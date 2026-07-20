@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -96,22 +96,43 @@ pub struct FaultInjectingHttpServer {
     address: SocketAddr,
     shutdown: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<HttpRequestRecord>>>,
+    held_transmission_count: Arc<AtomicUsize>,
+    held_transmissions_released: Arc<AtomicBool>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
 impl FaultInjectingHttpServer {
     pub fn start(fixtures: BTreeMap<String, HttpMediaFixture>) -> std::io::Result<Self> {
+        Self::start_with_transmission_holds(fixtures, BTreeMap::new())
+    }
+
+    /// Starts a server whose selected paths stop after the configured number of response-body
+    /// bytes until [`Self::release_held_transmissions`] is called.
+    ///
+    /// This gives real-player tests an externally controlled network boundary without relying on
+    /// wall-clock stalls or scheduler timing. Holds are global and one-shot for the server: a
+    /// release wakes every active response and leaves later responses unblocked.
+    pub fn start_with_transmission_holds(
+        fixtures: BTreeMap<String, HttpMediaFixture>,
+        hold_after_body_bytes: BTreeMap<String, usize>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
         let fixtures = Arc::new(fixtures);
+        let hold_after_body_bytes = Arc::new(hold_after_body_bytes);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_counts = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let held_transmission_count = Arc::new(AtomicUsize::new(0));
+        let held_transmissions_released = Arc::new(AtomicBool::new(false));
         let thread_fixtures = Arc::clone(&fixtures);
+        let thread_hold_after_body_bytes = Arc::clone(&hold_after_body_bytes);
         let thread_requests = Arc::clone(&requests);
         let thread_request_counts = Arc::clone(&request_counts);
         let thread_shutdown = Arc::clone(&shutdown);
+        let thread_held_transmission_count = Arc::clone(&held_transmission_count);
+        let thread_held_transmissions_released = Arc::clone(&held_transmissions_released);
         let accept_thread = thread::Builder::new()
             .name("sorotte-fault-http".to_owned())
             .spawn(move || {
@@ -119,12 +140,24 @@ impl FaultInjectingHttpServer {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let fixtures = Arc::clone(&thread_fixtures);
+                            let hold_after_body_bytes = Arc::clone(&thread_hold_after_body_bytes);
                             let requests = Arc::clone(&thread_requests);
                             let request_counts = Arc::clone(&thread_request_counts);
+                            let shutdown = Arc::clone(&thread_shutdown);
+                            let held_transmission_count =
+                                Arc::clone(&thread_held_transmission_count);
+                            let held_transmissions_released =
+                                Arc::clone(&thread_held_transmissions_released);
                             thread::spawn(move || {
-                                if let Some(record) =
-                                    handle_connection(stream, &fixtures, &request_counts)
-                                {
+                                if let Some(record) = handle_connection(
+                                    stream,
+                                    &fixtures,
+                                    &request_counts,
+                                    &hold_after_body_bytes,
+                                    &held_transmission_count,
+                                    &held_transmissions_released,
+                                    &shutdown,
+                                ) {
                                     requests.lock().expect("request log poisoned").push(record);
                                 }
                             });
@@ -140,6 +173,8 @@ impl FaultInjectingHttpServer {
             address,
             shutdown,
             requests,
+            held_transmission_count,
+            held_transmissions_released,
             accept_thread: Some(accept_thread),
         })
     }
@@ -171,11 +206,28 @@ impl FaultInjectingHttpServer {
         }
         false
     }
+
+    pub fn wait_for_held_transmissions(&self, count: usize, timeout: Duration) -> bool {
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            if self.held_transmission_count.load(Ordering::Acquire) >= count {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    pub fn release_held_transmissions(&self) {
+        self.held_transmissions_released
+            .store(true, Ordering::Release);
+    }
 }
 
 impl Drop for FaultInjectingHttpServer {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
+        self.release_held_transmissions();
         let _ = TcpStream::connect(self.address);
         if let Some(thread) = self.accept_thread.take() {
             let _ = thread.join();
@@ -187,6 +239,10 @@ fn handle_connection(
     mut stream: TcpStream,
     fixtures: &BTreeMap<String, HttpMediaFixture>,
     request_counts: &Mutex<BTreeMap<String, usize>>,
+    hold_after_body_bytes: &BTreeMap<String, usize>,
+    held_transmission_count: &AtomicUsize,
+    held_transmissions_released: &AtomicBool,
+    shutdown: &AtomicBool,
 ) -> Option<HttpRequestRecord> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
@@ -253,8 +309,18 @@ fn handle_connection(
         return None;
     }
 
-    let transmitted =
-        transmit_faulted_body(&mut stream, body, &fixture.fault_profile, request_ordinal);
+    let transmitted = transmit_faulted_body(
+        &mut stream,
+        body,
+        &fixture.fault_profile,
+        request_ordinal,
+        TransmissionHoldControl {
+            after_body_bytes: hold_after_body_bytes.get(&path).copied(),
+            held_transmission_count,
+            released: held_transmissions_released,
+            shutdown,
+        },
+    );
     Some(HttpRequestRecord {
         path,
         range_start,
@@ -310,11 +376,19 @@ fn parse_request(request: &[u8]) -> Option<(String, Option<usize>, Option<usize>
     Some((path, start, end))
 }
 
+struct TransmissionHoldControl<'a> {
+    after_body_bytes: Option<usize>,
+    held_transmission_count: &'a AtomicUsize,
+    released: &'a AtomicBool,
+    shutdown: &'a AtomicBool,
+}
+
 fn transmit_faulted_body(
     stream: &mut TcpStream,
     body: &[u8],
     faults: &NetworkFaultProfile,
     request_ordinal: usize,
+    hold: TransmissionHoldControl<'_>,
 ) -> usize {
     let disconnect_enabled = faults.temporary_disconnect_requests == 0
         || request_ordinal <= faults.temporary_disconnect_requests;
@@ -331,7 +405,23 @@ fn transmit_faulted_body(
     let mut stalls = faults.burst_stalls.clone();
     stalls.sort_by_key(|stall| stall.after_body_bytes);
     let mut next_stall = 0;
+    let hold_after_body_bytes = hold.after_body_bytes.map(|bytes| bytes.min(disconnect_at));
+    let mut hold_announced = false;
     while transmitted < disconnect_at {
+        if !hold.released.load(Ordering::Acquire)
+            && hold_after_body_bytes.is_some_and(|hold_at| transmitted >= hold_at)
+        {
+            if !hold_announced {
+                hold.held_transmission_count.fetch_add(1, Ordering::AcqRel);
+                hold_announced = true;
+            }
+            while !hold.released.load(Ordering::Acquire) && !hold.shutdown.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if hold.shutdown.load(Ordering::Acquire) {
+                break;
+            }
+        }
         while stalls
             .get(next_stall)
             .is_some_and(|stall| transmitted >= stall.after_body_bytes)
@@ -339,7 +429,18 @@ fn transmit_faulted_body(
             thread::sleep(stalls[next_stall].duration);
             next_stall += 1;
         }
-        let end = transmitted.saturating_add(chunk_size).min(disconnect_at);
+        let transmission_limit = if hold.released.load(Ordering::Acquire) {
+            disconnect_at
+        } else {
+            hold_after_body_bytes.unwrap_or(disconnect_at)
+        };
+        let end = transmitted
+            .saturating_add(chunk_size)
+            .min(disconnect_at)
+            .min(transmission_limit);
+        if end == transmitted {
+            continue;
+        }
         if stream.write_all(&body[transmitted..end]).is_err() {
             break;
         }
@@ -490,6 +591,33 @@ mod tests {
         assert!(requests[0].disconnected_early);
         assert!(!requests[1].disconnected_early);
         assert_eq!(requests[1].transmitted_body_bytes, 32);
+    }
+
+    #[test]
+    fn transmission_hold_waits_for_explicit_release() {
+        let fixture = HttpMediaFixture::static_bytes(
+            "application/octet-stream",
+            b"0123456789abcdef".to_vec(),
+        );
+        let server = FaultInjectingHttpServer::start_with_transmission_holds(
+            BTreeMap::from([("/held.bin".to_owned(), fixture)]),
+            BTreeMap::from([("/held.bin".to_owned(), 8)]),
+        )
+        .unwrap();
+        let address = server.address();
+        let request = thread::spawn(move || raw_get(address, "/held.bin", None));
+
+        assert!(server.wait_for_held_transmissions(1, Duration::from_secs(1)));
+        assert!(
+            !request.is_finished(),
+            "the response must remain blocked until the test releases its transmission gate"
+        );
+
+        server.release_held_transmissions();
+        let response = request.join().expect("request thread should finish");
+        assert!(response.ends_with(b"0123456789abcdef"));
+        assert!(server.wait_for_requests(1, Duration::from_secs(1)));
+        assert_eq!(server.requests()[0].transmitted_body_bytes, 16);
     }
 
     #[test]

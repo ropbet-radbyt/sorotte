@@ -1045,6 +1045,22 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    fn plex_watch_event_for_current_player(&self) -> Option<PlexWatchEvent> {
+        if !self.player_local_file_ready_for_attached_sync() {
+            return None;
+        }
+        self.player_local_file.clone().map(|file| {
+            let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
+            if let Some(position) = self.player_position_seconds {
+                event = event.with_position_seconds(position);
+            }
+            if let Some(paused) = self.player_paused {
+                event = event.with_paused(paused);
+            }
+            event
+        })
+    }
+
     pub(super) fn sync_plex_watch_state(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -1087,16 +1103,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
 
-        let event = self.player_local_file.clone().map(|file| {
-            let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
-            if let Some(position) = self.player_position_seconds {
-                event = event.with_position_seconds(position);
-            }
-            if let Some(paused) = self.player_paused {
-                event = event.with_paused(paused);
-            }
-            event
-        });
+        let event = self.plex_watch_event_for_current_player();
         let cache_path = self.plex_cache_path();
         let engine = match self.take_plex_sync_engine(config) {
             Ok(engine) => engine,
@@ -1893,8 +1900,117 @@ fn open_system_url_command(url: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::SecretDraft;
     use crate::app::testing::support::test_temp_root;
+    use crate::app::{GuiOwnedPlayer, SecretDraft};
+
+    #[test]
+    fn accepted_then_rejected_plex_load_never_enters_watch_sync() {
+        #[derive(Default)]
+        struct AcceptedPlexState {
+            outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+        }
+
+        struct AcceptedPlexPlayer {
+            state: std::sync::Arc<std::sync::Mutex<AcceptedPlexState>>,
+        }
+
+        impl PlayerAdapter for AcceptedPlexPlayer {
+            fn name(&self) -> &'static str {
+                "accepted-plex"
+            }
+
+            fn execute_tracked(
+                &mut self,
+                command: sorotte_player_api::PlayerCommand,
+            ) -> Result<sorotte_player_api::PlayerCommandId, sorotte_player_api::PlayerError>
+            {
+                assert!(matches!(
+                    command,
+                    sorotte_player_api::PlayerCommand::OpenFile(_)
+                ));
+                Ok(sorotte_player_api::PlayerCommandId::new(17))
+            }
+
+            fn take_media_load_outcome(
+                &mut self,
+            ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .outcomes
+                    .pop_front()
+            }
+        }
+
+        let playlist_uri = sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine-1".to_owned(),
+            rating_key: "rejected-episode".to_owned(),
+            title: Some("Rejected Episode".to_owned()),
+            file_name: Some("Rejected Episode.mkv".to_owned()),
+            duration_millis: Some(90_000),
+            size_bytes: Some(123_456),
+            media_type: Some(sorotte_plex::PlexMediaType::Episode),
+        };
+        let logical_uri = sorotte_plex::format_plex_playlist_uri(&playlist_uri);
+        let logical_file = LocalFileUpdate::new("Rejected Episode.mkv")
+            .with_path(logical_uri.clone())
+            .with_duration_seconds(90.0)
+            .with_size_bytes(123_456);
+        let playback_url =
+            "http://127.0.0.1:32400/library/parts/rejected/file.mkv?X-Plex-Token=secret-token";
+        let stream_target = sorotte_plex::PlexStreamTarget {
+            playlist_uri,
+            matched_item: sorotte_plex::PlexMatchedItem {
+                rating_key: "rejected-episode".to_owned(),
+                title: "Rejected Episode".to_owned(),
+                media_type: sorotte_plex::PlexMediaType::Episode,
+                duration_millis: Some(90_000),
+            },
+            logical_file: logical_file.clone(),
+            playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(playback_url),
+        };
+        let player_state = std::sync::Arc::new(std::sync::Mutex::new(AcceptedPlexState::default()));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(AcceptedPlexPlayer {
+            state: player_state.clone(),
+        })));
+
+        owner
+            .open_plex_stream_target_through_attached_player_result_impl(
+                &logical_uri,
+                stream_target,
+                false,
+            )
+            .expect("Plex stream open should have a player")
+            .expect("Plex stream command should be accepted");
+
+        assert_eq!(owner.player_local_file, Some(logical_file));
+        assert!(owner.player_local_file_placeholder);
+        assert!(
+            owner.plex_watch_event_for_current_player().is_none(),
+            "command acceptance must not create a Plex watch event"
+        );
+
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .outcomes
+            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::failure(
+                playback_url,
+                None,
+                sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
+                "player rejected the Plex stream",
+            ));
+        owner.refresh_player_state_impl();
+
+        assert!(owner.player_local_file.is_none());
+        assert!(!owner.player_local_file_placeholder);
+        assert!(owner.pending_logical_media_override.is_none());
+        assert!(
+            owner.plex_watch_event_for_current_player().is_none(),
+            "a rejected Plex load must never reach watch synchronization"
+        );
+    }
 
     #[test]
     fn open_system_url_command_preserves_plex_auth_url_as_one_argument() {
@@ -3095,7 +3211,7 @@ mod tests {
                 operation_context: old_context.clone(),
                 trigger_key: "old-stream-trigger".to_owned(),
                 result: Ok(GuiPlexStreamResolveOutcome {
-                    stream_target: None,
+                    stream_target: Ok(None),
                     cache: PlexMatchCache::default(),
                 }),
                 staged_cache_write: Some(Ok(staged_cache_write)),

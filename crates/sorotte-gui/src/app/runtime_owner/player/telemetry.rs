@@ -126,13 +126,11 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut playback_updates = Vec::new();
         let mut transport_updates = Vec::new();
+        let mut command_progress_updates = Vec::new();
         let mut media_load_outcomes = Vec::new();
         let mut local_file_updates = Vec::new();
-        while player.take_command_progress().is_some() {
-            // GUI coordinator commands remain completion-gated by the same
-            // transport observations forwarded below. Tracked open progress
-            // is drained here so adapter state remains bounded; load failures
-            // are surfaced through PlayerMediaLoadOutcome.
+        while let Some(progress) = player.take_command_progress() {
+            command_progress_updates.push(progress);
         }
         while let Some(update) = player.take_playback_telemetry_update() {
             playback_updates.push(update);
@@ -267,11 +265,19 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         for outcome in media_load_outcomes {
+            self.handle_untracked_playlist_media_load_outcome(&outcome);
             self.handle_player_media_load_outcome(outcome);
         }
         for mut update in local_file_updates {
-            if let Some(override_update) = self.logical_media_override_for_loaded_target(&update) {
+            self.handle_untracked_playlist_local_file_observation(&update);
+            let tracked_playlist_load_unconfirmed =
+                self.tracked_playlist_resolution_load_matches_local_file(&update);
+            let mut logical_override_confirmed = None;
+            if let Some((override_update, confirmed)) =
+                self.logical_media_override_for_loaded_target(&update)
+            {
                 update = override_update;
+                logical_override_confirmed = Some(confirmed);
             }
             let file_changed = Self::local_file_update_replaces_current_file(
                 self.player_local_file.as_ref(),
@@ -303,12 +309,21 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
             self.player_local_file = Some(update);
-            self.player_local_file_placeholder = false;
+            self.player_local_file_placeholder = tracked_playlist_load_unconfirmed
+                || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
             if file_changed || self.player_position_seconds.is_none() {
                 self.player_position_seconds = Some(0.0);
             }
         }
+        // A tracked load's terminal result is the final authority for the
+        // provisional identity observed in the queues above. Processing it
+        // last prevents an earlier file-loaded observation from resurrecting
+        // media that the same command subsequently rejected.
+        for progress in command_progress_updates {
+            self.handle_playlist_resolution_command_progress(progress);
+        }
         for update in transport_updates {
+            self.reconcile_pending_logical_override_media_generation(update.media_generation);
             let update = transport_update_on_room_timeline(update, user_offset_seconds);
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
@@ -544,30 +559,64 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn player_local_file_ready_for_attached_sync(&self) -> bool {
-        self.player_local_file.is_some() && !self.player_local_file_placeholder
+    pub(in crate::app::runtime_owner) fn player_local_file_ready_for_attached_sync(&self) -> bool {
+        self.player_local_file.is_some()
+            && self.player_local_file_identity_confirmed_for_shared_sync()
     }
 
     fn logical_media_override_for_loaded_target(
         &mut self,
         update: &LocalFileUpdate,
-    ) -> Option<LocalFileUpdate> {
-        let pending = self.pending_logical_media_override.as_ref()?;
-        let loaded_target = pending.loaded_target_secret.as_str();
-        let current_matches_logical = self.player_local_file.as_ref().is_some_and(|current| {
-            Self::local_file_identity_matches(current, &pending.logical_file)
-        });
-        let update_is_url =
-            update.path.as_deref().is_some_and(browser_is_url) || browser_is_url(&update.name);
-        let matches_path = update
-            .path
-            .as_deref()
-            .is_some_and(|path| path == loaded_target);
-        let matches_name = update.name == loaded_target;
-        if !(matches_path || matches_name || (current_matches_logical && update_is_url)) {
+    ) -> Option<(LocalFileUpdate, bool)> {
+        let scope_matches = self
+            .pending_logical_media_override
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.playlist_row_id.is_none()
+                    || (pending.playlist_generation == self.playlist_resolution.generation
+                        && self
+                            .playlist_resolution_attempt
+                            .as_ref()
+                            .is_some_and(|attempt| {
+                                Some(attempt.row_id) == pending.playlist_row_id
+                                    && attempt.playlist_generation == pending.playlist_generation
+                                    && attempt.player_command_id == pending.player_command_id
+                            }))
+            });
+        if !scope_matches {
+            self.pending_logical_media_override = None;
             return None;
         }
-        Some(pending.logical_file.clone())
+        let exact_target_match =
+            self.pending_logical_media_override
+                .as_ref()
+                .is_some_and(|pending| {
+                    let loaded_target = pending.loaded_target_secret.as_str();
+                    update
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| path == loaded_target)
+                        || update.name == loaded_target
+                });
+        if !exact_target_match {
+            // Any unmatched file observation is an external/superseding media
+            // generation. It must never inherit an older Plex logical identity.
+            self.pending_logical_media_override = None;
+            return None;
+        }
+
+        let (logical_file, consume) = {
+            let pending = self
+                .pending_logical_media_override
+                .as_mut()
+                .expect("exact pending logical override should exist");
+            pending.logical_file_observed = true;
+            (pending.logical_file.clone(), pending.load_completed)
+        };
+        if consume {
+            self.pending_logical_media_override = None;
+        }
+        Some((logical_file, consume))
     }
 }
 

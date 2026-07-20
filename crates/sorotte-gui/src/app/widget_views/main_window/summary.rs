@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::shell_state::GuiPlaylistSourcePolicy;
 
 impl SorotteGuiShellAppState {
     fn seek_preparation_panel(&self) -> Option<GuiWidgetNode> {
@@ -755,14 +756,23 @@ fn format_seek_preparation_timestamp(seconds: f64) -> String {
 }
 
 fn playlist_source_tooltip(source_state: &GuiPlaylistSourceState) -> String {
-    let mut lines = vec![
-        format!("Current source: {}", source_state.current_label),
-        format!(
+    let mut lines = vec![format!("Current source: {}", source_state.current_label)];
+    if source_state.policy == GuiPlaylistSourcePolicy::Automatic {
+        lines.push("Selection policy: Automatic".to_owned());
+    } else {
+        lines.push(format!(
             "Selected provider: {}",
-            source_state.current_provider_id.as_str()
-        ),
-        format!("Status: {}", source_state.status.label()),
-    ];
+            source_state
+                .preferred_provider_id
+                .as_ref()
+                .unwrap_or(&source_state.current_provider_id)
+                .as_str()
+        ));
+    }
+    if let Some(provider_id) = source_state.resolved_provider_id.as_ref() {
+        lines.push(format!("Resolved provider: {}", provider_id.as_str()));
+    }
+    lines.push(format!("Status: {}", source_state.status.label()));
     if let Some(detail) = source_state.detail.as_deref() {
         lines.push(detail.to_owned());
     }

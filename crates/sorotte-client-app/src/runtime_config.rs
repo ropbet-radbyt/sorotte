@@ -324,9 +324,9 @@ impl RoomBufferingPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartSynchronizationPolicy {
+    #[default]
     Immediate,
     WaitForController,
-    #[default]
     WaitForAllEligible,
     Quorum,
 }
@@ -451,7 +451,7 @@ pub struct StartSynchronizationConfig {
 impl Default for StartSynchronizationConfig {
     fn default() -> Self {
         Self {
-            policy: StartSynchronizationPolicy::WaitForAllEligible,
+            policy: StartSynchronizationPolicy::Immediate,
             quorum: Percent(75.0),
             timeout: Seconds(15.0),
             timeout_action: StartTimeoutAction::Continue,
@@ -1903,7 +1903,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn streaming_defaults_use_all_eligible_readiness_start_coordination() {
+    fn absent_streaming_start_policy_keeps_immediate_legacy_behavior() {
+        assert_eq!(
+            StartSynchronizationPolicy::default(),
+            StartSynchronizationPolicy::Immediate
+        );
+        assert_eq!(
+            StartSynchronizationConfig::default().policy,
+            StartSynchronizationPolicy::Immediate
+        );
+
         let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
             .expect("empty settings should resolve")
             .playback
@@ -1914,7 +1923,7 @@ mod tests {
         assert_eq!(config.recovery.max_catchup_rate.get(), 1.05);
         assert_eq!(
             config.start_synchronization.policy,
-            StartSynchronizationPolicy::WaitForAllEligible
+            StartSynchronizationPolicy::Immediate
         );
         assert_eq!(
             config.room_buffering.policy,
@@ -1928,20 +1937,37 @@ mod tests {
     }
 
     #[test]
-    fn explicit_immediate_start_policy_remains_available_for_legacy_compatibility() {
+    fn legacy_ini_without_streaming_start_policy_migrates_to_immediate() {
+        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings_mvp(
+            "[client_settings]\nname = legacy-user\n",
+        );
+        assert_eq!(settings.streaming_start_policy, None);
+
+        let config = ClientConfig::try_from_stored(&settings)
+            .expect("legacy settings without a start policy should resolve")
+            .playback
+            .streaming;
+        assert_eq!(
+            config.start_synchronization.policy,
+            StartSynchronizationPolicy::Immediate
+        );
+    }
+
+    #[test]
+    fn explicit_wait_all_start_policy_remains_opt_in() {
         let settings = StoredClientSettingsV1 {
-            streaming_start_policy: Some("immediate".to_owned()),
+            streaming_start_policy: Some("wait-all".to_owned()),
             ..StoredClientSettingsV1::default()
         };
 
         let config = ClientConfig::try_from_stored(&settings)
-            .expect("explicit immediate start policy should resolve")
+            .expect("explicit wait-all start policy should resolve")
             .playback
             .streaming;
 
         assert_eq!(
             config.start_synchronization.policy,
-            StartSynchronizationPolicy::Immediate
+            StartSynchronizationPolicy::WaitForAllEligible
         );
     }
 

@@ -2692,12 +2692,15 @@ fn loaded_media_without_applied_target_cannot_commit_an_otherwise_eligible_parti
 }
 
 #[test]
-fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
-    let stored_defaults = StoredClientSettingsV1::default();
-    let configured_default = ClientConfig::try_from_stored(&stored_defaults)
-        .expect("fully default stored settings should resolve");
+fn explicit_wait_all_settings_wait_for_every_ready_and_playable_participant() {
+    let stored_wait_all = StoredClientSettingsV1 {
+        streaming_start_policy: Some("wait-all".to_owned()),
+        ..StoredClientSettingsV1::default()
+    };
+    let configured_wait_all = ClientConfig::try_from_stored(&stored_wait_all)
+        .expect("explicit wait-all stored settings should resolve");
     assert_eq!(
-        configured_default
+        configured_wait_all
             .playback
             .streaming
             .start_synchronization
@@ -2706,12 +2709,12 @@ fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
     );
     assert_eq!(
         StartSynchronizationConfig::default().policy,
-        StartSynchronizationPolicy::WaitForAllEligible
+        StartSynchronizationPolicy::Immediate
     );
     assert_eq!(
         PlaybackBarrierStartConfig::default().policy,
-        Some(PlaybackBarrierPolicy::AllEligible),
-        "the core coordinator default must match the application default"
+        None,
+        "the core coordinator default must preserve immediate legacy starts"
     );
 
     let mut runtime = ServerRuntime::default();
@@ -2734,7 +2737,7 @@ fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
     }
     let mut application = ClientApplication::new(client_session, DisconnectedPlayer);
     application.dispatch(ClientCommand::update_settings(
-        ClientApplicationSettings::new(configured_default).with_active_room("room"),
+        ClientApplicationSettings::new(configured_wait_all).with_active_room("room"),
     ));
 
     let alice_epoch = runtime.room_readiness["room"].participants["alice"]
@@ -2757,8 +2760,8 @@ fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
     );
     let pending = application
         .pending_protocol_line()
-        .expect("default application prepare should encode")
-        .expect("default application should queue a barrier prepare");
+        .expect("explicit wait-all application prepare should encode")
+        .expect("explicit wait-all application should queue a barrier prepare");
     let prepare_line = pending.line().to_owned();
     let ProtocolMessage::Set(set) =
         decode_message_line(&prepare_line).expect("application prepare should decode")
@@ -2774,7 +2777,7 @@ fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
     assert_eq!(
         prepare.policy,
         PlaybackBarrierPolicy::AllEligible,
-        "fully default stored settings must reach the wire as allEligible"
+        "explicit wait-all stored settings must reach the wire as allEligible"
     );
     application
         .acknowledge_protocol_line(pending.lease())
@@ -2806,7 +2809,7 @@ fn default_client_settings_v2_waits_for_every_ready_and_playable_participant() {
     send_barrier_ready(&mut runtime, "bob-client", 1, true);
     assert!(
         runtime.room_playback_state("room").paused,
-        "a default V2 room must stay paused while Bob is Not Ready"
+        "a wait-all V2 room must stay paused while Bob is Not Ready"
     );
     assert_eq!(runtime.next_playback_barrier_revision, 0);
 

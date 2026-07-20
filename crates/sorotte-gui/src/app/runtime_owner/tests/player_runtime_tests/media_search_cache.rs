@@ -1,6 +1,9 @@
 use super::*;
 
-use crate::app::runtime_owner::{GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult};
+use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
+use crate::app::runtime_owner::{
+    GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
+};
 use crate::app::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
     GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState,
@@ -17,6 +20,357 @@ fn wait_for_media_match_remote_lookup(owner: &mut GuiPersistedConfigRuntimeOwner
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     panic!("timed out waiting for cached media-match remote lookup completion");
+}
+
+fn test_plex_stream_target(
+    file_name: &str,
+    rating_key: &str,
+) -> (
+    sorotte_plex::PlexStreamTarget,
+    sorotte_player_api::LocalFileUpdate,
+) {
+    let playlist_uri = sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: rating_key.to_owned(),
+        title: Some(file_name.to_owned()),
+        file_name: Some(file_name.to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    };
+    let logical_file = sorotte_player_api::LocalFileUpdate::new(file_name)
+        .with_path(sorotte_plex::format_plex_playlist_uri(&playlist_uri))
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let stream_target = sorotte_plex::PlexStreamTarget {
+        playlist_uri,
+        matched_item: sorotte_plex::PlexMatchedItem {
+            rating_key: rating_key.to_owned(),
+            title: file_name.to_owned(),
+            media_type: sorotte_plex::PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(format!(
+            "http://127.0.0.1:32400/library/parts/{rating_key}/file.mkv?X-Plex-Token=secret-token"
+        )),
+    };
+    (stream_target, logical_file)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FirstOpenFailureMode {
+    Synchronous,
+    Tracked,
+}
+
+struct FailFirstOpenPlayerAdapter {
+    mode: FirstOpenFailureMode,
+    opened_paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    next_command_id: u64,
+    command_progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
+    media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+    local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+}
+
+impl FailFirstOpenPlayerAdapter {
+    fn new(mode: FirstOpenFailureMode) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let opened_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                mode,
+                opened_paths: opened_paths.clone(),
+                next_command_id: 1,
+                command_progress: std::collections::VecDeque::new(),
+                media_load_outcomes: std::collections::VecDeque::new(),
+                local_file_updates: std::collections::VecDeque::new(),
+            },
+            opened_paths,
+        )
+    }
+
+    fn record_open(&self, path: &str) -> usize {
+        let mut opened = self
+            .opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        opened.push(path.to_owned());
+        opened.len()
+    }
+}
+
+impl PlayerAdapter for FailFirstOpenPlayerAdapter {
+    fn name(&self) -> &'static str {
+        "fail-first-open"
+    }
+
+    fn execute_tracked(
+        &mut self,
+        command: sorotte_player_api::PlayerCommand,
+    ) -> Result<sorotte_player_api::PlayerCommandId, sorotte_player_api::PlayerError> {
+        if matches!(self.mode, FirstOpenFailureMode::Synchronous) {
+            return Err(sorotte_player_api::PlayerError::Unsupported(
+                "execute_tracked",
+            ));
+        }
+        let sorotte_player_api::PlayerCommand::OpenFile(path) = command else {
+            return Err(sorotte_player_api::PlayerError::Unsupported("test command"));
+        };
+        let open_number = self.record_open(&path);
+        let command_id = sorotte_player_api::PlayerCommandId::new(self.next_command_id);
+        let generation = sorotte_player_api::PlayerMediaGeneration::new(self.next_command_id);
+        self.next_command_id += 1;
+        self.command_progress
+            .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
+                command_id,
+                Some(generation),
+                None,
+            ));
+        if open_number == 1 {
+            self.media_load_outcomes.push_back(
+                sorotte_player_api::PlayerMediaLoadOutcome::success(
+                    path.clone(),
+                    Some(path.clone()),
+                ),
+            );
+            self.local_file_updates.push_back(
+                sorotte_player_api::LocalFileUpdate::new("episode.mkv").with_path(path.clone()),
+            );
+        }
+        let result = if open_number == 1 {
+            sorotte_player_api::PlayerCommandResult::Failed(
+                sorotte_player_api::PlayerCommandFailureKind::Unknown,
+            )
+        } else {
+            sorotte_player_api::PlayerCommandResult::Completed
+        };
+        self.command_progress
+            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+                command_id,
+                Some(generation),
+                None,
+                None,
+                result,
+            ));
+        Ok(command_id)
+    }
+
+    fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+        let open_number = self.record_open(path);
+        if open_number == 1 {
+            return Err(sorotte_player_api::PlayerError::OperationFailed(
+                "simulated first candidate failure".to_owned(),
+            ));
+        }
+        self.media_load_outcomes
+            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::success(
+                path,
+                Some(path.to_owned()),
+            ));
+        Ok(())
+    }
+
+    fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+        self.command_progress.pop_front()
+    }
+
+    fn take_media_load_outcome(&mut self) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+        self.media_load_outcomes.pop_front()
+    }
+
+    fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        self.local_file_updates.pop_front()
+    }
+}
+
+fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) {
+    let root = test_temp_root(match mode {
+        FirstOpenFailureMode::Synchronous => "sync-local-open-failure-fallback",
+        FirstOpenFailureMode::Tracked => "tracked-local-open-failure-fallback",
+    });
+    let local_path = root.join("episode.mkv");
+    std::fs::write(&local_path, b"broken local fixture")
+        .expect("local fallback fixture should be written");
+    let local_path = local_path.to_string_lossy().into_owned();
+
+    let (adapter, opened_paths) = FailFirstOpenPlayerAdapter::new(mode);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
+
+    let first_outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    match mode {
+        FirstOpenFailureMode::Synchronous => {
+            assert_eq!(first_outcome, SelectedPlaylistMediaSyncOutcome::NoChange);
+            assert_eq!(
+                owner.playlist_resolution_attempt.as_ref().unwrap().state,
+                PlaylistResolutionAttemptState::Failed
+            );
+            assert!(
+                owner.player_local_file.is_none() && !owner.player_local_file_placeholder,
+                "a file-loaded success/local observation must remain provisional and be cleared by the matching terminal failure"
+            );
+            assert_eq!(
+                owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+                SelectedPlaylistMediaSyncOutcome::NoChange
+            );
+        }
+        FirstOpenFailureMode::Tracked => {
+            assert_eq!(
+                first_outcome,
+                SelectedPlaylistMediaSyncOutcome::StartedLoading
+            );
+            owner.refresh_player_state_impl();
+            assert_eq!(
+                owner.playlist_resolution_attempt.as_ref().unwrap().state,
+                PlaylistResolutionAttemptState::Failed
+            );
+            assert_eq!(
+                owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+                SelectedPlaylistMediaSyncOutcome::NoChange
+            );
+        }
+    }
+    assert!(
+        owner.plex_stream_resolve_rx.is_some(),
+        "a failed local candidate should advance to the Plex worker"
+    );
+
+    let (stream_target, _) = test_plex_stream_target("episode.mkv", "fallback-1");
+    let playback_url = stream_target.playback_url.as_str().to_owned();
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("Plex fallback should retain a trigger key");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("Plex fallback should retain an operation context");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Ok(Some(stream_target)),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("Plex fallback result should queue");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::StartedLoading
+    );
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![local_path.clone(), playback_url],
+        "the exact failed local path must be excluded instead of retried"
+    );
+    let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+    assert_eq!(attempt.failed_candidates.len(), 1);
+    assert_eq!(
+        attempt.candidate_provider,
+        Some(GuiMediaSourceProviderId::plex_stream())
+    );
+
+    owner.refresh_player_state_impl();
+    assert_eq!(
+        owner.playlist_resolution_attempt.as_ref().unwrap().state,
+        PlaylistResolutionAttemptState::Active
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_falls_back_after_synchronous_local_open_failure() {
+    assert_failed_local_candidate_falls_back_to_plex(FirstOpenFailureMode::Synchronous);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_falls_back_after_tracked_local_open_failure() {
+    assert_failed_local_candidate_falls_back_to_plex(FirstOpenFailureMode::Tracked);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_failure_backoff() {
+    let root = test_temp_root("repaired-local-candidate-retry");
+    let local_path = root.join("episode.mkv");
+    std::fs::write(&local_path, b"repaired after first open")
+        .expect("retry fixture should be written");
+    let local_path = local_path.to_string_lossy().into_owned();
+
+    let (adapter, opened_paths) =
+        FailFirstOpenPlayerAdapter::new(FirstOpenFailureMode::Synchronous);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange,
+        "the exact failed path must remain excluded during the immediate fallback pass"
+    );
+    assert_eq!(
+        opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        std::slice::from_ref(&local_path)
+    );
+
+    owner
+        .playlist_resolution_attempt
+        .as_mut()
+        .expect("failed attempt should remain retryable")
+        .failed_candidate_retry_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(owner.active_playlist_candidate_retry_due());
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::StartedLoading,
+        "the same repaired path must become eligible after the bounded failure backoff"
+    );
+    assert_eq!(
+        opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[local_path.clone(), local_path.clone()]
+    );
+    owner.refresh_player_state_impl();
+    assert_eq!(
+        owner.playlist_resolution_attempt.as_ref().unwrap().state,
+        PlaylistResolutionAttemptState::Active
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -227,7 +581,7 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
     wait_for_media_match_remote_lookup(&mut owner);
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+        SelectedPlaylistMediaSyncOutcome::StartedLoading
     );
     assert_eq!(
         player_state
@@ -515,7 +869,7 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri(
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
@@ -523,6 +877,21 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri(
             .and_then(|file| file.path.as_deref()),
         Some(selected_media_path.as_str())
     );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let source_state = &state.main_window.playlist[0].source_state;
+    assert_eq!(source_state.policy, GuiPlaylistSourcePolicy::Automatic);
+    assert_eq!(source_state.preferred_provider_id(), None);
+    assert_eq!(
+        source_state.resolved_provider_id.as_ref(),
+        Some(&GuiMediaSourceProviderId::local()),
+        "a Plex URI resolved from disk must display Local without changing Automatic policy"
+    );
+    assert_eq!(
+        source_state.current_provider_id,
+        GuiMediaSourceProviderId::local()
+    );
+    assert_eq!(source_state.status, GuiPlaylistSourceStatus::Active);
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -673,7 +1042,7 @@ fn gui_persisted_config_runtime_owner_uses_indexed_nested_local_media_for_plex_p
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
@@ -717,7 +1086,7 @@ fn gui_persisted_config_runtime_owner_opens_stale_cached_local_media_before_refr
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
@@ -901,7 +1270,7 @@ fn gui_persisted_config_runtime_owner_playlist_default_media_match_remains_local
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
@@ -913,6 +1282,212 @@ fn gui_persisted_config_runtime_owner_playlist_default_media_match_remains_local
     assert!(
         owner.media_match_remote_lookup_rx.is_none(),
         "preferred Media Matching should not run when local media resolved first"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preferred_media_match_recovers_from_local_open_failure() {
+    let root = test_temp_root("preferred-media-match-local-failure");
+    let config_path = root.join("sorotte.ini");
+    let direct_root = root.join("direct");
+    let media_match_root = root.join("media-match");
+    let media_match_nested = media_match_root.join("alternate");
+    std::fs::create_dir_all(&direct_root).expect("direct fixture root should be created");
+    std::fs::create_dir_all(&media_match_nested)
+        .expect("Media Matching fixture root should be created");
+    let direct_path = direct_root.join("episode.mkv");
+    let media_match_path = media_match_nested.join("episode.mkv");
+    std::fs::write(&direct_path, b"broken direct candidate")
+        .expect("direct fixture should be written");
+    std::fs::write(&media_match_path, b"alternate Media Matching candidate")
+        .expect("Media Matching fixture should be written");
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_match_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let direct_path = direct_path.to_string_lossy().into_owned();
+    state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+    state.main_window.playlist[0].source_state =
+        GuiPlaylistSourceState::for_playlist_default(GuiMediaSourceProviderId::media_matching());
+
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_match_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("Media Matching inventory should be persisted without fingerprint extraction");
+
+    let (adapter, opened_paths) =
+        FailFirstOpenPlayerAdapter::new(FirstOpenFailureMode::Synchronous);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
+    owner.active_shared_playlist_index = Some(0);
+    owner.reconcile_local_shared_playlist_media_paths(&state);
+    owner.playlist_resolution.local_origins_by_row.insert(
+        state.main_window.playlist[0].entry_id,
+        std::path::PathBuf::from(&direct_path),
+    );
+    let media_root_key =
+        crate::app::media_search_cache::normalized_media_search_root_key(&media_match_root);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![media_root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            media_root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key: media_root_key,
+                root_path: media_match_root.clone(),
+                built_at_unix_ms: 1,
+                candidates_by_name: std::collections::HashMap::new(),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    assert_eq!(
+        owner.media_match_cached_exact_inventory_candidate_for_target(
+            &state,
+            "episode.mkv",
+            std::slice::from_ref(&media_match_root),
+        ),
+        Some(sorotte_media_match::normalize_media_path(&media_match_path)),
+        "the fallback fixture must expose a distinct exact Media Matching candidate"
+    );
+
+    let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        outcome,
+        SelectedPlaylistMediaSyncOutcome::StartedLoading,
+        "PreferMediaMatching should continue after the exact local open fails; opened={:?}",
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    );
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            direct_path,
+            sorotte_media_match::normalize_media_path(&media_match_path),
+        ]
+    );
+    let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+    assert_eq!(attempt.failed_candidates.len(), 1);
+    assert_eq!(
+        attempt.candidate_provider,
+        Some(GuiMediaSourceProviderId::media_matching())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_falls_back_to_plex_after_media_match_open_failure() {
+    let root = test_temp_root("media-match-open-failure-plex-fallback");
+    let config_path = root.join("sorotte.ini");
+    let media_root = root.join("media-match");
+    std::fs::create_dir_all(&media_root).expect("Media Matching fixture root should be created");
+    let media_match_path = media_root.join("episode.mkv");
+    std::fs::write(&media_match_path, b"broken Media Matching candidate")
+        .expect("Media Matching fixture should be written");
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("Media Matching inventory should be persisted without fingerprint extraction");
+
+    let (adapter, opened_paths) =
+        FailFirstOpenPlayerAdapter::new(FirstOpenFailureMode::Synchronous);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
+    owner.active_shared_playlist_index = Some(0);
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert_eq!(
+        owner.playlist_resolution_attempt.as_ref().unwrap().state,
+        PlaylistResolutionAttemptState::Failed
+    );
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert!(
+        owner.plex_stream_resolve_rx.is_some(),
+        "a failed Media Matching candidate should advance Automatic to Plex"
+    );
+
+    let (stream_target, _) = test_plex_stream_target("episode.mkv", "media-match-fallback");
+    let playback_url = stream_target.playback_url.as_str().to_owned();
+    let trigger_key = owner.plex_stream_resolve_trigger_key.clone().unwrap();
+    let operation_context = owner.plex_stream_resolve_context.clone().unwrap();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Ok(Some(stream_target)),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("Plex fallback result should queue");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::StartedLoading
+    );
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            media_match_path.to_string_lossy().into_owned(),
+            playback_url,
+        ]
+    );
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.candidate_provider.clone()),
+        Some(GuiMediaSourceProviderId::plex_stream())
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -1037,7 +1612,7 @@ fn gui_persisted_config_runtime_owner_waits_for_pending_local_index_before_ready
             operation_context: operation_context.clone(),
             trigger_key: trigger_key.clone(),
             result: Ok(GuiPlexStreamResolveOutcome {
-                stream_target: Some(stream_target.clone()),
+                stream_target: Ok(Some(stream_target.clone())),
                 cache: sorotte_plex::PlexMatchCache::default(),
             }),
             staged_cache_write: None,
@@ -1083,13 +1658,91 @@ fn gui_persisted_config_runtime_owner_waits_for_pending_local_index_before_ready
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     assert_eq!(
         fallback_outcome,
-        SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+        SelectedPlaylistMediaSyncOutcome::StartedLoading
     );
     assert_eq!(
         owner.player_local_file,
         Some(logical_file),
         "Plex should become eligible once the configured local-search worker settles without a match"
     );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_does_not_block_ready_plex_for_scheduled_local_refresh() {
+    let root = test_temp_root("ready-plex-skips-scheduled-local-refresh");
+    std::fs::create_dir_all(&root).expect("scheduled-refresh fixture root should be created");
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let target = "Episode 1.mkv";
+    let (stream_target, logical_file) = test_plex_stream_target(target, "123");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key]),
+    });
+    owner.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Failed;
+    owner.attached_media_search_next_retry_at =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
+
+    assert!(!owner.attached_media_search_in_flight());
+    assert!(owner.attached_media_search_refresh_required());
+    assert!(owner.attached_media_search_retry_scheduled());
+    let _ = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert!(
+        !owner.attached_media_search_in_flight(),
+        "a future retry deadline must not manufacture an in-flight local lookup"
+    );
+
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("automatic resolution should queue Plex while the local retry is scheduled");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("queued Plex resolution should retain its operation context");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Ok(Some(stream_target)),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("ready Plex fallback should be queued");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    let _ = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(owner.player_local_file, Some(logical_file));
+    assert!(
+        owner.attached_media_search_next_retry_at.is_some(),
+        "opening Plex must preserve the scheduled background local refresh"
+    );
+    assert!(owner.attached_media_search_refresh_required());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1274,7 +1927,7 @@ fn gui_persisted_config_runtime_owner_releases_only_the_matching_ready_plex_fall
         operation_context: operation_context.clone(),
         trigger_key: trigger_key.clone(),
         result: Ok(GuiPlexStreamResolveOutcome {
-            stream_target: None,
+            stream_target: Ok(None),
             cache: sorotte_plex::PlexMatchCache::default(),
         }),
         staged_cache_write: None,
@@ -1363,7 +2016,7 @@ fn gui_persisted_config_runtime_owner_releases_plex_result_completed_after_activ
             operation_context,
             trigger_key,
             result: Ok(GuiPlexStreamResolveOutcome {
-                stream_target: None,
+                stream_target: Ok(None),
                 cache: sorotte_plex::PlexMatchCache::default(),
             }),
             staged_cache_write: None,
@@ -1399,7 +2052,7 @@ fn gui_persisted_config_runtime_owner_consumes_terminal_plex_results_without_can
         (
             "no match",
             Ok(GuiPlexStreamResolveOutcome {
-                stream_target: None,
+                stream_target: Ok(None),
                 cache: sorotte_plex::PlexMatchCache::default(),
             }),
         ),
@@ -1457,6 +2110,162 @@ fn gui_persisted_config_runtime_owner_consumes_terminal_plex_results_without_can
             "{case} must be consumed instead of blocking Plex watch sync indefinitely"
         );
     }
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_match() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
+
+    let (_first_sync_tx, first_sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(first_sync_rx);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let (_, resolving_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("the active automatic attempt should project while Plex is resolving");
+    assert_eq!(resolving_source.policy, GuiPlaylistSourcePolicy::Automatic);
+    assert_eq!(resolving_source.resolved_provider_id, None);
+    assert_eq!(resolving_source.current_label, "Automatic");
+    assert_eq!(resolving_source.status, GuiPlaylistSourceStatus::Resolving);
+    assert!(
+        resolving_source
+            .options
+            .iter()
+            .all(|option| !option.selected)
+    );
+    let first_trigger = owner.plex_stream_resolve_trigger_key.take().unwrap();
+    let first_context = owner.plex_stream_resolve_context.take().unwrap();
+    owner.plex_sync_rx = None;
+    owner.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+        operation_context: first_context,
+        trigger_key: first_trigger,
+        result: Ok(GuiPlexStreamResolveOutcome {
+            stream_target: Ok(None),
+            cache: sorotte_plex::PlexMatchCache::default(),
+        }),
+        staged_cache_write: None,
+    });
+    owner.last_attached_media_resolution_trigger = None;
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let (_, missing_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("the active automatic miss should remain visible during Plex backoff");
+    assert_eq!(missing_source.resolved_provider_id, None);
+    assert_eq!(missing_source.current_label, "Automatic");
+    assert_eq!(missing_source.status, GuiPlaylistSourceStatus::Missing);
+    assert!(
+        missing_source
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("Plex will retry automatically"))
+    );
+    assert!(
+        !missing_source
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("episode.mkv"),
+        "the lifecycle detail must not expose the media target"
+    );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let applied_missing_source = &state.main_window.playlist[0].source_state;
+    assert_eq!(applied_missing_source.current_label, "Automatic");
+    assert_eq!(
+        applied_missing_source.status,
+        GuiPlaylistSourceStatus::Missing,
+        "snapshot reduction must preserve the provider-less Automatic lifecycle state"
+    );
+    assert_eq!(applied_missing_source.resolved_provider_id, None);
+    assert!(
+        applied_missing_source
+            .options
+            .iter()
+            .all(|option| !option.selected)
+    );
+    let miss = owner
+        .plex_miss_state
+        .as_mut()
+        .expect("the initial active Plex miss should schedule an independent retry");
+    assert_eq!(miss.attempt_count, 1);
+    miss.next_retry_at = std::time::Instant::now();
+    assert!(owner.active_plex_miss_retry_due(&state));
+    // The runtime pump invalidates the cached automatic trigger when this
+    // independent deadline becomes due before asking the coordinator to retry.
+    owner.last_attached_media_resolution_trigger = None;
+
+    let (_second_sync_tx, second_sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(second_sync_rx);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert!(owner.plex_miss_state.as_ref().unwrap().retry_in_flight);
+    let (_, retrying_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("the independent Plex retry should project as resolving");
+    assert_eq!(retrying_source.current_label, "Automatic");
+    assert_eq!(retrying_source.status, GuiPlaylistSourceStatus::Resolving);
+    let second_trigger = owner.plex_stream_resolve_trigger_key.take().unwrap();
+    let second_context = owner.plex_stream_resolve_context.take().unwrap();
+    owner.plex_sync_rx = None;
+    let (stream_target, _) = test_plex_stream_target("episode.mkv", "later-indexed");
+    owner.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+        operation_context: second_context,
+        trigger_key: second_trigger,
+        result: Ok(GuiPlexStreamResolveOutcome {
+            stream_target: Ok(Some(stream_target)),
+            cache: sorotte_plex::PlexMatchCache::default(),
+        }),
+        staged_cache_write: None,
+    });
+    owner.last_attached_media_resolution_trigger = None;
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::StartedLoading
+    );
+    assert!(
+        owner.plex_miss_state.is_none(),
+        "a later indexed Plex match must reset the miss backoff"
+    );
+    let (_, loading_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("the later Plex candidate should project until player confirmation");
+    assert_eq!(
+        loading_source.resolved_provider_id,
+        Some(GuiMediaSourceProviderId::plex_stream())
+    );
+    assert_eq!(loading_source.current_label, "Plex Stream");
+    assert_eq!(loading_source.status, GuiPlaylistSourceStatus::Loading);
+    owner.refresh_player_state_impl();
+    assert_eq!(
+        owner.playlist_resolution_attempt.as_ref().unwrap().state,
+        PlaylistResolutionAttemptState::Active
+    );
+    let (_, active_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("the confirmed Plex candidate should project as active");
+    assert_eq!(active_source.status, GuiPlaylistSourceStatus::Active);
 }
 
 #[test]
@@ -1560,7 +2369,7 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
             operation_context,
             trigger_key,
             result: Ok(GuiPlexStreamResolveOutcome {
-                stream_target: Some(stream_target),
+                stream_target: Ok(Some(stream_target)),
                 cache: sorotte_plex::PlexMatchCache::default(),
             }),
             staged_cache_write: None,
@@ -1576,11 +2385,17 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
     assert_eq!(owner.player_local_file, Some(logical_file));
     assert_eq!(
         state.main_window.playlist[0].source_state.status,
+        GuiPlaylistSourceStatus::Loading,
+        "accepting the open command must not publish Active before player completion"
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(
+        state.main_window.playlist[0].source_state.status,
         GuiPlaylistSourceStatus::Active
     );
     assert_eq!(
         state.main_window.playlist[0].source_state.detail.as_deref(),
-        Some("Loaded Plex stream target.")
+        Some("The attached player confirmed the Plex Stream load.")
     );
 }
 
@@ -1903,13 +2718,21 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = sorotte_media_match::normalize_media_path(&selected_media_path);
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some(selected_media_path.as_str())
+    );
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.candidate_provider.clone()),
+        Some(GuiMediaSourceProviderId::media_matching()),
+        "an exact inventory path must remain attributed to Media Matching"
     );
     assert!(
         owner.pending_attached_media_resolution.is_none(),
@@ -2037,7 +2860,7 @@ fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_mat
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
-    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         owner
             .player_local_file
@@ -2733,13 +3556,232 @@ fn gui_persisted_config_runtime_owner_prefers_exact_cached_relative_path_for_pat
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     };
 
-    let resolved = owner
-        .cached_missing_media_target_path(&index, "season-1/episode2.mkv")
-        .map(|path| path.replace('\\', "/"));
+    let resolved = match owner.cached_missing_media_target_path(&index, "season-1/episode2.mkv") {
+        Some(GuiUserMediaTargetResolution::Resolved { path, .. }) => Some(path.replace('\\', "/")),
+        other => panic!("expected one exact relative-path match, got {other:?}"),
+    };
     assert_eq!(
         resolved,
         Some(exact_path.to_string_lossy().replace('\\', "/"))
     );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reports_cached_same_name_across_roots_as_ambiguous() {
+    let root = test_temp_root("cross-root-cache-ambiguity");
+    let first_root = root.join("library-a");
+    let second_root = root.join("library-b");
+    std::fs::create_dir_all(&first_root).expect("first cache root should exist");
+    std::fs::create_dir_all(&second_root).expect("second cache root should exist");
+    std::fs::write(first_root.join("cross-root-episode.mkv"), b"first")
+        .expect("first cross-root fixture should be written");
+    std::fs::write(second_root.join("cross-root-episode.mkv"), b"second")
+        .expect("second cross-root fixture should be written");
+    let first_key = crate::app::media_search_cache::normalized_media_search_root_key(&first_root);
+    let second_key = crate::app::media_search_cache::normalized_media_search_root_key(&second_root);
+    let candidates = std::collections::HashMap::from([(
+        "cross-root-episode.mkv".to_owned(),
+        vec!["cross-root-episode.mkv".to_owned()],
+    )]);
+    let index = GuiAttachedMediaSearchIndex {
+        roots: vec![first_key.clone(), second_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([
+            (
+                first_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: first_key,
+                    root_path: first_root,
+                    built_at_unix_ms: 1234,
+                    candidates_by_name: candidates.clone(),
+                },
+            ),
+            (
+                second_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: second_key,
+                    root_path: second_root,
+                    built_at_unix_ms: 1234,
+                    candidates_by_name: candidates,
+                },
+            ),
+        ]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    };
+    let owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+
+    assert_eq!(
+        owner.cached_missing_media_target_path(&index, "cross-root-episode.mkv"),
+        Some(GuiUserMediaTargetResolution::Ambiguous { candidate_count: 2 })
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reports_direct_child_same_name_across_roots_as_ambiguous() {
+    let root = test_temp_root("cross-root-direct-ambiguity");
+    let first_root = root.join("library-a");
+    let second_root = root.join("library-b");
+    std::fs::create_dir_all(&first_root).expect("first direct root should exist");
+    std::fs::create_dir_all(&second_root).expect("second direct root should exist");
+    let file_name = "cross-root-direct-only-episode.mkv";
+    std::fs::write(first_root.join(file_name), b"first")
+        .expect("first direct cross-root fixture should be written");
+    std::fs::write(second_root.join(file_name), b"second")
+        .expect("second direct cross-root fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![
+            first_root.to_string_lossy().into_owned(),
+            second_root.to_string_lossy().into_owned(),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![file_name.to_owned()], Some(0), false);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        0,
+        GuiMediaSourceProviderId::local(),
+    ));
+    let source_state = &state.main_window.playlist[0].source_state;
+    assert_eq!(source_state.status, GuiPlaylistSourceStatus::Failed);
+    let detail = source_state
+        .detail
+        .as_deref()
+        .expect("direct cross-root ambiguity should be explained");
+    assert!(detail.contains("2 equally credible files"));
+    assert!(!detail.contains("library-a"));
+    assert!(!detail.contains("library-b"));
+    assert!(owner.player_local_file.is_none());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reports_ambiguous_cached_names_and_allows_plex_fallback() {
+    let root = test_temp_root("ambiguous-basename-cache-ranking");
+    let first_directory = root.join("private-choice-a");
+    let second_directory = root.join("private-choice-b");
+    let first_path = first_directory.join("episode2.mkv");
+    let second_path = second_directory.join("episode2.mkv");
+    std::fs::create_dir_all(&first_directory)
+        .expect("first ambiguous fixture directory should be created");
+    std::fs::create_dir_all(&second_directory)
+        .expect("second ambiguous fixture directory should be created");
+    std::fs::write(&first_path, b"first").expect("first ambiguous fixture should be written");
+    std::fs::write(&second_path, b"second").expect("second ambiguous fixture should be written");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let index = GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: root.clone(),
+                built_at_unix_ms: 1234,
+                candidates_by_name: std::collections::HashMap::from([(
+                    "episode2.mkv".to_owned(),
+                    vec![
+                        "private-choice-a/episode2.mkv".to_owned(),
+                        "private-choice-b/episode2.mkv".to_owned(),
+                    ],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+
+    assert_eq!(
+        owner.cached_missing_media_target_path(&index, "episode2.mkv"),
+        Some(GuiUserMediaTargetResolution::Ambiguous { candidate_count: 2 })
+    );
+
+    owner.attached_media_search_index = Some(index);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        0,
+        GuiMediaSourceProviderId::local(),
+    ));
+
+    let source_state = &state.main_window.playlist[0].source_state;
+    assert_eq!(source_state.status, GuiPlaylistSourceStatus::Failed);
+    let detail = source_state
+        .detail
+        .as_deref()
+        .expect("forced Local ambiguity should explain why it did not open a file");
+    assert!(detail.contains("2 equally credible files"));
+    assert!(!detail.contains("private-choice-a"));
+    assert!(!detail.contains("private-choice-b"));
+    assert!(owner.player_local_file.is_none());
+
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let (stream_target, logical_file) = test_plex_stream_target("episode2.mkv", "456");
+    let _ = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("Automatic should continue to Plex after an ambiguous local result");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("queued Plex fallback should retain its operation context");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Ok(Some(stream_target)),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("ambiguous-local Plex fallback should be queued");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    let _ = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(owner.player_local_file, Some(logical_file));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let source_state = &state.main_window.playlist[0].source_state;
+    assert_eq!(source_state.policy, GuiPlaylistSourcePolicy::Automatic);
+    assert_eq!(source_state.preferred_provider_id(), None);
+    assert_eq!(
+        source_state.resolved_provider_id.as_ref(),
+        Some(&GuiMediaSourceProviderId::plex_stream()),
+        "an ordinary playlist entry resolved by Plex must display Plex without changing Automatic policy"
+    );
+    assert_eq!(
+        source_state.current_provider_id,
+        GuiMediaSourceProviderId::plex_stream()
+    );
+    assert_eq!(source_state.status, GuiPlaylistSourceStatus::Active);
 
     let _ = std::fs::remove_dir_all(&root);
 }

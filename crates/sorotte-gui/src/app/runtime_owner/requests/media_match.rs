@@ -1168,7 +1168,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(path)
             }
             Ok(GuiUserMediaTargetResolution::Resolved { .. })
-            | Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
+            | Ok(
+                GuiUserMediaTargetResolution::Ambiguous { .. }
+                | GuiUserMediaTargetResolution::Pending
+                | GuiUserMediaTargetResolution::Missing,
+            )
             | Err(_) => None,
         }
     }
@@ -2557,7 +2561,7 @@ mod tests {
 
         assert_eq!(
             owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-            SelectedPlaylistMediaSyncOutcome::OpenedNewMedia
+            SelectedPlaylistMediaSyncOutcome::StartedLoading
         );
         let exact_local_path = exact_local_path.to_string_lossy().into_owned();
         assert_eq!(

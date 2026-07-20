@@ -523,6 +523,8 @@ impl GuiPersistedConfigRuntimeOwner {
             self.playlist_resolution.local_origins_by_row.clear();
             self.pending_playlist_source_resolution = None;
             self.last_attached_media_resolution_trigger = None;
+            self.supersede_playlist_resolution_attempt();
+            self.plex_miss_state = None;
         }
         self.playlist_resolution.row_scope_reset_pending |=
             remote_playlist_replacement || established_scope_transition;
@@ -610,6 +612,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.playlist_resolution.row_scope_reset_pending = false;
         self.pending_playlist_source_resolution = None;
         self.last_attached_media_resolution_trigger = None;
+        self.supersede_playlist_resolution_attempt();
+        self.plex_miss_state = None;
     }
 
     pub(super) fn remember_local_shared_playlist_media_paths(

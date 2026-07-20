@@ -32,8 +32,10 @@ pub fn is_unsupported_mpv_version_error(error: &PlayerError) -> bool {
 pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
 pub use adapter::{
-    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
-    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaDiagnosticSnapshot,
+    MpvNetworkMediaOptionsTransitionOutcome, MpvNetworkMediaPolicyApplicationState,
+    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionApplyResult,
+    MpvNetworkOptionApplyStatus, MpvNetworkOptionsHookHealth,
     MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};

@@ -901,6 +901,14 @@ impl PlayerAdapter for MpvAdapter {
         self.pending_transport_telemetry_updates.pop_front()
     }
 
+    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+        self.maintain_runtime_integrations();
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
+        self.pending_cache_telemetry_updates.pop_front()
+    }
+
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
         self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();

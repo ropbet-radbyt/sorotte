@@ -439,6 +439,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
         playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
+        playlist_resolution_attempt: None,
+        plex_miss_state: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,

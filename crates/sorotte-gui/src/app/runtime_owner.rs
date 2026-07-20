@@ -365,6 +365,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) last_published_media_match_signature: Option<serde_json::Value>,
     pub(super) local_shared_playlist_media_match_signature_path: Option<String>,
     pub(super) playlist_resolution: GuiPlaylistResolutionCoordinator,
+    playlist_resolution_attempt: Option<player::PlaylistResolutionAttempt>,
+    plex_miss_state: Option<player::PlexMissState>,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
@@ -885,7 +887,7 @@ pub(super) struct GuiPlexPlaylistResolveWorkerResult {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveOutcome {
-    pub(super) stream_target: Option<PlexStreamTarget>,
+    pub(super) stream_target: Result<Option<PlexStreamTarget>, String>,
     pub(super) cache: PlexMatchCache,
 }
 
@@ -893,7 +895,14 @@ impl std::fmt::Debug for GuiPlexStreamResolveOutcome {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GuiPlexStreamResolveOutcome")
-            .field("stream_target_resolved", &self.stream_target.is_some())
+            .field("resolution_succeeded", &self.stream_target.is_ok())
+            .field(
+                "stream_target_resolved",
+                &self
+                    .stream_target
+                    .as_ref()
+                    .is_ok_and(|target| target.is_some()),
+            )
             .field("cache", &sorotte_secret::REDACTED_SECRET)
             .finish()
     }
@@ -1038,6 +1047,9 @@ pub(super) enum GuiUserMediaTargetResolution {
         path: String,
         source: GuiUserMediaTargetResolutionSource,
     },
+    Ambiguous {
+        candidate_count: usize,
+    },
     Pending,
     Missing,
 }
@@ -1049,6 +1061,10 @@ impl std::fmt::Debug for GuiUserMediaTargetResolution {
                 .debug_struct("Resolved")
                 .field("path", &sorotte_secret::REDACTED_SECRET)
                 .field("source", source)
+                .finish(),
+            Self::Ambiguous { candidate_count } => formatter
+                .debug_struct("Ambiguous")
+                .field("candidate_count", candidate_count)
                 .finish(),
             Self::Pending => formatter.write_str("Pending"),
             Self::Missing => formatter.write_str("Missing"),
@@ -1131,6 +1147,12 @@ pub(super) struct GuiPendingLogicalMediaOverride {
     pub(super) loaded_target_secret: SecretPlexPlaybackUrl,
     pub(super) logical_file: LocalFileUpdate,
     pub(super) user_initiated: bool,
+    pub(super) player_command_id: Option<sorotte_player_api::PlayerCommandId>,
+    pub(super) player_media_generation: Option<sorotte_player_api::PlayerMediaGeneration>,
+    pub(super) playlist_row_id: Option<GuiPlaylistEntryId>,
+    pub(super) playlist_generation: u64,
+    pub(super) load_completed: bool,
+    pub(super) logical_file_observed: bool,
 }
 
 impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
@@ -1140,6 +1162,12 @@ impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
             .field("loaded_target_secret", &self.loaded_target_secret)
             .field("logical_file", &sorotte_secret::REDACTED_SECRET)
             .field("user_initiated", &self.user_initiated)
+            .field("player_command_id", &self.player_command_id)
+            .field("player_media_generation", &self.player_media_generation)
+            .field("playlist_row_id", &self.playlist_row_id)
+            .field("playlist_generation", &self.playlist_generation)
+            .field("load_completed", &self.load_completed)
+            .field("logical_file_observed", &self.logical_file_observed)
             .finish()
     }
 }

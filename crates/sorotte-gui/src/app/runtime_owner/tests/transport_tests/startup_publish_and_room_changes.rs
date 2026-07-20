@@ -331,7 +331,8 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_publishes_opened_local_path_before_player_metadata() {
+fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_player_completion()
+{
     struct OpenOnlyPlayer;
 
     impl PlayerAdapter for OpenOnlyPlayer {
@@ -380,22 +381,352 @@ fn gui_persisted_config_runtime_owner_publishes_opened_local_path_before_player_
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     assert!(
-        !owner.player_local_file_placeholder,
-        "concrete local file paths should not wait for later player metadata before publishing"
+        owner.player_local_file_placeholder,
+        "the playlist-resolution candidate should remain unconfirmed until correlated player completion"
+    );
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .map(|attempt| attempt.state),
+        Some(crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading),
+        "publishing the known local path must not promote the resolution attempt to Active",
     );
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
     assert!(
-        outbound_protocol_lines.iter().any(|line| {
-            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
-                return false;
-            };
-            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
-                return false;
-            };
-            file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
+        outbound_protocol_lines.iter().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|message| message.get("Set").and_then(|set| set.get("file")).cloned())
+                .is_none()
         }),
-        "opened local paths should publish a room file update immediately; outbound_protocol_lines={outbound_protocol_lines:?}"
+        "command acceptance must not publish the unresolved local file identity; outbound_protocol_lines={outbound_protocol_lines:?}"
     );
+    assert!(owner.last_published_local_file.is_none());
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tracked_candidate() {
+    #[derive(Default)]
+    struct ObservedThenRejectedState {
+        progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
+        outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+        local_files: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+    }
+
+    struct ObservedThenRejectedPlayer {
+        state: std::sync::Arc<std::sync::Mutex<ObservedThenRejectedState>>,
+    }
+
+    impl PlayerAdapter for ObservedThenRejectedPlayer {
+        fn name(&self) -> &'static str {
+            "observed-then-rejected"
+        }
+
+        fn execute_tracked(
+            &mut self,
+            command: sorotte_player_api::PlayerCommand,
+        ) -> Result<sorotte_player_api::PlayerCommandId, sorotte_player_api::PlayerError> {
+            let sorotte_player_api::PlayerCommand::OpenFile(_) = command else {
+                return Err(sorotte_player_api::PlayerError::Unsupported("test command"));
+            };
+            let command_id = sorotte_player_api::PlayerCommandId::new(41);
+            let generation = sorotte_player_api::PlayerMediaGeneration::new(9);
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .progress
+                .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
+                    command_id,
+                    Some(generation),
+                    None,
+                ));
+            Ok(command_id)
+        }
+
+        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .progress
+                .pop_front()
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .outcomes
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_files
+                .pop_front()
+        }
+    }
+
+    let player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(ObservedThenRejectedState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        ObservedThenRejectedPlayer {
+            state: player_state.clone(),
+        },
+    )));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    let media_root = test_temp_root("transport-observed-then-rejected-tracked-media");
+    let media_path = media_root.join("observed-then-rejected.mkv");
+    std::fs::write(&media_path, b"rejected media fixture")
+        .expect("rejected media fixture should be written");
+    let requested_target = media_path.to_string_lossy().into_owned();
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![requested_target.clone()],
+        load_into_shared_playlist: false,
+        playlist_insert_slot: None,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    assert!(owner.player_local_file_placeholder);
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .map(|attempt| attempt.state),
+        Some(crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading)
+    );
+
+    {
+        let mut queued = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queued
+            .outcomes
+            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::success(
+                requested_target.clone(),
+                Some(requested_target.clone()),
+            ));
+        queued.local_files.push_back(
+            sorotte_player_api::LocalFileUpdate::new("observed-then-rejected.mkv")
+                .with_path(requested_target.clone()),
+        );
+    }
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let observed_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        observed_lines
+            .iter()
+            .all(|line| !line.contains("observed-then-rejected.mkv")),
+        "file-loaded success/local observations must remain private until tracked completion: {observed_lines:?}"
+    );
+    assert!(owner.player_local_file_placeholder);
+    assert!(!owner.player_local_file_ready_for_attached_sync());
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .map(|attempt| attempt.state),
+        Some(crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading)
+    );
+
+    {
+        let mut queued = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queued
+            .progress
+            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+                sorotte_player_api::PlayerCommandId::new(41),
+                Some(sorotte_player_api::PlayerMediaGeneration::new(9)),
+                None,
+                None,
+                sorotte_player_api::PlayerCommandResult::Failed(
+                    sorotte_player_api::PlayerCommandFailureKind::Unknown,
+                ),
+            ));
+    }
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let rejected_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        rejected_lines
+            .iter()
+            .all(|line| !line.contains("observed-then-rejected.mkv")),
+        "a provisional local observation rejected by its tracked command must never publish: {rejected_lines:?}"
+    );
+    assert!(owner.player_local_file.is_none());
+    assert!(!owner.player_local_file_placeholder);
+    assert!(!owner.player_local_file_ready_for_attached_sync());
+    assert!(owner.last_published_local_file.is_none());
+    let attempt = owner
+        .playlist_resolution_attempt
+        .as_ref()
+        .expect("the rejected attempt should remain available for fallback/retry");
+    assert_eq!(
+        attempt.state,
+        crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Failed
+    );
+    assert_eq!(attempt.failed_candidates.len(), 1);
+
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_local_media() {
+    #[derive(Default)]
+    struct RejectedLoadState {
+        outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+    }
+
+    struct AcceptedThenRejectedPlayer {
+        state: std::sync::Arc<std::sync::Mutex<RejectedLoadState>>,
+    }
+
+    impl PlayerAdapter for AcceptedThenRejectedPlayer {
+        fn name(&self) -> &'static str {
+            "accepted-then-rejected"
+        }
+
+        fn open_file(&mut self, _path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            Ok(())
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .outcomes
+                .pop_front()
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RejectedLoadState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        AcceptedThenRejectedPlayer {
+            state: player_state.clone(),
+        },
+    )));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    let previously_active_file = sorotte_player_api::LocalFileUpdate::new("previously-active.mkv")
+        .with_path("C:/Media/previously-active.mkv");
+    owner.player_local_file = Some(previously_active_file.clone());
+    owner.player_local_file_placeholder = false;
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let previously_active_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        previously_active_lines
+            .iter()
+            .any(|line| line.contains("previously-active.mkv")),
+        "test setup must publish the previously active identity: {previously_active_lines:?}",
+    );
+    assert_eq!(
+        owner.last_published_local_file,
+        Some(previously_active_file)
+    );
+
+    let media_root = test_temp_root("transport-accepted-then-rejected-media");
+    let media_path = media_root.join("rejected.mkv");
+    std::fs::write(&media_path, b"rejected media fixture")
+        .expect("rejected media fixture should be written");
+    let requested_target = media_path.to_string_lossy().into_owned();
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![requested_target.clone()],
+        load_into_shared_playlist: false,
+        playlist_insert_slot: None,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let accepted_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        accepted_lines
+            .iter()
+            .all(|line| !line.contains(r#""file""#)),
+        "accepted-but-unconfirmed media must not publish a file identity: {accepted_lines:?}",
+    );
+    assert!(owner.player_local_file_placeholder);
+    assert_eq!(
+        owner
+            .last_published_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("previously-active.mkv")
+    );
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .outcomes
+        .push_back(sorotte_player_api::PlayerMediaLoadOutcome::failure(
+            requested_target,
+            None,
+            sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
+            "player rejected the accepted load",
+        ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let rejected_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        rejected_lines
+            .iter()
+            .all(|line| !line.contains("rejected.mkv")),
+        "rejected media must never leak into the room file identity: {rejected_lines:?}",
+    );
+    assert!(
+        rejected_lines.iter().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|message| message.get("Set").and_then(|set| set.get("file")).cloned())
+                .and_then(|file| file.as_object().cloned())
+                .is_some_and(|file| file.is_empty())
+        }),
+        "failure after a prior active identity must publish a compensating file clear: {rejected_lines:?}",
+    );
+    assert!(owner.player_local_file.is_none());
+    assert!(!owner.player_local_file_placeholder);
+    assert!(owner.last_published_local_file.is_none());
     let _ = std::fs::remove_dir_all(media_root);
 }
 

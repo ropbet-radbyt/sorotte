@@ -13,6 +13,27 @@ local ACTIVE_RESULT_MESSAGE = "sorotte-network-options-active-result"
 local TRANSITION_RESULT_MESSAGE = "sorotte-network-options-transition-result"
 local MINIMUM_LEASE_MS = 250
 local MAXIMUM_LEASE_MS = 30000
+local OPTION_APPLICATION_ORDER = {
+    "cache",
+    "cache-pause",
+    "cache-pause-initial",
+    "cache-pause-wait",
+    "cache-secs",
+    "demuxer-max-bytes",
+    "demuxer-max-back-bytes",
+    "cache-on-disk",
+    "ytdl-format",
+}
+local EFFECTIVE_READBACK_ORDER = {
+    "cache",
+    "cache-pause",
+    "cache-pause-initial",
+    "cache-pause-wait",
+    "cache-secs",
+    "demuxer-max-bytes",
+    "demuxer-max-back-bytes",
+    "cache-on-disk",
+}
 
 -- `load-script` gives duplicate clients a suffixed name. Only the stable canonical client owns
 -- core policy so reconnecting Sorotte processes cannot install duplicate on-load hooks.
@@ -43,6 +64,12 @@ local owner_lease_seconds = 0
 local last_active_attempt = nil
 local last_active_result = nil
 local load_sequence = 0
+local pending_load_verification = nil
+
+local option_application_rank = {}
+for index, name in ipairs(OPTION_APPLICATION_ORDER) do
+    option_application_rank[name] = index
+end
 
 local function emit(name, payload)
     mp.commandv("script-message", name, utils.format_json(payload))
@@ -63,6 +90,7 @@ local function clear_owner()
     owner_lease_seconds = 0
     last_active_attempt = nil
     last_active_result = nil
+    pending_load_verification = nil
 end
 
 local function owner_is_live()
@@ -99,20 +127,72 @@ local function expire_owner_if_needed()
     return true
 end
 
-local function apply_options(path)
-    if path == nil or path == "" then return "no-active", nil end
-    if not network_path(path) then return "local", nil end
-
-    for name, value in pairs(options) do
-        local ok, error_message = mp.set_property("file-local-options/" .. name, value)
-        if not ok then
-            return "failed", error_message or ("mpv rejected file-local option " .. name)
-        end
+local function ordered_option_names()
+    local names = {}
+    for name, _ in pairs(options) do
+        table.insert(names, name)
     end
-    return "network-updated", nil
+    table.sort(names, function(left, right)
+        local left_rank = option_application_rank[left]
+        local right_rank = option_application_rank[right]
+        if left_rank ~= nil or right_rank ~= nil then
+            if left_rank == nil then return false end
+            if right_rank == nil then return true end
+            return left_rank < right_rank
+        end
+        return left < right
+    end)
+    return names
 end
 
-local function result_payload(status, sequence, source_path, stream_open_filename, error_message)
+local function apply_options(path)
+    if path == nil or path == "" then return "no-active", {} end
+    if not network_path(path) then return "local", {} end
+
+    local results = {}
+    local applied = 0
+    local rejected = 0
+    for _, name in ipairs(ordered_option_names()) do
+        local ok = mp.set_property("file-local-options/" .. name, options[name])
+        local status = "rejected"
+        if ok then
+            status = "applied"
+            applied = applied + 1
+        else
+            rejected = rejected + 1
+        end
+        table.insert(results, { name = name, status = status })
+    end
+    if rejected == 0 then return "network-updated", results end
+    if applied == 0 then return "failed", results end
+    return "partially-applied", results
+end
+
+local function effective_options()
+    local effective = {}
+    for _, name in ipairs(EFFECTIVE_READBACK_ORDER) do
+        if options[name] ~= nil then
+            local value = mp.get_property(name, nil)
+            if value ~= nil then effective[name] = tostring(value) end
+        end
+    end
+    return effective
+end
+
+local function result_payload(status, sequence, source_path, stream_open_filename, option_results)
+    local wire_status = status
+    local application_state = nil
+    if status == "network-updated" then
+        application_state = "applied"
+    elseif status == "partially-applied" then
+        -- Protocol v3 adapters only know `failed` and must continue to fail closed. The additive
+        -- field lets newer adapters retain the more precise aggregate without introducing an
+        -- incompatible v3 status value.
+        wire_status = "failed"
+        application_state = "partially-applied"
+    elseif status == "failed" then
+        application_state = "failed"
+    end
     local payload = {
         protocol = PROTOCOL,
         ownerId = owner_id,
@@ -122,9 +202,29 @@ local function result_payload(status, sequence, source_path, stream_open_filenam
         loadSequence = sequence,
         sourcePath = source_path,
         streamOpenFilename = stream_open_filename,
-        status = status,
+        status = wire_status,
+        optionResults = option_results,
     }
-    if error_message ~= nil then payload.error = tostring(error_message) end
+    if application_state ~= nil then payload.applicationState = application_state end
+    return payload
+end
+
+local function verified_result_payload(
+    status,
+    sequence,
+    source_path,
+    stream_open_filename,
+    option_results
+)
+    local payload = result_payload(
+        status,
+        sequence,
+        source_path,
+        stream_open_filename,
+        option_results
+    )
+    payload.verification = "complete"
+    payload.effectiveOptions = effective_options()
     return payload
 end
 
@@ -175,6 +275,7 @@ mp.register_script_message(CONFIGURE_MESSAGE, function(payload_text)
         options = payload.options
         last_active_attempt = nil
         last_active_result = nil
+        pending_load_verification = nil
     end
     owner_lease_seconds = math.max(
         MINIMUM_LEASE_MS,
@@ -271,19 +372,19 @@ mp.register_script_message(APPLY_ACTIVE_MESSAGE, function(payload_text)
     local source_path = mp.get_property("path", "")
     local stream_open_filename = mp.get_property("stream-open-filename", source_path)
     if stream_open_filename == "" then stream_open_filename = source_path end
-    local status, error_message
+    local status, option_results
     if payload.configurationGeneration ~= generation then
         status = "failed"
-        error_message = "network-options configuration generation changed"
+        option_results = {}
     else
-        status, error_message = apply_options(stream_open_filename)
+        status, option_results = apply_options(stream_open_filename)
     end
-    local result = result_payload(
+    local result = verified_result_payload(
         status,
         load_sequence,
         source_path,
         stream_open_filename,
-        error_message
+        option_results
     )
     result.attempt = payload.attempt
     last_active_attempt = payload.attempt
@@ -302,14 +403,55 @@ mp.add_hook("on_load", 50, function()
     local source_path = mp.get_property("path", "")
     local stream_open_filename = mp.get_property("stream-open-filename", source_path)
     if stream_open_filename == "" then stream_open_filename = source_path end
-    local status, error_message = apply_options(stream_open_filename)
-    emit(TRANSITION_RESULT_MESSAGE, result_payload(
-        status,
-        load_sequence,
-        source_path,
-        stream_open_filename,
-        error_message
+    local status, option_results = apply_options(stream_open_filename)
+    if status == "no-active" or status == "local" then
+        pending_load_verification = nil
+        emit(TRANSITION_RESULT_MESSAGE, result_payload(
+            status,
+            load_sequence,
+            source_path,
+            stream_open_filename,
+            option_results
+        ))
+        return
+    end
+    pending_load_verification = {
+        status = status,
+        sequence = load_sequence,
+        sourcePath = source_path,
+        streamOpenFilename = stream_open_filename,
+        optionResults = option_results,
+    }
+end)
+
+mp.register_event("file-loaded", function()
+    expire_owner_if_needed()
+    if not owner_is_live() or pending_load_verification == nil then return end
+    local pending = pending_load_verification
+    pending_load_verification = nil
+    emit(TRANSITION_RESULT_MESSAGE, verified_result_payload(
+        pending.status,
+        pending.sequence,
+        pending.sourcePath,
+        pending.streamOpenFilename,
+        pending.optionResults
     ))
+end)
+
+mp.register_event("end-file", function()
+    expire_owner_if_needed()
+    if not owner_is_live() or pending_load_verification == nil then return end
+    local pending = pending_load_verification
+    pending_load_verification = nil
+    local payload = result_payload(
+        "failed",
+        pending.sequence,
+        pending.sourcePath,
+        pending.streamOpenFilename,
+        pending.optionResults
+    )
+    payload.verification = "incomplete"
+    emit(TRANSITION_RESULT_MESSAGE, payload)
 end)
 
 mp.add_periodic_timer(0.1, expire_owner_if_needed)

@@ -522,6 +522,25 @@ impl PlayerSeekableRange {
     }
 }
 
+/// One complete, generation-aware observation of a player's demuxer cache state.
+///
+/// Every metric is authoritative for the observation: `None` means the player omitted the value,
+/// so a consumer must clear any older value retained for the same media generation. This is a
+/// separate additive channel so the long-standing [`PlayerTransportTelemetryUpdate`] public
+/// shape remains source-compatible for external adapters and consumers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerCacheTelemetryUpdate {
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub buffered_ahead_seconds: Option<f64>,
+    pub buffered_ahead_bytes: Option<u64>,
+    pub input_rate_bytes_per_second: Option<u64>,
+    pub reader_position_seconds: Option<f64>,
+    pub cache_end_seconds: Option<f64>,
+    pub eof: Option<bool>,
+    pub underrun: Option<bool>,
+}
+
 /// Generation-aware observations used for transport readiness and recovery.
 ///
 /// This is intentionally separate from [`PlayerPlaybackTelemetryUpdate`]. The
@@ -879,6 +898,13 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
         None
     }
+    /// Returns one complete cache observation.
+    ///
+    /// The default keeps existing third-party adapters source-compatible while adapters with
+    /// authoritative cache-state support can opt into the additive channel.
+    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+        None
+    }
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
         None
     }
@@ -910,12 +936,12 @@ impl PlayerAdapter for DisconnectedPlayer {
 #[cfg(test)]
 mod tests {
     use super::{
-        DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCapability,
-        PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
-        PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
-        PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
-        PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
-        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+        DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate,
+        PlayerCapabilities, PlayerCapability, PlayerCommand, PlayerCommandFailureKind,
+        PlayerCommandId, PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult,
+        PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+        PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
+        PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
 
     struct DummyPlayer;
@@ -1168,6 +1194,35 @@ mod tests {
         assert_eq!(update.seekable_ranges.as_ref().map(Vec::len), Some(1));
         assert_eq!(update.buffered_ahead_seconds, Some(5.25));
         assert_eq!(update.input_rate_bytes_per_second, Some(2_000_000));
+    }
+
+    #[test]
+    fn cache_telemetry_update_is_complete_and_generation_aware() {
+        let generation = PlayerMediaGeneration::new(8);
+        let observed_at =
+            PlayerObservationTimestamp::from_adapter_start(std::time::Duration::from_millis(250));
+        let populated = PlayerCacheTelemetryUpdate {
+            media_generation: Some(generation),
+            observed_at: Some(observed_at),
+            buffered_ahead_seconds: Some(12.0),
+            buffered_ahead_bytes: Some(400_000),
+            input_rate_bytes_per_second: Some(2_000_000),
+            reader_position_seconds: Some(20.0),
+            cache_end_seconds: Some(32.0),
+            eof: Some(false),
+            underrun: Some(false),
+        };
+        let cleared = PlayerCacheTelemetryUpdate {
+            media_generation: Some(generation),
+            observed_at: Some(observed_at),
+            ..PlayerCacheTelemetryUpdate::default()
+        };
+
+        assert_eq!(populated.media_generation, Some(generation));
+        assert_eq!(populated.cache_end_seconds, Some(32.0));
+        assert_eq!(cleared.buffered_ahead_seconds, None);
+        assert_eq!(cleared.cache_end_seconds, None);
+        assert_eq!(cleared.underrun, None);
     }
 
     #[test]

@@ -117,6 +117,7 @@ jobs:
             libavfilter-dev \
             libavformat-dev \
             libavutil-dev \
+            liblua5.2-dev \
             libplacebo-dev \
             libswresample-dev \
             libswscale-dev \
@@ -140,6 +141,7 @@ jobs:
             -Ddrm=disabled \
             -Dgl=disabled \
             -Dlibmpv=false \
+            -Dlua=enabled \
             -Dmanpage-build=disabled \
             -Dpipewire=disabled \
             -Dpulse=disabled \
@@ -173,6 +175,13 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           cargo test -p sorotte-sim --test mpv_rebuffer_harness \
             real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
+
+      - name: Required real mpv cache-cap drain and input-resume semantics
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness \
+            real_mpv_cache_cap_drains_and_input_resumes \
+            -- --ignored --exact --nocapture
 
       - name: Full deterministic HTTP-stall and rebuffer harness
         run: |

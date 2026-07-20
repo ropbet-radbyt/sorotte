@@ -46,6 +46,8 @@ impl GuiPersistedConfigRuntimeOwner {
             last_published_media_match_signature: None,
             local_shared_playlist_media_match_signature_path: None,
             playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
+            playlist_resolution_attempt: None,
+            plex_miss_state: None,
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
@@ -223,6 +225,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_stream_feedback.clear();
         self.pending_stream_load_context = None;
         self.pending_logical_media_override = None;
+        self.playlist_resolution_attempt = None;
+        self.plex_miss_state = None;
         if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
             pending_resolution
                 .cancel_flag

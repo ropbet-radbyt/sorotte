@@ -17,11 +17,11 @@ use std::{
 
 use serde_json::{Value, json};
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCommandFailureKind, PlayerCommandId,
-    PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
-    PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
-    PlayerPlayIntent, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
-    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
+    PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError,
+    PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+    PlayerObservationTimestamp, PlayerPlayIntent, PlayerPlaybackTelemetryUpdate,
+    PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_secret::SecretValue;
 
@@ -59,6 +59,16 @@ const NETWORK_OPTIONS_HOOK_OWNER_LEASE_MS: u64 = 2_000;
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_millis(750);
 const MINIMUM_SUPPORTED_MPV_VERSION_COMPONENTS: (u64, u64, u64) = (0, 41, 0);
+const NETWORK_MEDIA_OPTION_READBACK_ALLOWLIST: [&str; 8] = [
+    "cache",
+    "cache-pause",
+    "cache-pause-initial",
+    "cache-pause-wait",
+    "cache-secs",
+    "demuxer-max-bytes",
+    "demuxer-max-back-bytes",
+    "cache-on-disk",
+];
 static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     let started_at = SystemTime::now()
@@ -145,6 +155,60 @@ pub struct MpvNetworkOptionsRuntimeHealthSnapshot {
     pub media_policy: MpvNetworkMediaPolicyState,
 }
 
+/// Classification of one configured option in the authoritative network-policy result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpvNetworkOptionApplyStatus {
+    /// mpv accepted the option and, when read-back was available, reported the desired value.
+    Applied,
+    /// mpv rejected the file-local option write.
+    Rejected,
+    /// mpv accepted the write but authoritative read-back differed or was unavailable.
+    Mismatched,
+}
+
+/// Privacy-safe per-option result. Values live only in the allowlisted cache-option maps on the
+/// diagnostic snapshot, so arbitrary advanced arguments cannot leak into diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MpvNetworkOptionApplyResult {
+    pub name: String,
+    pub status: MpvNetworkOptionApplyStatus,
+}
+
+/// Aggregate result of applying the current network policy to one media generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpvNetworkMediaPolicyApplicationState {
+    Applied,
+    PartiallyApplied,
+    Failed,
+}
+
+/// Generation-scoped, privacy-safe network-policy and cache diagnostic state.
+///
+/// Media targets, URLs, local paths, credentials, and arbitrary advanced option values are never
+/// retained here. Only the fixed cache-option allowlist can contribute desired/effective values.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MpvNetworkMediaDiagnosticSnapshot {
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub network_policy_generation: u64,
+    pub load_sequence: Option<u64>,
+    pub application_state: Option<MpvNetworkMediaPolicyApplicationState>,
+    pub verification_complete: bool,
+    pub option_results: Vec<MpvNetworkOptionApplyResult>,
+    pub desired_cache_options: BTreeMap<String, String>,
+    pub effective_cache_options: BTreeMap<String, String>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub transport_phase: PlayerTransportPhase,
+    pub paused_for_cache: Option<bool>,
+    pub demuxer_cache_idle: Option<bool>,
+    pub cache_duration_seconds: Option<f64>,
+    pub forward_bytes: Option<u64>,
+    pub raw_input_rate_bytes_per_second: Option<u64>,
+    pub reader_position_seconds: Option<f64>,
+    pub cache_end_seconds: Option<f64>,
+    pub cache_eof: Option<bool>,
+    pub cache_underrun: Option<bool>,
+}
+
 /// Compatibility view that merges the two independent event channels in production order.
 /// New consumers should use the split transition/outcome APIs and the authoritative snapshot.
 #[derive(Debug, PartialEq, Eq)]
@@ -176,6 +240,12 @@ struct NetworkMediaOptionsApplyIdentity {
     path: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExpectedNetworkOptionsTransition {
+    media_generation: PlayerMediaGeneration,
+    load_sequence: u64,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct EmbeddedNetworkMediaOptions {
     media_generation: PlayerMediaGeneration,
@@ -187,7 +257,20 @@ enum NetworkOptionsHookApplyStatus {
     NoActiveMedia,
     LocalMediaUnchanged,
     NetworkMediaUpdated,
+    PartiallyApplied,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NetworkOptionsHookOptionApplyStatus {
+    Applied,
+    Rejected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NetworkOptionsHookOptionResult {
+    name: String,
+    status: NetworkOptionsHookOptionApplyStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +282,9 @@ struct NetworkOptionsHookActiveResult {
     source_kind: NetworkOptionsMediaTargetKind,
     stream_target_kind: NetworkOptionsMediaTargetKind,
     status: NetworkOptionsHookApplyStatus,
+    verification_complete: bool,
+    option_results: Vec<NetworkOptionsHookOptionResult>,
+    effective_options: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +295,9 @@ struct NetworkOptionsHookTransitionResult {
     source_kind: NetworkOptionsMediaTargetKind,
     stream_target_kind: NetworkOptionsMediaTargetKind,
     status: NetworkOptionsHookApplyStatus,
+    verification_complete: bool,
+    option_results: Vec<NetworkOptionsHookOptionResult>,
+    effective_options: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -473,11 +562,18 @@ pub struct MpvAdapter {
     next_network_media_options_hook_heartbeat_nonce: u64,
     network_media_options_hook_instance_id: Option<String>,
     network_media_options_hook_last_accepted_load_sequence: Option<u64>,
+    network_media_options_hook_latest_started_load_sequence: Option<u64>,
+    network_media_options_expected_transition: Option<ExpectedNetworkOptionsTransition>,
     network_media_options_hook_health: MpvNetworkOptionsHookHealth,
     network_media_options_hook_ownership_possible: bool,
     network_media_options_hook_configuration_in_progress: bool,
     network_media_options_policy_state: MpvNetworkMediaPolicyState,
     network_media_options_runtime_health_revision: u64,
+    network_media_options_application_state: Option<MpvNetworkMediaPolicyApplicationState>,
+    network_media_options_diagnostic_load_sequence: Option<u64>,
+    network_media_options_verification_complete: bool,
+    network_media_options_option_results: Vec<MpvNetworkOptionApplyResult>,
+    network_media_options_effective_cache_options: BTreeMap<String, String>,
     pending_network_media_options_hook_active_result: Option<NetworkOptionsHookActiveResult>,
     deferred_network_media_options_hook_transition_result:
         Option<NetworkOptionsHookTransitionResult>,
@@ -494,6 +590,7 @@ pub struct MpvAdapter {
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
+    pending_cache_telemetry_updates: VecDeque<PlayerCacheTelemetryUpdate>,
     pending_tracked_commands: VecDeque<PendingTrackedCommand>,
     pending_command_progress_updates: VecDeque<PlayerCommandProgress>,
     pending_media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
@@ -630,10 +727,13 @@ impl MpvAdapter {
         self.next_network_media_options_hook_heartbeat_nonce = 1;
         self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
+        self.network_media_options_hook_latest_started_load_sequence = None;
+        self.network_media_options_expected_transition = None;
         self.network_media_options_hook_health = MpvNetworkOptionsHookHealth::Pending;
         self.network_media_options_hook_ownership_possible = false;
         self.network_media_options_hook_configuration_in_progress = false;
         self.network_media_options_policy_state = MpvNetworkMediaPolicyState::Unknown;
+        self.reset_network_media_policy_diagnostics();
         self.bump_network_options_runtime_health_revision();
         self.pending_network_media_options_hook_active_result = None;
         self.deferred_network_media_options_hook_transition_result = None;
@@ -964,6 +1064,53 @@ impl MpvAdapter {
         ));
     }
 
+    /// Establishes a successful privacy-safe network/cache diagnostic fixture.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn inject_test_verified_network_media_diagnostic_snapshot(&mut self, load_sequence: u64) {
+        if self.observation_media_generation().is_none() {
+            self.active_media_generation = Some(PlayerMediaGeneration::new(1));
+        }
+        self.network_media_options_application_state =
+            Some(MpvNetworkMediaPolicyApplicationState::Applied);
+        self.network_media_options_diagnostic_load_sequence = Some(load_sequence);
+        self.network_media_options_verification_complete = true;
+        self.network_media_options_option_results = self
+            .network_media_options
+            .keys()
+            .map(|name| MpvNetworkOptionApplyResult {
+                name: name.clone(),
+                status: MpvNetworkOptionApplyStatus::Applied,
+            })
+            .collect();
+        self.network_media_options_effective_cache_options =
+            self.network_media_options_desired_cache_options();
+        self.transport_phase = PlayerTransportPhase::ReadyPaused;
+        self.observed_state.paused_for_cache = Some(false);
+        self.observed_state.demuxer_cache_idle = Some(true);
+        self.observed_state.buffered_ahead_seconds = Some(30.0);
+        self.observed_state.buffered_ahead_bytes = Some(524_288);
+        self.observed_state.input_rate_bytes_per_second = Some(2_000_000);
+        self.observed_state.cache_reader_position_seconds = Some(10.0);
+        self.observed_state.cache_end_seconds = Some(40.0);
+        self.observed_state.cache_eof = Some(false);
+        self.observed_state.cache_underrun = Some(false);
+        self.observed_state.cache_metrics_observed_at = Some(self.observation_timestamp());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_cache_telemetry_update(&mut self) {
+        let generation = self
+            .observation_media_generation()
+            .or_else(|| Some(PlayerMediaGeneration::new(1)));
+        self.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
+            media_generation: generation,
+            observed_at: Some(self.observation_timestamp()),
+            buffered_ahead_seconds: Some(5.0),
+            ..PlayerCacheTelemetryUpdate::default()
+        });
+    }
+
     #[cfg(feature = "test-support")]
     fn with_external_network_media_transition_test_ipc_mode(
         settings: LegacySyncplayUiSettings,
@@ -1052,7 +1199,9 @@ impl MpvAdapter {
             self.deferred_network_media_options_hook_transition_result = None;
             self.network_media_options_embedded_load = None;
             self.network_media_options_apply_identity = None;
+            self.network_media_options_expected_transition = None;
             self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
+            self.reset_network_media_policy_diagnostics();
             self.deferred_network_media_options_observation = None;
             // File-policy results belong to the superseded option generation. Hook-health
             // transitions describe the adapter-wide hook lease and must survive unchanged,
@@ -1101,6 +1250,32 @@ impl MpvAdapter {
             revision: self.network_media_options_runtime_health_revision,
             hook_health: self.network_media_options_hook_health.clone(),
             media_policy: self.network_media_options_policy_state.clone(),
+        }
+    }
+
+    /// Returns generation-correlated effective policy and cache state without retaining media
+    /// targets or arbitrary advanced option values.
+    pub fn network_media_diagnostic_snapshot(&self) -> MpvNetworkMediaDiagnosticSnapshot {
+        MpvNetworkMediaDiagnosticSnapshot {
+            media_generation: self.observation_media_generation(),
+            network_policy_generation: self.network_media_options_generation,
+            load_sequence: self.network_media_options_diagnostic_load_sequence,
+            application_state: self.network_media_options_application_state,
+            verification_complete: self.network_media_options_verification_complete,
+            option_results: self.network_media_options_option_results.clone(),
+            desired_cache_options: self.network_media_options_desired_cache_options(),
+            effective_cache_options: self.network_media_options_effective_cache_options.clone(),
+            observed_at: self.observed_state.cache_metrics_observed_at,
+            transport_phase: self.transport_phase,
+            paused_for_cache: self.observed_state.paused_for_cache,
+            demuxer_cache_idle: self.observed_state.demuxer_cache_idle,
+            cache_duration_seconds: self.observed_state.buffered_ahead_seconds,
+            forward_bytes: self.observed_state.buffered_ahead_bytes,
+            raw_input_rate_bytes_per_second: self.observed_state.input_rate_bytes_per_second,
+            reader_position_seconds: self.observed_state.cache_reader_position_seconds,
+            cache_end_seconds: self.observed_state.cache_end_seconds,
+            cache_eof: self.observed_state.cache_eof,
+            cache_underrun: self.observed_state.cache_underrun,
         }
     }
 
@@ -1234,6 +1409,7 @@ impl MpvAdapter {
                 return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
             }
             self.clear_network_media_options_path_identity();
+            self.reset_network_media_policy_diagnostics();
             self.record_network_media_options_policy_applied(
                 MpvNetworkMediaPolicyState::NoActiveMedia,
                 None,
@@ -1255,6 +1431,7 @@ impl MpvAdapter {
         }
         if !uses_network_media_options(&active_path) {
             self.clear_network_media_options_path_identity();
+            self.reset_network_media_policy_diagnostics();
             self.record_network_media_options_policy_applied(
                 MpvNetworkMediaPolicyState::LocalMediaUnchanged,
                 None,
@@ -1267,6 +1444,7 @@ impl MpvAdapter {
         if !self.apply_network_media_options_for_attempt(&active_path, attempt_id)? {
             return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::Superseded);
         }
+        self.record_unverified_network_media_options_applied();
         self.record_network_media_options_policy_applied(
             MpvNetworkMediaPolicyState::NetworkMediaUpdated,
             None,
@@ -1305,6 +1483,7 @@ impl MpvAdapter {
         self.network_media_options_hook_pending_event_poll_command_id = None;
         self.pending_network_media_options_hook_active_result = None;
         self.deferred_network_media_options_hook_transition_result = None;
+        self.network_media_options_expected_transition = None;
     }
 
     fn network_media_options_hook_controller_payload(&self) -> String {
@@ -1516,6 +1695,7 @@ impl MpvAdapter {
 
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
+                self.reset_network_media_policy_diagnostics();
                 self.record_network_media_options_policy_applied(
                     MpvNetworkMediaPolicyState::NoActiveMedia,
                     Some(result.load_sequence),
@@ -1523,24 +1703,35 @@ impl MpvAdapter {
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia)
             }
             NetworkOptionsHookApplyStatus::LocalMediaUnchanged => {
+                self.reset_network_media_policy_diagnostics();
                 self.record_network_media_options_policy_applied(
                     MpvNetworkMediaPolicyState::LocalMediaUnchanged,
                     Some(result.load_sequence),
                 );
                 Ok(MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged)
             }
-            NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
-                self.record_network_media_options_policy_applied(
-                    MpvNetworkMediaPolicyState::NetworkMediaUpdated,
-                    Some(result.load_sequence),
+            NetworkOptionsHookApplyStatus::NetworkMediaUpdated
+            | NetworkOptionsHookApplyStatus::PartiallyApplied
+            | NetworkOptionsHookApplyStatus::Failed => {
+                let application_state = self.record_network_media_option_application(
+                    result.load_sequence,
+                    result.status,
+                    result.verification_complete,
+                    result.option_results,
+                    result.effective_options,
                 );
-                Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated)
-            }
-            NetworkOptionsHookApplyStatus::Failed => {
-                let error = NetworkOptionsApplyDiagnostic::player_error(
+                if application_state == MpvNetworkMediaPolicyApplicationState::Applied {
+                    self.record_network_media_options_policy_applied(
+                        MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+                        Some(result.load_sequence),
+                    );
+                    return Ok(MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated);
+                }
+                let error = self.network_media_option_application_error(
                     result.load_sequence,
                     result.source_kind,
                     result.stream_target_kind,
+                    application_state,
                 );
                 self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Failed(
                     error.to_string(),
@@ -1733,6 +1924,7 @@ impl MpvAdapter {
                 );
             self.clear_network_media_options_path_identity();
             if origin == AuthoritativePathObservationOrigin::EndFileIdle {
+                self.reset_network_media_policy_diagnostics();
                 self.set_network_media_policy_state(MpvNetworkMediaPolicyState::NoActiveMedia);
             }
             if self.network_media_options_hook_should_run()
@@ -1808,6 +2000,7 @@ impl MpvAdapter {
 
         if !uses_network_media_options(path) {
             self.network_media_options_apply_identity = None;
+            self.reset_network_media_policy_diagnostics();
             self.set_network_media_policy_state(MpvNetworkMediaPolicyState::LocalMediaUnchanged);
             let embedded_generation_is_current = self
                 .network_media_options_embedded_load
@@ -1841,6 +2034,7 @@ impl MpvAdapter {
         if self.embedded_network_media_options_apply_to_path(media_generation, path) {
             self.begin_network_media_options_apply_attempt(media_generation, path);
             self.network_media_options_embedded_load = None;
+            self.record_unverified_network_media_options_applied();
             self.queue_network_media_policy_outcome(
                 MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
             );
@@ -1870,7 +2064,10 @@ impl MpvAdapter {
         let attempt_id = self.begin_network_media_options_apply_attempt(media_generation, path);
 
         let outcome = match self.apply_network_media_options_for_attempt(path, attempt_id) {
-            Ok(true) => MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
+            Ok(true) => {
+                self.record_unverified_network_media_options_applied();
+                MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated
+            }
             Ok(false) => return,
             Err(error) => MpvNetworkMediaPolicyOutcome::Failed(error),
         };
@@ -1987,6 +2184,272 @@ impl MpvAdapter {
                 MpvNetworkOptionsHookHealthTransition::Recovered,
             );
         }
+    }
+
+    fn network_media_option_allows_diagnostic_value(name: &str) -> bool {
+        NETWORK_MEDIA_OPTION_READBACK_ALLOWLIST.contains(&name)
+    }
+
+    fn network_media_options_desired_cache_options(&self) -> BTreeMap<String, String> {
+        self.network_media_options
+            .iter()
+            .filter_map(|(name, value)| {
+                Self::canonical_network_media_diagnostic_value(name, value)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect()
+    }
+
+    fn reset_network_media_policy_diagnostics(&mut self) {
+        self.network_media_options_application_state = None;
+        self.network_media_options_diagnostic_load_sequence = None;
+        self.network_media_options_verification_complete = false;
+        self.network_media_options_option_results.clear();
+        self.network_media_options_effective_cache_options.clear();
+    }
+
+    fn record_unverified_network_media_options_applied(&mut self) {
+        self.network_media_options_application_state =
+            Some(MpvNetworkMediaPolicyApplicationState::Applied);
+        self.network_media_options_diagnostic_load_sequence = None;
+        self.network_media_options_verification_complete = false;
+        self.network_media_options_option_results = self
+            .network_media_options
+            .keys()
+            .map(|name| MpvNetworkOptionApplyResult {
+                name: name.clone(),
+                status: MpvNetworkOptionApplyStatus::Applied,
+            })
+            .collect();
+        self.network_media_options_effective_cache_options.clear();
+    }
+
+    fn normalize_mpv_boolean(value: &str) -> Option<bool> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "yes" | "true" | "on" | "1" => Some(true),
+            "no" | "false" | "off" | "0" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn parse_mpv_byte_quantity(value: &str) -> Option<f64> {
+        let normalized = value.trim().to_ascii_lowercase().replace(' ', "");
+        let (number, multiplier) = [
+            ("gib", 1024.0 * 1024.0 * 1024.0),
+            ("mib", 1024.0 * 1024.0),
+            ("kib", 1024.0),
+            ("gb", 1_000_000_000.0),
+            ("mb", 1_000_000.0),
+            ("kb", 1_000.0),
+            ("b", 1.0),
+        ]
+        .into_iter()
+        .find_map(|(suffix, multiplier)| {
+            normalized
+                .strip_suffix(suffix)
+                .map(|number| (number, multiplier))
+        })
+        .unwrap_or((normalized.as_str(), 1.0));
+        let bytes = number.parse::<f64>().ok()? * multiplier;
+        (bytes.is_finite() && bytes >= 0.0).then_some(bytes)
+    }
+
+    fn canonical_network_media_diagnostic_value(name: &str, value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        match name {
+            "cache" => match trimmed.to_ascii_lowercase().as_str() {
+                "yes" => Some("yes".to_owned()),
+                "no" => Some("no".to_owned()),
+                "auto" => Some("auto".to_owned()),
+                "auto-safe" => Some("auto-safe".to_owned()),
+                _ => None,
+            },
+            "cache-pause" | "cache-pause-initial" | "cache-on-disk" => {
+                Self::normalize_mpv_boolean(trimmed)
+                    .map(|enabled| if enabled { "yes" } else { "no" }.to_owned())
+            }
+            "cache-pause-wait" | "cache-secs" => {
+                let number = trimmed.parse::<f64>().ok()?;
+                (number.is_finite() && number >= 0.0).then(|| number.to_string())
+            }
+            "demuxer-max-bytes" | "demuxer-max-back-bytes" => {
+                let bytes = Self::parse_mpv_byte_quantity(trimmed)?;
+                (bytes <= u64::MAX as f64).then(|| bytes.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn network_media_option_values_match(name: &str, desired: &str, effective: &str) -> bool {
+        if desired.trim().eq_ignore_ascii_case(effective.trim()) {
+            return true;
+        }
+        match name {
+            "cache-pause" | "cache-pause-initial" | "cache-on-disk" => {
+                Self::normalize_mpv_boolean(desired) == Self::normalize_mpv_boolean(effective)
+                    && Self::normalize_mpv_boolean(desired).is_some()
+            }
+            "cache-pause-wait" | "cache-secs" => {
+                let Some(desired) = desired.trim().parse::<f64>().ok() else {
+                    return false;
+                };
+                let Some(effective) = effective.trim().parse::<f64>().ok() else {
+                    return false;
+                };
+                desired.is_finite()
+                    && effective.is_finite()
+                    && (desired - effective).abs() <= 0.000_001
+            }
+            "demuxer-max-bytes" | "demuxer-max-back-bytes" => {
+                let Some(desired) = Self::parse_mpv_byte_quantity(desired) else {
+                    return false;
+                };
+                let Some(effective) = Self::parse_mpv_byte_quantity(effective) else {
+                    return false;
+                };
+                (desired - effective).abs() <= 1.0
+            }
+            _ => false,
+        }
+    }
+
+    fn record_network_media_option_application(
+        &mut self,
+        load_sequence: u64,
+        hook_status: NetworkOptionsHookApplyStatus,
+        verification_complete: bool,
+        hook_results: Vec<NetworkOptionsHookOptionResult>,
+        effective_options: BTreeMap<String, String>,
+    ) -> MpvNetworkMediaPolicyApplicationState {
+        let mut results = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for hook_result in hook_results {
+            if !self.network_media_options.contains_key(&hook_result.name)
+                || !seen.insert(hook_result.name.clone())
+            {
+                continue;
+            }
+            let status = match hook_result.status {
+                NetworkOptionsHookOptionApplyStatus::Rejected => {
+                    MpvNetworkOptionApplyStatus::Rejected
+                }
+                NetworkOptionsHookOptionApplyStatus::Applied
+                    if verification_complete
+                        && Self::network_media_option_allows_diagnostic_value(
+                            &hook_result.name,
+                        ) =>
+                {
+                    match (
+                        self.network_media_options.get(&hook_result.name),
+                        effective_options.get(&hook_result.name),
+                    ) {
+                        (Some(desired), Some(effective))
+                            if Self::network_media_option_values_match(
+                                &hook_result.name,
+                                desired,
+                                effective,
+                            ) =>
+                        {
+                            MpvNetworkOptionApplyStatus::Applied
+                        }
+                        _ => MpvNetworkOptionApplyStatus::Mismatched,
+                    }
+                }
+                NetworkOptionsHookOptionApplyStatus::Applied => {
+                    MpvNetworkOptionApplyStatus::Applied
+                }
+            };
+            results.push(MpvNetworkOptionApplyResult {
+                name: hook_result.name,
+                status,
+            });
+        }
+
+        if verification_complete {
+            for name in self.network_media_options.keys() {
+                if seen.insert(name.clone()) {
+                    results.push(MpvNetworkOptionApplyResult {
+                        name: name.clone(),
+                        status: MpvNetworkOptionApplyStatus::Mismatched,
+                    });
+                }
+            }
+        }
+
+        let applied = results
+            .iter()
+            .filter(|result| result.status == MpvNetworkOptionApplyStatus::Applied)
+            .count();
+        let problematic = results.len().saturating_sub(applied);
+        let state = match hook_status {
+            NetworkOptionsHookApplyStatus::Failed => MpvNetworkMediaPolicyApplicationState::Failed,
+            NetworkOptionsHookApplyStatus::PartiallyApplied => {
+                if applied == 0 {
+                    MpvNetworkMediaPolicyApplicationState::Failed
+                } else {
+                    MpvNetworkMediaPolicyApplicationState::PartiallyApplied
+                }
+            }
+            NetworkOptionsHookApplyStatus::NetworkMediaUpdated if problematic == 0 => {
+                MpvNetworkMediaPolicyApplicationState::Applied
+            }
+            _ if applied == 0 => MpvNetworkMediaPolicyApplicationState::Failed,
+            _ => MpvNetworkMediaPolicyApplicationState::PartiallyApplied,
+        };
+
+        self.network_media_options_application_state = Some(state);
+        self.network_media_options_diagnostic_load_sequence = Some(load_sequence);
+        self.network_media_options_verification_complete = verification_complete;
+        self.network_media_options_option_results = results;
+        self.network_media_options_effective_cache_options = effective_options
+            .into_iter()
+            .filter(|(name, _)| {
+                self.network_media_options.contains_key(name)
+                    && Self::network_media_option_allows_diagnostic_value(name)
+            })
+            .collect();
+        state
+    }
+
+    fn network_media_option_application_error(
+        &self,
+        load_sequence: u64,
+        source_kind: NetworkOptionsMediaTargetKind,
+        stream_target_kind: NetworkOptionsMediaTargetKind,
+        state: MpvNetworkMediaPolicyApplicationState,
+    ) -> PlayerError {
+        if state == MpvNetworkMediaPolicyApplicationState::Failed
+            && self.network_media_options_option_results.is_empty()
+        {
+            return NetworkOptionsApplyDiagnostic::player_error(
+                load_sequence,
+                source_kind,
+                stream_target_kind,
+            );
+        }
+        let applied = self
+            .network_media_options_option_results
+            .iter()
+            .filter(|result| result.status == MpvNetworkOptionApplyStatus::Applied)
+            .count();
+        let rejected = self
+            .network_media_options_option_results
+            .iter()
+            .filter(|result| result.status == MpvNetworkOptionApplyStatus::Rejected)
+            .count();
+        let mismatched = self
+            .network_media_options_option_results
+            .iter()
+            .filter(|result| result.status == MpvNetworkOptionApplyStatus::Mismatched)
+            .count();
+        let classification = match state {
+            MpvNetworkMediaPolicyApplicationState::Applied => "applied",
+            MpvNetworkMediaPolicyApplicationState::PartiallyApplied => "partially applied",
+            MpvNetworkMediaPolicyApplicationState::Failed => "failed to apply",
+        };
+        PlayerError::OperationFailed(format!(
+            "mpv {classification} the network-media policy for hook load {load_sequence} (source: {source_kind}, resolved target: {stream_target_kind}; {applied} applied, {rejected} rejected, {mismatched} mismatched)"
+        ))
     }
 
     fn network_media_options_map(&self) -> serde_json::Map<String, Value> {
@@ -3755,18 +4218,43 @@ impl MpvAdapter {
         self.pending_transport_telemetry_updates.push_back(update);
     }
 
+    fn queue_cache_telemetry_update(&mut self, mut update: PlayerCacheTelemetryUpdate) {
+        if update.media_generation.is_none() {
+            update.media_generation = self.observation_media_generation();
+        }
+        if update.observed_at.is_none() {
+            update.observed_at = Some(self.observation_timestamp());
+        }
+        if self.pending_cache_telemetry_updates.len() >= MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES {
+            self.pending_cache_telemetry_updates.pop_front();
+        }
+        self.pending_cache_telemetry_updates.push_back(update);
+    }
+
+    fn cleared_cache_telemetry_update(
+        &self,
+        generation: Option<PlayerMediaGeneration>,
+    ) -> PlayerCacheTelemetryUpdate {
+        PlayerCacheTelemetryUpdate {
+            media_generation: generation,
+            observed_at: Some(self.observation_timestamp()),
+            ..PlayerCacheTelemetryUpdate::default()
+        }
+    }
+
     fn begin_seek_cache_evidence_epoch(&mut self) {
         let generation = self.observation_media_generation();
         self.cache_buffering_percent = None;
         self.observed_state.cache_buffering_percent = None;
-        for pending in &mut self.pending_transport_telemetry_updates {
-            if pending.media_generation == generation {
-                pending.cache_buffering_percent = None;
-                pending.buffered_ahead_seconds = None;
-                pending.buffered_ahead_bytes = None;
-                pending.input_rate_bytes_per_second = None;
-            }
-        }
+        self.observed_state.buffered_ahead_seconds = None;
+        self.observed_state.buffered_ahead_bytes = None;
+        self.observed_state.input_rate_bytes_per_second = None;
+        self.observed_state.cache_reader_position_seconds = None;
+        self.observed_state.cache_end_seconds = None;
+        self.observed_state.cache_eof = None;
+        self.observed_state.cache_underrun = None;
+        self.observed_state.cache_metrics_observed_at = None;
+        self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(generation));
     }
 
     fn set_transport_phase(&mut self, phase: PlayerTransportPhase) {
@@ -3830,6 +4318,19 @@ impl MpvAdapter {
     fn cache_state_telemetry_update(&mut self, data: &Value) -> PlayerTransportTelemetryUpdate {
         let mut update = self.transport_update();
         let Some(cache_state) = data.as_object() else {
+            self.observed_state.buffered_ahead_seconds = None;
+            self.observed_state.buffered_ahead_bytes = None;
+            self.observed_state.input_rate_bytes_per_second = None;
+            self.observed_state.cache_reader_position_seconds = None;
+            self.observed_state.cache_end_seconds = None;
+            self.observed_state.cache_eof = None;
+            self.observed_state.cache_underrun = None;
+            self.observed_state.cache_metrics_observed_at = update.observed_at;
+            self.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
+                media_generation: update.media_generation,
+                observed_at: update.observed_at,
+                ..PlayerCacheTelemetryUpdate::default()
+            });
             return update;
         };
 
@@ -3874,6 +4375,39 @@ impl MpvAdapter {
         update.input_rate_bytes_per_second = cache_state
             .get("raw-input-rate")
             .and_then(Self::nonnegative_u64_from_json);
+        let reader_position_seconds = cache_state
+            .get("reader-pts")
+            .and_then(Value::as_f64)
+            .filter(|seconds| seconds.is_finite());
+        let cache_end_seconds = cache_state
+            .get("cache-end")
+            .and_then(Value::as_f64)
+            .filter(|seconds| seconds.is_finite());
+        let cache_eof = cache_state
+            .get("eof")
+            .or_else(|| cache_state.get("eof-cached"))
+            .and_then(Value::as_bool);
+        let cache_underrun = cache_state.get("underrun").and_then(Value::as_bool);
+        self.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
+            media_generation: update.media_generation,
+            observed_at: update.observed_at,
+            buffered_ahead_seconds: update.buffered_ahead_seconds,
+            buffered_ahead_bytes: update.buffered_ahead_bytes,
+            input_rate_bytes_per_second: update.input_rate_bytes_per_second,
+            reader_position_seconds,
+            cache_end_seconds,
+            eof: cache_eof,
+            underrun: cache_underrun,
+        });
+
+        self.observed_state.buffered_ahead_seconds = update.buffered_ahead_seconds;
+        self.observed_state.buffered_ahead_bytes = update.buffered_ahead_bytes;
+        self.observed_state.input_rate_bytes_per_second = update.input_rate_bytes_per_second;
+        self.observed_state.cache_reader_position_seconds = reader_position_seconds;
+        self.observed_state.cache_end_seconds = cache_end_seconds;
+        self.observed_state.cache_eof = cache_eof;
+        self.observed_state.cache_underrun = cache_underrun;
+        self.observed_state.cache_metrics_observed_at = update.observed_at;
         update
     }
 
@@ -4239,6 +4773,7 @@ impl MpvAdapter {
                     let mut update = self.transport_update().with_phase(phase);
                     update.paused_for_cache = Some(paused_for_cache);
                     update.logical_pause = logical_pause;
+                    self.observed_state.cache_metrics_observed_at = update.observed_at;
                     self.queue_transport_telemetry_update(update);
                     self.observe_tracked_commands(
                         self.observation_media_generation(),
@@ -4347,6 +4882,7 @@ impl MpvAdapter {
                     self.observed_state.demuxer_cache_idle = Some(demuxer_cache_idle);
                     let mut update = self.transport_update();
                     update.demuxer_cache_idle = Some(demuxer_cache_idle);
+                    self.observed_state.cache_metrics_observed_at = update.observed_at;
                     self.queue_transport_telemetry_update(update);
                 } else {
                     self.observed_state.demuxer_cache_idle = None;
@@ -4399,7 +4935,27 @@ impl MpvAdapter {
             .or(self.pending_load_generation)
             .unwrap_or_else(|| self.allocate_media_generation());
 
+        if self.network_media_options_hook_instance_id.is_some()
+            && self.network_media_options_hook_configured_generation
+                == Some(self.network_media_options_generation)
+        {
+            let base_sequence = self
+                .network_media_options_hook_latest_started_load_sequence
+                .or(self.network_media_options_hook_last_accepted_load_sequence)
+                .unwrap_or(0);
+            let load_sequence = base_sequence.wrapping_add(1).max(1);
+            self.network_media_options_hook_latest_started_load_sequence = Some(load_sequence);
+            self.network_media_options_expected_transition =
+                Some(ExpectedNetworkOptionsTransition {
+                    media_generation: generation,
+                    load_sequence,
+                });
+        } else {
+            self.network_media_options_expected_transition = None;
+        }
+
         self.network_media_options_apply_identity = None;
+        self.reset_network_media_policy_diagnostics();
 
         if let Some(playlist_entry_id) = playlist_entry_id {
             self.playlist_entry_generations
@@ -4427,6 +4983,14 @@ impl MpvAdapter {
         self.observed_state.core_idle = retained_core_idle;
         self.observed_state.demuxer_cache_idle = None;
         self.observed_state.eof_reached = Some(false);
+        self.observed_state.buffered_ahead_seconds = None;
+        self.observed_state.buffered_ahead_bytes = None;
+        self.observed_state.input_rate_bytes_per_second = None;
+        self.observed_state.cache_reader_position_seconds = None;
+        self.observed_state.cache_end_seconds = None;
+        self.observed_state.cache_eof = None;
+        self.observed_state.cache_underrun = None;
+        self.observed_state.cache_metrics_observed_at = None;
         self.transport_phase = PlayerTransportPhase::Loading;
 
         let mut update = self
@@ -4437,6 +5001,7 @@ impl MpvAdapter {
         update.core_idle = retained_core_idle;
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update(update);
+        self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(Some(generation)));
         // A later start-file in the same buffered batch invalidates every earlier path even when
         // mpv has not emitted the replacement path yet. The batch reducer will let a following
         // path observation supersede this idle/loading marker before any option write begins.
@@ -4447,6 +5012,7 @@ impl MpvAdapter {
     }
 
     fn handle_seek_event(&mut self) {
+        self.begin_seek_cache_evidence_epoch();
         self.observed_state.seeking = Some(true);
         self.transport_phase = PlayerTransportPhase::Seeking;
         let mut update = self
@@ -4592,6 +5158,9 @@ impl MpvAdapter {
             update.eof_reached = Some(true);
             update.error_kind = error_kind;
             self.queue_transport_telemetry_update(update);
+            self.queue_cache_telemetry_update(
+                self.cleared_cache_telemetry_update(Some(generation)),
+            );
             self.fail_tracked_commands_for_generation(
                 generation,
                 PlayerCommandFailureKind::MediaEnded,
@@ -4603,10 +5172,24 @@ impl MpvAdapter {
                 || (self.pending_load_generation.is_none()
                     && generation == self.active_media_generation));
         if affects_current_generation {
+            if self
+                .network_media_options_expected_transition
+                .is_some_and(|expected| Some(expected.media_generation) == generation)
+            {
+                self.network_media_options_expected_transition = None;
+            }
             self.transport_phase = phase;
             self.active_file_loaded = false;
             self.reset_timeline_metadata();
             self.observed_state.eof_reached = Some(true);
+            self.observed_state.buffered_ahead_seconds = None;
+            self.observed_state.buffered_ahead_bytes = None;
+            self.observed_state.input_rate_bytes_per_second = None;
+            self.observed_state.cache_reader_position_seconds = None;
+            self.observed_state.cache_end_seconds = None;
+            self.observed_state.cache_eof = None;
+            self.observed_state.cache_underrun = None;
+            self.observed_state.cache_metrics_observed_at = None;
             if self.active_playlist_entry_id == playlist_entry_id {
                 self.active_playlist_entry_id = None;
             }
@@ -4697,13 +5280,76 @@ impl MpvAdapter {
     }
 
     fn parse_network_options_hook_status(parsed: &Value) -> Option<NetworkOptionsHookApplyStatus> {
-        match parsed.get("status").and_then(Value::as_str)? {
+        let wire_status = parsed.get("status").and_then(Value::as_str)?;
+        match (
+            wire_status,
+            parsed.get("applicationState").and_then(Value::as_str),
+        ) {
+            ("network-updated", Some("applied")) => {
+                return Some(NetworkOptionsHookApplyStatus::NetworkMediaUpdated);
+            }
+            ("failed", Some("partially-applied")) => {
+                return Some(NetworkOptionsHookApplyStatus::PartiallyApplied);
+            }
+            ("failed", Some("failed")) => return Some(NetworkOptionsHookApplyStatus::Failed),
+            (_, Some(_)) => return None,
+            _ => {}
+        }
+        match wire_status {
             "no-active" => Some(NetworkOptionsHookApplyStatus::NoActiveMedia),
             "local" => Some(NetworkOptionsHookApplyStatus::LocalMediaUnchanged),
             "network-updated" => Some(NetworkOptionsHookApplyStatus::NetworkMediaUpdated),
+            // Accepted for compatibility with short-lived development builds. The bundled v3
+            // hook uses legacy `failed` plus `applicationState=partially-applied`, so an older
+            // v3 adapter still fails closed instead of silently ignoring a new wire status.
+            "partially-applied" => Some(NetworkOptionsHookApplyStatus::PartiallyApplied),
             "failed" => Some(NetworkOptionsHookApplyStatus::Failed),
             _ => None,
         }
+    }
+
+    fn parse_network_options_hook_option_results(
+        parsed: &Value,
+    ) -> Vec<NetworkOptionsHookOptionResult> {
+        parsed
+            .get("optionResults")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|result| {
+                let name = result
+                    .get("name")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_owned();
+                if name.is_empty() {
+                    return None;
+                }
+                let status = match result.get("status").and_then(Value::as_str)? {
+                    "applied" => NetworkOptionsHookOptionApplyStatus::Applied,
+                    "rejected" => NetworkOptionsHookOptionApplyStatus::Rejected,
+                    _ => return None,
+                };
+                Some(NetworkOptionsHookOptionResult { name, status })
+            })
+            .collect()
+    }
+
+    fn parse_network_options_hook_effective_options(parsed: &Value) -> BTreeMap<String, String> {
+        parsed
+            .get("effectiveOptions")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, value)| {
+                Self::canonical_network_media_diagnostic_value(name, value.as_str()?)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect()
+    }
+
+    fn network_options_hook_verification_complete(parsed: &Value) -> bool {
+        parsed.get("verification").and_then(Value::as_str) == Some("complete")
     }
 
     fn parse_network_options_hook_payload(&self, payload: Option<&str>) -> Option<Value> {
@@ -4821,10 +5467,19 @@ impl MpvAdapter {
                                 accepted.max(current_load_sequence)
                             }),
                     );
+                    self.network_media_options_hook_latest_started_load_sequence = Some(
+                        self.network_media_options_hook_latest_started_load_sequence
+                            .map_or(current_load_sequence, |started| {
+                                started.max(current_load_sequence)
+                            }),
+                    );
                 } else {
                     self.network_media_options_hook_instance_id = Some(hook_instance_id.to_owned());
                     self.network_media_options_hook_last_accepted_load_sequence =
                         Some(current_load_sequence);
+                    self.network_media_options_hook_latest_started_load_sequence =
+                        Some(current_load_sequence);
+                    self.network_media_options_expected_transition = None;
                     self.pending_network_media_options_hook_active_result = None;
                     self.deferred_network_media_options_hook_transition_result = None;
                 }
@@ -4879,6 +5534,8 @@ impl MpvAdapter {
                 self.network_media_options_hook_pending_event_poll_command_id = None;
                 self.network_media_options_hook_instance_id = None;
                 self.network_media_options_hook_last_accepted_load_sequence = None;
+                self.network_media_options_hook_latest_started_load_sequence = None;
+                self.network_media_options_expected_transition = None;
                 self.pending_network_media_options_hook_active_result = None;
                 return;
             }
@@ -4890,6 +5547,8 @@ impl MpvAdapter {
         self.network_media_options_hook_pending_event_poll_command_id = None;
         self.network_media_options_hook_instance_id = None;
         self.network_media_options_hook_last_accepted_load_sequence = None;
+        self.network_media_options_hook_latest_started_load_sequence = None;
+        self.network_media_options_expected_transition = None;
         self.network_media_options_hook_ownership_possible = false;
         self.pending_network_media_options_hook_active_result = None;
         self.network_media_options_hook_configuration_error = Some(reason.to_owned());
@@ -4965,6 +5624,9 @@ impl MpvAdapter {
                 ),
                 source_path: source_path.map(SecretValue::from),
                 status,
+                verification_complete: Self::network_options_hook_verification_complete(&parsed),
+                option_results: Self::parse_network_options_hook_option_results(&parsed),
+                effective_options: Self::parse_network_options_hook_effective_options(&parsed),
             });
     }
 
@@ -4988,6 +5650,15 @@ impl MpvAdapter {
             return;
         };
         if self
+            .network_media_options_expected_transition
+            .is_some_and(|expected| {
+                self.active_media_generation != Some(expected.media_generation)
+                    || load_sequence != expected.load_sequence
+            })
+        {
+            return;
+        }
+        if self
             .network_media_options_hook_last_accepted_load_sequence
             .is_some_and(|accepted| load_sequence <= accepted)
             || self
@@ -5009,13 +5680,16 @@ impl MpvAdapter {
                 ),
                 source_path: source_path.map(SecretValue::from),
                 status,
+                verification_complete: Self::network_options_hook_verification_complete(&parsed),
+                option_results: Self::parse_network_options_hook_option_results(&parsed),
+                effective_options: Self::parse_network_options_hook_effective_options(&parsed),
             });
     }
 
     fn apply_network_options_hook_transition_result(
         &mut self,
         result: NetworkOptionsHookTransitionResult,
-        _observed_path: Option<Option<String>>,
+        observed_path: Option<Option<String>>,
     ) {
         if result.generation != self.network_media_options_generation
             || self
@@ -5023,6 +5697,21 @@ impl MpvAdapter {
                 .is_some_and(|accepted| result.load_sequence <= accepted)
         {
             return;
+        }
+        if let Some(expected) = self.network_media_options_expected_transition {
+            if self.active_media_generation != Some(expected.media_generation)
+                || result.load_sequence != expected.load_sequence
+            {
+                return;
+            }
+            if let Some(Some(observed_path)) = observed_path.as_ref()
+                && result.source_path.as_ref().is_none_or(|source| {
+                    !Self::media_target_matches(source.expose_secret(), observed_path)
+                })
+            {
+                return;
+            }
+            self.network_media_options_expected_transition = None;
         }
         self.network_media_options_hook_last_accepted_load_sequence = Some(result.load_sequence);
         self.queue_network_media_options_hook_recovered();
@@ -5036,6 +5725,7 @@ impl MpvAdapter {
         match result.status {
             NetworkOptionsHookApplyStatus::NoActiveMedia => {
                 self.clear_network_media_options_path_identity();
+                self.reset_network_media_policy_diagnostics();
                 self.record_network_media_options_policy_applied(
                     MpvNetworkMediaPolicyState::NoActiveMedia,
                     Some(result.load_sequence),
@@ -5053,6 +5743,7 @@ impl MpvAdapter {
                         path,
                     );
                 }
+                self.reset_network_media_policy_diagnostics();
                 self.record_network_media_options_policy_applied(
                     MpvNetworkMediaPolicyState::LocalMediaUnchanged,
                     Some(result.load_sequence),
@@ -5061,35 +5752,41 @@ impl MpvAdapter {
                     MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged,
                 );
             }
-            NetworkOptionsHookApplyStatus::NetworkMediaUpdated => {
+            NetworkOptionsHookApplyStatus::NetworkMediaUpdated
+            | NetworkOptionsHookApplyStatus::PartiallyApplied
+            | NetworkOptionsHookApplyStatus::Failed => {
                 if let Some(path) = result.source_path.as_ref().map(SecretValue::expose_secret) {
                     self.begin_network_media_options_apply_attempt(
                         self.active_media_generation,
                         path,
                     );
                 }
-                self.record_network_media_options_policy_applied(
-                    MpvNetworkMediaPolicyState::NetworkMediaUpdated,
-                    Some(result.load_sequence),
+                let application_state = self.record_network_media_option_application(
+                    result.load_sequence,
+                    result.status,
+                    result.verification_complete,
+                    result.option_results,
+                    result.effective_options,
                 );
-                self.queue_network_media_policy_outcome(
-                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
-                );
-            }
-            NetworkOptionsHookApplyStatus::Failed => {
-                if let Some(path) = result.source_path.as_ref().map(SecretValue::expose_secret) {
-                    self.begin_network_media_options_apply_attempt(
-                        self.active_media_generation,
-                        path,
+                if application_state == MpvNetworkMediaPolicyApplicationState::Applied {
+                    self.record_network_media_options_policy_applied(
+                        MpvNetworkMediaPolicyState::NetworkMediaUpdated,
+                        Some(result.load_sequence),
                     );
-                }
-                self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::Failed(
-                    NetworkOptionsApplyDiagnostic::player_error(
+                    self.queue_network_media_policy_outcome(
+                        MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
+                    );
+                } else {
+                    let error = self.network_media_option_application_error(
                         result.load_sequence,
                         result.source_kind,
                         result.stream_target_kind,
-                    ),
-                ));
+                        application_state,
+                    );
+                    self.queue_network_media_policy_outcome(MpvNetworkMediaPolicyOutcome::Failed(
+                        error,
+                    ));
+                }
             }
         }
     }
@@ -5542,6 +6239,7 @@ impl MpvAdapter {
         self.network_media_options_hook_configured_generation =
             Some(self.network_media_options_generation);
         self.network_media_options_hook_last_heartbeat_at = Some(Instant::now());
+        self.network_media_options_hook_latest_started_load_sequence = Some(0);
     }
 
     #[cfg(test)]
@@ -5566,6 +6264,47 @@ impl MpvAdapter {
         });
         if let Some(error) = error {
             payload["error"] = Value::String(error.to_owned());
+        }
+        self.handle_network_options_hook_transition_result(Some(&payload.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn defer_test_network_options_hook_verified_transition(
+        &mut self,
+        load_sequence: u64,
+        source_path: &str,
+        status: &str,
+        option_results: &[(&str, &str)],
+        effective_options: &[(&str, &str)],
+    ) {
+        let (wire_status, application_state) = match status {
+            "network-updated" => ("network-updated", Some("applied")),
+            "partially-applied" => ("failed", Some("partially-applied")),
+            "failed" => ("failed", Some("failed")),
+            other => (other, None),
+        };
+        let mut payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": self.legacy_syncplayintf_owner_id,
+            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "configurationGeneration": self.network_media_options_generation,
+            "hookInstanceId": "test-hook-instance",
+            "loadSequence": load_sequence,
+            "sourcePath": source_path,
+            "streamOpenFilename": source_path,
+            "status": wire_status,
+            "verification": "complete",
+            "optionResults": option_results
+                .iter()
+                .map(|(name, status)| json!({ "name": name, "status": status }))
+                .collect::<Vec<_>>(),
+            "effectiveOptions": effective_options
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), Value::String((*value).to_owned())))
+                .collect::<serde_json::Map<_, _>>(),
+        });
+        if let Some(application_state) = application_state {
+            payload["applicationState"] = Value::String(application_state.to_owned());
         }
         self.handle_network_options_hook_transition_result(Some(&payload.to_string()));
     }
@@ -6085,5 +6824,112 @@ mod timeline_kind_tests {
         assert_eq!(cleared.seekable_ranges, Some(Vec::new()));
         assert_eq!(cleared.known_live_seekable_window, None);
         assert_eq!(adapter.latest_cached_seekable_window, None);
+    }
+
+    #[test]
+    fn newer_cache_state_snapshot_clears_metrics_that_mpv_omits() {
+        let mut adapter = loaded_adapter("https://media.invalid/first.m3u8", Some(120.0));
+        adapter.cache_state_telemetry_update(&json!({
+            "cache-duration": 30.0,
+            "fw-bytes": 157_286_400,
+            "raw-input-rate": 4_000_000,
+            "reader-pts": 42.0,
+            "cache-end": 72.0,
+            "eof": false,
+            "underrun": true,
+        }));
+        adapter.cache_state_telemetry_update(&json!({}));
+        let cleared = adapter
+            .pending_cache_telemetry_updates
+            .pop_back()
+            .expect("the newer cache-state observation should be queued");
+
+        assert!(cleared.media_generation.is_some());
+        assert!(cleared.observed_at.is_some());
+        assert_eq!(cleared.buffered_ahead_seconds, None);
+        assert_eq!(cleared.buffered_ahead_bytes, None);
+        assert_eq!(cleared.input_rate_bytes_per_second, None);
+        assert_eq!(cleared.reader_position_seconds, None);
+        assert_eq!(cleared.cache_end_seconds, None);
+        assert_eq!(cleared.eof, None);
+        assert_eq!(cleared.underrun, None);
+    }
+
+    #[test]
+    fn authoritative_seek_event_emits_an_explicit_same_generation_cache_clear() {
+        let mut adapter = loaded_adapter("https://media.invalid/first.m3u8", Some(120.0));
+        let generation = adapter.active_media_generation;
+        adapter.cache_state_telemetry_update(&json!({
+            "cache-duration": 30.0,
+            "fw-bytes": 157_286_400,
+            "raw-input-rate": 4_000_000,
+            "reader-pts": 42.0,
+            "cache-end": 72.0,
+            "eof": false,
+            "underrun": true,
+        }));
+        adapter.pending_cache_telemetry_updates.clear();
+        adapter.pending_transport_telemetry_updates.clear();
+
+        adapter.handle_seek_event();
+
+        let cleared = adapter
+            .pending_cache_telemetry_updates
+            .pop_front()
+            .expect("the production seek handler should queue a cache clear");
+        assert_eq!(cleared.media_generation, generation);
+        assert!(cleared.observed_at.is_some());
+        assert_eq!(cleared.buffered_ahead_seconds, None);
+        assert_eq!(cleared.buffered_ahead_bytes, None);
+        assert_eq!(cleared.input_rate_bytes_per_second, None);
+        assert_eq!(cleared.reader_position_seconds, None);
+        assert_eq!(cleared.cache_end_seconds, None);
+        assert_eq!(cleared.eof, None);
+        assert_eq!(cleared.underrun, None);
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .any(|update| {
+                    update.media_generation == generation
+                        && update.phase == Some(PlayerTransportPhase::Seeking)
+                        && update.seeking == Some(true)
+                })
+        );
+    }
+
+    #[test]
+    fn new_media_generation_clears_all_cache_cap_diagnostics() {
+        let mut adapter = loaded_adapter("https://media.invalid/first.m3u8", Some(120.0));
+        let first_generation = adapter.active_media_generation;
+        adapter.cache_state_telemetry_update(&json!({
+            "cache-duration": 30.0,
+            "fw-bytes": 157_286_400,
+            "raw-input-rate": 4_000_000,
+            "reader-pts": 42.0,
+            "cache-end": 72.0,
+            "eof": false,
+            "underrun": true,
+        }));
+        adapter.observed_state.demuxer_cache_idle = Some(true);
+        adapter.observed_state.paused_for_cache = Some(false);
+        let populated = adapter.network_media_diagnostic_snapshot();
+        assert_eq!(populated.forward_bytes, Some(157_286_400));
+        assert_eq!(populated.cache_underrun, Some(true));
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 99 }));
+
+        let reset = adapter.network_media_diagnostic_snapshot();
+        assert_ne!(reset.media_generation, first_generation);
+        assert_eq!(reset.cache_duration_seconds, None);
+        assert_eq!(reset.forward_bytes, None);
+        assert_eq!(reset.raw_input_rate_bytes_per_second, None);
+        assert_eq!(reset.reader_position_seconds, None);
+        assert_eq!(reset.cache_end_seconds, None);
+        assert_eq!(reset.cache_eof, None);
+        assert_eq!(reset.cache_underrun, None);
+        assert_eq!(reset.demuxer_cache_idle, None);
+        assert_eq!(reset.paused_for_cache, None);
+        assert_eq!(reset.observed_at, None);
     }
 }

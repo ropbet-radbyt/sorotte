@@ -351,7 +351,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
     );
     let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
 
-    assert_eq!(opened, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(opened, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
         player_state
             .lock()

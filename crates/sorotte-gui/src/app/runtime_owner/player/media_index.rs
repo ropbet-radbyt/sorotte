@@ -4,8 +4,9 @@ const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
 
-type CachedMissingMediaMatchRank = (usize, usize, usize, usize, String);
-type CachedMissingMediaMatch = (CachedMissingMediaMatchRank, String);
+type CachedMissingMediaCredibilityRank = (usize, usize, usize);
+type CachedMissingMediaDeterministicRank = (CachedMissingMediaCredibilityRank, String);
+type CachedMissingMediaMatch = (CachedMissingMediaDeterministicRank, String);
 
 impl GuiPersistedConfigRuntimeOwner {
     fn push_unique_existing_media_search_root(
@@ -206,12 +207,24 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn attached_media_search_refresh_pending(&self) -> bool {
+    pub(in crate::app::runtime_owner) fn attached_media_search_in_flight(&self) -> bool {
         self.pending_attached_media_resolution.is_some()
-            || self
-                .attached_media_search_index
-                .as_ref()
-                .is_some_and(|index| !index.roots_requiring_refresh.is_empty())
+    }
+
+    pub(in crate::app::runtime_owner) fn attached_media_search_refresh_required(&self) -> bool {
+        self.attached_media_search_index
+            .as_ref()
+            .is_some_and(|index| !index.roots_requiring_refresh.is_empty())
+    }
+
+    pub(in crate::app::runtime_owner) fn attached_media_search_retry_scheduled(&self) -> bool {
+        self.attached_media_search_next_retry_at.is_some()
+    }
+
+    pub(super) fn attached_media_search_refresh_pending(&self) -> bool {
+        self.attached_media_search_in_flight()
+            || self.attached_media_search_refresh_required()
+            || self.attached_media_search_retry_scheduled()
     }
 
     pub(in crate::app::runtime_owner) fn cancel_pending_attached_media_search_index_build_impl(
@@ -414,7 +427,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         index: &GuiAttachedMediaSearchIndex,
         target: &str,
-    ) -> Option<String> {
+    ) -> Option<GuiUserMediaTargetResolution> {
         let target_key =
             GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(target)?;
         let target_relative_key = Self::cached_missing_media_relative_target_key(target);
@@ -425,8 +438,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(PathBuf::from)
             .and_then(|path| path.parent().map(Path::to_path_buf));
         let mut best_match: Option<CachedMissingMediaMatch> = None;
+        let mut best_credibility_match_count = 0_usize;
 
-        for (root_order, root_key) in index.roots.iter().enumerate() {
+        for root_key in &index.roots {
             let Some(root_index) = index.root_indexes_by_key.get(root_key) else {
                 continue;
             };
@@ -460,26 +474,48 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else {
                     relative_path.replace('\\', "/")
                 };
-                let rank = (
-                    relative_path_rank,
-                    locality_rank,
-                    root_order,
-                    depth,
-                    lexical,
-                );
+                let credibility_rank = (relative_path_rank, locality_rank, depth);
+                let rank = (credibility_rank, lexical);
                 let candidate_path = Self::display_path_for_existing_media_file(&candidate_path)
                     .to_string_lossy()
                     .into_owned();
-                if best_match
-                    .as_ref()
-                    .is_none_or(|(best_rank, _)| rank < *best_rank)
-                {
-                    best_match = Some((rank, candidate_path));
+                match best_match.as_ref() {
+                    None => {
+                        best_credibility_match_count = 1;
+                        best_match = Some((rank, candidate_path));
+                    }
+                    Some(((best_credibility_rank, _), _))
+                        if credibility_rank < *best_credibility_rank =>
+                    {
+                        best_credibility_match_count = 1;
+                        best_match = Some((rank, candidate_path));
+                    }
+                    Some(((best_credibility_rank, _), _))
+                        if credibility_rank == *best_credibility_rank =>
+                    {
+                        best_credibility_match_count += 1;
+                        if best_match
+                            .as_ref()
+                            .is_some_and(|(best_rank, _)| rank < *best_rank)
+                        {
+                            best_match = Some((rank, candidate_path));
+                        }
+                    }
+                    Some(_) => {}
                 }
             }
         }
 
-        best_match.map(|(_, path)| path)
+        match (best_match, best_credibility_match_count) {
+            (Some(_), count) if count > 1 => Some(GuiUserMediaTargetResolution::Ambiguous {
+                candidate_count: count,
+            }),
+            (Some((_, path)), _) => Some(GuiUserMediaTargetResolution::Resolved {
+                path,
+                source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+            }),
+            (None, _) => None,
+        }
     }
 
     fn media_index_progress_root_label(path: &Path) -> String {

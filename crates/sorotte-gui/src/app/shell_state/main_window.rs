@@ -64,6 +64,7 @@ pub(in crate::app) enum GuiPlaylistSourceStatus {
     Available,
     Active,
     Resolving,
+    Loading,
     Pending,
     Disabled,
     Missing,
@@ -76,6 +77,7 @@ impl GuiPlaylistSourceStatus {
             Self::Available => "available",
             Self::Active => "active",
             Self::Resolving => "resolving",
+            Self::Loading => "loading",
             Self::Pending => "pending",
             Self::Disabled => "disabled",
             Self::Missing => "missing",
@@ -150,6 +152,13 @@ impl std::fmt::Debug for GuiPlaylistResolutionStep {
 #[derive(Clone)]
 pub(in crate::app) struct GuiPlaylistSourceState {
     pub(in crate::app) entry_id: GuiPlaylistEntryId,
+    /// The provider selected by an explicit row/default policy. Automatic rows
+    /// intentionally have no preferred provider.
+    pub(in crate::app) preferred_provider_id: Option<GuiMediaSourceProviderId>,
+    /// The provider that produced the current resolution/load attempt.
+    pub(in crate::app) resolved_provider_id: Option<GuiMediaSourceProviderId>,
+    /// Compatibility/presentation alias for the provider currently shown in
+    /// the row. Resolution updates this without changing `policy`.
     pub(in crate::app) current_provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) current_label: String,
     pub(in crate::app) policy: GuiPlaylistSourcePolicy,
@@ -162,7 +171,9 @@ pub(in crate::app) struct GuiPlaylistSourceState {
 
 impl PartialEq for GuiPlaylistSourceState {
     fn eq(&self, other: &Self) -> bool {
-        self.current_provider_id == other.current_provider_id
+        self.preferred_provider_id == other.preferred_provider_id
+            && self.resolved_provider_id == other.resolved_provider_id
+            && self.current_provider_id == other.current_provider_id
             && self.current_label == other.current_label
             && self.policy == other.policy
             && self.selection_origin == other.selection_origin
@@ -225,6 +236,8 @@ impl std::fmt::Debug for GuiPlaylistSourceState {
         formatter
             .debug_struct("GuiPlaylistSourceState")
             .field("entry_id", &self.entry_id)
+            .field("preferred_provider_id", &self.preferred_provider_id)
+            .field("resolved_provider_id", &self.resolved_provider_id)
             .field("current_provider_id", &self.current_provider_id)
             .field("current_label", &self.current_label)
             .field("policy", &self.policy)
@@ -302,6 +315,9 @@ impl GuiPlaylistSourceState {
         let current_label = playlist_source_provider_label(&provider_id).to_owned();
         Self {
             entry_id: GuiPlaylistEntryId::next(),
+            preferred_provider_id: (!matches!(policy, GuiPlaylistSourcePolicy::Automatic))
+                .then_some(provider_id.clone()),
+            resolved_provider_id: None,
             current_provider_id: provider_id.clone(),
             current_label,
             policy,
@@ -310,6 +326,29 @@ impl GuiPlaylistSourceState {
             detail: Some("Waiting for playlist activation.".to_owned()),
             options: default_playlist_source_options(&provider_id),
             resolution_steps: Vec::new(),
+        }
+    }
+
+    pub(in crate::app) fn preferred_provider_id(&self) -> Option<&GuiMediaSourceProviderId> {
+        self.preferred_provider_id.as_ref()
+    }
+
+    pub(in crate::app) fn set_resolved_provider(&mut self, provider_id: GuiMediaSourceProviderId) {
+        self.resolved_provider_id = Some(provider_id.clone());
+        self.current_provider_id = provider_id.clone();
+        self.current_label = playlist_source_provider_label(&provider_id).to_owned();
+        for option in &mut self.options {
+            option.selected = option.provider_id == provider_id;
+        }
+    }
+
+    pub(in crate::app) fn clear_resolved_provider(&mut self) {
+        self.resolved_provider_id = None;
+        if self.policy == GuiPlaylistSourcePolicy::Automatic {
+            self.current_label = "Automatic".to_owned();
+            for option in &mut self.options {
+                option.selected = false;
+            }
         }
     }
 }

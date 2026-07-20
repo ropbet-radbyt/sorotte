@@ -926,7 +926,7 @@ impl GuiWidgetEguiRenderer {
             })
             .unwrap_or("available");
         let (fill, stroke_color, text_color) = match status {
-            "resolving" | "pending" => (
+            "resolving" | "loading" | "pending" => (
                 palette.warning_bg,
                 palette.warning_text.gamma_multiply(0.75),
                 palette.warning_text,

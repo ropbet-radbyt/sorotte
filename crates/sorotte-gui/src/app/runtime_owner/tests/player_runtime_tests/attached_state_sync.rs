@@ -155,6 +155,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
         playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
+        playlist_resolution_attempt: None,
+        plex_miss_state: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -512,7 +514,7 @@ fn gui_persisted_config_runtime_owner_opens_plex_stream_as_logical_playlist_uri(
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
-    let message = owner
+    let started = owner
         .open_plex_stream_target_through_attached_player_result_impl(
             &logical_uri,
             stream_target,
@@ -521,10 +523,13 @@ fn gui_persisted_config_runtime_owner_opens_plex_stream_as_logical_playlist_uri(
         .expect("Plex stream open should have a player")
         .expect("Plex stream open should succeed");
 
-    assert!(message.contains("Episode 1.mkv"));
-    assert!(!message.contains("secret-token"));
+    assert!(started.feedback_message.contains("Episode 1.mkv"));
+    assert!(!started.feedback_message.contains("secret-token"));
     assert_eq!(owner.player_local_file, Some(logical_file));
-    assert!(!owner.player_local_file_placeholder);
+    assert!(
+        owner.player_local_file_placeholder,
+        "Plex command acceptance must keep the logical identity private until correlated completion"
+    );
     assert!(owner.pending_logical_media_override.is_some());
     assert_eq!(owner.pending_stream_retry_target, None);
 }
@@ -637,7 +642,8 @@ fn gui_persisted_config_runtime_owner_sets_player_media_titles_for_plex_and_loca
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_player_metadata() {
+fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_player_completion()
+{
     #[derive(Debug, Default)]
     struct DeferredMetadataPlayerState {
         opened_paths: Vec<String>,
@@ -745,20 +751,20 @@ fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_
     );
     assert_eq!(owner.player_local_file, Some(logical_file.clone()));
     assert!(
-        !owner.player_local_file_placeholder,
-        "Plex logical file metadata is complete before mpv finishes loading the secret stream URL"
+        owner.player_local_file_placeholder,
+        "Plex logical metadata must remain an optimistic placeholder until player completion"
     );
     assert_eq!(owner.player_paused_for_cache, None);
     assert_eq!(owner.player_cache_buffering_percent, None);
     assert!(owner.pending_attached_room_unpause_observation.is_none());
     assert!(
-        owner.current_player_matches_media_target(sparse_logical_uri),
-        "Plex stream identity should match by machine/rating key even when the opened logical URI has richer query metadata"
+        !owner.current_player_matches_media_target(sparse_logical_uri),
+        "an unconfirmed Plex command must not be mistaken for the active player generation"
     );
 
     owner
         .sync_detached_session_preferences_and_player_state(&state)
-        .expect("detached session sync should publish the Plex logical file");
+        .expect("detached session sync should withhold the optimistic Plex logical file");
     let outbound_lines = owner
         .session
         .as_mut()
@@ -768,9 +774,10 @@ fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_
     assert!(
         outbound_lines
             .iter()
-            .any(|line| line.contains(r#""file""#) && line.contains("Episode 1.mkv")),
-        "Plex logical file should publish immediately without waiting for player metadata; outbound_lines={outbound_lines:?}"
+            .all(|line| !line.contains(r#""file""#) && !line.contains("Episode 1.mkv")),
+        "Plex logical file must not publish before correlated completion; outbound_lines={outbound_lines:?}"
     );
+    assert!(owner.last_published_local_file.is_none());
     assert!(
         outbound_lines
             .iter()
@@ -780,7 +787,7 @@ fn gui_persisted_config_runtime_owner_publishes_plex_stream_logical_file_before_
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_keeps_plex_stream_logical_identity_across_url_telemetry() {
+fn gui_persisted_config_runtime_owner_consumes_plex_override_and_accepts_external_url_change() {
     #[derive(Debug, Default)]
     struct PlexStreamTelemetryState {
         local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
@@ -891,7 +898,16 @@ fn gui_persisted_config_runtime_owner_keeps_plex_stream_logical_identity_across_
         .expect("Plex stream open should succeed");
     assert_eq!(owner.player_local_file, Some(logical_file.clone()));
     assert_eq!(owner.player_position_seconds, Some(0.0));
-    assert!(owner.pending_logical_media_override.is_some());
+    assert!(
+        owner.pending_logical_media_override.is_some(),
+        "command acceptance alone must retain the scoped logical override"
+    );
+    owner.refresh_player_state_impl();
+    assert_eq!(owner.player_local_file, Some(logical_file.clone()));
+    assert!(
+        owner.pending_logical_media_override.is_none(),
+        "the matching observed file must consume its completed logical override"
+    );
 
     owner.player_position_seconds = Some(42.0);
     player_state
@@ -903,14 +919,17 @@ fn gui_persisted_config_runtime_owner_keeps_plex_stream_logical_identity_across_
         );
     owner.refresh_player_state_impl();
 
-    assert_eq!(owner.player_local_file, Some(logical_file));
+    assert_eq!(
+        owner.player_local_file,
+        Some(sorotte_player_api::LocalFileUpdate::new(redirected_url).with_path(redirected_url))
+    );
     assert!(!owner.player_local_file_placeholder);
     assert_eq!(
         owner.player_position_seconds,
-        Some(42.0),
-        "repeated Plex URL telemetry for the active stream should not reset playback"
+        Some(0.0),
+        "an external URL media change starts a new player generation"
     );
-    assert!(owner.pending_logical_media_override.is_some());
+    assert!(owner.pending_logical_media_override.is_none());
 }
 
 #[test]

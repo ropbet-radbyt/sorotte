@@ -80,6 +80,9 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         target: &str,
     ) -> bool {
+        if self.player_local_file_placeholder {
+            return false;
+        }
         let Some(local_file) = self.player_local_file.as_ref() else {
             return false;
         };
@@ -137,6 +140,23 @@ impl GuiPersistedConfigRuntimeOwner {
                 local_file.name == target_name
             }
         })
+    }
+
+    pub(in crate::app::runtime_owner) fn current_player_is_loading_media_target(
+        &self,
+        target: &str,
+    ) -> bool {
+        self.player_local_file_placeholder
+            && self
+                .playlist_resolution_attempt
+                .as_ref()
+                .is_some_and(|attempt| {
+                    attempt.state == PlaylistResolutionAttemptState::Loading
+                        && attempt
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.matches_loaded_target(target))
+                })
     }
 
     fn plex_playlist_target_identity_matches(left: &str, right: &str) -> bool {

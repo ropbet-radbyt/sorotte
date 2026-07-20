@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::{GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceStatus};
 
 #[test]
 fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_seek() {
@@ -123,6 +124,8 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         last_published_media_match_signature: None,
         local_shared_playlist_media_match_signature_path: None,
         playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
+        playlist_resolution_attempt: None,
+        plex_miss_state: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
@@ -223,7 +226,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     assert_eq!(playlist_snapshots.len(), 2);
     let opened_entry_ids = playlist_snapshots[0].playlist_entry_ids.clone();
     assert_eq!(opened_entry_ids.len(), 2);
-    for snapshot in playlist_snapshots {
+    for snapshot in &playlist_snapshots {
         assert_eq!(snapshot.playlist_entry_ids, opened_entry_ids);
         assert_eq!(
             snapshot.playlist_source_states.len(),
@@ -238,9 +241,29 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             "runtime snapshots should keep source states aligned with stable playlist row IDs",
         );
     }
+    let mut expected_available_source_states = expected_playlist_source_states_for_entries(
+        &state,
+        &["episode1.mkv", "episode2.mkv"],
+        Some("Added from the local filesystem."),
+    );
+    for source_state in &mut expected_available_source_states {
+        source_state.set_resolved_provider(GuiMediaSourceProviderId::local());
+    }
+    let mut expected_confirmed_source_states = expected_available_source_states.clone();
+    let confirmed_detail = "The attached player confirmed the Local load.".to_owned();
+    expected_confirmed_source_states[0].status = GuiPlaylistSourceStatus::Active;
+    expected_confirmed_source_states[0].detail = Some(confirmed_detail.clone());
+    expected_confirmed_source_states[0].resolution_steps = vec![GuiPlaylistResolutionStep {
+        provider_id: GuiMediaSourceProviderId::local(),
+        label: "Local".to_owned(),
+        status: GuiPlaylistSourceStatus::Active,
+        detail: Some(confirmed_detail),
+    }];
     assert_eq!(
-        open_actions,
-        vec![
+        playlist_snapshots[1].playlist_source_states, expected_confirmed_source_states,
+        "the post-telemetry playlist snapshot should expose the confirmed provider state",
+    );
+    let expected_open_actions = vec![
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "(no room joined)".to_owned(),
                 room_control_status: "Unavailable: no active server session.".to_owned(),
@@ -255,11 +278,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
                 playlist_entry_ids: opened_entry_ids.clone(),
-                playlist_source_states: expected_playlist_source_states_for_entries(
-                    &state,
-                    &["episode1.mkv", "episode2.mkv"],
-                    Some("Added from the local filesystem."),
-                ),
+                playlist_source_states: expected_available_source_states,
                 active_playlist_index: Some(0),
                 chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: false,
@@ -306,11 +325,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
                 playlist_entry_ids: opened_entry_ids,
-                playlist_source_states: expected_playlist_source_states_for_entries(
-                    &state,
-                    &["episode1.mkv", "episode2.mkv"],
-                    Some("Added from the local filesystem."),
-                ),
+                playlist_source_states: expected_confirmed_source_states,
                 active_playlist_index: Some(0),
                 chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: true,
@@ -390,8 +405,23 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 },
                 pending_operation: None,
             }),
-        ]
-    );
+        ];
+    for (index, (actual, expected)) in open_actions.iter().zip(&expected_open_actions).enumerate() {
+        if actual != expected {
+            match (actual, expected) {
+                (
+                    GuiShellAction::ApplyMainWindowRuntimeSnapshot(actual),
+                    GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected),
+                ) => panic!(
+                    "open action {index} snapshot mismatch:\nactual: {actual:#?}\nexpected: {expected:#?}"
+                ),
+                _ => panic!(
+                    "open action {index} mismatch:\nactual: {actual:#?}\nexpected: {expected:#?}"
+                ),
+            }
+        }
+    }
+    assert_eq!(open_actions, expected_open_actions);
     for action in open_actions {
         assert!(state.apply(action));
     }

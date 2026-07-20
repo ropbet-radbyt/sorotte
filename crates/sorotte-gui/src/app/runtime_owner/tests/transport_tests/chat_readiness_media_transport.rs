@@ -482,6 +482,7 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
     let (outbound_lines_tx, outbound_lines_rx) = mpsc::channel();
+    let (release_server_tx, release_server_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -536,9 +537,23 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
                 break;
             }
         }
+        stream
+            .write_all(br#"{"Set":{"ready":{"isReady":false,"username":"alice"}}}"#)
+            .expect("test session transport server should echo the inbound not-ready state");
+        stream
+            .write_all(b"\n")
+            .expect("test session transport server should terminate the inbound not-ready line");
+        stream
+            .flush()
+            .expect("test session transport server should flush the inbound not-ready line");
         outbound_lines_tx
             .send(outbound_lines)
             .expect("test session transport server should report outbound media-open lines");
+        release_server_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect(
+                "test session transport server should stay connected until the not-ready state is projected",
+            );
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -609,7 +624,7 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        Duration::from_secs(3),
         |state| {
             state
                 .main_window
@@ -619,6 +634,10 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         },
         "local open-media not-ready projection over TCP transport",
     );
+
+    release_server_tx
+        .send(())
+        .expect("test session transport server should be releasable after not-ready is projected");
 
     server_thread
         .join()
