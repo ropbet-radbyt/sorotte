@@ -31,6 +31,31 @@ use transport_contract::verify_transport_reconnect_contract;
 mod shared_helpers;
 use shared_helpers::*;
 
+pub(super) fn start_visual_mock_session_server(
+    initial_lines: &'static [&'static str],
+) -> Result<MockSessionServer, String> {
+    start_mock_session_server_with_hold_timeout(initial_lines, &[], &[], Duration::from_secs(60))
+}
+
+pub(super) fn visual_mock_session_server_port(server: &MockSessionServer) -> u16 {
+    server.port
+}
+
+pub(super) fn recv_visual_mock_session_hello(
+    server: &MockSessionServer,
+    timeout: Duration,
+    label: &str,
+) -> Result<String, String> {
+    server.recv_hello(timeout, label)
+}
+
+pub(super) fn release_visual_mock_session_server(
+    server: MockSessionServer,
+    label: &str,
+) -> Result<(), String> {
+    server.release(label)
+}
+
 pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, String> {
     let configured_binary_path = options
         .binary_path

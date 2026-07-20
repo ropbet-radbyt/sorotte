@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::render_io::GuiDroppedFilesRequest;
-use super::shell_state::{GuiShellAction, GuiShellModal, SorotteGuiShellAppState};
+use super::shell_state::{GuiShellAction, GuiShellModal, MenuActionId, SorotteGuiShellAppState};
 use super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 
 mod chat;
@@ -13,6 +13,7 @@ mod playback_controls;
 mod playlist;
 mod plugins;
 mod room_browser;
+mod shortcuts;
 #[cfg(test)]
 mod tests;
 mod tree_renderer;
@@ -292,6 +293,8 @@ impl GuiWidgetEguiRenderer {
         show_manual_pending_controls: bool,
     ) -> Vec<GuiShellAction> {
         Self::apply_global_style(ctx);
+        self.actions
+            .extend(Self::consume_menu_shortcuts(ctx, state));
         let hovered_files_active = ctx.input(|input| !input.raw.hovered_files.is_empty());
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         let external_file_drag_active = hovered_files_active || !dropped_files.is_empty();
@@ -353,7 +356,7 @@ impl GuiWidgetEguiRenderer {
         }
         let mut open = true;
         let mut close_clicked = false;
-        egui::Window::new(Self::modal_window_title(modal))
+        egui::Window::new(Self::modal_window_title_for_state(modal, state))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -368,14 +371,15 @@ impl GuiWidgetEguiRenderer {
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    for (id, label) in Self::modal_actions(modal) {
-                        if ui
-                            .add_enabled(
-                                Self::modal_action_enabled(state, id),
-                                egui::Button::new(label),
-                            )
-                            .clicked()
-                        {
+                    for (id, label) in Self::modal_actions_for_state(modal, state) {
+                        let response = ui.add_enabled(
+                            Self::modal_action_enabled(state, id),
+                            egui::Button::new(label),
+                        );
+                        let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+                            builder.set_author_id(id.to_owned());
+                        });
+                        if response.clicked() {
                             self.actions
                                 .extend(Self::modal_button_actions(state, id, label));
                         }
@@ -383,7 +387,11 @@ impl GuiWidgetEguiRenderer {
                 });
                 if Self::modal_close_enabled(state, modal) {
                     ui.separator();
-                    if ui.button("Close").clicked() {
+                    let response = ui.button("Close");
+                    let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+                        builder.set_author_id("shell:modal:close".to_owned());
+                    });
+                    if response.clicked() {
                         close_clicked = true;
                     }
                 }
@@ -639,6 +647,7 @@ impl GuiWidgetEguiRenderer {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
         });
+        Self::register_automation_id(ui, &response, node);
 
         let visuals = ui.style().interact(&response);
         let selection = &ui.visuals().selection;

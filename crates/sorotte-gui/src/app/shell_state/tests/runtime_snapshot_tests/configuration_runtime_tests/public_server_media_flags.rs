@@ -29,8 +29,7 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
         }
     )));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "syncplay.example".to_owned().into(),
     }));
 
@@ -150,8 +149,7 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_acr
         }
     )));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "syncplay.example".to_owned().into(),
     }));
 

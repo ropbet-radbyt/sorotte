@@ -83,11 +83,12 @@ impl GuiPersistedConfigRuntimeOwner {
         let _ = player.set_option_string(MPV_FORCE_MEDIA_TITLE_OPTION, &title);
     }
 
-    fn room_stream_target_kind(
+    pub(in crate::app::runtime_owner) fn room_stream_target_kind(
+        &self,
         state: &SorotteGuiShellAppState,
         target: &str,
     ) -> GuiStreamTargetKind {
-        let settings = state.configuration.to_stored_settings();
+        let settings = self.runtime_operation_settings(state);
         let playback = ClientConfig::resolve(&settings).config.playback;
         browser_stream_target_kind(
             target,
@@ -213,7 +214,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SorotteGuiShellAppState,
         target: &str,
     ) -> bool {
-        match Self::room_stream_target_kind(state, target) {
+        match self.room_stream_target_kind(state, target) {
             GuiStreamTargetKind::UntrustedUrl => {
                 self.refresh_stream_helper_runtime_snapshot_for_target(None);
                 self.queue_stream_warning(format!(

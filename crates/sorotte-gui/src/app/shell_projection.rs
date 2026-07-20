@@ -6,8 +6,7 @@ mod menu_dialog;
 mod public_servers;
 
 use sorotte_client_app::app_boundary::state::{
-    ClientConfig, StoredClientSettingsMvp,
-    stored_client_settings_runtime_snapshot_legacy_compatible,
+    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
 };
 
 use super::shell_state::{
@@ -20,7 +19,7 @@ use super::shell_state::{
     GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState, MainWindowChatRow,
     MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowShellState,
     MainWindowUserRow, MediaSearchDirectoryRow, MediaSearchWorkflowRuntimeFlags,
-    MediaSearchWorkflowShellState, MenuActionShellItem, MenuDialogShellState,
+    MediaSearchWorkflowShellState, MenuActionId, MenuActionShellItem, MenuDialogShellState,
     MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
     PublicServerBrowserShellState, SorotteGuiShellAppState,
 };

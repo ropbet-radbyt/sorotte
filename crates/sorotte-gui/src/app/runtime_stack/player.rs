@@ -1,9 +1,7 @@
 use std::{collections::VecDeque, path::Path};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
-use sorotte_client_app::app_boundary::state::{
-    EffectiveMpvStreamingOption, StreamingPlaybackConfig,
-};
+use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
     PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
@@ -144,6 +142,24 @@ impl PlayerAdapter for GuiOwnedPlayer {
         self.name()
     }
 
+    fn maintain_runtime_leases_nonblocking(&mut self) {
+        match self {
+            Self::Test(player) => player.maintain_runtime_leases_nonblocking(),
+            Self::Mpv(player) => player.maintain_runtime_leases_nonblocking(),
+            #[cfg(test)]
+            Self::Custom(player) => player.maintain_runtime_leases_nonblocking(),
+        }
+    }
+
+    fn maintain_runtime_integrations(&mut self) {
+        match self {
+            Self::Test(player) => player.maintain_runtime_integrations(),
+            Self::Mpv(player) => player.maintain_runtime_integrations(),
+            #[cfg(test)]
+            Self::Custom(player) => player.maintain_runtime_integrations(),
+        }
+    }
+
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
         match self {
             Self::Test(player) => player.open_file(path),
@@ -276,7 +292,6 @@ pub(in super::super) enum GuiPlayerLaunchRuntimeState {
     ExplicitMpvIpc {
         ipc_path: String,
         ui_settings: Box<LegacySyncplayUiSettings>,
-        streaming: Box<StreamingPlaybackConfig>,
         effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     },
     ManagedMpv(Box<ManagedMpvLaunchConfig>),
@@ -302,25 +317,6 @@ impl GuiPlayerLaunchRuntimeState {
             self,
             Self::TestPlayer | Self::ExplicitMpvIpc { .. } | Self::ManagedMpv(_)
         )
-    }
-
-    pub(in super::super) fn can_apply_mpv_ui_settings_in_place(&self, next: &Self) -> bool {
-        match (self, next) {
-            (
-                Self::ExplicitMpvIpc {
-                    ipc_path: current_path,
-                    ..
-                },
-                Self::ExplicitMpvIpc {
-                    ipc_path: next_path,
-                    ..
-                },
-            ) => current_path == next_path,
-            (Self::ManagedMpv(current), Self::ManagedMpv(next)) => {
-                current.matches_process_target(next)
-            }
-            _ => false,
-        }
     }
 
     pub(in super::super) fn mpv_ui_settings(&self) -> Option<&LegacySyncplayUiSettings> {

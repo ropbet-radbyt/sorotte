@@ -48,10 +48,66 @@ use super::{
 #[cfg(test)]
 use super::{
     LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION, LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE,
-    LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO, LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_ONE,
-    LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_TWO, LivePythonPeerDetachedConnectInteropResult,
+    LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO, LivePythonPeerDetachedConnectInteropResult,
     LivePythonPeerSharedPlaylistOpenInteropResult,
 };
+
+#[cfg(test)]
+struct LivePythonSharedPlaylistMediaFixture {
+    root: std::path::PathBuf,
+    paths: [String; 2],
+}
+
+#[cfg(test)]
+impl LivePythonSharedPlaylistMediaFixture {
+    fn create() -> Result<Self, LivePythonPeerInteropError> {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| {
+                LivePythonPeerInteropError::Gui(format!(
+                    "could not derive a unique live-Python media fixture path: {error}"
+                ))
+            })?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-live-python-shared-playlist-{}-{unique_suffix}",
+            std::process::id()
+        ));
+        let first = root.join(LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE);
+        let second = root.join(LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO);
+        let fixture = Self {
+            root,
+            paths: [
+                first.to_string_lossy().into_owned(),
+                second.to_string_lossy().into_owned(),
+            ],
+        };
+        std::fs::create_dir_all(&fixture.root).map_err(|error| {
+            LivePythonPeerInteropError::Gui(format!(
+                "could not create the live-Python media fixture directory: {error}"
+            ))
+        })?;
+        for path in &fixture.paths {
+            std::fs::write(path, b"live Python shared-playlist fixture").map_err(|error| {
+                LivePythonPeerInteropError::Gui(format!(
+                    "could not create live-Python media fixture {path:?}: {error}"
+                ))
+            })?;
+        }
+        Ok(fixture)
+    }
+
+    fn path_refs(&self) -> [&str; 2] {
+        [&self.paths[0], &self.paths[1]]
+    }
+}
+
+#[cfg(test)]
+impl Drop for LivePythonSharedPlaylistMediaFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
 
 pub(super) fn run_live_python_peer_connect_flow_with_harness(
     harness: &mut LegacyServerPythonPeerHarness,
@@ -406,7 +462,8 @@ pub(super) fn run_live_python_peer_detached_public_server_connect_flow_with_harn
         ));
     }
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged public-server connect should capture its submitted request"),
     ));
     pump_and_apply(&mut owner, &handle, &mut state);
     wait_for_projected_room_projection(
@@ -535,13 +592,8 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
         LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE.to_owned(),
         LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO.to_owned(),
     ];
-    request_local_shared_playlist_open(
-        &handle,
-        &[
-            LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_ONE,
-            LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_TWO,
-        ],
-    );
+    let media_fixture = LivePythonSharedPlaylistMediaFixture::create()?;
+    request_local_shared_playlist_open(&handle, &media_fixture.path_refs());
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &expected_playlist, Some(0))?;
     wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
     wait_for_peer_observed_playlist(harness, &expected_playlist, Duration::from_secs(3))?;

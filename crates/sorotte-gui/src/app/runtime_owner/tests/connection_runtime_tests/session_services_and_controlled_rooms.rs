@@ -102,24 +102,9 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     )));
     assert!(startup_actions.iter().any(|action| matches!(
         action,
-        GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-            action_overrides,
-            tls_prompt_expected,
-            update_notice_expected,
-            about_dialog_available,
-        }) if *tls_prompt_expected == state.menus.tls_prompt_expected
-            && *update_notice_expected == state.menus.update_notice_expected
-            && *about_dialog_available == state.menus.about_dialog_available
-            && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Window"
-                    && override_action.action_label == "Show Chat"
-                    && !override_action.enabled)
-    )));
-    assert!(startup_actions.iter().any(|action| matches!(
-        action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -138,20 +123,6 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         assert!(state.apply(action));
     }
     assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Chat")
-            })
-            .is_some_and(|action| !action.enabled)
-    );
     assert!(!state.commands.can_send_chat_message);
 
     session_transport.push_inbound_protocol_line(
@@ -197,19 +168,14 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
             && *update_notice_expected == state.menus.update_notice_expected
             && *about_dialog_available == state.menus.about_dialog_available
             && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Window"
-                    && override_action.action_label == "Show Chat"
-                    && override_action.enabled)
-            && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Advanced"
-                    && override_action.action_label == "Create Controlled Room"
+                override_action.id == MenuActionId::CreateControlledRoom
                     && override_action.enabled)
     )));
     assert!(hello_actions.iter().any(|action| matches!(
         action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -227,21 +193,38 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     for action in hello_actions {
         assert!(state.apply(action));
     }
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Chat")
-            })
-            .is_some_and(|action| action.enabled)
-    );
     assert!(state.commands.can_send_chat_message);
+
+    let mut runtime_degraded_player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    runtime_degraded_player.mark_sorotte_bridge_degraded(
+        sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
+        "another mpv bridge owner retained the input lease",
+    );
+    owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(runtime_degraded_player)));
+    let _ = session_transport.drain_outbound_protocol_lines();
+    handle.push_request(GuiRuntimeRequest::SendChatMessage(
+        "chat survives bridge degradation".to_owned(),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    assert!(
+        state.commands.can_send_chat_message,
+        "runtime player-bridge degradation must not disable GUI session chat"
+    );
+    assert!(state.player_setup_issue.as_ref().is_some_and(|issue| {
+        issue.kind == crate::app::shell_state::GuiPlayerSetupIssueKind::BridgeDegraded
+            && issue.retry_available
+    }));
+    assert!(
+        session_transport
+            .drain_outbound_protocol_lines()
+            .iter()
+            .any(|line| line.contains("chat survives bridge degradation")),
+        "GUI chat must continue through the client-core session while the player bridge is degraded"
+    );
 }
 
 #[test]
@@ -341,13 +324,9 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
     let expected_message =
         format!("Opened media file through the attached recording player: {found_path_text}.");
     assert!(
-        actions.iter().any(|action| matches!(
-            action,
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                pending_operation: None,
-                ..
-            })
-        )),
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompletePendingOperation)),
         "queued owner should clear the pending search before continuing the session"
     );
     assert!(

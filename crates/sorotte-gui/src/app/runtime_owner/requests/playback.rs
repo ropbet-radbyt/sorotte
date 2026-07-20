@@ -1,7 +1,12 @@
 use super::*;
 use crate::app::feature_slices::player::Command;
+use crate::app::mpv_launch::retry_sorotte_chat_osd_integration;
+use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
+use crate::app::runtime_stack::GuiOwnedPlayer;
 use crate::app::support::system_time_seconds;
+use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_player_mpv::SorotteBridgeHealth;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_player_command(
@@ -23,6 +28,12 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             Command::RetryLaunch => {
                 self.handle_retry_player_launch_request(handle, projected_state)
+            }
+            Command::RetrySettings => {
+                self.handle_retry_player_settings_request(handle, projected_state)
+            }
+            Command::RetryChatOsdIntegration => {
+                self.handle_retry_chat_osd_integration_request(handle, projected_state)
             }
             Command::SeekOffset(offset_seconds) => {
                 self.handle_seek_offset_request(handle, projected_state, offset_seconds)
@@ -106,15 +117,32 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let settings = projected_state.configuration.to_stored_settings();
+        let settings = projected_state.saved_configuration.clone();
         self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+        self.finish_retry_player_launch_request(handle, projected_state, &settings)
+    }
+
+    pub(in crate::app::runtime_owner) fn finish_retry_player_launch_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        settings: &StoredClientSettingsMvp,
+    ) -> bool {
         self.refresh_player_state();
         let stream_helper_snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
+        let player_settings_applied = self.current_player_core_state_is_applied();
 
-        let (level, message) = if self.player.is_some() {
+        let (level, message) = if self.player.is_some() && player_settings_applied {
             (
                 GuiTransientNotificationLevel::Success,
                 "mpv is ready with the current player settings.".to_owned(),
+            )
+        } else if player_settings_applied
+            && matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None)
+        {
+            (
+                GuiTransientNotificationLevel::Success,
+                "The saved configuration has no active player.".to_owned(),
             )
         } else {
             (
@@ -122,20 +150,142 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_unavailability_reason
                     .clone()
                     .unwrap_or_else(|| {
-                        "Retrying mpv launch did not attach a playback runtime.".to_owned()
+                        if self
+                            .player_apply_state
+                            .streaming_apply_awaiting_transition
+                        {
+                            "mpv attached, but its streaming settings are still awaiting the authoritative media-load result."
+                                .to_owned()
+                        } else {
+                            "Retrying mpv launch did not attach a playback runtime.".to_owned()
+                        }
                     }),
             )
         };
+        let mut actions = vec![
+            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ];
+        if player_settings_applied {
+            self.promote_restart_player_runtime_fields(settings);
+        }
+        actions.push(self.pending_apply_requirements_action(projected_state, settings));
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    pub(super) fn handle_retry_player_settings_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let settings = projected_state.saved_configuration.clone();
+        let _ = self.apply_saved_player_settings_in_place(&settings);
+        self.refresh_player_state();
+        let player_settings_applied = self.current_player_core_state_is_applied();
+
+        let (level, message) = if player_settings_applied {
+            (
+                GuiTransientNotificationLevel::Success,
+                "mpv streaming settings were applied without restarting playback.".to_owned(),
+            )
+        } else {
+            (
+                GuiTransientNotificationLevel::Error,
+                self.player_unavailability_reason
+                    .clone()
+                    .unwrap_or_else(|| {
+                        "Retrying mpv streaming settings did not complete.".to_owned()
+                    }),
+            )
+        };
+        let mut actions = vec![
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ];
+        if player_settings_applied {
+            self.promote_restart_player_runtime_fields(&settings);
+        }
+        actions.push(self.pending_apply_requirements_action(projected_state, &settings));
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    pub(super) fn handle_retry_chat_osd_integration_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let Some(ui_settings) = self.player_launch_state.mpv_ui_settings().cloned() else {
+            Self::push_player_error(
+                handle,
+                "Retrying Chat/OSD integration requires an attached mpv runtime.".to_owned(),
+            );
+            return true;
+        };
+        let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
+            Self::push_player_error(
+                handle,
+                "Retrying Chat/OSD integration requires an attached mpv runtime.".to_owned(),
+            );
+            return true;
+        };
+
+        let core_ipc_was_connected = player.is_connected();
+        let integration = retry_sorotte_chat_osd_integration(player, &ui_settings);
+        let acknowledged_generation = player.sorotte_bridge_acknowledged_generation();
+        if core_ipc_was_connected && !player.is_connected() {
+            self.detach_player();
+            let message =
+                "mpv JSON IPC became unavailable while retrying Chat/OSD integration.".to_owned();
+            self.player_unavailability_reason = Some(message.clone());
+            Self::push_player_error(handle, message);
+            return true;
+        }
+        if integration.mpv_ui_settings_applied {
+            self.player_apply_state.applied_mpv_ui_settings = Some(ui_settings.clone());
+        }
+        self.record_sorotte_bridge_health(integration.bridge_health.clone());
+        if matches!(
+            integration.bridge_health,
+            SorotteBridgeHealth::Ready | SorotteBridgeHealth::Disabled
+        ) {
+            self.player_apply_state.acknowledged_bridge_settings = Some(ui_settings);
+            self.player_apply_state.acknowledged_bridge_generation = acknowledged_generation;
+        }
+
+        let (level, message) = match &self.player_integration_health {
+            GuiPlayerIntegrationHealth::Ready => (
+                GuiTransientNotificationLevel::Success,
+                "mpv Chat/OSD integration is ready.".to_owned(),
+            ),
+            GuiPlayerIntegrationHealth::BridgeDegraded { reason, .. } => (
+                GuiTransientNotificationLevel::Warning,
+                format!(
+                    "mpv remains ready, but Chat/OSD integration could not be configured: {reason}"
+                ),
+            ),
+        };
+        let settings = projected_state.saved_configuration.clone();
+        let pending_requirements =
+            self.pending_apply_requirements_action(projected_state, &settings);
         Self::push_actions_and_project(
             handle,
             projected_state,
             vec![
-                GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
                 GuiShellAction::PushTransientNotification {
                     level,
                     message: message.clone(),
                 },
                 GuiShellAction::AnnounceSystemChatEvent(message),
+                pending_requirements,
             ],
         );
         true
@@ -280,10 +430,16 @@ impl GuiPersistedConfigRuntimeOwner {
             Self::push_player_error(handle, error);
             return false;
         }
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.set_autoplay_enabled(enabled)
-        {
-            Self::push_player_error(handle, error);
+        if let Some(session) = self.session.as_mut() {
+            match session.set_autoplay_enabled(enabled) {
+                Ok(()) => {
+                    if let Some(runtime_settings) = self.active_session_settings.as_mut() {
+                        runtime_settings.settings.autoplay_initial_state = Some(enabled);
+                        runtime_settings.config.readiness.autoplay_initial_state = enabled;
+                    }
+                }
+                Err(error) => Self::push_player_error(handle, error),
+            }
         }
         true
     }
@@ -298,10 +454,20 @@ impl GuiPersistedConfigRuntimeOwner {
             Self::push_player_error(handle, error);
             return false;
         }
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.set_autoplay_threshold(threshold)
-        {
-            Self::push_player_error(handle, error);
+        if let Some(session) = self.session.as_mut() {
+            match session.set_autoplay_threshold(threshold) {
+                Ok(()) => {
+                    let threshold =
+                        sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(
+                            threshold,
+                        );
+                    if let Some(runtime_settings) = self.active_session_settings.as_mut() {
+                        runtime_settings.settings.autoplay_min_users = Some(threshold.clone());
+                        runtime_settings.config.readiness.autoplay_min_users = threshold;
+                    }
+                }
+                Err(error) => Self::push_player_error(handle, error),
+            }
         }
         true
     }

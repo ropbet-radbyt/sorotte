@@ -2,6 +2,10 @@ use std::{thread, time::Duration};
 
 use super::{PlatformNativeGuiDriver, PlatformWindowHandle};
 
+fn permits_visible_label_fallback(identity: &str) -> bool {
+    !identity.starts_with("settings.")
+}
+
 impl PlatformNativeGuiDriver {
     fn rect_is_nonempty(rect: &windows::Win32::Foundation::RECT) -> bool {
         rect.right > rect.left && rect.bottom > rect.top
@@ -147,30 +151,9 @@ impl PlatformNativeGuiDriver {
         value: &str,
         submit: bool,
     ) -> Result<(), String> {
-        let value_pattern = Self::automation_value_pattern(element);
-        if let Some(pattern) = value_pattern.as_ref()
-            && Self::set_automation_value(pattern, value).is_ok()
-        {
-            thread::sleep(Duration::from_millis(120));
-            let actual = Self::automation_value(pattern).unwrap_or_default();
-            if actual == value {
-                if !submit {
-                    return Ok(());
-                }
-                Self::focus_window_element(window, element, "edit field for submit key entry")?;
-                thread::sleep(Duration::from_millis(120));
-                Self::send_enter_key().map_err(|error| {
-                    format!("failed to submit edit entry with Enter key: {error}")
-                })?;
-                thread::sleep(Duration::from_millis(120));
-                return Ok(());
-            }
-        }
-
-        if Self::click_element_center(window, element, "edit field for keyboard entry").is_err() {
-            Self::focus_window_element(window, element, "edit field for keyboard entry")?;
-            thread::sleep(Duration::from_millis(120));
-        }
+        let _ = Self::click_element_center(window, element, "edit field for keyboard entry");
+        Self::focus_window_element(window, element, "edit field for keyboard entry")?;
+        thread::sleep(Duration::from_millis(120));
         Self::send_select_all_backspace_and_type(value)
             .map_err(|error| format!("failed keyboard fallback text entry: {error}"))?;
         thread::sleep(Duration::from_millis(120));
@@ -178,19 +161,8 @@ impl PlatformNativeGuiDriver {
             Self::send_enter_key()
                 .map_err(|error| format!("failed to submit edit entry with Enter key: {error}"))?;
             thread::sleep(Duration::from_millis(120));
-            return Ok(());
         }
-        let Some(verification_pattern) = value_pattern else {
-            return Ok(());
-        };
-        let actual = Self::automation_value(&verification_pattern).unwrap_or_default();
-        if actual == value {
-            Ok(())
-        } else {
-            Err(format!(
-                "keyboard fallback set edit field to {actual:?}, expected {value:?}"
-            ))
-        }
+        Ok(())
     }
 
     pub(super) fn editable_text_input_count(window: PlatformWindowHandle) -> Result<usize, String> {
@@ -237,29 +209,6 @@ impl PlatformNativeGuiDriver {
         Self::automation_value(&pattern)
     }
 
-    pub(super) fn get_edit_value_by_index(
-        window: PlatformWindowHandle,
-        edit_index: usize,
-    ) -> Result<String, String> {
-        Self::with_ui_automation(
-            window,
-            "UI Automation edit value lookup",
-            |automation, root| {
-                let mut edit_elements = Self::collect_editable_elements(automation, root)?;
-                if edit_elements.len() <= edit_index {
-                    return Err(format!(
-                        "edit field index {edit_index} was requested, but only {} editable text fields were found",
-                        edit_elements.len()
-                    ));
-                }
-                let element = edit_elements.remove(edit_index);
-                Self::read_edit_element_value(&element).map_err(|error| {
-                    format!("failed to read edit field index {edit_index}: {error}")
-                })
-            },
-        )
-    }
-
     pub(super) fn get_named_edit_value(
         window: PlatformWindowHandle,
         name: &str,
@@ -269,35 +218,29 @@ impl PlatformNativeGuiDriver {
             "UI Automation named edit value lookup",
             |automation, root| {
                 let edit_elements = Self::collect_editable_elements(automation, root)?;
-                let mut fallback_last_edit = None;
                 let mut available_names = Vec::new();
                 for element in &edit_elements {
-                    fallback_last_edit = Some(element.clone());
                     let element_name = Self::automation_element_name(element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }
-                    if element_name == name {
+                    let automation_id = Self::automation_element_automation_id(element);
+                    if element_name == name || automation_id == name {
                         return Self::read_edit_element_value(element).map_err(|error| {
                             format!("failed to read edit field named {name:?}: {error}")
                         });
                     }
                 }
-                if let Some(element) = Self::nearest_editable_element_to_named_label(
-                    automation,
-                    root,
-                    name,
-                    &edit_elements,
-                )? {
+                if permits_visible_label_fallback(name)
+                    && let Some(element) = Self::nearest_editable_element_to_named_label(
+                        automation,
+                        root,
+                        name,
+                        &edit_elements,
+                    )?
+                {
                     return Self::read_edit_element_value(&element).map_err(|error| {
                         format!("failed to read edit field nearest label {name:?}: {error}")
-                    });
-                }
-                if let Some(element) = fallback_last_edit {
-                    return Self::read_edit_element_value(&element).map_err(|error| {
-                        format!(
-                            "failed to read fallback unnamed edit field while targeting {name:?}: {error}"
-                        )
                     });
                 }
                 available_names.sort();
@@ -315,26 +258,6 @@ impl PlatformNativeGuiDriver {
             },
         )
     }
-    pub(super) fn set_edit_value_by_index(
-        window: PlatformWindowHandle,
-        edit_index: usize,
-        value: &str,
-    ) -> Result<(), String> {
-        Self::with_ui_automation(window, "UI Automation edit entry", |automation, root| {
-            let mut edit_elements = Self::collect_editable_elements(automation, root)?;
-
-            if edit_elements.len() <= edit_index {
-                return Err(format!(
-                    "edit field index {edit_index} was requested, but only {} editable text fields were found",
-                    edit_elements.len()
-                ));
-            }
-            let element = edit_elements.remove(edit_index);
-            Self::set_edit_element_value(window, &element, value, false)
-                .map_err(|error| format!("failed to write edit field index {edit_index}: {error}"))
-        })
-    }
-
     pub(super) fn set_named_edit_value(
         window: PlatformWindowHandle,
         name: &str,
@@ -346,39 +269,31 @@ impl PlatformNativeGuiDriver {
             "UI Automation named edit entry",
             |automation, root| {
                 let edit_elements = Self::collect_editable_elements(automation, root)?;
-                let mut fallback_last_edit = None;
                 let mut available_names = Vec::new();
                 for element in &edit_elements {
-                    fallback_last_edit = Some(element.clone());
                     let element_name = Self::automation_element_name(element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }
-                    if element_name == name {
+                    let automation_id = Self::automation_element_automation_id(element);
+                    if element_name == name || automation_id == name {
                         return Self::set_edit_element_value(window, element, value, submit)
                             .map_err(|error| {
                                 format!("failed to write edit field named {name:?}: {error}")
                             });
                     }
                 }
-                if let Some(element) = Self::nearest_editable_element_to_named_label(
-                    automation,
-                    root,
-                    name,
-                    &edit_elements,
-                )? {
+                if permits_visible_label_fallback(name)
+                    && let Some(element) = Self::nearest_editable_element_to_named_label(
+                        automation,
+                        root,
+                        name,
+                        &edit_elements,
+                    )?
+                {
                     return Self::set_edit_element_value(window, &element, value, submit).map_err(
                         |error| {
                             format!("failed to write edit field nearest label {name:?}: {error}")
-                        },
-                    );
-                }
-                if let Some(element) = fallback_last_edit {
-                    return Self::set_edit_element_value(window, &element, value, submit).map_err(
-                        |error| {
-                            format!(
-                                "failed to write fallback unnamed edit field while targeting {name:?}: {error}"
-                            )
                         },
                     );
                 }
@@ -396,5 +311,16 @@ impl PlatformNativeGuiDriver {
                 }
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_setting_ids_never_fall_back_to_visible_labels() {
+        assert!(!permits_visible_label_fallback("settings.connection.host"));
+        assert!(permits_visible_label_fallback("Room"));
     }
 }

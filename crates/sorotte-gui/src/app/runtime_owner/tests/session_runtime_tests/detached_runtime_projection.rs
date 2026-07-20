@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn gui_persisted_config_runtime_owner_resyncs_detached_runtime_settings_each_pump() {
+fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_controls_live() {
     #[derive(Debug, Default)]
     struct RecordingDetachedSessionState {
         runtime_settings:
@@ -121,56 +121,111 @@ fn gui_persisted_config_runtime_owner_resyncs_detached_runtime_settings_each_pum
         .sync_detached_session_preferences_and_player_state(&state_b)
         .expect("second detached-session preference sync should succeed");
 
-    let recorded = recorded
+    let mut recorded_state = recorded
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    assert_eq!(recorded.runtime_settings.len(), 2);
+    assert_eq!(recorded_state.runtime_settings.len(), 2);
     assert_eq!(
-        recorded.runtime_settings[0].settings.dont_slow_down_with_me,
+        recorded_state.runtime_settings[0]
+            .settings
+            .dont_slow_down_with_me,
         Some(false)
     );
     assert_eq!(
-        recorded.runtime_settings[0].settings.loop_single_files,
+        recorded_state.runtime_settings[0]
+            .settings
+            .loop_single_files,
         Some(true)
     );
     assert_eq!(
-        recorded.runtime_settings[0].settings.rewind_on_desync,
+        recorded_state.runtime_settings[0].settings.rewind_on_desync,
         Some(false)
     );
     assert_eq!(
-        recorded.runtime_settings[0].settings.unpause_action,
+        recorded_state.runtime_settings[0].settings.unpause_action,
         Some(sorotte_client_core::UnpauseActionMode::IfOthersReady)
     );
     assert_eq!(
-        recorded.runtime_settings[1].settings.dont_slow_down_with_me,
-        Some(true)
-    );
-    assert_eq!(
-        recorded.runtime_settings[1].settings.loop_single_files,
+        recorded_state.runtime_settings[1]
+            .settings
+            .dont_slow_down_with_me,
         Some(false)
     );
     assert_eq!(
-        recorded.runtime_settings[1].settings.rewind_on_desync,
+        recorded_state.runtime_settings[1]
+            .settings
+            .loop_single_files,
         Some(true)
     );
     assert_eq!(
-        recorded.runtime_settings[1].settings.unpause_action,
-        Some(sorotte_client_core::UnpauseActionMode::Always)
+        recorded_state.runtime_settings[1].settings.rewind_on_desync,
+        Some(false)
     );
     assert_eq!(
-        recorded.autoplay_enabled,
+        recorded_state.runtime_settings[1].settings.unpause_action,
+        Some(sorotte_client_core::UnpauseActionMode::IfOthersReady)
+    );
+    assert_eq!(
+        recorded_state.autoplay_enabled,
         vec![
             state_a.main_window.autoplay_active,
-            state_b.main_window.autoplay_active
+            state_a.main_window.autoplay_active,
         ]
     );
     assert_eq!(
-        recorded.autoplay_thresholds,
+        recorded_state.autoplay_thresholds,
         vec![
             state_a.main_window.autoplay_threshold,
-            state_b.main_window.autoplay_threshold,
+            state_a.main_window.autoplay_threshold,
         ]
     );
+    recorded_state.autoplay_enabled.clear();
+    recorded_state.autoplay_thresholds.clear();
+    drop(recorded_state);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    handle.push_request(GuiRuntimeRequest::SetAutoplayEnabled(
+        state_b.main_window.autoplay_active,
+    ));
+    handle.push_request(GuiRuntimeRequest::SetAutoplayThreshold(
+        state_b.main_window.autoplay_threshold,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state_b);
+    owner
+        .sync_detached_session_preferences_and_player_state(&state_a)
+        .expect("explicit autoplay controls should survive the next active-session sync");
+
+    let recorded_state = recorded
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        recorded_state.autoplay_enabled.last().copied(),
+        Some(state_b.main_window.autoplay_active)
+    );
+    assert_eq!(
+        recorded_state.autoplay_thresholds.last().copied(),
+        Some(state_b.main_window.autoplay_threshold)
+    );
+    let last_runtime_settings = recorded_state
+        .runtime_settings
+        .last()
+        .expect("a post-command active-session sync should be recorded");
+    assert_eq!(
+        last_runtime_settings.settings.autoplay_initial_state,
+        Some(state_b.main_window.autoplay_active)
+    );
+    assert_eq!(
+        last_runtime_settings.settings.autoplay_min_users,
+        Some(
+            sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(
+                state_b.main_window.autoplay_threshold,
+            )
+        )
+    );
+    drop(recorded_state);
+    assert!(owner.active_session_settings.is_some());
+    owner.remove_session_runtime();
+    assert!(owner.active_session_settings.is_none());
 }
 
 #[test]

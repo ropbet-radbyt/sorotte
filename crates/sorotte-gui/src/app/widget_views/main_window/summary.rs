@@ -193,7 +193,7 @@ impl SorotteGuiShellAppState {
         let can_request_runtime_room_change = can_edit_room && self.commands.can_disconnect_session;
         let room_draft = self
             .configuration
-            .control_value("Connection", "Room")
+            .control_value(SettingId::ConnectionRoom)
             .unwrap_or_default()
             .to_owned();
         let has_room_draft = configured_room_name_text(&room_draft).is_some();
@@ -280,7 +280,7 @@ impl SorotteGuiShellAppState {
                             ),
                             GuiWidgetNode::leaf(
                                 "main-window:player-setup:retry",
-                                "Retry mpv",
+                                self.player_setup_retry_label(),
                                 GuiWidgetKind::Button,
                                 None,
                                 self.player_setup_retry_available(),

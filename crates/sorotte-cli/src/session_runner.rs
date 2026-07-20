@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use anyhow::anyhow;
 use serde_json::Value;
@@ -43,6 +43,7 @@ use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION_LEGACY,
     legacy_server_password_token,
 };
+use sorotte_player_api::PlayerAdapter;
 use sorotte_player_mpv::MpvAdapter;
 use sorotte_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line,
@@ -62,8 +63,9 @@ use crate::diagnostics_config::{ClientLoopDiagnosticsConfig, client_loop_diagnos
 use crate::env_support::{env_flag_enabled, env_flag_override, env_trimmed};
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
 use crate::local_runtime_actions::{
-    PLAYER_CHAT_INPUT_POLL_INTERVAL_MS, drain_player_chat_input_legacy_compatible,
-    publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
+    CliNetworkOptionsHealthReporter, PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
+    drain_player_chat_input_legacy_compatible, publish_pending_local_file_updates,
+    run_planned_local_runtime_action_legacy_compatible,
 };
 use crate::mpv_startup::{
     ManagedMpvProcessGuard,
@@ -103,6 +105,27 @@ pub(super) use self::connected_session::{
 #[cfg(test)]
 pub(super) use self::network_loop::run_client_network_loop;
 pub(super) use self::network_loop::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
+
+pub(super) async fn await_with_player_integration_maintenance<P, T>(
+    runtime: &mut ClientApplication<P>,
+    future: impl Future<Output = T>,
+) -> T
+where
+    P: PlayerAdapter,
+{
+    tokio::pin!(future);
+    let mut maintenance_tick =
+        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
+    maintenance_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = maintenance_tick.tick() => {
+                runtime.with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
+            }
+        }
+    }
+}
 
 pub(super) fn cli_plex_config_from_env_and_stored_settings(
     stored_settings: Option<&StoredClientSettingsMvp>,

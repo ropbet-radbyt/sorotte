@@ -5,17 +5,16 @@ fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
-        section: "Connection",
-        label: "Host",
-    }));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
         "syncplay.example".to_owned().into(),
     )));
     let rendered = state.render_lines().join("\n");
     assert!(
         rendered
-            .contains("[Text Edit] editing=Connection / Host, dirty=yes, buffer=syncplay.example")
+            .contains("[Text Edit] editing=settings.connection.host (Connection / Host), dirty=yes, buffer=syncplay.example")
     );
 
     assert!(state.apply(GuiShellAction::CommitConfigurationTextEdit));
@@ -31,10 +30,9 @@ fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
             .contains("[Text Edit] editing=(none)")
     );
 
-    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
-        section: "Connection",
-        label: "Host",
-    }));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
         "syncplay.cancelled".to_owned().into(),
     )));
@@ -51,10 +49,9 @@ fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Readiness",
-        label: "Autoplay",
-    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::PlaybackAutoplay,
+    )));
     assert!(state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
     assert_eq!(
         state
@@ -71,17 +68,13 @@ fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
         Some(1)
     );
 
-    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Connection",
-        label: "Host",
-    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionHost,
+    )));
     assert!(state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
     assert_eq!(
-        state
-            .text_edit_session
-            .as_ref()
-            .map(|session| session.label),
-        Some("Host")
+        state.text_edit_session.as_ref().map(|session| session.id),
+        Some(SettingId::ConnectionHost)
     );
     assert_eq!(
         state
@@ -93,20 +86,19 @@ fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
 
     let rendered = state.render_lines().join("\n");
     assert!(
-        rendered.contains("[Control Focus] focused=Connection / Host, kind=text, activations=1")
+        rendered.contains("[Control Focus] focused=settings.connection.host (Connection / Host), kind=text, activations=1")
     );
-    assert!(rendered.contains("[Text Edit] editing=Connection / Host"));
+    assert!(rendered.contains("[Text Edit] editing=settings.connection.host (Connection / Host)"));
 
-    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Readiness",
-        label: "Autoplay",
-    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::PlaybackAutoplay,
+    )));
     assert_eq!(
         state
             .focused_configuration_control
             .as_ref()
-            .map(|focused| (focused.section, focused.label)),
-        Some(("Connection", "Host"))
+            .map(|focused| focused.id),
+        Some(SettingId::ConnectionHost)
     );
 
     assert!(state.apply(GuiShellAction::ClearConfigurationControlFocus));
@@ -114,8 +106,8 @@ fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
         state
             .focused_configuration_control
             .as_ref()
-            .map(|focused| (focused.section, focused.label)),
-        Some(("Connection", "Host"))
+            .map(|focused| focused.id),
+        Some(SettingId::ConnectionHost)
     );
     assert!(state.apply(GuiShellAction::CancelConfigurationTextEdit));
     assert!(state.apply(GuiShellAction::ClearConfigurationControlFocus));
@@ -134,10 +126,9 @@ fn gui_shell_app_state_rejects_invalid_configuration_focus_and_activation() {
         Some("No configuration control is currently focused.")
     );
 
-    assert!(!state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Privacy",
-        label: "Trusted Domain Count",
-    }));
+    assert!(!state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::PrivacyTrustedDomainCount,
+    )));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
         Some("The requested configuration control is not focusable.")
@@ -149,10 +140,9 @@ fn gui_shell_app_state_rejects_invalid_configuration_text_edit_sessions() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(!state.apply(GuiShellAction::BeginConfigurationTextEdit {
-        section: "OSD",
-        label: "Show OSD",
-    }));
+    assert!(!state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::OsdShow,
+    )));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
         Some("The requested configuration control does not support text-edit sessions.")
@@ -185,7 +175,7 @@ fn gui_shell_app_state_tracks_pending_operations_and_busy_command_availability()
     state.main_window.playback.can_toggle_pause = true;
     state.refresh_validation();
 
-    assert!(state.commands.can_save_configuration);
+    assert!(!state.commands.can_save_configuration);
     assert!(!state.commands.can_reset_configuration);
     assert!(state.commands.can_reload_configuration);
     assert!(state.commands.can_connect_public_server);
@@ -224,7 +214,7 @@ fn gui_shell_app_state_tracks_pending_operations_and_busy_command_availability()
 
     assert!(state.apply(GuiShellAction::CompletePendingOperation));
     assert_eq!(state.pending_operation, None);
-    assert!(state.commands.can_save_configuration);
+    assert!(!state.commands.can_save_configuration);
     assert!(!state.commands.can_reset_configuration);
     assert!(state.commands.can_reload_configuration);
     assert!(state.commands.can_connect_public_server);

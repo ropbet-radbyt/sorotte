@@ -19,7 +19,8 @@ use super::runtime_localization::{
     localized_update_notice_available_message_legacy_compatible,
 };
 use super::shell_state::{
-    GuiConfigurationTab, GuiShellView, GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiConfigurationTab, GuiShellView, GuiTransientNotificationLevel, MenuActionId,
+    SorotteGuiShellAppState,
 };
 use super::support::autoplay_threshold_from_settings;
 
@@ -369,15 +370,21 @@ impl GuiPersistedUiState {
         }
         if self.hide_empty_rooms {
             state.main_window.hide_empty_rooms = true;
-            state.set_menu_action_selected("Window", "Hide Empty Rooms", true);
+            state.set_menu_action_checked(MenuActionId::ToggleHideEmptyRooms, true);
         }
         if let Some(show_playback_buttons) = self.show_playback_buttons {
             state.main_window.show_playback_buttons = show_playback_buttons;
-            state.set_menu_action_selected("Window", "Playback Buttons", show_playback_buttons);
+            state.set_menu_action_checked(
+                MenuActionId::TogglePlaybackButtons,
+                show_playback_buttons,
+            );
         }
         if let Some(show_autoplay_controls) = self.show_autoplay_controls {
             state.main_window.show_autoplay_controls = show_autoplay_controls;
-            state.set_menu_action_selected("Window", "Autoplay", show_autoplay_controls);
+            state.set_menu_action_checked(
+                MenuActionId::ToggleAutoplayControls,
+                show_autoplay_controls,
+            );
         }
         if let Some(autoplay_checked) = self.autoplay_checked {
             state.main_window.autoplay_active = autoplay_checked;

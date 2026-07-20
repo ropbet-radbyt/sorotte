@@ -194,9 +194,11 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let plugins_surface = shell_tree.find("plugins-root").unwrap();
     let stream_plugin_row = shell_tree.find("plugins:list:stream-support").unwrap();
     let plex_plugin_row = shell_tree.find("plugins:list:plex").unwrap();
-    let menu_action = shell_tree.find("menus:action:0:0").unwrap();
-    let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
-    let seek_menu_action = shell_tree.find("menus:action:1:3").unwrap();
+    let menu_action = shell_tree.find("menu.open_media").unwrap();
+    let exit_menu_action = shell_tree.find("menu.exit").unwrap();
+    let seek_menu_action = shell_tree.find("menu.seek").unwrap();
+    let undo_seek_menu_action = shell_tree.find("menu.undo_seek").unwrap();
+    let set_offset_menu_action = shell_tree.find("menu.set_offset").unwrap();
     let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
     let playlist_row = shell_tree.find("main-window:playlist:0").unwrap();
     let room_toggle_button = shell_tree.find("main-window:room-actions:toggle").unwrap();
@@ -223,8 +225,8 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         "Open URL should not be exposed from the Controls pane"
     );
     assert!(
-        shell_tree.find("main-window:browser").is_none(),
-        "the old separate room browser should not be projected"
+        shell_tree.find("main-window:browser").is_some(),
+        "the compact room filter should be projected"
     );
     assert!(
         shell_tree.find("main-window:room-group:1:join").is_none(),
@@ -249,30 +251,6 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         GuiWidgetEguiRenderer::action_for_surface_node(plugins_surface),
         Some(GuiShellAction::SwitchView(GuiShellView::Plugins))
     );
-    assert!(GuiWidgetEguiRenderer::is_open_media_file_menu_action(
-        &state,
-        menu_action
-    ));
-    assert!(!GuiWidgetEguiRenderer::is_exit_menu_action(
-        &state,
-        menu_action
-    ));
-    assert!(!GuiWidgetEguiRenderer::is_open_media_file_menu_action(
-        &state,
-        exit_menu_action
-    ));
-    assert!(GuiWidgetEguiRenderer::is_exit_menu_action(
-        &state,
-        exit_menu_action
-    ));
-    assert!(!GuiWidgetEguiRenderer::is_seek_menu_action(
-        &state,
-        menu_action
-    ));
-    assert!(GuiWidgetEguiRenderer::is_seek_menu_action(
-        &state,
-        seek_menu_action
-    ));
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, menu_action),
         vec![
@@ -280,11 +258,25 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
                 section_index: 0,
                 action_index: 0,
             },
-            GuiShellAction::TriggerSelectedMenuAction,
+            GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia),
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, exit_menu_action),
+        vec![
+            GuiShellAction::SelectMenuAction {
+                section_index: 0,
+                action_index: 3,
+            },
+            GuiShellAction::InvokeMenuAction(MenuActionId::Exit),
         ]
     );
     assert_eq!(quick_open_media.kind, GuiWidgetKind::Button);
     assert!(quick_open_media.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, quick_open_media),
+        vec![GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia)]
+    );
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_list_item_node(playlist_row),
         Some(GuiShellAction::SelectMainWindowPlaylist(0))
@@ -333,11 +325,75 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, seek_button),
-        vec![GuiShellAction::RequestSeekPrompt]
+        vec![GuiShellAction::InvokeMenuAction(MenuActionId::Seek)]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_seek_button),
-        vec![GuiShellAction::RequestPlaybackUndoSeek]
+        vec![GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek)]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, seek_menu_action),
+        vec![
+            GuiShellAction::SelectMenuAction {
+                section_index: 1,
+                action_index: 3,
+            },
+            GuiShellAction::InvokeMenuAction(MenuActionId::Seek),
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_seek_menu_action),
+        vec![
+            GuiShellAction::SelectMenuAction {
+                section_index: 1,
+                action_index: 4,
+            },
+            GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek),
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, set_offset_menu_action),
+        vec![
+            GuiShellAction::SelectMenuAction {
+                section_index: 2,
+                action_index: 3,
+            },
+            GuiShellAction::InvokeMenuAction(MenuActionId::SetOffset),
+        ]
+    );
+    let menu_shortcuts = GuiWidgetEguiRenderer::menu_shortcuts();
+    for (index, binding) in menu_shortcuts.iter().enumerate() {
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_menu_shortcut(binding.shortcut),
+            vec![GuiShellAction::InvokeMenuAction(binding.action_id)],
+            "keyboard shortcuts must enter the same typed action path as other surfaces"
+        );
+        let menu_node = shell_tree
+            .find(binding.action_id.automation_id())
+            .expect("every shortcut action should have a real menu node");
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, menu_node).last(),
+            Some(&GuiShellAction::InvokeMenuAction(binding.action_id)),
+        );
+        assert!(
+            menu_shortcuts[..index]
+                .iter()
+                .all(|earlier| earlier.shortcut != binding.shortcut),
+            "global menu shortcuts must be unique"
+        );
+    }
+    let localized_seek_action = GuiWidgetNode::leaf(
+        MenuActionId::Seek.automation_id(),
+        "Suchen (localized copy)",
+        GuiWidgetKind::Button,
+        None,
+        true,
+        false,
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, &localized_seek_action),
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, seek_menu_action),
+        "menu dispatch must depend on the stable action ID rather than visible copy"
     );
     assert!(
         shell_tree.find("main-window:control:set-offset").is_none(),
@@ -520,4 +576,84 @@ fn gui_widget_egui_renderer_keeps_local_ready_available_for_non_controller_empty
         GuiWidgetEguiRenderer::actions_for_button_node(&state, ready_button),
         vec![GuiShellAction::AnnounceLocalUserReady]
     );
+}
+
+#[test]
+fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let menu_nodes = [
+        MenuActionId::OpenMedia,
+        MenuActionId::Seek,
+        MenuActionId::UndoSeek,
+        MenuActionId::SetOffset,
+        MenuActionId::About,
+        MenuActionId::Help,
+    ]
+    .map(|action_id| {
+        GuiWidgetNode::leaf(
+            action_id.automation_id(),
+            action_id.label(),
+            GuiWidgetKind::Button,
+            None,
+            true,
+            false,
+        )
+    });
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut renderer = GuiWidgetEguiRenderer::default();
+
+    let output = context.run(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            for node in &menu_nodes {
+                renderer.render_button_like(ui, node, &state);
+            }
+        });
+    });
+    let accesskit_update = output
+        .platform_output
+        .accesskit_update
+        .expect("the accessibility pass should produce a tree update");
+    let author_ids = accesskit_update
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.author_id())
+        .collect::<Vec<_>>();
+
+    for node in &menu_nodes {
+        assert!(
+            author_ids.contains(&node.id.as_str()),
+            "{} should be exposed as the UI Automation ID",
+            node.id,
+        );
+    }
+}
+
+#[test]
+fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    for binding in GuiWidgetEguiRenderer::menu_shortcuts() {
+        let context = egui::Context::default();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        state.render_shell_widgets(&mut renderer);
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: binding.shortcut.logical_key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: binding.shortcut.modifiers,
+        });
+        let mut actions = Vec::new();
+
+        let _ = context.run(input, |context| {
+            actions = renderer.show(context, &state, false);
+        });
+
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::InvokeMenuAction(binding.action_id)],
+        );
+    }
 }

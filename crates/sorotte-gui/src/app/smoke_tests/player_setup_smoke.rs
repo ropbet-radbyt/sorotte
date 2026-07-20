@@ -13,8 +13,7 @@ fn gui_portable_smoke_regression_surfaces_first_run_player_setup_blocker() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Host",
+        id: SettingId::ConnectionHost,
         value: "first-run.example".to_owned().into(),
     }));
 
@@ -48,7 +47,7 @@ fn gui_portable_smoke_regression_surfaces_first_run_player_setup_blocker() {
     );
     assert!(
         !configuration
-            .find("config-command:connect")
+            .find("config-command:connect-once")
             .expect("connect button should exist")
             .enabled
     );

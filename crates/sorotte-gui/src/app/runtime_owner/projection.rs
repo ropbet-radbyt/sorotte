@@ -13,8 +13,8 @@ use super::super::shell_state::{
     GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
     GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
     GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, GuiShellAction,
-    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    MenuSectionShellState, SorotteGuiShellAppState,
+    MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    SorotteGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
@@ -140,19 +140,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_index_runtime_snapshot_impl()
     }
 
-    fn menu_action_enabled(
-        section: Option<&MenuSectionShellState>,
-        action_label: &str,
-    ) -> Option<bool> {
-        section.and_then(|section| {
-            section
-                .actions
-                .iter()
-                .find(|action| action.label == action_label)
-                .map(|action| action.enabled)
-        })
-    }
-
     fn format_local_file_playlist_entry(local_file: &LocalFileUpdate) -> String {
         let mut details = Vec::new();
         if let Some(duration_seconds) = local_file.duration_seconds {
@@ -178,6 +165,25 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn player_setup_issue_impl(&self) -> Option<GuiPlayerSetupIssue> {
         if self.player.is_some() {
+            if let Some(reason) = self
+                .core_player_configuration_health
+                .streaming_degraded_reason()
+            {
+                return Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::PlayerSettingsDegraded,
+                    message: reason.to_owned(),
+                    retry_available: self
+                        .core_player_configuration_health
+                        .streaming_retryable_in_place(),
+                });
+            }
+            if let Some(reason) = self.player_integration_health.bridge_degraded_reason() {
+                return Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::BridgeDegraded,
+                    message: reason.to_owned(),
+                    retry_available: self.player_integration_health.bridge_retryable_in_place(),
+                });
+            }
             return None;
         }
 
@@ -204,7 +210,11 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiPlayerLaunchRuntimeState::TestPlayer => return None,
         };
 
-        Some(GuiPlayerSetupIssue { kind, message })
+        Some(GuiPlayerSetupIssue {
+            retry_available: kind != GuiPlayerSetupIssueKind::NotConfigured,
+            kind,
+            message,
+        })
     }
 
     pub(super) fn player_setup_runtime_snapshot_impl(&self) -> GuiPlayerSetupRuntimeSnapshot {
@@ -230,12 +240,19 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> GuiCommandAvailabilityState {
         let player_runtime_available =
             player_attached || self.player_runtime_available_for_actions();
-        let settings = state.configuration.to_stored_settings();
+        let settings = self
+            .active_session_settings
+            .as_ref()
+            .filter(|_| self.session_projects_to_shell)
+            .map(|runtime_settings| runtime_settings.settings.clone())
+            .unwrap_or_else(|| state.configuration.to_stored_settings());
         let busy = state.pending_operation.is_some();
         let chat_unavailable_reason =
             state.chat_send_unavailable_reason_from_settings(&settings, self.session.is_some());
         let command_availability = GuiCommandAvailabilityState {
-            can_save_configuration: !busy && state.validation.issues.is_empty(),
+            can_save_configuration: !busy
+                && state.validation.issues.is_empty()
+                && state.has_unsaved_configuration_changes(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
             can_connect_saved_server: !busy
@@ -287,7 +304,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let pre_poll_media_index_revision = self.attached_media_search_index_revision;
         let media_index_was_pending = self.pending_attached_media_resolution.is_some();
         let media_index_still_pending = self.poll_attached_media_search_index_build(
-            Self::automatic_media_search_retry_interval(state),
+            self.automatic_media_search_retry_interval(state),
         );
         if media_index_was_pending
             && !media_index_still_pending
@@ -299,14 +316,13 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();
+        let shared_playlist_enabled = self.runtime_shared_playlist_enabled(state);
         let can_manage_playlist = self
             .session
             .as_ref()
-            .map(|session| {
-                state.main_window.shared_playlist_enabled && session.playlist_control_available()
-            })
-            .unwrap_or(player_runtime_available && state.main_window.shared_playlist_enabled);
-        let desired_playlist = if state.main_window.shared_playlist_enabled {
+            .map(|session| shared_playlist_enabled && session.playlist_control_available())
+            .unwrap_or(player_runtime_available && shared_playlist_enabled);
+        let desired_playlist = if shared_playlist_enabled {
             None
         } else {
             let playlist = self.player_local_file_playlist_entries_impl();
@@ -320,8 +336,9 @@ impl GuiPersistedConfigRuntimeOwner {
             (!playlist_matches).then_some(playlist)
         };
         let desired_paused = player_attached.then_some(self.player_paused).flatten();
-        let main_window_changed = state.main_window.playback.can_toggle_pause
-            != player_runtime_available
+        let main_window_changed = state.main_window.shared_playlist_enabled
+            != shared_playlist_enabled
+            || state.main_window.playback.can_toggle_pause != player_runtime_available
             || state.main_window.playback.can_seek != player_runtime_available
             || !state.main_window.playback.can_set_offset
             || state.main_window.playback.can_manage_playlist != can_manage_playlist
@@ -333,6 +350,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if main_window_changed {
             let mut desired_main_window =
                 MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+            desired_main_window.shared_playlist_enabled = shared_playlist_enabled;
             desired_main_window.can_toggle_pause = player_runtime_available;
             desired_main_window.can_seek = player_runtime_available;
             desired_main_window.can_set_offset = true;
@@ -375,6 +393,19 @@ impl GuiPersistedConfigRuntimeOwner {
             handle.push_action(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
                 desired_player_setup,
             ));
+        }
+
+        if self.pending_apply_requirements_refresh_required {
+            let desired_pending_apply_requirements =
+                self.pending_apply_requirements_for_settings(state, &state.saved_configuration);
+            // Pending requirements are runtime-owned output and are intentionally absent from
+            // the compact threaded input projection. A refresh request must therefore publish an
+            // authoritative snapshot even when the compatibility projection happens to compare
+            // equal, otherwise the real shell can retain stale retry guidance.
+            handle.push_action(GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
+                desired_pending_apply_requirements,
+            ));
+            self.pending_apply_requirements_refresh_required = false;
         }
 
         let desired_seek_preparation = self.seek_preparation_runtime_snapshot_impl();
@@ -461,54 +492,48 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
-        let playback_section = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Playback");
-        let advanced_section = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Advanced");
+        let playback_controls_available =
+            state.pending_operation.is_none() && !state.main_window.playlist.is_empty();
         let mut action_overrides = Vec::new();
-        for (action_label, enabled) in [
-            ("Play", player_attached),
-            ("Pause", player_attached),
-            ("Toggle Pause", player_attached),
-            ("Seek", player_attached),
+        for (id, enabled) in [
             (
-                "Undo Seek",
-                state.pending_operation.is_none() && state.main_window.playback.can_undo_seek,
+                MenuActionId::Play,
+                player_runtime_available && playback_controls_available,
             ),
             (
-                "Shared Playlist",
-                self.session
-                    .as_ref()
-                    .map(|session| {
-                        state.main_window.shared_playlist_enabled
-                            && session.playlist_control_available()
-                    })
-                    .unwrap_or(player_attached && state.main_window.shared_playlist_enabled),
+                MenuActionId::Pause,
+                player_runtime_available && playback_controls_available,
             ),
+            (
+                MenuActionId::TogglePause,
+                player_runtime_available && playback_controls_available,
+            ),
+            (
+                MenuActionId::Seek,
+                player_runtime_available && playback_controls_available,
+            ),
+            (
+                MenuActionId::UndoSeek,
+                playback_controls_available && state.main_window.playback.can_undo_seek,
+            ),
+            (MenuActionId::SharedPlaylist, can_manage_playlist),
         ] {
-            let current_enabled = Self::menu_action_enabled(playback_section, action_label);
+            let current_enabled = state.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
-                action_overrides.push(MenuActionRuntimeOverride {
-                    section_title: "Playback",
-                    action_label,
-                    enabled,
-                });
+                action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
         }
-        let current_offset_enabled = Self::menu_action_enabled(advanced_section, "Set Offset");
-        let desired_offset_enabled = state.pending_operation.is_none();
+        let current_offset_enabled = state
+            .menus
+            .action(MenuActionId::SetOffset)
+            .map(|action| action.enabled);
+        let desired_offset_enabled =
+            playback_controls_available && state.main_window.playback.can_set_offset;
         if current_offset_enabled
             .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
         {
             action_overrides.push(MenuActionRuntimeOverride {
-                section_title: "Advanced",
-                action_label: "Set Offset",
+                id: MenuActionId::SetOffset,
                 enabled: desired_offset_enabled,
             });
         }

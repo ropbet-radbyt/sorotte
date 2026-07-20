@@ -139,8 +139,7 @@ fn gui_shell_app_state_handles_text_edits_and_room_switches() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Username",
+        id: SettingId::ConnectionUsername,
         value: TEST_USERNAME.to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom(
@@ -161,8 +160,7 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_jo
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "  TeamRoom  ".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::SetMainWindowRoom("  TeamRoom  ".to_owned(),)));
@@ -222,6 +220,43 @@ fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target()
             .as_ref()
             .map(|secret| secret.expose_secret()),
         Some("RH-273-303")
+    );
+}
+
+#[test]
+fn connect_once_target_ignores_unsaved_room_history_when_room_is_empty() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room_list: Some(vec!["saved-room".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::ConnectionRoom,
+        value: String::new().into(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+    assert!(state.apply(GuiShellAction::UpdateRoomHistoryEdit(
+        "unsaved-draft-room".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::CommitRoomHistoryEdit));
+
+    let connect_once_target = state
+        .submitted_saved_server_connect_target(GuiSavedServerConnectIntent::ConnectOnce)
+        .expect("Connect Once should produce a target from the captured settings");
+    assert_eq!(connect_once_target.room, "saved-room");
+
+    let save_and_connect_target = state
+        .submitted_saved_server_connect_target(GuiSavedServerConnectIntent::SaveAndConnect)
+        .expect("Save & connect should produce a target from the draft settings");
+    assert_eq!(save_and_connect_target.room, "unsaved-draft-room");
+
+    assert!(state.apply(GuiShellAction::BeginConnectOnce));
+    assert_eq!(
+        state.pending_saved_server_connect_intent,
+        Some(GuiSavedServerConnectIntent::ConnectOnce),
     );
 }
 

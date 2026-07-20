@@ -3,16 +3,22 @@ use super::*;
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiPendingCompletionRequest {
     SaveConfiguration(StoredClientSettingsMvp),
-    ResetConfiguration(StoredClientSettingsMvp),
+    DiscardConfigurationChanges(StoredClientSettingsMvp),
     ReloadConfiguration(StoredClientSettingsMvp),
     ClearGuiData,
     ChangeConfigStorageRoot {
         target: GuiConfigStorageChangeTarget,
         settings: StoredClientSettingsMvp,
     },
-    ConnectSavedServer,
+    ConnectSavedServer {
+        intent: GuiSavedServerConnectIntent,
+        submitted_settings: StoredClientSettingsMvp,
+    },
     DisconnectSession,
-    ConnectPublicServer,
+    ConnectPublicServer {
+        selected_server: (String, String),
+        active_settings: StoredClientSettingsMvp,
+    },
     RefreshPublicServers(Vec<(String, String)>),
     SearchMissingMedia,
     SetPlaybackPause(bool),
@@ -27,8 +33,8 @@ impl GuiPendingCompletionRequest {
             GuiPendingOperationKind::SaveConfiguration => {
                 Self::SaveConfiguration(state.configuration.to_stored_settings())
             }
-            GuiPendingOperationKind::ResetConfiguration => {
-                Self::ResetConfiguration(state.saved_configuration.clone())
+            GuiPendingOperationKind::DiscardConfigurationChanges => {
+                Self::DiscardConfigurationChanges(state.saved_configuration.clone())
             }
             GuiPendingOperationKind::ReloadConfiguration => {
                 Self::ReloadConfiguration(state.saved_configuration.clone())
@@ -38,9 +44,24 @@ impl GuiPendingCompletionRequest {
                 target: state.pending_config_storage_target.clone()?,
                 settings: state.configuration.to_stored_settings(),
             },
-            GuiPendingOperationKind::ConnectSavedServer => Self::ConnectSavedServer,
+            GuiPendingOperationKind::ConnectSavedServer => {
+                let intent = state.pending_saved_server_connect_intent?;
+                Self::ConnectSavedServer {
+                    intent,
+                    submitted_settings: state.submitted_saved_server_connect_settings(intent),
+                }
+            }
             GuiPendingOperationKind::DisconnectSession => Self::DisconnectSession,
-            GuiPendingOperationKind::ConnectPublicServer => Self::ConnectPublicServer,
+            GuiPendingOperationKind::ConnectPublicServer => {
+                let selected_server = state
+                    .selected_public_server_index()
+                    .and_then(|index| state.public_servers.servers.get(index))
+                    .map(|row| (row.label.clone(), row.address.clone()))?;
+                Self::ConnectPublicServer {
+                    selected_server,
+                    active_settings: state.connect_once_runtime_settings(),
+                }
+            }
             GuiPendingOperationKind::RefreshPublicServers => Self::RefreshPublicServers(
                 state
                     .public_servers
@@ -63,17 +84,17 @@ impl GuiPendingCompletionRequest {
             Self::SaveConfiguration(settings) => {
                 GuiShellAction::CompleteConfigurationSave(settings)
             }
-            Self::ResetConfiguration(settings) => {
-                GuiShellAction::CompleteConfigurationReset(settings)
+            Self::DiscardConfigurationChanges(settings) => {
+                GuiShellAction::CompleteDiscardConfigurationChanges(settings)
             }
             Self::ReloadConfiguration(settings) => {
                 GuiShellAction::CompleteConfigurationReload(settings)
             }
             Self::ClearGuiData => GuiShellAction::CompleteClearGuiData,
             Self::ChangeConfigStorageRoot { .. } => GuiShellAction::CancelConfigStorageRootChange,
-            Self::ConnectSavedServer => GuiShellAction::CompleteSavedServerConnect,
+            Self::ConnectSavedServer { .. } => GuiShellAction::CompleteSavedServerConnect,
             Self::DisconnectSession => GuiShellAction::CompleteSessionDisconnect,
-            Self::ConnectPublicServer => GuiShellAction::CompleteSelectedPublicServerConnect,
+            Self::ConnectPublicServer { .. } => GuiShellAction::CompleteSelectedPublicServerConnect,
             Self::RefreshPublicServers(servers) => {
                 GuiShellAction::CompletePublicServerRefresh(servers)
             }

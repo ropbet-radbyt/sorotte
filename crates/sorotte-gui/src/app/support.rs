@@ -91,11 +91,6 @@ pub(super) fn legacy_chat_input_enabled(settings: &StoredClientSettingsMvp) -> b
         .chat_input_enabled
 }
 
-pub(super) fn legacy_chat_enabled(settings: &StoredClientSettingsMvp) -> bool {
-    let interface = ClientConfig::resolve(settings).config.interface;
-    interface.chat_input_enabled || interface.chat_output_enabled
-}
-
 pub(super) fn autoplay_threshold_from_settings(settings: &StoredClientSettingsMvp) -> usize {
     match &ClientConfig::resolve(settings)
         .config

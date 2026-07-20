@@ -105,7 +105,7 @@ impl GuiPersistedConfigRuntimeOwner {
         playlist_control_available: bool,
         can_auto_advance_to_next_playlist_item: bool,
     ) -> bool {
-        let should_trigger = state.main_window.shared_playlist_enabled
+        let should_trigger = self.runtime_shared_playlist_enabled(state)
             && playlist_control_available
             && can_auto_advance_to_next_playlist_item
             && self.attached_player_observation_is_end_of_file();

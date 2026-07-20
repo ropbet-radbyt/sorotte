@@ -198,7 +198,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             action,
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                 command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
+                    can_save_configuration: false,
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: true,
@@ -270,14 +270,18 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged attached public-server connect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let connect_actions = drain_actions_except_media_index(&handle, &mut state);
-    assert_eq!(
-        connect_actions,
-        vec![GuiShellAction::CompleteSelectedPublicServerConnect]
-    );
+    assert!(matches!(
+        connect_actions.as_slice(),
+        [
+            GuiShellAction::CompleteSelectedPublicServerConnect,
+            GuiShellAction::ApplyPendingApplyRequirementsSnapshot(_),
+        ]
+    ));
     for action in connect_actions {
         assert!(state.apply(action));
     }

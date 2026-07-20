@@ -8,14 +8,12 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         ..StoredClientSettingsMvp::default()
     });
 
-    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Connection",
-        label: "Host",
-    }));
-    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
-        section: "Connection",
-        label: "Host",
-    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::ConnectionHost,
+    )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
     assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
         "widget.example".to_owned().into(),
     )));
@@ -36,32 +34,34 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
             .selected
     );
     let host = tree
-        .find("config:Connection:Host")
+        .find("settings.connection.host")
         .expect("host control should exist in widget tree");
     assert_eq!(host.kind, GuiWidgetKind::TextInput);
     assert_eq!(host.value.as_deref(), Some("widget.example"));
     assert!(host.enabled);
     assert!(host.selected);
     let player_arguments = tree
-        .find("config:Connection:Player Arguments")
+        .find("settings.player.arguments")
         .expect("player-arguments control should exist in widget tree");
     assert_eq!(player_arguments.kind, GuiWidgetKind::TextInput);
     assert!(!player_arguments.enabled);
     let room_history = tree
-        .find("config:Connection:Room History")
+        .find("settings.connection.room_history")
         .expect("room-history control should exist in widget tree");
     assert_eq!(room_history.kind, GuiWidgetKind::TextArea);
     assert!(
-        tree.find("config:Privacy:Trusted Domains").is_none(),
+        tree.find("settings.privacy.trusted_domains").is_none(),
         "privacy controls should be hidden while the connection tab is selected"
     );
+
+    assert!(state.apply(GuiShellAction::CommitConfigurationTextEdit));
 
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::PrivacyChat,
     )));
     let tree = state.configuration_widget_tree();
     let trusted_domains = tree
-        .find("config:Privacy:Trusted Domains")
+        .find("settings.privacy.trusted_domains")
         .expect("trusted-domains control should exist once the privacy tab is selected");
     assert_eq!(trusted_domains.kind, GuiWidgetKind::TextArea);
 
@@ -70,6 +70,43 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         .expect("save command should exist in widget tree");
     assert_eq!(save.kind, GuiWidgetKind::Button);
     assert!(save.enabled);
+}
+
+#[test]
+fn gui_shell_app_state_distinguishes_default_draft_and_stored_setting_origins() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectConfigurationTab(
+        GuiConfigurationTab::PlaybackSearch,
+    )));
+
+    let tree = state.configuration_widget_tree();
+    assert_eq!(
+        tree.find("settings.playback.unpause_action.origin")
+            .and_then(|node| node.value.as_deref()),
+        Some("Using application default")
+    );
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::PlaybackUnpauseAction,
+        value: "Always".to_owned().into(),
+    }));
+    let tree = state.configuration_widget_tree();
+    assert_eq!(
+        tree.find("settings.playback.unpause_action.origin")
+            .and_then(|node| node.value.as_deref()),
+        Some("Unsaved change")
+    );
+
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+    let persisted = state.configuration.to_stored_settings();
+    assert!(state.apply(GuiShellAction::CompleteConfigurationSave(persisted)));
+    let tree = state.configuration_widget_tree();
+    assert_eq!(
+        tree.find("settings.playback.unpause_action.origin")
+            .and_then(|node| node.value.as_deref()),
+        Some("Stored override")
+    );
 }
 
 #[test]
@@ -84,6 +121,7 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::NotConfigured,
                     message: "Set playerPath to mpv before connecting.".to_owned(),
+                    retry_available: false,
                 }),
             },
         ))
@@ -101,7 +139,7 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
     );
     assert!(
         !configuration
-            .find("config-command:connect")
+            .find("config-command:connect-once")
             .expect("connect button should exist")
             .enabled
     );
@@ -197,14 +235,8 @@ fn gui_shell_app_state_projects_actionable_setup_alerts_only_after_feedback() {
         GuiWidgetEguiRenderer::actions_for_button_node(&state, fix_player_path),
         vec![
             GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
-            GuiShellAction::FocusConfigurationControl {
-                section: "Connection",
-                label: "Player Path",
-            },
-            GuiShellAction::BeginConfigurationTextEdit {
-                section: "Connection",
-                label: "Player Path",
-            },
+            GuiShellAction::FocusConfigurationControl(SettingId::PlayerExecutable),
+            GuiShellAction::BeginConfigurationTextEdit(SettingId::PlayerExecutable),
         ]
     );
 }

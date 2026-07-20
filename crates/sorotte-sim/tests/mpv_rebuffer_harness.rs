@@ -924,9 +924,8 @@ impl RealMpvClient {
     ) -> Self {
         let (process, player) = MpvProcess::start(index);
         let mut player = player.into_inner();
-        // Exercise Sorotte's version-dependent network `loadfile` options
-        // against the real mpv binary used by this harness. CI runs this on
-        // both pre-0.38 and current mpv command layouts.
+        // Exercise Sorotte's network `loadfile` options against the minimum
+        // supported real mpv binary used by the required CI harness.
         player.configure_network_media_options([
             ("cache", "yes"),
             ("cache-pause", "yes"),

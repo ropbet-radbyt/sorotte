@@ -66,6 +66,7 @@ fn expected_playlist_source_states_for_entries(
 mod attached_media_open_seek;
 mod attached_state_sync;
 mod desync_slowdown;
+mod detached_saved_settings;
 mod media_search_cache;
 mod offsets_and_recent_rewind;
 mod playlist_index_and_search_seed;

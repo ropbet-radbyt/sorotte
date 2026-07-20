@@ -6,8 +6,8 @@ use super::super::remote_services::{
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiPlexPlaylistJobCancellationReason, GuiPlexPlaylistSearchResult,
     GuiPluginSelection, GuiRuntimeRequest, GuiSeekPreparationPhase, GuiSeekPreparationState,
-    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    SorotteGuiShellAppState, StoredClientSettingsMvp,
+    GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionId,
+    SettingId, SorotteGuiShellAppState, StoredClientSettingsMvp,
 };
 use sorotte_plex::PlexMediaType;
 
@@ -68,25 +68,10 @@ fn staged_update(candidate: UpdateCandidate) -> StagedUpdate {
     }
 }
 
-fn menu_action_index(
-    state: &SorotteGuiShellAppState,
-    section_title: &str,
-    action_label: &str,
-) -> (usize, usize) {
+fn menu_action_index(state: &SorotteGuiShellAppState, action_id: MenuActionId) -> (usize, usize) {
     state
         .menus
-        .sections
-        .iter()
-        .enumerate()
-        .find_map(|(section_index, section)| {
-            (section.title == section_title).then(|| {
-                section
-                    .actions
-                    .iter()
-                    .position(|action| action.label == action_label)
-                    .map(|action_index| (section_index, action_index))
-            })?
-        })
+        .action_index(action_id)
         .expect("menu action should exist")
 }
 
@@ -94,8 +79,7 @@ fn menu_action_index(
 fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
     let mut state = runtime_ready_state();
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "System",
-        label: "Update Channel",
+        id: SettingId::GeneralUpdateChannel,
         value: "dev".to_owned().into(),
     }));
     let plan = GuiShellDispatchPlan::from_shell_actions(
@@ -115,7 +99,7 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
         plan.runtime_requests,
         vec![GuiRuntimeRequest::CheckForUpdates {
             language: "en".to_owned(),
-            update_channel: Some("dev".to_owned()),
+            update_channel: None,
             user_initiated: true,
         }]
     );
@@ -128,9 +112,9 @@ fn gui_shell_dispatch_plan_routes_plugin_enablement_to_runtime_owner() {
         plugin: GuiPluginSelection::Plex,
         enabled: false,
     };
-    let plan = GuiShellDispatchPlan::from_shell_actions(&state, vec![action.clone()]);
+    let plan = GuiShellDispatchPlan::from_shell_actions(&state, vec![action]);
 
-    assert_eq!(plan.shell_actions, vec![action]);
+    assert!(plan.shell_actions.is_empty());
     assert_eq!(
         plan.pre_shell_runtime_requests,
         vec![GuiRuntimeRequest::SetPluginEnabled {
@@ -253,7 +237,7 @@ fn gui_shell_dispatch_plan_routes_plex_playlist_picker_requests_to_runtime_owner
 #[test]
 fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
     let state = runtime_ready_state();
-    let (section_index, action_index) = menu_action_index(&state, "Help", "Check for Updates");
+    let (section_index, action_index) = menu_action_index(&state, MenuActionId::CheckForUpdates);
     let select_action = GuiShellAction::SelectMenuAction {
         section_index,
         action_index,
@@ -268,7 +252,10 @@ fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
 
     assert_eq!(
         plan.shell_actions,
-        vec![select_action, GuiShellAction::TriggerSelectedMenuAction]
+        vec![
+            select_action,
+            GuiShellAction::InvokeMenuAction(MenuActionId::CheckForUpdates),
+        ]
     );
     assert_eq!(
         plan.runtime_requests,
@@ -278,6 +265,14 @@ fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
             user_initiated: true,
         }]
     );
+
+    let typed_plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::InvokeMenuAction(
+            MenuActionId::CheckForUpdates,
+        )],
+    );
+    assert_eq!(typed_plan.runtime_requests, plan.runtime_requests);
 }
 
 #[test]
@@ -698,7 +693,7 @@ fn gui_shell_dispatch_plan_routes_media_match_actions_to_runtime_requests() {
 }
 
 #[test]
-fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
+fn gui_shell_dispatch_plan_routes_media_match_settings_to_write_first_runtime_requests() {
     let state = runtime_ready_state();
     let plan = GuiShellDispatchPlan::from_shell_actions(
         &state,
@@ -713,20 +708,10 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
         ],
     );
 
+    assert!(plan.shell_actions.is_empty());
+    assert!(plan.runtime_requests.is_empty());
     assert_eq!(
-        plan.shell_actions,
-        vec![
-            GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
-            GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
-            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
-            GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
-            GuiShellAction::SetMediaMatchAutoplayPolicy(
-                sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
-            ),
-        ]
-    );
-    assert_eq!(
-        plan.runtime_requests,
+        plan.pre_shell_runtime_requests,
         vec![
             GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true),
             GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(false),

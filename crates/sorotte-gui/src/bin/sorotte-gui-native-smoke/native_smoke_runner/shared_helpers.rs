@@ -113,13 +113,11 @@ pub(super) fn navigate_to_room_surface<D: NativeGuiDriver>(
     window: D::WindowHandle,
     timeout: Duration,
 ) -> Result<(), String> {
-    navigate_to_view_with_fallback(
+    navigate_to_view_with_wait(
         driver,
         window,
-        "Room",
+        ROOM_SURFACE_AUTOMATION_ID,
         "view: room",
-        "Window",
-        "Show Users",
         timeout,
     )
 }
@@ -314,14 +312,6 @@ pub(super) fn wait_for_visible_chat_message<D: NativeGuiDriver>(
     }
 
     let _ = navigate_to_room_surface(driver, window, Duration::from_millis(800));
-
-    let _ = invoke_menu_command_with_fallback(
-        driver,
-        window,
-        "Window",
-        "Show Chat",
-        Duration::from_millis(800),
-    );
 
     if wait_for_accessible_name(
         driver,
@@ -527,6 +517,20 @@ pub(super) fn start_mock_session_server(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
+    start_mock_session_server_with_hold_timeout(
+        initial_lines,
+        first_chat_followup_lines,
+        second_chat_followup_lines,
+        Duration::from_secs(10),
+    )
+}
+
+pub(super) fn start_mock_session_server_with_hold_timeout(
+    initial_lines: &'static [&'static str],
+    first_chat_followup_lines: &'static [&'static str],
+    second_chat_followup_lines: &'static [&'static str],
+    hold_timeout: Duration,
+) -> Result<MockSessionServer, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
     listener
@@ -644,7 +648,7 @@ pub(super) fn start_mock_session_server(
         process_followup("first", first_chat_followup_lines)?;
         process_followup("second", second_chat_followup_lines)?;
 
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        let _ = release_rx.recv_timeout(hold_timeout);
         Ok(())
     });
 
@@ -769,43 +773,6 @@ pub(super) fn wait_for_named_edit_value<D: NativeGuiDriver>(
             } else {
                 Err(format!(
                     "timed out waiting for edit field {name:?} to equal {expected_value:?}; last value: {last_value:?}"
-                ))
-            };
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-pub(super) fn wait_for_edit_value_by_index<D: NativeGuiDriver>(
-    driver: &D,
-    window: D::WindowHandle,
-    edit_index: usize,
-    expected_value: &str,
-    timeout: Duration,
-) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    let mut last_value = None;
-    let mut last_error = None;
-    loop {
-        match driver.get_edit_value_by_index(window, edit_index) {
-            Ok(value) => {
-                if value == expected_value {
-                    return Ok(());
-                }
-                last_value = Some(value);
-            }
-            Err(error) => {
-                last_error = Some(error);
-            }
-        }
-        if Instant::now() >= deadline {
-            return if let Some(error) = last_error {
-                Err(format!(
-                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last read error: {error}"
-                ))
-            } else {
-                Err(format!(
-                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last value: {last_value:?}"
                 ))
             };
         }

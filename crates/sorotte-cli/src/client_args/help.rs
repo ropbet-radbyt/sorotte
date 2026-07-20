@@ -13,6 +13,10 @@ pub(crate) fn print_legacy_client_help(language: Option<&str>) {
         println!("{line}");
         println!();
     }
+    let mpv_requirement_line = format!(
+        "  Managed and explicit JSON IPC modes require mpv {} or newer.",
+        sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+    );
     let help_lines = [
         "Usage: sorotte-cli [OPTIONS]",
         "  --no-gui",
@@ -37,6 +41,7 @@ pub(crate) fn print_legacy_client_help(language: Option<&str>) {
         "  -h, --help",
         "",
         "Environment (optional mpv integration / diagnostics):",
+        mpv_requirement_line.as_str(),
         "  SOROTTE_CLIENT_CONFIG_PATH=<path>",
         "    Use this exact sorotte.ini path when no CLI config path/root is set.",
         "  SOROTTE_CLIENT_CONFIG_ROOT=<path>",

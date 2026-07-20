@@ -14,7 +14,10 @@ use sorotte_client_app::app_boundary::{
     persistence::{
         load_sorotte_ini_stored_client_settings_mvp_from_path,
         upsert_sorotte_ini_stored_client_settings_mvp_at_path,
+        upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
+        write_sorotte_ini_contents_atomically_at_path,
     },
+    state::stored_client_settings_runtime_snapshot_legacy_compatible,
     storage::{
         SorotteClientStoragePaths, SorotteClientStorageSource, current_sorotte_client_install_root,
         default_sorotte_client_config_root, ensure_sorotte_client_storage_root, normalize_path,
@@ -37,15 +40,15 @@ use super::super::media_match_support::{
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState,
+    GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter, GuiSessionTransportDriver,
     GuiThreadedTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
-    GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,
-    GuiMediaSourceProviderId, GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth,
+    GuiConfigStorageRuntimeSnapshot, GuiMediaMatchToolHealth, GuiMediaSourceProviderId,
+    GuiPersistedSettingsPatch, GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth,
     GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
-    SorotteGuiShellAppState, apply_media_match_settings_to_stored_settings,
-    browser_stream_target_kind,
+    SorotteGuiShellAppState, browser_stream_target_kind,
 };
 use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
@@ -61,21 +64,44 @@ use super::{
 };
 
 impl GuiPersistedConfigRuntimeOwner {
-    fn plugin_enablement_config_path_for_request(
-        &mut self,
+    pub(in crate::app) fn persisted_settings_config_path_for_request(
+        &self,
         projected_state: &SorotteGuiShellAppState,
     ) -> Option<PathBuf> {
         if let Some(config_path) = self.config_path.clone() {
             return Some(config_path);
         }
-        let config_path = projected_state
+        projected_state
             .config_storage
             .config_path
             .as_deref()
             .map(PathBuf::from)
-            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)?;
-        self.config_path = Some(config_path.clone());
-        Some(config_path)
+            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)
+    }
+
+    pub(in crate::app::runtime_owner) fn persist_saved_settings_patch(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        patch: &GuiPersistedSettingsPatch,
+    ) -> Result<sorotte_client_app::app_boundary::state::StoredClientSettingsMvp, String> {
+        let Some(config_path) = self.persisted_settings_config_path_for_request(projected_state)
+        else {
+            return Err("no writable GUI config path is available".to_owned());
+        };
+        let mut settings = projected_state.saved_configuration.clone();
+        patch.apply_to(&mut settings);
+        let persist_result = if patch.clears_plex_identity_on_disk() {
+            upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path(
+                &config_path,
+                &settings,
+            )
+        } else {
+            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &settings)
+        };
+        persist_result.map_err(|error| error.to_string())?;
+        self.config_path = Some(config_path);
+        self.apply_patch_to_active_session_settings(patch);
+        Ok(settings)
     }
 
     fn stop_disabled_plugin_runtime_work(
@@ -147,31 +173,8 @@ impl GuiPersistedConfigRuntimeOwner {
         plugin: GuiPluginSelection,
         enabled: bool,
     ) -> bool {
-        projected_state
-            .plugin_enablement
-            .set_enabled_for(plugin, enabled);
-        projected_state
-            .plugin_enablement
-            .apply_to_stored_settings(&mut projected_state.configuration.settings);
-        if !enabled {
-            self.stop_disabled_plugin_runtime_work(handle, projected_state, plugin);
-        }
-        let Some(config_path) = self.plugin_enablement_config_path_for_request(projected_state)
-        else {
-            Self::push_runtime_error_notification(
-                handle,
-                projected_state,
-                format!(
-                    "Could not persist {} plugin setting: no writable GUI config path is available.",
-                    plugin.label()
-                ),
-            );
-            return false;
-        };
-        if let Err(error) = upsert_sorotte_ini_stored_client_settings_mvp_at_path(
-            &config_path,
-            &projected_state.configuration.settings,
-        ) {
+        let patch = GuiPersistedSettingsPatch::PluginEnabled { plugin, enabled };
+        if let Err(error) = self.persist_saved_settings_patch(projected_state, &patch) {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -182,20 +185,24 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return false;
         }
-        let settings = projected_state.configuration.settings.clone();
-        let mut actions = vec![
-            GuiShellAction::SetPluginEnabled { plugin, enabled },
-            GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(GuiConfigurationRuntimeSnapshot {
-                draft_settings: settings.clone(),
-                saved_settings: settings,
-            }),
-        ];
+
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiPersistedSettingsPatch(patch)],
+        );
+        if !enabled {
+            self.stop_disabled_plugin_runtime_work(handle, projected_state, plugin);
+        }
+        let mut actions = Vec::new();
         if enabled && plugin == GuiPluginSelection::MediaMatching {
             actions.push(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
                 self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings),
             ));
         }
-        Self::push_actions_and_project(handle, projected_state, actions);
+        if !actions.is_empty() {
+            Self::push_actions_and_project(handle, projected_state, actions);
+        }
         true
     }
 
@@ -217,6 +224,8 @@ impl GuiPersistedConfigRuntimeOwner {
             | GuiRuntimeRequest::SetAutoplayEnabled(_)
             | GuiRuntimeRequest::SetAutoplayThreshold(_)
             | GuiRuntimeRequest::RetryPlayerLaunch
+            | GuiRuntimeRequest::RetryPlayerSettings
+            | GuiRuntimeRequest::RetryChatOsdIntegration
             | GuiRuntimeRequest::SeekOffset(_)
             | GuiRuntimeRequest::SeekToPosition(_)
             | GuiRuntimeRequest::KeepWaitingForSeekPreparation
@@ -522,9 +531,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 return self.handle_complete_toggle_playback_pause_request(handle, projected_state);
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::ConnectSavedServer,
+                GuiPendingCompletionRequest::ConnectSavedServer {
+                    intent,
+                    submitted_settings,
+                },
             ) => {
-                self.complete_saved_server_connect_runtime(handle, projected_state, true);
+                self.complete_submitted_saved_server_connect_runtime(
+                    handle,
+                    projected_state,
+                    true,
+                    intent,
+                    submitted_settings,
+                );
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::DisconnectSession,
@@ -532,9 +550,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.complete_session_disconnect_runtime(handle, projected_state);
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::ConnectPublicServer,
+                GuiPendingCompletionRequest::ConnectPublicServer {
+                    selected_server,
+                    active_settings,
+                },
             ) => {
-                return self.handle_complete_public_server_connect_request(handle, projected_state);
+                return self.handle_complete_public_server_connect_request(
+                    handle,
+                    projected_state,
+                    selected_server,
+                    active_settings,
+                );
             }
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::RefreshPublicServers(requested_servers),
@@ -569,7 +595,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::ResetConfiguration(settings),
+                GuiPendingCompletionRequest::DiscardConfigurationChanges(settings),
             ) => {
                 return self.handle_complete_configuration_reset_request(
                     handle,

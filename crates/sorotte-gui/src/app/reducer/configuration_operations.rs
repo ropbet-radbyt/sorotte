@@ -8,17 +8,25 @@ impl SorotteGuiShellAppState {
                 self.complete_configuration_save(settings)
             }
             GuiShellAction::CancelConfigurationSave => self.cancel_configuration_save(),
-            GuiShellAction::BeginConfigurationReset => self.begin_configuration_reset(),
-            GuiShellAction::CompleteConfigurationReset(settings) => {
-                self.complete_configuration_reset(settings)
+            GuiShellAction::BeginDiscardConfigurationChanges => {
+                self.begin_discard_configuration_changes()
             }
-            GuiShellAction::CancelConfigurationReset => self.cancel_configuration_reset(),
+            GuiShellAction::CompleteDiscardConfigurationChanges(settings) => {
+                self.complete_discard_configuration_changes(settings)
+            }
+            GuiShellAction::CancelDiscardConfigurationChanges => {
+                self.cancel_discard_configuration_changes()
+            }
             GuiShellAction::BeginConfigurationReload => self.begin_configuration_reload(),
             GuiShellAction::CompleteConfigurationReload(settings) => {
                 self.complete_configuration_reload(settings)
             }
             GuiShellAction::CancelConfigurationReload => self.cancel_configuration_reload(),
             GuiShellAction::BeginClearGuiData => self.begin_clear_gui_data(),
+            GuiShellAction::ConfirmClearGuiData => self.confirm_clear_gui_data(),
+            GuiShellAction::DismissClearGuiDataConfirmation => {
+                self.dismiss_clear_gui_data_confirmation()
+            }
             GuiShellAction::CompleteClearGuiData => self.complete_clear_gui_data(),
             GuiShellAction::CancelClearGuiData => self.cancel_clear_gui_data(),
             GuiShellAction::BeginConfigStorageRootChange(root) => {

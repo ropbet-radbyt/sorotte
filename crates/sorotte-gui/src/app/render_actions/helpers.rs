@@ -4,18 +4,14 @@ impl GuiWidgetEguiRenderer {
     pub(in crate::app::render_actions) fn configuration_control_identity(
         state: &SorotteGuiShellAppState,
         node: &GuiWidgetNode,
-    ) -> Option<(&'static str, &'static str, GuiDialogControlKind)> {
-        let identity = node.id.strip_prefix("config:")?;
-        let (section, label) = identity.split_once(':')?;
-        state.configuration.control_identity(section, label)
+    ) -> Option<(SettingId, GuiDialogControlKind)> {
+        state.configuration.control_identity(&node.id)
     }
 
     pub(in crate::app::render_actions) fn menu_action_identity(
         node: &GuiWidgetNode,
-    ) -> Option<(usize, usize)> {
-        let identity = node.id.strip_prefix("menus:action:")?;
-        let (section_index, action_index) = identity.split_once(':')?;
-        Some((section_index.parse().ok()?, action_index.parse().ok()?))
+    ) -> Option<MenuActionId> {
+        MenuActionId::from_automation_id(&node.id)
     }
 
     pub(in crate::app::render_actions) fn main_window_room_draft(
@@ -23,7 +19,7 @@ impl GuiWidgetEguiRenderer {
     ) -> String {
         state
             .configuration
-            .control_value("Connection", "Room")
+            .control_value(SettingId::ConnectionRoom)
             .unwrap_or_default()
             .to_owned()
     }

@@ -192,7 +192,7 @@ fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detached_room_edit() {
+fn gui_persisted_config_runtime_owner_ignores_unsaved_default_room_edit() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -223,8 +223,7 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
     );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "room9".to_owned().into(),
     }));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -238,8 +237,8 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
     assert_eq!(outbound_protocol_lines.len(), 2);
     assert!(
-        outbound_protocol_lines[0].contains(r#""room":{"name":"room9"}"#),
-        "return-to-default should target the updated detached room setting"
+        outbound_protocol_lines[0].contains(r#""room":{"name":"room1"}"#),
+        "return-to-default must use the saved room and ignore the unsaved detached draft"
     );
     assert!(
         outbound_protocol_lines[1].contains(r#""List""#),

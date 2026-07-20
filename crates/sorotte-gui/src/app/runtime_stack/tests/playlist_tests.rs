@@ -277,6 +277,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -303,21 +304,15 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
     assert!(!snapshot.shared_playlist_enabled);
     assert!(snapshot.playlist.is_empty());
     assert!(!snapshot.can_manage_playlist);
-    let menu_snapshot = actions
-        .iter()
-        .find_map(|action| match action {
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot) => Some(snapshot),
-            _ => None,
-        })
-        .expect("server playlist capability change should project a menu snapshot");
     assert!(
-        menu_snapshot
-            .action_overrides
-            .contains(&MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: false,
-            })
+        actions.iter().all(|action| !matches!(
+            action,
+            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot)
+                if snapshot.action_overrides.iter().any(|action_override|
+                    action_override.id == MenuActionId::SharedPlaylist
+                        && action_override.enabled)
+        )),
+        "a server without shared-playlist support must not enable the playlist command"
     );
 }
 
@@ -351,18 +346,10 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
     );
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
-            action_overrides: vec![
-                MenuActionRuntimeOverride {
-                    section_title: "Window",
-                    action_label: "Show Playlist",
-                    enabled: true,
-                },
-                MenuActionRuntimeOverride {
-                    section_title: "Playback",
-                    action_label: "Shared Playlist",
-                    enabled: true,
-                },
-            ],
+            action_overrides: vec![MenuActionRuntimeOverride {
+                id: MenuActionId::SharedPlaylist,
+                enabled: true,
+            }],
             tls_prompt_expected: state.menus.tls_prompt_expected,
             update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
@@ -371,6 +358,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -397,18 +385,11 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         menu_snapshot.action_overrides,
         vec![
             MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: false,
             },
             MenuActionRuntimeOverride {
-                section_title: "Playback",
-                action_label: "Shared Playlist",
-                enabled: false,
-            },
-            MenuActionRuntimeOverride {
-                section_title: "Advanced",
-                action_label: "Create Controlled Room",
+                id: MenuActionId::CreateControlledRoom,
                 enabled: true,
             },
         ]
@@ -421,20 +402,6 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
     assert!(!state.main_window.playback.can_manage_playlist);
     assert_eq!(state.selection.selected_main_window_playlist, None);
     assert_eq!(state.selection.selected_main_window_user, Some(0));
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
-            .is_some_and(|action| !action.enabled)
-    );
     assert!(
         state
             .menus
@@ -463,6 +430,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -496,18 +464,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     };
     assert_eq!(
         menu_snapshot.action_overrides,
-        vec![
-            MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
-                enabled: true,
-            },
-            MenuActionRuntimeOverride {
-                section_title: "Playback",
-                action_label: "Shared Playlist",
-                enabled: true,
-            },
-        ]
+        vec![MenuActionRuntimeOverride {
+            id: MenuActionId::SharedPlaylist,
+            enabled: true,
+        }]
     );
 }
 
@@ -521,6 +481,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -590,6 +551,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -613,8 +575,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                 action_overrides: vec![MenuActionRuntimeOverride {
-                    section_title: "Advanced",
-                    action_label: "Create Controlled Room",
+                    id: MenuActionId::CreateControlledRoom,
                     enabled: true,
                 }],
                 tls_prompt_expected: state.menus.tls_prompt_expected,
@@ -648,6 +609,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
+    sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -671,8 +633,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                 action_overrides: vec![MenuActionRuntimeOverride {
-                    section_title: "Advanced",
-                    action_label: "Create Controlled Room",
+                    id: MenuActionId::CreateControlledRoom,
                     enabled: true,
                 }],
                 tls_prompt_expected: state.menus.tls_prompt_expected,

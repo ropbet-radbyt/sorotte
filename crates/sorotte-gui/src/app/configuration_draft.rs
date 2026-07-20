@@ -9,7 +9,7 @@ use sorotte_client_core::PrivacyMode;
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
-    GuiDialogControlKind,
+    GuiDialogControlKind, GuiSettingApplyRequirement, SecretDraft, SettingId,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -23,84 +23,150 @@ mod tests;
 impl FirstRunConfigurationDialogDraft {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let state = FirstRunConfigurationDialogState::from_stored_settings(settings);
+        let sections = state.dialog_sections();
+        debug_assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.controls.len())
+                .sum::<usize>(),
+            SettingId::ALL.len(),
+            "every setting identity must have exactly one projected control",
+        );
         Self {
             launch_mode: state.launch_mode,
             compatibility_startup_entry_count: state.system.compatibility_startup_entry_count,
             ignored_startup_exception_count: state.system.ignored_startup_exception_count,
-            sections: state.dialog_sections(),
+            sections,
             settings: settings.clone(),
+            server_password: SecretDraft::Unchanged,
         }
     }
 
     pub(super) fn to_stored_settings(&self) -> StoredClientSettingsMvp {
-        self.settings.clone()
+        let mut settings = self.settings.clone();
+        match &self.server_password {
+            SecretDraft::Unchanged => {}
+            SecretDraft::Replace(value) => {
+                if !value.expose_secret().trim().is_empty() {
+                    settings.server_password = Some(value.clone());
+                }
+            }
+            SecretDraft::Clear => settings.server_password = None,
+        }
+        settings
     }
 
     pub(super) fn has_unsaved_changes_against(&self, settings: &StoredClientSettingsMvp) -> bool {
-        self.settings != *settings || self.sections != Self::from_stored_settings(settings).sections
+        self.to_stored_settings() != *settings
+            || self.sections != Self::from_stored_settings(settings).sections
     }
 
-    pub(super) fn control(&self, section: &str, label: &str) -> Option<&GuiDialogControl> {
+    pub(super) fn changed_setting_ids_against(
+        &self,
+        settings: &StoredClientSettingsMvp,
+    ) -> Vec<SettingId> {
+        let persisted = Self::from_stored_settings(settings);
+        let mut changed = SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| {
+                if *id == SettingId::ConnectionServerPassword {
+                    return !matches!(self.server_password, SecretDraft::Unchanged);
+                }
+                self.control_value(*id) != persisted.control_value(*id)
+            })
+            .collect::<Vec<_>>();
+
+        // Public-server rows are edited through their own workflow. Count-only controls do not
+        // detect a same-length replacement, so lock that typed change to the public-server ID.
+        if self.settings.public_servers != settings.public_servers
+            && !changed.contains(&SettingId::ConnectionPublicServerCount)
+        {
+            changed.push(SettingId::ConnectionPublicServerCount);
+        }
+        changed.sort_unstable();
+        changed.dedup();
+        changed
+    }
+
+    pub(super) fn merge_apply_requirement_from_settings(
+        baseline: &StoredClientSettingsMvp,
+        source: &StoredClientSettingsMvp,
+        requirement: GuiSettingApplyRequirement,
+    ) -> StoredClientSettingsMvp {
+        let mut merged = Self::from_stored_settings(baseline);
+        let source = Self::from_stored_settings(source);
+        for id in SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| id.apply_requirement() == requirement)
+        {
+            let Some(control) = source.control(id) else {
+                continue;
+            };
+            match control.kind {
+                GuiDialogControlKind::Checkbox => {
+                    let _ = merged.apply_bool_value(id, control.value == "yes");
+                }
+                kind if kind.is_editable() => {
+                    let _ = merged.apply_text_value(id, &control.value);
+                }
+                _ => {}
+            }
+        }
+        if requirement == GuiSettingApplyRequirement::Reconnect {
+            merged.settings.server_password = source.settings.server_password.clone();
+        }
+        merged.to_stored_settings()
+    }
+
+    pub(super) fn control(&self, id: SettingId) -> Option<&GuiDialogControl> {
         self.sections
             .iter()
-            .find(|candidate| candidate.title == section)
-            .and_then(|candidate| {
-                candidate
-                    .controls
-                    .iter()
-                    .find(|control| control.label == label)
-            })
+            .flat_map(|section| &section.controls)
+            .find(|control| control.id == id)
     }
 
-    pub(super) fn control_value(&self, section: &str, label: &str) -> Option<&str> {
-        self.control(section, label)
-            .map(|control| control.value.as_str())
+    pub(super) fn control_value(&self, id: SettingId) -> Option<&str> {
+        self.control(id).map(|control| control.value.as_str())
     }
 
     pub(super) fn control_identity(
         &self,
-        section: &str,
-        label: &str,
-    ) -> Option<(&'static str, &'static str, GuiDialogControlKind)> {
-        let section = self
-            .sections
-            .iter()
-            .find(|candidate| candidate.title == section)?;
-        let control = section
-            .controls
-            .iter()
-            .find(|candidate| candidate.label == label)?;
-        Some((section.title, control.label, control.kind))
+        automation_id: &str,
+    ) -> Option<(SettingId, GuiDialogControlKind)> {
+        let id = SettingId::from_automation_id(automation_id)?;
+        self.control(id).map(|control| (id, control.kind))
     }
 
-    pub(super) fn apply_text_value(&mut self, section: &str, label: &str, value: &str) -> bool {
-        let Some(kind) = self.control(section, label).map(|control| control.kind) else {
+    pub(super) fn apply_text_value(&mut self, id: SettingId, value: &str) -> bool {
+        let Some(kind) = self.control(id).map(|control| control.kind) else {
             return false;
         };
         if !kind.is_editable() || kind == GuiDialogControlKind::Checkbox {
             return false;
         }
-        let Some(control) = self.control_mut(section, label) else {
+        let Some(control) = self.control_mut(id) else {
             return false;
         };
         control.value = value.to_owned();
-        self.apply_text_value_to_settings(section, label, value);
+        self.apply_text_value_to_settings(id, value);
         self.refresh_derived_controls();
         true
     }
 
-    pub(super) fn apply_bool_value(&mut self, section: &str, label: &str, value: bool) -> bool {
-        let Some(kind) = self.control(section, label).map(|control| control.kind) else {
+    pub(super) fn apply_bool_value(&mut self, id: SettingId, value: bool) -> bool {
+        let Some(kind) = self.control(id).map(|control| control.kind) else {
             return false;
         };
         if kind != GuiDialogControlKind::Checkbox {
             return false;
         }
-        let Some(control) = self.control_mut(section, label) else {
+        let Some(control) = self.control_mut(id) else {
             return false;
         };
         control.value = bool_label(value).to_owned();
-        self.apply_bool_value_to_settings(section, label, value);
+        self.apply_bool_value_to_settings(id, value);
         self.refresh_derived_controls();
         true
     }
@@ -114,34 +180,61 @@ impl FirstRunConfigurationDialogDraft {
         self.refresh_derived_controls();
     }
 
-    fn control_mut(&mut self, section: &str, label: &str) -> Option<&mut GuiDialogControl> {
-        self.sections
-            .iter_mut()
-            .find(|candidate| candidate.title == section)
-            .and_then(|candidate| candidate.control_mut(label))
+    pub(super) fn begin_server_password_change(&mut self) {
+        self.server_password = SecretDraft::Replace(String::new().into());
+        if let Some(control) = self.control_mut(SettingId::ConnectionServerPassword) {
+            control.value.clear();
+        }
     }
 
-    fn apply_text_value_to_settings(&mut self, section: &str, label: &str, value: &str) {
-        match (section, label) {
-            ("Connection", "Host") => {
+    pub(super) fn remove_server_password(&mut self) {
+        self.server_password = SecretDraft::Clear;
+        if let Some(control) = self.control_mut(SettingId::ConnectionServerPassword) {
+            control.value.clear();
+        }
+    }
+
+    pub(super) fn cancel_server_password_change(&mut self) {
+        self.server_password = SecretDraft::Unchanged;
+        if let Some(control) = self.control_mut(SettingId::ConnectionServerPassword) {
+            control.value.clear();
+        }
+    }
+
+    pub(super) fn server_password_is_configured(&self) -> bool {
+        self.to_stored_settings()
+            .server_password
+            .as_ref()
+            .is_some_and(|value| !value.expose_secret().trim().is_empty())
+    }
+
+    fn control_mut(&mut self, id: SettingId) -> Option<&mut GuiDialogControl> {
+        self.sections
+            .iter_mut()
+            .find_map(|section| section.control_mut(id))
+    }
+
+    fn apply_text_value_to_settings(&mut self, id: SettingId, value: &str) {
+        match id {
+            SettingId::ConnectionHost => {
                 self.settings.host = normalized_editable_text(value);
             }
-            ("Connection", "Port") => {
+            SettingId::ConnectionPort => {
                 self.settings.port = parse_optional_u16(value);
             }
-            ("Connection", "Username") => {
+            SettingId::ConnectionUsername => {
                 self.settings.username = normalized_editable_text(value);
             }
-            ("Connection", "Room") => {
+            SettingId::ConnectionRoom => {
                 self.settings.room = configured_room_name_text(value);
             }
-            ("Connection", "Server Password") => {
-                self.settings.server_password = normalized_editable_text(value).map(Into::into);
+            SettingId::ConnectionServerPassword => {
+                self.server_password = SecretDraft::Replace(value.to_owned().into());
             }
-            ("Connection", "Player Path") => {
+            SettingId::PlayerExecutable => {
                 self.settings.player_path = normalized_editable_text(value);
             }
-            ("Connection", "Player Arguments") => {
+            SettingId::PlayerArguments => {
                 let player_path = self.settings.player_path.clone();
                 set_player_arguments_text_for_path(
                     &mut self.settings.per_player_arguments,
@@ -149,15 +242,15 @@ impl FirstRunConfigurationDialogDraft {
                     value,
                 );
             }
-            ("Connection", "Room History") => {
+            SettingId::ConnectionRoomHistory => {
                 self.settings.room_list = parse_room_history_text(value);
             }
-            ("Readiness", "Unpause Action") => {
+            SettingId::PlaybackUnpauseAction => {
                 self.settings.unpause_action = normalized_editable_text(value)
                     .as_deref()
                     .and_then(parse_unpause_action_mode_legacy_compatible);
             }
-            ("Readiness", "Autoplay Min Users") => {
+            SettingId::PlaybackAutoplayMinUsers => {
                 self.settings.autoplay_min_users = normalized_editable_text(value)
                     .as_deref()
                     .and_then(|value| {
@@ -168,173 +261,173 @@ impl FirstRunConfigurationDialogDraft {
                         }
                     });
             }
-            ("Privacy", "Filename Privacy") => {
+            SettingId::PrivacyFilename => {
                 self.settings.filename_privacy_mode = normalized_editable_text(value)
                     .as_deref()
                     .and_then(PrivacyMode::from_legacy_name);
             }
-            ("Privacy", "Filesize Privacy") => {
+            SettingId::PrivacyFilesize => {
                 self.settings.filesize_privacy_mode = normalized_editable_text(value)
                     .as_deref()
                     .and_then(PrivacyMode::from_legacy_name);
             }
-            ("Privacy", "Trusted Domains") => {
+            SettingId::PrivacyTrustedDomains => {
                 self.settings.trusted_domains = parse_editable_string_list_text(value);
             }
-            ("Desync", "Rewind Threshold") => {
+            SettingId::SyncRewindThreshold => {
                 self.settings.rewind_threshold_seconds = parse_optional_nonnegative_f64(value);
             }
-            ("Desync", "Fastforward Threshold") => {
+            SettingId::SyncFastforwardThreshold => {
                 self.settings.fastforward_threshold_seconds = parse_optional_nonnegative_f64(value);
             }
-            ("Desync", "Slowdown Threshold") => {
+            SettingId::SyncSlowdownThreshold => {
                 self.settings.slowdown_threshold_seconds = parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Quality") => {
+            SettingId::StreamingQuality => {
                 self.settings.streaming_quality_preset =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
-            ("Streaming", "Custom Format") => {
+            SettingId::StreamingCustomFormat => {
                 self.settings.streaming_custom_format = normalized_editable_text(value);
             }
-            ("Streaming", "Buffer Target Seconds") => {
+            SettingId::StreamingBufferTargetSeconds => {
                 self.settings.streaming_buffer_target_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Read Ahead Seconds") => {
+            SettingId::StreamingReadAheadSeconds => {
                 self.settings.streaming_read_ahead_seconds = parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Memory Cache MiB") => {
+            SettingId::StreamingMemoryCacheMib => {
                 self.settings.streaming_memory_cache_mebibytes = parse_optional_u64(value);
             }
-            ("Streaming", "Recovery Policy") => {
+            SettingId::StreamingRecoveryPolicy => {
                 self.settings.streaming_recovery_policy =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
-            ("Streaming", "Maximum Catchup Rate") => {
+            SettingId::StreamingMaximumCatchupRate => {
                 self.settings.streaming_max_catchup_rate = parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Hard Seek Threshold Seconds") => {
+            SettingId::StreamingHardSeekThresholdSeconds => {
                 self.settings.streaming_hard_seek_threshold_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Maximum Hard Seeks") => {
+            SettingId::StreamingMaximumHardSeeks => {
                 self.settings.streaming_max_hard_seeks_per_episode = parse_optional_u32(value);
             }
-            ("Streaming", "Stability Interval Seconds") => {
+            SettingId::StreamingStabilityIntervalSeconds => {
                 self.settings.streaming_stability_interval_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Recovery Retry Budget") => {
+            SettingId::StreamingRecoveryRetryBudget => {
                 self.settings.streaming_recovery_retry_budget = parse_optional_u32(value);
             }
-            ("Streaming", "Recovery Cooldown Seconds") => {
+            SettingId::StreamingRecoveryCooldownSeconds => {
                 self.settings.streaming_recovery_cooldown_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Room Buffering Policy") => {
+            SettingId::StreamingRoomBufferingPolicy => {
                 self.settings.streaming_room_buffering_policy =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
-            ("Streaming", "Room Quorum Percent") => {
+            SettingId::StreamingRoomQuorumPercent => {
                 self.settings.streaming_room_quorum_percent = parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Room Maximum Pause Seconds") => {
+            SettingId::StreamingRoomMaximumPauseSeconds => {
                 self.settings.streaming_room_max_pause_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Start Synchronization") => {
+            SettingId::StreamingStartSynchronization => {
                 self.settings.streaming_start_policy =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
-            ("Streaming", "Start Quorum Percent") => {
+            SettingId::StreamingStartQuorumPercent => {
                 self.settings.streaming_start_quorum_percent =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Start Timeout Seconds") => {
+            SettingId::StreamingStartTimeoutSeconds => {
                 self.settings.streaming_start_timeout_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Streaming", "Start Timeout Action") => {
+            SettingId::StreamingStartTimeoutAction => {
                 self.settings.streaming_start_timeout_action =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
-            ("Media Search", "First File Timeout") => {
+            SettingId::MediaLibraryFirstFileTimeout => {
                 self.settings.folder_search_first_file_timeout_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Media Search", "Directories") => {
+            SettingId::MediaLibraryDirectories => {
                 self.settings.media_search_directories = parse_editable_string_list_text(value);
             }
-            ("Media Search", "Search Timeout") => {
+            SettingId::MediaLibrarySearchTimeout => {
                 self.settings.folder_search_timeout_seconds = parse_optional_nonnegative_f64(value);
             }
-            ("Media Search", "Double Check Interval") => {
+            SettingId::MediaLibraryDoubleCheckInterval => {
                 self.settings.folder_search_double_check_interval_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Media Search", "Warning Threshold") => {
+            SettingId::MediaLibraryWarningThreshold => {
                 self.settings.folder_search_warning_threshold_seconds =
                     parse_optional_nonnegative_f64(value);
             }
-            ("Chat", "Max Lines") => {
+            SettingId::ChatMaxLines => {
                 self.settings.chat_max_lines = parse_optional_positive_i64(value);
             }
-            ("Chat", "Input Position") => {
+            SettingId::ChatInputPosition => {
                 self.settings.chat_input_position = normalized_editable_text(value);
             }
-            ("Chat", "Input Font") => {
+            SettingId::ChatInputFont => {
                 self.settings.chat_input_font_family = normalized_editable_text(value);
             }
-            ("Chat", "Input Font Size") => {
+            SettingId::ChatInputFontSize => {
                 self.settings.chat_input_relative_font_size = parse_optional_positive_i64(value);
             }
-            ("Chat", "Input Font Weight") => {
+            SettingId::ChatInputFontWeight => {
                 self.settings.chat_input_font_weight = parse_optional_nonnegative_i64(value);
             }
-            ("Chat", "Input Color") => {
+            SettingId::ChatInputColor => {
                 self.settings.chat_input_font_color = normalized_editable_text(value);
             }
-            ("Chat", "Output Mode") => {
+            SettingId::ChatOutputMode => {
                 self.settings.chat_output_mode = normalized_editable_text(value);
             }
-            ("Chat", "Output Font") => {
+            SettingId::ChatOutputFont => {
                 self.settings.chat_output_font_family = normalized_editable_text(value);
             }
-            ("Chat", "Output Font Size") => {
+            SettingId::ChatOutputFontSize => {
                 self.settings.chat_output_relative_font_size = parse_optional_positive_i64(value);
             }
-            ("Chat", "Output Font Weight") => {
+            SettingId::ChatOutputFontWeight => {
                 self.settings.chat_output_font_weight = parse_optional_nonnegative_i64(value);
             }
-            ("Chat", "Top Margin") => {
+            SettingId::ChatTopMargin => {
                 self.settings.chat_top_margin = parse_optional_nonnegative_i64(value);
             }
-            ("Chat", "Left Margin") => {
+            SettingId::ChatLeftMargin => {
                 self.settings.chat_left_margin = parse_optional_nonnegative_i64(value);
             }
-            ("Chat", "Bottom Margin") => {
+            SettingId::ChatBottomMargin => {
                 self.settings.chat_bottom_margin = parse_optional_nonnegative_i64(value);
             }
-            ("Chat", "OSD Margin") => {
+            SettingId::ChatOsdMargin => {
                 self.settings.chat_osd_margin = parse_optional_nonnegative_i64(value);
             }
-            ("OSD", "Notification Timeout") => {
+            SettingId::OsdNotificationTimeout => {
                 self.settings.notification_timeout_seconds = parse_optional_nonnegative_i64(value);
             }
-            ("OSD", "Alert Timeout") => {
+            SettingId::OsdAlertTimeout => {
                 self.settings.alert_timeout_seconds = parse_optional_nonnegative_i64(value);
             }
-            ("OSD", "Chat Timeout") => {
+            SettingId::OsdChatTimeout => {
                 self.settings.chat_timeout_seconds = parse_optional_nonnegative_i64(value);
             }
-            ("System", "Language") => {
+            SettingId::GeneralLanguage => {
                 self.settings.language = normalized_editable_text(value)
                     .as_deref()
                     .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
                     .map(str::to_owned);
             }
-            ("System", "Update Channel") => {
+            SettingId::GeneralUpdateChannel => {
                 self.settings.update_channel =
                     normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
             }
@@ -342,93 +435,93 @@ impl FirstRunConfigurationDialogDraft {
         }
     }
 
-    fn apply_bool_value_to_settings(&mut self, section: &str, label: &str, value: bool) {
-        match (section, label) {
-            ("Readiness", "Ready At Start") => {
+    fn apply_bool_value_to_settings(&mut self, id: SettingId, value: bool) {
+        match id {
+            SettingId::PlaybackReadyAtStart => {
                 self.settings.ready_at_start = Some(value);
             }
-            ("Readiness", "Autoplay") => {
+            SettingId::PlaybackAutoplay => {
                 self.settings.autoplay_initial_state = Some(value);
             }
-            ("Readiness", "Require Same Filenames") => {
+            SettingId::PlaybackRequireSameFilenames => {
                 self.settings.autoplay_require_same_filenames = Some(value);
             }
-            ("Readiness", "Shared Playlists") => {
+            SettingId::PlaybackSharedPlaylists => {
                 self.settings.shared_playlist_enabled = Some(value);
             }
-            ("Readiness", "Pause On Leave") => {
+            SettingId::PlaybackPauseOnLeave => {
                 self.settings.pause_on_leave = Some(value);
             }
-            ("Readiness", "Loop At End Of Playlist") => {
+            SettingId::PlaybackLoopPlaylist => {
                 self.settings.loop_at_end_of_playlist = Some(value);
             }
-            ("Readiness", "Loop Single Files") => {
+            SettingId::PlaybackLoopSingleFiles => {
                 self.settings.loop_single_files = Some(value);
             }
-            ("Privacy", "Trusted Domains Only") => {
+            SettingId::PrivacyTrustedDomainsOnly => {
                 self.settings.only_switch_to_trusted_domains = Some(value);
             }
-            ("Desync", "Rewind On Desync") => {
+            SettingId::SyncRewindOnDesync => {
                 self.settings.rewind_on_desync = Some(value);
             }
-            ("Desync", "Fastforward On Desync") => {
+            SettingId::SyncFastforwardOnDesync => {
                 self.settings.fastforward_on_desync = Some(value);
             }
-            ("Desync", "Slow On Desync") => {
+            SettingId::SyncSlowOnDesync => {
                 self.settings.slow_on_desync = Some(value);
             }
-            ("Desync", "Dont Slow Down With Me") => {
+            SettingId::SyncDontSlowDownWithMe => {
                 self.settings.dont_slow_down_with_me = Some(value);
             }
-            ("Streaming", "Disk Cache") => {
+            SettingId::StreamingDiskCache => {
                 self.settings.streaming_disk_cache_enabled = Some(value);
             }
-            ("Streaming", "Quality Downgrade Suggestions") => {
+            SettingId::StreamingQualityDowngradeSuggestions => {
                 self.settings.streaming_quality_downgrade_suggestions = Some(value);
             }
-            ("Chat", "Chat Input") => {
+            SettingId::ChatInputEnabled => {
                 self.settings.chat_input_enabled = Some(value);
             }
-            ("Chat", "Chat Output") => {
+            SettingId::ChatOutputEnabled => {
                 self.settings.chat_output_enabled = Some(value);
             }
-            ("Chat", "Direct Input") => {
+            SettingId::ChatDirectInput => {
                 self.settings.chat_direct_input = Some(value);
             }
-            ("Chat", "Move OSD") => {
+            SettingId::ChatMoveOsd => {
                 self.settings.chat_move_osd = Some(value);
             }
-            ("OSD", "Show OSD") => {
+            SettingId::OsdShow => {
                 self.settings.show_osd = Some(value);
             }
-            ("OSD", "Show Duration") => {
+            SettingId::OsdShowDuration => {
                 self.settings.show_duration_notification = Some(value);
             }
-            ("OSD", "Show Same Room") => {
+            SettingId::OsdShowSameRoom => {
                 self.settings.show_same_room_osd = Some(value);
             }
-            ("OSD", "Show Warnings") => {
+            SettingId::OsdShowWarnings => {
                 self.settings.show_osd_warnings = Some(value);
             }
-            ("OSD", "Show Slowdown") => {
+            SettingId::OsdShowSlowdown => {
                 self.settings.show_slowdown_osd = Some(value);
             }
-            ("OSD", "Show Noncontroller") => {
+            SettingId::OsdShowNoncontroller => {
                 self.settings.show_noncontroller_osd = Some(value);
             }
-            ("OSD", "Show Different Room") => {
+            SettingId::OsdShowDifferentRoom => {
                 self.settings.show_different_room_osd = Some(value);
             }
-            ("OSD", "Show Contact Info") => {
+            SettingId::OsdShowContactInfo => {
                 self.settings.show_contact_info = Some(value);
             }
-            ("System", "Auto Update") => {
+            SettingId::GeneralCheckForUpdatesAutomatically => {
                 self.settings.check_for_updates_automatically = Some(value);
             }
-            ("System", "Autosave Joins To List") => {
+            SettingId::GeneralAutosaveJoinsToList => {
                 self.settings.autosave_joins_to_list = Some(value);
             }
-            ("System", "Force GUI Prompt") => {
+            SettingId::GeneralForceGuiPrompt => {
                 self.settings.force_gui_prompt = Some(value);
             }
             _ => {}
@@ -436,29 +529,27 @@ impl FirstRunConfigurationDialogDraft {
     }
 
     fn refresh_derived_controls(&mut self) {
-        let baseline = FirstRunConfigurationDialogState::from_stored_settings(&self.settings)
+        let baseline_settings = self.to_stored_settings();
+        let baseline = FirstRunConfigurationDialogState::from_stored_settings(&baseline_settings)
             .dialog_sections();
         for section in &mut self.sections {
-            let Some(baseline_section) = baseline
-                .iter()
-                .find(|candidate| candidate.title == section.title)
-            else {
-                continue;
-            };
             for control in &mut section.controls {
-                let Some(baseline_control) = baseline_section
-                    .controls
+                let Some(baseline_control) = baseline
                     .iter()
-                    .find(|candidate| candidate.label == control.label)
+                    .flat_map(|candidate| &candidate.controls)
+                    .find(|candidate| candidate.id == control.id)
                 else {
                     continue;
                 };
                 if !control.kind.is_editable()
                     || control.kind == GuiDialogControlKind::Checkbox
-                    || (section.title == "Connection" && control.label == "Server Password")
-                    || (section.title == "Connection" && control.label == "Room History")
-                    || (section.title == "Connection" && control.label == "Player Arguments")
-                    || (section.title == "Media Search" && control.label == "Directories")
+                    || matches!(
+                        control.id,
+                        SettingId::ConnectionServerPassword
+                            | SettingId::ConnectionRoomHistory
+                            | SettingId::PlayerArguments
+                            | SettingId::MediaLibraryDirectories
+                    )
                 {
                     control.value = baseline_control.value.clone();
                 }

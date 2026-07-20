@@ -7,9 +7,9 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     assert!(notice.contains("[Shell App State]"));
     assert!(notice.contains("active_view=setup"));
     assert!(notice.contains("open_modal=(none)"));
-    assert!(notice.contains("[Selection] user=0, playlist=0, menu=0:0, media_directory=(none)"));
+    assert!(notice.contains("[Selection] user=0, playlist=0"));
     assert!(notice.contains(
-        "[Commands] busy=no, save_configuration=yes, reset_configuration=no, reload_configuration=yes, connect_saved_server=no, disconnect_session=no, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=yes"
+        "[Commands] busy=no, save_configuration=no, reset_configuration=no, reload_configuration=yes, connect_saved_server=no, disconnect_session=no, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=yes"
     ));
     assert!(notice.contains("[Pending] operation=(none)"));
     assert!(notice.contains("[Control Focus] focused=(none)"));
@@ -50,7 +50,7 @@ fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
         "  - Setup [layout] id=configuration-root, enabled=yes, selected=yes, value=(none)"
     ));
     assert!(preview.contains(
-        "    - Host [text-input] id=config:Connection:Host, enabled=yes, selected=no, value=(unset)"
+        "    - Host [text-input] id=settings.connection.host, enabled=yes, selected=no, value=(unset)"
     ));
     assert!(
         preview.contains(
@@ -69,30 +69,59 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 }
 
 #[test]
-fn gui_startup_public_server_outcome_loads_cache_when_it_is_empty() {
-    let settings = StoredClientSettingsMvp {
-        check_for_updates_automatically: Some(true),
-        last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
-        ..StoredClientSettingsMvp::default()
-    };
+fn gui_startup_public_server_outcome_hydrates_uninitialized_cache_independent_of_updates() {
+    for automatic_updates in [None, Some(false), Some(true)] {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: automatic_updates,
+            last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
+            public_servers: None,
+            ..StoredClientSettingsMvp::default()
+        };
+        let fetch_calls = std::cell::Cell::new(0);
 
-    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
-        Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
-    });
+        let outcome =
+            super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+                fetch_calls.set(fetch_calls.get() + 1);
+                Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
+            });
 
-    assert_eq!(
-        outcome,
-        super::super::StartupPublicServerOutcome::Loaded(vec![(
-            "Primary".to_owned(),
-            "syncplay.pl:8999".to_owned(),
-        )])
-    );
+        assert_eq!(fetch_calls.get(), 1);
+        assert_eq!(
+            outcome,
+            super::super::StartupPublicServerOutcome::Loaded(vec![(
+                "Primary".to_owned(),
+                "syncplay.pl:8999".to_owned(),
+            )]),
+            "startup hydration should ignore automatic update preference {automatic_updates:?}"
+        );
+    }
+}
+
+#[test]
+fn gui_startup_public_server_outcome_preserves_explicit_empty_cache_without_fetching() {
+    for automatic_updates in [None, Some(false), Some(true)] {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: automatic_updates,
+            public_servers: Some(Vec::new()),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let outcome =
+            super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+                panic!("an explicitly empty public-server list must prevent startup hydration")
+            });
+
+        assert_eq!(
+            outcome,
+            super::super::StartupPublicServerOutcome::AlreadyCached
+        );
+    }
 }
 
 #[test]
 fn gui_startup_public_server_outcome_reports_empty_service_response() {
     let settings = StoredClientSettingsMvp {
-        check_for_updates_automatically: Some(true),
+        check_for_updates_automatically: Some(false),
         ..StoredClientSettingsMvp::default()
     };
 
@@ -107,22 +136,38 @@ fn gui_startup_public_server_outcome_reports_empty_service_response() {
 }
 
 #[test]
-fn gui_startup_public_server_outcome_preserves_existing_cache_without_fetching() {
-    let settings = StoredClientSettingsMvp {
-        check_for_updates_automatically: Some(true),
-        public_servers: Some(vec![(
-            "Cached".to_owned(),
-            "cached.example:8999".to_owned(),
-        )]),
-        ..StoredClientSettingsMvp::default()
-    };
-
-    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
-        panic!("an existing cache must prevent startup hydration")
-    });
+fn gui_startup_public_server_outcome_reports_offline_fetch_failure() {
+    let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(
+        &StoredClientSettingsMvp::default(),
+        |_| Err("offline".to_owned()),
+    );
 
     assert_eq!(
         outcome,
-        super::super::StartupPublicServerOutcome::AlreadyCached
+        super::super::StartupPublicServerOutcome::Failed("offline".to_owned())
     );
+}
+
+#[test]
+fn gui_startup_public_server_outcome_preserves_existing_cache_without_fetching() {
+    for automatic_updates in [None, Some(false), Some(true)] {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: automatic_updates,
+            public_servers: Some(vec![(
+                "Cached".to_owned(),
+                "cached.example:8999".to_owned(),
+            )]),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let outcome =
+            super::super::gui_startup_public_server_outcome_with_fetcher(&settings, |_| {
+                panic!("an existing cache must prevent startup hydration")
+            });
+
+        assert_eq!(
+            outcome,
+            super::super::StartupPublicServerOutcome::AlreadyCached
+        );
+    }
 }

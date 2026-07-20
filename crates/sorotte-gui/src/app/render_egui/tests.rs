@@ -8,11 +8,12 @@ use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab, GuiDraftRuntimeSnapshot,
-    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
+    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlayerSetupIssue,
+    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiPlaylistDefaultSourceId,
     GuiPlexPlaylistSearchResult, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
-    MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState,
+    MainWindowRuntimeUserSnapshot, MenuActionId, SettingId, SorotteGuiShellAppState,
 };
 use crate::app::testing::support::{TEST_USERNAME, browser_runtime_user};
 use crate::app::widget_tree::{GuiWidgetKind, GuiWidgetNode};

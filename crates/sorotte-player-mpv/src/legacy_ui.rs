@@ -1,15 +1,6 @@
-use std::path::Path;
+use serde_json::{Value, json};
 
-use crate::constants::LEGACY_SYNCPLAYINTF_SCRIPT_NAME;
-
-pub(crate) fn legacy_syncplayintf_script_name_for_path(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(str::trim)
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or(LEGACY_SYNCPLAYINTF_SCRIPT_NAME)
-        .to_owned()
-}
+use crate::constants::LEGACY_SYNCPLAYINTF_PROTOCOL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacySyncplayOsdKind {
@@ -50,90 +41,64 @@ impl LegacySyncplayUiSettings {
         self.chat_input_position.trim().eq_ignore_ascii_case("Top")
     }
 
-    pub(crate) fn should_move_osd(&self) -> bool {
+    pub fn should_move_osd(&self) -> bool {
         self.chat_move_osd
             && (self.chat_output_enabled
                 || (self.chat_input_enabled && self.chat_input_position_top()))
     }
 
-    pub(crate) fn syncplayintf_options_payload(&self) -> String {
-        let options = [
-            (
-                "chatInputEnabled",
-                legacy_syncplay_bool_string_compatible(self.chat_input_enabled),
-            ),
-            (
-                "chatInputFontFamily",
-                self.chat_input_font_family.trim().to_owned(),
-            ),
-            (
-                "chatInputRelativeFontSize",
-                self.chat_input_relative_font_size.to_string(),
-            ),
-            (
-                "chatInputFontWeight",
-                self.chat_input_font_weight.to_string(),
-            ),
-            (
-                "chatInputFontUnderline",
-                legacy_syncplay_bool_string_compatible(self.chat_input_font_underline),
-            ),
-            (
-                "chatInputFontColor",
-                self.chat_input_font_color.trim().to_owned(),
-            ),
-            (
-                "chatInputPosition",
-                self.chat_input_position.trim().to_owned(),
-            ),
-            (
-                "chatOutputFontFamily",
-                self.chat_output_font_family.trim().to_owned(),
-            ),
-            (
-                "chatOutputRelativeFontSize",
-                self.chat_output_relative_font_size.to_string(),
-            ),
-            (
-                "chatOutputFontWeight",
-                self.chat_output_font_weight.to_string(),
-            ),
-            (
-                "chatOutputFontUnderline",
-                legacy_syncplay_bool_string_compatible(self.chat_output_font_underline),
-            ),
-            ("chatOutputMode", self.chat_output_mode.trim().to_owned()),
-            ("chatMaxLines", self.chat_max_lines.to_string()),
-            ("chatTopMargin", self.chat_top_margin.to_string()),
-            ("chatLeftMargin", self.chat_left_margin.to_string()),
-            ("chatBottomMargin", self.chat_bottom_margin.to_string()),
-            (
-                "chatDirectInput",
-                legacy_syncplay_bool_string_compatible(self.chat_direct_input),
-            ),
-            (
-                "notificationTimeout",
-                legacy_syncplay_timeout_seconds_string_compatible(self.notification_timeout_ms),
-            ),
-            (
-                "alertTimeout",
-                legacy_syncplay_timeout_seconds_string_compatible(self.alert_timeout_ms),
-            ),
-            (
-                "chatTimeout",
-                legacy_syncplay_timeout_seconds_string_compatible(self.chat_timeout_ms),
-            ),
-            (
-                "chatOutputEnabled",
-                legacy_syncplay_bool_string_compatible(self.chat_output_enabled),
-            ),
-        ];
+    pub fn syncplayintf_options_differ(&self, other: &Self) -> bool {
+        self.syncplayintf_settings_value() != other.syncplayintf_settings_value()
+    }
 
-        options
-            .into_iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    pub fn uses_syncplayintf_bridge(&self) -> bool {
+        self.chat_output_enabled || self.chat_input_enabled
+    }
+
+    fn syncplayintf_settings_value(&self) -> Value {
+        json!({
+            "chatInputEnabled": self.chat_input_enabled,
+            "chatInputFontFamily": self.chat_input_font_family.trim(),
+            "chatInputRelativeFontSize": self.chat_input_relative_font_size,
+            "chatInputFontWeight": self.chat_input_font_weight,
+            "chatInputFontUnderline": self.chat_input_font_underline,
+            "chatInputFontColor": self.chat_input_font_color.trim(),
+            "chatInputPosition": self.chat_input_position.trim(),
+            "chatOutputFontFamily": self.chat_output_font_family.trim(),
+            "chatOutputRelativeFontSize": self.chat_output_relative_font_size,
+            "chatOutputFontWeight": self.chat_output_font_weight,
+            "chatOutputFontUnderline": self.chat_output_font_underline,
+            "chatOutputMode": self.chat_output_mode.trim(),
+            "chatMaxLines": self.chat_max_lines,
+            "chatTopMargin": self.chat_top_margin,
+            "chatLeftMargin": self.chat_left_margin,
+            "chatBottomMargin": self.chat_bottom_margin,
+            "chatDirectInput": self.chat_direct_input,
+            "notificationTimeout": self.notification_timeout_ms as f64 / 1_000.0,
+            "alertTimeout": self.alert_timeout_ms as f64 / 1_000.0,
+            "chatTimeout": self.chat_timeout_ms as f64 / 1_000.0,
+            "chatOutputEnabled": self.chat_output_enabled,
+        })
+    }
+
+    pub(crate) fn syncplayintf_options_payload(
+        &self,
+        bridge_instance_id: &str,
+        owner_id: &str,
+        attachment_id: &str,
+        generation: u64,
+        lease_ms: u64,
+    ) -> String {
+        json!({
+            "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+            "bridgeInstanceId": bridge_instance_id,
+            "ownerId": owner_id,
+            "attachmentId": attachment_id,
+            "generation": generation,
+            "leaseMs": lease_ms,
+            "settings": self.syncplayintf_settings_value(),
+        })
+        .to_string()
     }
 }
 
@@ -166,30 +131,6 @@ impl Default for LegacySyncplayUiSettings {
             chat_timeout_ms: 7_000,
         }
     }
-}
-
-fn legacy_syncplay_bool_string_compatible(value: bool) -> String {
-    if value {
-        "True".to_owned()
-    } else {
-        "False".to_owned()
-    }
-}
-
-fn legacy_syncplay_timeout_seconds_string_compatible(duration_ms: u64) -> String {
-    if duration_ms.is_multiple_of(1_000) {
-        return (duration_ms / 1_000).to_string();
-    }
-
-    let seconds = duration_ms as f64 / 1_000.0;
-    let mut formatted = format!("{seconds:.3}");
-    while formatted.contains('.') && formatted.ends_with('0') {
-        formatted.pop();
-    }
-    if formatted.ends_with('.') {
-        formatted.pop();
-    }
-    formatted
 }
 
 pub(crate) fn sanitize_legacy_syncplay_script_message_text(message: &str) -> String {

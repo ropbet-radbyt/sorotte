@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::paths::write_sorotte_ini_contents_atomically_with_injected_pre_commit;
 use super::{
     clear_sorotte_ini_stored_client_settings_mvp_at_path,
     load_sorotte_ini_stored_client_settings_mvp_from_path,
@@ -391,6 +392,71 @@ fn path_helpers_roundtrip_settings_file_contents() {
 
     std::fs::remove_dir_all(path.parent().expect("sorotte.ini path should have parent"))
         .expect("temp test directory should be removable");
+}
+
+#[test]
+fn path_helper_atomically_replaces_existing_contents_without_temporary_files() {
+    let path = unique_temp_sorotte_ini_path("atomic-replace");
+    let parent = path.parent().expect("sorotte.ini path should have parent");
+    std::fs::create_dir_all(parent).expect("temp test directory should be created");
+    std::fs::write(
+        &path,
+        "[misc]\nkeep = yes\n[client_settings]\nname = before\n",
+    )
+    .expect("initial settings should write");
+
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+        &path,
+        &StoredClientSettingsMvp {
+            username: Some("after".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .expect("settings replacement should succeed");
+
+    let contents = std::fs::read_to_string(&path).expect("replacement should be readable");
+    assert!(contents.contains("[misc]\nkeep = yes\n"));
+    assert!(contents.contains("[client_settings]\nname = after\n"));
+    assert_eq!(
+        std::fs::read_dir(parent)
+            .expect("temp test directory should be readable")
+            .count(),
+        1,
+        "successful replacement should not leave a temporary file"
+    );
+
+    std::fs::remove_dir_all(parent).expect("temp test directory should be removable");
+}
+
+#[test]
+fn injected_pre_commit_failure_preserves_original_and_cleans_temporary_file() {
+    let path = unique_temp_sorotte_ini_path("atomic-pre-commit-failure");
+    let parent = path.parent().expect("sorotte.ini path should have parent");
+    let original = "[client_settings]\nname = before\n";
+    std::fs::create_dir_all(parent).expect("temp test directory should be created");
+    std::fs::write(&path, original).expect("initial settings should write");
+
+    let error = write_sorotte_ini_contents_atomically_with_injected_pre_commit(
+        &path,
+        b"[client_settings]\nname = after\n",
+        |_| Err(std::io::Error::other("injected pre-commit failure")),
+    )
+    .expect_err("injected failure should stop replacement");
+
+    assert!(error.to_string().contains("injected pre-commit failure"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("original settings should remain readable"),
+        original
+    );
+    assert_eq!(
+        std::fs::read_dir(parent)
+            .expect("temp test directory should be readable")
+            .count(),
+        1,
+        "failed replacement should clean its temporary file"
+    );
+
+    std::fs::remove_dir_all(parent).expect("temp test directory should be removable");
 }
 
 #[test]

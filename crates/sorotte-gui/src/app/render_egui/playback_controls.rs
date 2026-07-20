@@ -34,6 +34,7 @@ impl GuiWidgetEguiRenderer {
                         .min_size(Self::playback_button_size(ui))
                         .corner_radius(6),
                 );
+                Self::register_automation_id(ui, &response, node);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
@@ -83,6 +84,7 @@ impl GuiWidgetEguiRenderer {
                             .corner_radius(18)
                             .min_size(egui::vec2(button_width, 36.0)),
                     );
+                    Self::register_automation_id(ui, &response, node);
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,

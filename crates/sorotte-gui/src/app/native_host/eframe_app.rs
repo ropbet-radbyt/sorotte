@@ -2,6 +2,7 @@ use super::*;
 
 impl eframe::App for GuiNativeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        Self::apply_test_theme_override_from_lookup(ctx, &env_trimmed);
         let mut renderer = GuiWidgetEguiRenderer::default();
         self.state.render_shell_widgets(&mut renderer);
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
@@ -10,7 +11,7 @@ impl eframe::App for GuiNativeApp {
             renderer.show(ctx, &self.state, show_manual_pending_controls),
         );
         let mut close_requested = renderer.take_close_requested();
-        let selected_media_files = renderer.take_selected_media_files();
+        let mut selected_media_files = renderer.take_selected_media_files();
         let dropped_files_request = renderer.take_dropped_files_request();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
@@ -108,15 +109,6 @@ impl eframe::App for GuiNativeApp {
                 GuiShellAction::ShuffleEntireSharedPlaylist => {
                     playlist_shuffle_entire_requested = true;
                 }
-                GuiShellAction::RequestSeekPrompt => {
-                    requested_playback_prompt = Some(GuiPlaybackPromptKind::Seek);
-                }
-                GuiShellAction::RequestOffsetPrompt => {
-                    requested_playback_prompt = Some(GuiPlaybackPromptKind::Offset);
-                }
-                GuiShellAction::RequestPlaybackUndoSeek => {
-                    requested_undo_seek = true;
-                }
                 GuiShellAction::AnnounceAutoplayState(active) => {
                     requested_autoplay_state = Some(*active);
                 }
@@ -126,9 +118,6 @@ impl eframe::App for GuiNativeApp {
                 _ => {}
             }
         }
-        if let Some(prompt) = requested_playback_prompt {
-            self.open_playback_prompt(prompt);
-        }
         let mut state_changed = false;
         for request in dispatch_plan.pre_shell_runtime_requests {
             for action in self.runtime.dispatch_runtime_request(&self.state, request) {
@@ -136,7 +125,29 @@ impl eframe::App for GuiNativeApp {
             }
         }
         for action in dispatch_plan.shell_actions {
-            state_changed |= self.state.apply(action);
+            let native_effect = Self::native_effect_for_applied_action(&action, true);
+            let action_applied = self.state.apply(action);
+            state_changed |= action_applied;
+            if !action_applied {
+                continue;
+            }
+            match native_effect {
+                Some(GuiNativeShellEffect::PickMediaFiles) => {
+                    selected_media_files = GuiWidgetEguiRenderer::pick_media_files(&self.state);
+                }
+                Some(GuiNativeShellEffect::CloseWindow) => close_requested = true,
+                Some(GuiNativeShellEffect::OpenPlaybackPrompt(prompt)) => {
+                    requested_playback_prompt = Some(prompt);
+                }
+                Some(GuiNativeShellEffect::RequestUndoSeek) => requested_undo_seek = true,
+                Some(GuiNativeShellEffect::OpenHelp) => {
+                    ctx.open_url(egui::OpenUrl::new_tab(MenuActionId::help_url()));
+                }
+                None => {}
+            }
+        }
+        if let Some(prompt) = requested_playback_prompt {
+            self.open_playback_prompt(prompt);
         }
         for request in dispatch_plan.runtime_requests {
             for action in self.runtime.dispatch_runtime_request(&self.state, request) {

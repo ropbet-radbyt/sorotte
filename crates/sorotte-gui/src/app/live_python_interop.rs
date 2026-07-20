@@ -20,10 +20,6 @@ pub(crate) const LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE: &str = "hello 
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 #[cfg(test)]
-pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_ONE: &str = "C:/Media/gui-open-1.mkv";
-#[cfg(test)]
-pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_TWO: &str = "C:/Media/gui-open-2.mkv";
-#[cfg(test)]
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE: &str = "gui-open-1.mkv";
 #[cfg(test)]
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO: &str = "gui-open-2.mkv";

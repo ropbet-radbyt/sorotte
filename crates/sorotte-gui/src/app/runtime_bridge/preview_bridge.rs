@@ -133,7 +133,8 @@ impl GuiPreviewRuntimeBridge {
     pub(in crate::app) fn preview_pending_completion_actions(
         state: &SorotteGuiShellAppState,
     ) -> Vec<GuiShellAction> {
-        if state.pending_saved_server_connect_saves_configuration
+        if state.pending_saved_server_connect_intent
+            == Some(GuiSavedServerConnectIntent::SaveAndConnect)
             && state
                 .pending_operation
                 .as_ref()

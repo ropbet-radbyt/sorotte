@@ -4,7 +4,7 @@ use sorotte_secret::SecretValue;
 use super::shell_state::{
     GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState,
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
-    MainWindowRoomRow, MainWindowUserRow, SorotteGuiShellAppState,
+    MainWindowRoomRow, MainWindowUserRow, MenuActionId, SettingId, SorotteGuiShellAppState,
 };
 use super::support::{joined_room_name_text, nonempty_room_name_text, normalized_editable_text};
 
@@ -271,7 +271,7 @@ impl SorotteGuiShellAppState {
         if user.is_self
             && !self
                 .configuration
-                .apply_text_value("Connection", "Username", &username)
+                .apply_text_value(SettingId::ConnectionUsername, &username)
         {
             user.username = previous_username;
             self.record_action_error(
@@ -774,9 +774,8 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn toggle_main_window_playback_buttons(&mut self) -> bool {
         self.main_window.show_playback_buttons = !self.main_window.show_playback_buttons;
-        self.set_menu_action_selected(
-            "Window",
-            "Playback Buttons",
+        self.set_menu_action_checked(
+            MenuActionId::TogglePlaybackButtons,
             self.main_window.show_playback_buttons,
         );
         self.clear_action_error_and_refresh();
@@ -785,9 +784,8 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn toggle_main_window_autoplay_controls(&mut self) -> bool {
         self.main_window.show_autoplay_controls = !self.main_window.show_autoplay_controls;
-        self.set_menu_action_selected(
-            "Window",
-            "Autoplay",
+        self.set_menu_action_checked(
+            MenuActionId::ToggleAutoplayControls,
             self.main_window.show_autoplay_controls,
         );
         self.clear_action_error_and_refresh();

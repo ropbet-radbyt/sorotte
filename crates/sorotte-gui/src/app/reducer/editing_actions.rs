@@ -8,7 +8,7 @@ impl SorotteGuiShellAppState {
                     return self
                         .record_action_error("Another GUI operation is already in progress.");
                 }
-                self.pending_saved_server_connect_saves_configuration = false;
+                self.pending_saved_server_connect_intent = None;
                 self.pending_operation = Some(GuiPendingOperationState { kind });
                 self.clear_action_error_and_refresh();
                 true
@@ -21,13 +21,13 @@ impl SorotteGuiShellAppState {
                     self.outgoing_chat_message = None;
                 }
                 self.pending_operation = None;
-                self.pending_saved_server_connect_saves_configuration = false;
+                self.pending_saved_server_connect_intent = None;
                 self.clear_action_error_and_refresh();
                 true
             }
             GuiShellAction::CancelPendingOperation => self.cancel_pending_operation(),
-            GuiShellAction::FocusConfigurationControl { section, label } => {
-                let Some(control) = self.configuration.control(section, label) else {
+            GuiShellAction::FocusConfigurationControl(id) => {
+                let Some(control) = self.configuration.control(id) else {
                     return self.record_action_error(
                         "No editable configuration control exists at the requested location.",
                     );
@@ -40,17 +40,14 @@ impl SorotteGuiShellAppState {
                 let activation_count = self
                     .focused_configuration_control
                     .as_ref()
-                    .filter(|focused| focused.section == section && focused.label == label)
+                    .filter(|focused| focused.id == id)
                     .map_or(0, |focused| focused.activation_count);
                 self.focused_configuration_control = Some(GuiFocusedConfigurationControlState {
-                    section,
-                    label,
+                    id,
                     kind: control.kind,
                     activation_count,
                 });
-                if let Some(tab) = Self::configuration_tab_for_section(section) {
-                    self.select_configuration_tab(tab);
-                }
+                self.select_configuration_tab(Self::configuration_tab_for_setting(id));
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -61,21 +58,14 @@ impl SorotteGuiShellAppState {
                 };
 
                 if focused.kind == GuiDialogControlKind::Checkbox {
-                    let Some(current_value) = self
-                        .configuration
-                        .control_value(focused.section, focused.label)
-                    else {
+                    let Some(current_value) = self.configuration.control_value(focused.id) else {
                         return self.record_action_error(
                             "The focused configuration control no longer exists.",
                         );
                     };
                     let next_value = current_value != "yes";
                     let previous_settings = self.configuration.to_stored_settings();
-                    let applied = self.configuration.apply_bool_value(
-                        focused.section,
-                        focused.label,
-                        next_value,
-                    );
+                    let applied = self.configuration.apply_bool_value(focused.id, next_value);
                     if !applied {
                         return self.record_action_error(
                             "The focused checkbox control could not be toggled.",
@@ -89,15 +79,13 @@ impl SorotteGuiShellAppState {
                     return true;
                 }
 
-                let Some(control) = self.configuration.control(focused.section, focused.label)
-                else {
+                let Some(control) = self.configuration.control(focused.id) else {
                     return self.record_action_error(
                         "The focused configuration control no longer exists.",
                     );
                 };
                 self.text_edit_session = Some(GuiTextEditSessionState {
-                    section: focused.section,
-                    label: focused.label,
+                    id: focused.id,
                     buffer: GuiConfigurationTextValue::for_control(
                         control.kind,
                         control.value.clone(),
@@ -229,11 +217,7 @@ impl SorotteGuiShellAppState {
                         .record_action_error("No public server exists at the requested index.");
                 }
                 servers.remove(index);
-                settings.public_servers = if servers.is_empty() {
-                    None
-                } else {
-                    Some(servers)
-                };
+                settings.public_servers = Some(servers);
                 self.resync_from_settings(settings);
                 if self.public_servers.servers.is_empty() {
                     self.set_selected_public_server_index(None);

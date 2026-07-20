@@ -480,31 +480,44 @@ fn gui_shell_app_state_tracks_cross_surface_selection_and_preserves_it_across_re
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
         ..StoredClientSettingsMvp::default()
     });
+    let selected_menu_action = state
+        .menus
+        .action_index(MenuActionId::TogglePlaybackButtons)
+        .expect("the implemented Window visibility action should be present");
 
     assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(0)));
     assert!(state.apply(GuiShellAction::SelectMenuAction {
-        section_index: 3,
-        action_index: 1,
+        section_index: selected_menu_action.0,
+        action_index: selected_menu_action.1,
     }));
     assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Username",
+        id: SettingId::ConnectionUsername,
         value: TEST_USERNAME.to_owned().into(),
     }));
 
     assert_eq!(state.selection.selected_main_window_user, Some(0));
     assert_eq!(state.selection.selected_main_window_playlist, Some(0));
-    assert_eq!(state.selection.selected_menu_action, Some((3, 1)));
+    assert_eq!(
+        state.selection.selected_menu_action,
+        Some(selected_menu_action)
+    );
     assert_eq!(state.selection.selected_media_search_directory, Some(1));
     assert!(state.main_window.users[0].is_selected);
     assert!(state.main_window.playlist[0].is_selected);
-    assert!(state.menus.sections[3].actions[1].is_selected);
-    assert!(!state.menus.sections[3].actions[0].is_selected);
+    assert!(
+        state
+            .menus
+            .action(MenuActionId::TogglePlaybackButtons)
+            .is_some_and(|action| action.is_selected)
+    );
     assert!(!state.media_search.directories[0].is_selected);
     assert!(state.media_search.directories[1].is_selected);
 
     let rendered = state.render_lines().join("\n");
-    assert!(rendered.contains("[Selection] user=0, playlist=0, menu=3:1, media_directory=1"));
+    assert!(rendered.contains(&format!(
+        "[Selection] user=0, playlist=0, menu={}:{}, media_directory=1",
+        selected_menu_action.0, selected_menu_action.1,
+    )));
 }

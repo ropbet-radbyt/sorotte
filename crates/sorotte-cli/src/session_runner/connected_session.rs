@@ -9,6 +9,7 @@ use self::execution::{
     run_connected_session_event_plan_legacy_compatible,
 };
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use sorotte_player_mpv::SorotteBridgeHealth;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 
@@ -68,6 +69,149 @@ fn emit_application_service_events(events: Vec<ClientEvent>) {
             ClientEvent::OperationFailed { message, .. } => eprintln!("warning: {message}"),
             _ => {}
         }
+    }
+}
+
+#[derive(Debug)]
+struct CliBridgeRuntimeHealthReporter {
+    degradation_reported: bool,
+}
+
+impl CliBridgeRuntimeHealthReporter {
+    fn new(initial_health: &SorotteBridgeHealth) -> Self {
+        Self {
+            degradation_reported: matches!(initial_health, SorotteBridgeHealth::Degraded(_)),
+        }
+    }
+
+    fn line_for_transition(&mut self, health: &SorotteBridgeHealth) -> Option<String> {
+        match health {
+            SorotteBridgeHealth::Degraded(failure) if !self.degradation_reported => {
+                self.degradation_reported = true;
+                Some(format!(
+                    "warning: mpv remains ready, but Chat/OSD integration degraded at runtime: {}",
+                    failure.reason
+                ))
+            }
+            SorotteBridgeHealth::Ready if self.degradation_reported => {
+                self.degradation_reported = false;
+                Some("info: mpv Chat/OSD integration recovered".to_owned())
+            }
+            SorotteBridgeHealth::Disabled => {
+                self.degradation_reported = false;
+                None
+            }
+            SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering
+            | SorotteBridgeHealth::Degraded(_) => None,
+        }
+    }
+}
+
+fn drain_cli_bridge_runtime_health_transitions_to_sink(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliBridgeRuntimeHealthReporter,
+    mut emit: impl FnMut(String),
+) {
+    let transitions = runtime.with_player_io(|player| {
+        std::iter::from_fn(|| player.take_sorotte_bridge_health_transition_nonblocking())
+            .collect::<Vec<_>>()
+    });
+    for health in transitions {
+        if let Some(line) = reporter.line_for_transition(&health) {
+            emit(line);
+        }
+    }
+}
+
+fn report_cli_bridge_runtime_health_transitions(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    reporter: &mut CliBridgeRuntimeHealthReporter,
+) {
+    drain_cli_bridge_runtime_health_transitions_to_sink(runtime, reporter, |line| {
+        eprintln!("{line}");
+    });
+}
+
+#[cfg(test)]
+mod bridge_runtime_health_reporter_tests {
+    use super::*;
+    use sorotte_player_mpv::{
+        LegacySyncplayUiSettings, SorotteBridgeFailure, SorotteBridgeFailureKind,
+    };
+
+    fn degraded(reason: &str) -> SorotteBridgeHealth {
+        SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
+            kind: SorotteBridgeFailureKind::LeaseBusy,
+            reason: reason.to_owned(),
+        })
+    }
+
+    #[test]
+    fn cli_runtime_health_reporter_logs_each_degradation_and_recovery_once() {
+        let mut reporter = CliBridgeRuntimeHealthReporter::new(&SorotteBridgeHealth::Ready);
+
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .is_none()
+        );
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Recovering)
+                .is_none()
+        );
+        assert_eq!(
+            reporter
+                .line_for_transition(&degraded("another owner holds the input lease"))
+                .as_deref(),
+            Some(
+                "warning: mpv remains ready, but Chat/OSD integration degraded at runtime: another owner holds the input lease"
+            )
+        );
+        assert!(
+            reporter
+                .line_for_transition(&degraded("same degradation repeated"))
+                .is_none()
+        );
+        assert_eq!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .as_deref(),
+            Some("info: mpv Chat/OSD integration recovered")
+        );
+        assert!(
+            reporter
+                .line_for_transition(&SorotteBridgeHealth::Ready)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cli_player_pump_consumes_runtime_degradation_transition_only_once() {
+        let (mut player, _release_count) =
+            MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(LegacySyncplayUiSettings {
+                chat_move_osd: false,
+                ..LegacySyncplayUiSettings::default()
+            });
+        let mut reporter = CliBridgeRuntimeHealthReporter::new(&player.sorotte_bridge_health());
+        player.mark_sorotte_bridge_degraded(
+            SorotteBridgeFailureKind::LeaseBusy,
+            "runtime lease reacquisition was rejected",
+        );
+        let mut runtime = ClientApplication::with_default_session(player);
+        let mut lines = Vec::new();
+
+        drain_cli_bridge_runtime_health_transitions_to_sink(&mut runtime, &mut reporter, |line| {
+            lines.push(line)
+        });
+        drain_cli_bridge_runtime_health_transitions_to_sink(&mut runtime, &mut reporter, |line| {
+            lines.push(line)
+        });
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("runtime lease reacquisition was rejected"));
+        assert!(runtime.player().is_connected());
     }
 }
 
@@ -210,6 +354,7 @@ where
 {
     let diagnostics_config = client_loop_diagnostics_config(None);
     let plex_config = cli_plex_config_from_env_and_stored_settings(None);
+    let mut network_options_health_reporter = CliNetworkOptionsHealthReporter::default();
     run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
         stream,
         ConnectedSessionLaunchContext {
@@ -222,6 +367,7 @@ where
             file_difference_sink,
             diagnostics_config,
             plex_config: &plex_config,
+            network_options_health_reporter: &mut network_options_health_reporter,
         },
     )
     .await
@@ -241,6 +387,7 @@ where
     pub(crate) file_difference_sink: &'a mut G,
     pub(crate) diagnostics_config: ClientLoopDiagnosticsConfig,
     pub(crate) plex_config: &'a PlexClientConfig,
+    pub(crate) network_options_health_reporter: &'a mut CliNetworkOptionsHealthReporter,
 }
 
 pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<
@@ -264,6 +411,7 @@ where
         file_difference_sink,
         diagnostics_config,
         plex_config,
+        network_options_health_reporter,
     } = launch;
     let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
         && (runtime.session().readiness_snapshot().is_some()
@@ -304,7 +452,11 @@ where
     let hello_line = encode_message_line(&hello_message)?;
     let stream: Box<dyn ConnectedSessionAsyncStream> =
         if start_tls_negotiation_enabled_legacy_compatible() {
-            negotiate_start_tls_legacy_compatible(stream, &config.host).await?
+            await_with_player_integration_maintenance(
+                runtime,
+                negotiate_start_tls_legacy_compatible(stream, &config.host),
+            )
+            .await?
         } else {
             Box::new(stream)
         };
@@ -318,9 +470,13 @@ where
             )
             .await,
     );
-    write_protocol_line(&mut writer, &hello_line).await?;
+    await_with_player_integration_maintenance(
+        runtime,
+        write_protocol_line(&mut writer, &hello_line),
+    )
+    .await?;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
-    publish_pending_local_file_updates(runtime, config)?;
+    publish_pending_local_file_updates(runtime, config, network_options_health_reporter)?;
     flush_runtime_protocol_lines(runtime, &mut writer).await?;
     emit_application_service_events(runtime.pump_plex_service().await);
 
@@ -349,6 +505,8 @@ where
     };
     let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
     let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
+    let mut bridge_health_reporter =
+        CliBridgeRuntimeHealthReporter::new(&runtime.player().sorotte_bridge_health());
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
@@ -412,6 +570,7 @@ where
                                     seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                     readiness_notification_state: &mut readiness_notification_state,
                                     file_difference_state: &mut file_difference_state,
+                                    network_options_health_reporter,
                                     notification_sink,
                                     file_difference_sink,
                                 },
@@ -463,6 +622,7 @@ where
                             seek_preparation_notification_state: &mut seek_preparation_notification_state,
                             readiness_notification_state: &mut readiness_notification_state,
                             file_difference_state: &mut file_difference_state,
+                            network_options_health_reporter,
                             notification_sink,
                             file_difference_sink,
                         },
@@ -480,6 +640,10 @@ where
                 emit_application_service_events(runtime.pump_plex_service().await);
             }
             _ = player_chat_input_tick.tick() => {
+                report_cli_bridge_runtime_health_transitions(
+                    runtime,
+                    &mut bridge_health_reporter,
+                );
                 if drain_player_chat_input_legacy_compatible(runtime)? {
                     flush_runtime_protocol_lines(runtime, &mut writer).await?;
                 }
@@ -557,6 +721,7 @@ where
                                 seek_preparation_notification_state: &mut seek_preparation_notification_state,
                                 readiness_notification_state: &mut readiness_notification_state,
                                 file_difference_state: &mut file_difference_state,
+                                network_options_health_reporter,
                                 notification_sink,
                                 file_difference_sink,
                             },
@@ -574,9 +739,29 @@ where
 mod tests {
     use super::*;
     use sorotte_client_core::ClientSession;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    struct StartTlsMaintenancePlayer(Arc<AtomicUsize>);
+
+    impl PlayerAdapter for StartTlsMaintenancePlayer {
+        fn name(&self) -> &'static str {
+            "starttls-maintenance-test-player"
+        }
+
+        fn maintain_runtime_leases_nonblocking(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            panic!("async connection waits must not invoke blocking player maintenance");
+        }
+    }
 
     #[test]
     fn reconnect_token_is_added_only_to_same_room_hello() {
@@ -614,6 +799,8 @@ mod tests {
             .local_addr()
             .expect("listener should have local addr");
 
+        let maintenance_calls = Arc::new(AtomicUsize::new(0));
+        let server_maintenance_calls = Arc::clone(&maintenance_calls);
         let server_task = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("server should accept");
             let (reader, mut writer) = socket.into_split();
@@ -628,6 +815,9 @@ mod tests {
                 tls_line.contains(r#""TLS":{"startTLS":"send"}"#),
                 "client should request StartTLS before Hello"
             );
+            while server_maintenance_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
             writer
                 .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
                 .await
@@ -641,9 +831,23 @@ mod tests {
         let stream = TcpStream::connect(addr)
             .await
             .expect("client should connect to test server");
-        let _stream = negotiate_start_tls_legacy_compatible(stream, "127.0.0.1")
-            .await
-            .expect("plain TLS fallback should complete");
+        let mut runtime = ClientApplication::with_default_session(StartTlsMaintenancePlayer(
+            Arc::clone(&maintenance_calls),
+        ));
+        let _stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            await_with_player_integration_maintenance(
+                &mut runtime,
+                negotiate_start_tls_legacy_compatible(stream, "127.0.0.1"),
+            ),
+        )
+        .await
+        .expect("STARTTLS fallback should remain serviced")
+        .expect("plain TLS fallback should complete");
+        assert!(
+            maintenance_calls.load(Ordering::SeqCst) >= 1,
+            "STARTTLS response wait must maintain player integrations"
+        );
 
         server_task
             .await

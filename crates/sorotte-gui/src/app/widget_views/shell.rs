@@ -44,7 +44,11 @@ impl SorotteGuiShellAppState {
         let items = [
             ("busy", "Busy", self.pending_operation.is_some()),
             ("save", "Save", self.commands.can_save_configuration),
-            ("reset", "Reset", self.commands.can_reset_configuration),
+            (
+                "discard",
+                "Discard changes",
+                self.commands.can_reset_configuration,
+            ),
             ("reload", "Reload", self.commands.can_reload_configuration),
             (
                 "connect-saved-server",
@@ -139,7 +143,10 @@ impl SorotteGuiShellAppState {
                 .enumerate()
                 .map(|(index, issue)| {
                     GuiWidgetNode::leaf(
-                        format!("shell:validation:issue:{index}"),
+                        issue.setting_id.map_or_else(
+                            || format!("shell:validation:issue:{index}"),
+                            |id| format!("{}.validation", id.automation_id()),
+                        ),
                         format!("{} / {}", issue.scope, issue.label),
                         GuiWidgetKind::ListItem,
                         Some(issue.message.clone()),
@@ -159,15 +166,7 @@ impl SorotteGuiShellAppState {
     pub(crate) fn quick_actions_widget_tree(&self) -> GuiWidgetNode {
         let can_open_media_file = self
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "File")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Open Media File")
-            })
+            .action(MenuActionId::OpenMedia)
             .is_some_and(|action| action.enabled);
 
         GuiWidgetNode::branch(

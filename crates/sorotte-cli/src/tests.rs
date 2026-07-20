@@ -2,7 +2,7 @@
 use super::spawn_legacy_external_player_from_spec_legacy_compatible;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-    ConnectedSessionExit, LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, LegacyClientArgOverrides,
+    ConnectedSessionExit, LegacyClientArgOverrides,
     LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
     LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
     ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
@@ -10,6 +10,7 @@ use super::{
     StoredClientSettingsMvp, apply_chat_policy_overrides, apply_client_behavior_overrides,
     apply_legacy_client_arg_managed_mpv_overrides, apply_legacy_client_arg_overrides,
     apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
+    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
     apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
     apply_stored_legacy_startup_player_defaults_if_arg_absent,
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
@@ -18,7 +19,10 @@ use super::{
     cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
     controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
     controller_auth_transition_notification_message, create_client_runtime,
-    create_client_runtime_with_managed_mpv_support, create_client_session,
+    create_client_runtime_with_managed_mpv_support,
+    create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
+    create_client_runtime_with_prepared_mpv_for_test, create_client_session,
     flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
     flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
     flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
@@ -27,7 +31,6 @@ use super::{
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
     legacy_utc_timestamp_string_legacy_compatible,
     load_sorotte_cli_stored_settings_mvp_legacy_compatible,
     managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,
@@ -46,7 +49,7 @@ use super::{
     persist_sorotte_cli_stored_settings_mvp_legacy_compatible,
     player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
     protocol_lines_for_startup_playlist_load_from_file_legacy_compatible,
-    reconnect_correction_diagnostics_alert_thresholds_from_env,
+    publish_pending_local_file_updates, reconnect_correction_diagnostics_alert_thresholds_from_env,
     reconnect_correction_diagnostics_format_from_env,
     reconnect_correction_metrics_delta_alert_lines, reconnect_correction_metrics_delta_json_line,
     reconnect_correction_metrics_delta_message, reconnect_correction_state_snapshot_json_line,
@@ -83,7 +86,10 @@ use sorotte_client_core::{
     ReconnectTransitionNotification, UnpauseActionMode, UserChangeNotification,
 };
 use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_mpv::{
+    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailure, SorotteBridgeFailureKind,
+    SorotteBridgeHealth,
+};
 #[cfg(windows)]
 use sorotte_protocol::HelloPayload;
 use sorotte_protocol::{

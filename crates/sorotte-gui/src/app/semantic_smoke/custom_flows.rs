@@ -166,6 +166,9 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         if !clear_state.apply(GuiShellAction::BeginClearGuiData) {
             return Err("failed to begin semantic clear-GUI-data flow".to_owned());
         }
+        if !clear_state.apply(GuiShellAction::ConfirmClearGuiData) {
+            return Err("failed to confirm semantic clear-GUI-data flow".to_owned());
+        }
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ClearGuiData,
         ));
@@ -364,7 +367,8 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             );
         }
         connect_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::ConnectPublicServer,
+            GuiPendingCompletionRequest::from_state(&connect_state)
+                .expect("staged semantic connect should capture its submitted public server"),
         ));
         connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
         let connect_actions = connect_handle.drain_actions();
@@ -425,20 +429,39 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         if !refresh_state.apply(GuiShellAction::BeginPublicServerRefresh) {
             return Err("detached semantic refresh flow could not begin refresh".to_owned());
         }
-        refresh_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::RefreshPublicServers(vec![
-                (
-                    " Detached Primary ".to_owned(),
-                    " detached.example:8999 ".to_owned(),
-                ),
-                ("Duplicate".to_owned(), "DETACHED.EXAMPLE:8999".to_owned()),
-                (
-                    "Detached Backup".to_owned(),
-                    "backup.example:9000".to_owned(),
-                ),
-            ]),
-        ));
-        refresh_owner.pump_compatibility_state(&refresh_handle, &refresh_state);
+        let requested_servers = refresh_state
+            .public_servers
+            .servers
+            .iter()
+            .map(|row| (row.label.clone(), row.address.clone()))
+            .collect();
+        let fetch_calls = std::cell::Cell::new(0_u8);
+        let mut projected_refresh_state = refresh_state.clone();
+        if !refresh_owner.handle_complete_public_server_refresh_request_with_fetcher(
+            &refresh_handle,
+            &mut projected_refresh_state,
+            requested_servers,
+            |_language| {
+                fetch_calls.set(fetch_calls.get() + 1);
+                Ok(vec![
+                    (
+                        "Remote Primary".to_owned(),
+                        "remote.example:8999".to_owned(),
+                    ),
+                    (
+                        "Remote Backup".to_owned(),
+                        "remote-backup.example:9000".to_owned(),
+                    ),
+                ])
+            },
+        ) {
+            return Err("detached semantic refresh flow rejected the fetch".to_owned());
+        }
+        if fetch_calls.get() != 1 {
+            return Err(
+                "detached semantic refresh flow did not invoke its fetcher once".to_owned(),
+            );
+        }
         let refresh_actions = refresh_handle.drain_actions();
         if !refresh_actions.iter().any(|action| {
             matches!(
@@ -446,13 +469,16 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 GuiShellAction::CompletePublicServerRefresh(servers)
                     if servers
                         == &vec![
-                            ("Detached Primary".to_owned(), "detached.example:8999".to_owned()),
-                            ("Detached Backup".to_owned(), "backup.example:9000".to_owned()),
+                            ("Remote Primary".to_owned(), "remote.example:8999".to_owned()),
+                            (
+                                "Remote Backup".to_owned(),
+                                "remote-backup.example:9000".to_owned(),
+                            ),
                         ]
             )
         }) {
             return Err(
-                "detached semantic refresh flow did not normalize the disconnected public-server rows"
+                "detached semantic refresh flow did not apply the fetched public-server replacement"
                     .to_owned(),
             );
         }

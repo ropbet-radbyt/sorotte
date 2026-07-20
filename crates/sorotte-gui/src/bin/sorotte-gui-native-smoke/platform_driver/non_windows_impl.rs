@@ -1,4 +1,8 @@
-use super::{NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver, PlatformWindowHandle};
+use super::{
+    NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver,
+    PlatformWindowHandle,
+};
+use std::path::Path;
 
 #[cfg(not(target_os = "windows"))]
 impl NativeGuiDriver for PlatformNativeGuiDriver {
@@ -9,6 +13,15 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     }
 
     fn prepare_window_for_smoke(&self, _window: Self::WindowHandle) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn prepare_window_for_dimensions(
+        &self,
+        _window: Self::WindowHandle,
+        _width: i32,
+        _height: i32,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -46,6 +59,13 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
+    fn accessibility_nodes(
+        &self,
+        _window: Self::WindowHandle,
+    ) -> Result<Vec<NativeAccessibilityNode>, String> {
+        Err("native accessibility snapshots are currently implemented only on Windows".to_owned())
+    }
+
     fn top_level_menu_labels(&self, _window: Self::WindowHandle) -> Result<Vec<String>, String> {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
@@ -73,28 +93,11 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
-    fn get_edit_value_by_index(
-        &self,
-        _window: Self::WindowHandle,
-        _edit_index: usize,
-    ) -> Result<String, String> {
-        Err("native smoke is currently implemented only on Windows".to_owned())
-    }
-
     fn get_named_edit_value(
         &self,
         _window: Self::WindowHandle,
         _name: &str,
     ) -> Result<String, String> {
-        Err("native smoke is currently implemented only on Windows".to_owned())
-    }
-
-    fn set_edit_value_by_index(
-        &self,
-        _window: Self::WindowHandle,
-        _edit_index: usize,
-        _value: &str,
-    ) -> Result<(), String> {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
@@ -117,7 +120,28 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
+    fn capture_window_png(
+        &self,
+        _window: Self::WindowHandle,
+        _output_path: &Path,
+    ) -> Result<(), String> {
+        Err("native window PNG capture is currently implemented only on Windows".to_owned())
+    }
+
     fn close_window(&self, _window: Self::WindowHandle) -> Result<(), String> {
         Err("native smoke is currently implemented only on Windows".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_png_capture_reports_unsupported_platform() {
+        let error = PlatformNativeGuiDriver
+            .capture_window_png((), Path::new("unused.png"))
+            .expect_err("non-Windows capture must report that it is unavailable");
+        assert!(error.contains("implemented only on Windows"));
     }
 }

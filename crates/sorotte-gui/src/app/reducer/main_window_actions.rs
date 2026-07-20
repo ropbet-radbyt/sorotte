@@ -80,8 +80,8 @@ impl SorotteGuiShellAppState {
                 }
                 had_notifications
             }
-            GuiShellAction::BeginConfigurationTextEdit { section, label } => {
-                let Some(control) = self.configuration.control(section, label) else {
+            GuiShellAction::BeginConfigurationTextEdit(id) => {
+                let Some(control) = self.configuration.control(id) else {
                     return self.record_action_error(
                         "No editable configuration control exists at the requested location.",
                     );
@@ -92,17 +92,14 @@ impl SorotteGuiShellAppState {
                     );
                 }
                 self.text_edit_session = Some(GuiTextEditSessionState {
-                    section,
-                    label,
+                    id,
                     buffer: GuiConfigurationTextValue::for_control(
                         control.kind,
                         control.value.clone(),
                     ),
                     is_dirty: false,
                 });
-                if let Some(tab) = Self::configuration_tab_for_section(section) {
-                    self.select_configuration_tab(tab);
-                }
+                self.select_configuration_tab(Self::configuration_tab_for_setting(id));
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -114,7 +111,7 @@ impl SorotteGuiShellAppState {
                 };
                 let current_value = self
                     .configuration
-                    .control_value(session.section, session.label)
+                    .control_value(session.id)
                     .unwrap_or("(missing)")
                     .to_owned();
                 session.is_dirty = buffer.expose_for_ui() != current_value;
@@ -129,11 +126,9 @@ impl SorotteGuiShellAppState {
                     );
                 };
                 let previous_settings = self.configuration.to_stored_settings();
-                let applied = self.configuration.apply_text_value(
-                    session.section,
-                    session.label,
-                    session.buffer.expose_for_config_apply(),
-                );
+                let applied = self
+                    .configuration
+                    .apply_text_value(session.id, session.buffer.expose_for_config_apply());
                 if !applied {
                     return self.record_action_error(
                         "Configuration text-edit session could not be committed.",
@@ -141,6 +136,38 @@ impl SorotteGuiShellAppState {
                 }
                 self.text_edit_session = None;
                 self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::BeginServerPasswordChange => {
+                if self.pending_operation.is_some() {
+                    return self
+                        .record_action_error("Password changes are unavailable while busy.");
+                }
+                self.configuration.begin_server_password_change();
+                self.text_edit_session = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::RemoveServerPassword => {
+                if self.pending_operation.is_some() {
+                    return self.record_action_error("Password removal is unavailable while busy.");
+                }
+                let previous_settings = self.configuration.to_stored_settings();
+                self.configuration.remove_server_password();
+                self.text_edit_session = None;
+                self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CancelServerPasswordChange => {
+                if self.pending_operation.is_some() {
+                    return self.record_action_error(
+                        "Canceling a password change is unavailable while busy.",
+                    );
+                }
+                self.configuration.cancel_server_password_change();
+                self.text_edit_session = None;
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -238,10 +265,7 @@ impl SorotteGuiShellAppState {
             GuiShellAction::CancelPlaybackPauseToggle => self.cancel_playback_pause_toggle(),
             GuiShellAction::AnnouncePlaybackPaused => self.announce_playback_pause_state(true),
             GuiShellAction::AnnouncePlaybackResumed => self.announce_playback_pause_state(false),
-            GuiShellAction::RequestSeekPrompt
-            | GuiShellAction::RequestOffsetPrompt
-            | GuiShellAction::RequestPlaybackUndoSeek
-            | GuiShellAction::RequestSeekPreparationKeepWaiting
+            GuiShellAction::RequestSeekPreparationKeepWaiting
             | GuiShellAction::RequestSeekPreparationCancel
             | GuiShellAction::RequestSeekPreparationJoinNearest => {
                 self.request_main_window_playback_control()

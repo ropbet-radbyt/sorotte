@@ -244,7 +244,14 @@ pub(super) fn invoke_named_control_with_wait<D: NativeGuiDriver>(
                         .map(|names| {
                             render_accessible_name_snapshot_for_patterns(
                                 &names,
-                                &[name, "Save", "Reset", "Reload", "Configuration", "view:"],
+                                &[
+                                    name,
+                                    "Save",
+                                    "Discard changes",
+                                    "Reload",
+                                    "Configuration",
+                                    "view:",
+                                ],
                             )
                         })
                         .unwrap_or_else(|_| "unavailable".to_owned());
@@ -261,7 +268,14 @@ pub(super) fn invoke_named_control_with_wait<D: NativeGuiDriver>(
                 last_snapshot = driver.accessible_names(window).ok().map(|names| {
                     render_accessible_name_snapshot_for_patterns(
                         &names,
-                        &[name, "Save", "Reset", "Reload", "Configuration", "view:"],
+                        &[
+                            name,
+                            "Save",
+                            "Discard changes",
+                            "Reload",
+                            "Configuration",
+                            "view:",
+                        ],
                     )
                 });
             }
@@ -360,6 +374,30 @@ pub(super) fn invoke_menu_command_with_fallback<D: NativeGuiDriver>(
     }
 }
 
+pub(super) fn navigate_to_view_with_wait<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    button_name: &str,
+    view_name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if let Ok(accessible_names) = driver.accessible_names(window)
+        && contains_accessible_name(&accessible_names, view_name)
+    {
+        return Ok(());
+    }
+
+    let view_timeout = timeout.min(Duration::from_millis(800));
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        button_name,
+        NativeControlKind::Button,
+        timeout,
+    )
+    .and_then(|_| wait_for_accessible_name(driver, window, view_name, view_timeout))
+}
+
 pub(super) fn navigate_to_view_with_fallback<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -369,21 +407,8 @@ pub(super) fn navigate_to_view_with_fallback<D: NativeGuiDriver>(
     fallback_command_name: &str,
     timeout: Duration,
 ) -> Result<(), String> {
-    if let Ok(accessible_names) = driver.accessible_names(window)
-        && contains_accessible_name(&accessible_names, view_name)
-    {
-        return Ok(());
-    }
-
-    let sidebar_timeout = timeout.min(Duration::from_millis(800));
-    let sidebar_result = invoke_named_control_with_wait(
-        driver,
-        window,
-        button_name,
-        NativeControlKind::Button,
-        timeout,
-    )
-    .and_then(|_| wait_for_accessible_name(driver, window, view_name, sidebar_timeout));
+    let sidebar_result =
+        navigate_to_view_with_wait(driver, window, button_name, view_name, timeout);
     if sidebar_result.is_ok() {
         return Ok(());
     }

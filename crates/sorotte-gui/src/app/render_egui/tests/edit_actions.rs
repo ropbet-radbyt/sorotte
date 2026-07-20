@@ -8,18 +8,18 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         GuiConfigurationTab::Overview,
     )));
     let configuration_tree = state.configuration_widget_tree();
-    let host = configuration_tree.find("config:Connection:Host").unwrap();
+    let host = configuration_tree.find("settings.connection.host").unwrap();
     let autoplay = configuration_tree
-        .find("config:Readiness:Autoplay")
+        .find("settings.playback.autoplay")
         .unwrap();
     let trusted_domains = configuration_tree
-        .find("config:Privacy:Trusted Domains")
+        .find("settings.privacy.trusted_domains")
         .unwrap();
     let unpause_action = configuration_tree
-        .find("config:Readiness:Unpause Action")
+        .find("settings.playback.unpause_action")
         .unwrap();
     let update_channel = configuration_tree
-        .find("config:System:Update Channel")
+        .find("settings.general.update_channel")
         .unwrap();
 
     assert_eq!(
@@ -31,16 +31,14 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             false,
         ),
         Some(vec![GuiShellAction::EditConfigurationText {
-            section: "Connection",
-            label: "Host",
+            id: SettingId::ConnectionHost,
             value: "syncplay.example".to_owned().into(),
         }])
     );
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_checkbox_node(&state, autoplay, true),
         Some(GuiShellAction::EditConfigurationBool {
-            section: "Readiness",
-            label: "Autoplay",
+            id: SettingId::PlaybackAutoplay,
             value: true,
         })
     );
@@ -53,8 +51,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             false,
         ),
         Some(vec![GuiShellAction::EditConfigurationText {
-            section: "Privacy",
-            label: "Trusted Domains",
+            id: SettingId::PrivacyTrustedDomains,
             value: "youtube.com; *.example.com/videos".to_owned().into(),
         }])
     );
@@ -113,8 +110,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         ),
         Some(vec![
             GuiShellAction::EditConfigurationText {
-                section: "Connection",
-                label: "Room",
+                id: SettingId::ConnectionRoom,
                 value: "  TeamRoom  ".to_owned().into(),
             },
             GuiShellAction::JoinMainWindowRoom("  TeamRoom  ".to_owned()),
@@ -130,8 +126,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         ),
         Some(vec![
             GuiShellAction::EditConfigurationText {
-                section: "Connection",
-                label: "Room",
+                id: SettingId::ConnectionRoom,
                 value: "   ".to_owned().into(),
             },
             GuiShellAction::JoinMainWindowRoom("   ".to_owned()),

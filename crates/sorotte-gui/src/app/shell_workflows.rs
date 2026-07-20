@@ -3,7 +3,7 @@ use super::shell_state::{
     GuiConfigurationTab, GuiShellModal, GuiShellView, GuiTransientNotification,
     GuiTransientNotificationLevel, MainWindowChatRow, MainWindowPlaybackControls,
     MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
-    MainWindowUserRow, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
+    MainWindowUserRow, MenuActionId, SettingId, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use super::support::{
     NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
@@ -26,16 +26,16 @@ impl SorotteGuiShellAppState {
         if !self.menus.about_dialog_available {
             return self.record_action_error("The About dialog is unavailable.");
         }
-        self.active_view = GuiShellView::Setup;
-        if self.open_modal == Some(GuiShellModal::About) {
-            self.open_modal = None;
-        }
+        self.open_modal = Some(GuiShellModal::About);
         self.clear_action_error_and_refresh();
         true
     }
 
     pub(super) fn announce_help_requested(&mut self) -> bool {
-        self.active_view = GuiShellView::Setup;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Opening the Sorotte client guide in your browser.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -44,18 +44,22 @@ impl SorotteGuiShellAppState {
         let Some((section_index, action_index)) = self.selection.selected_menu_action else {
             return self.record_action_error("No menu action is currently selected.");
         };
-        let Some(section) = self.menus.sections.get(section_index) else {
-            return self.record_action_error("No menu section exists at the requested index.");
-        };
-        let Some(action) = section.actions.get(action_index) else {
+        let Some(action_id) = self.menus.action_id_at(section_index, action_index) else {
             return self.record_action_error("No menu action exists at the requested index.");
         };
-        if !action.enabled {
+        self.invoke_menu_action(action_id)
+    }
+
+    pub(super) fn invoke_menu_action(&mut self, action_id: MenuActionId) -> bool {
+        if self.menus.action(action_id).is_none() {
+            return self.record_action_error("The requested menu action is not available.");
+        }
+        if !self.menu_action_available_now(action_id) {
             return self.record_action_error("The selected menu action is currently disabled.");
         }
 
-        match (section.title, action.label) {
-            ("File", "Open Media File") => {
+        match action_id {
+            MenuActionId::OpenMedia => {
                 self.push_transient_notification(
                     GuiTransientNotificationLevel::Info,
                     "Open media file requested.".to_owned(),
@@ -64,21 +68,21 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("File", "Open Media Search") => {
+            MenuActionId::OpenMediaSearch => {
                 self.active_view = GuiShellView::Setup;
                 self.select_configuration_tab(GuiConfigurationTab::PlaybackSearch);
                 self.push_system_chat_message("Media search opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("File", "Open Public Server Browser") => {
+            MenuActionId::OpenPublicServerBrowser => {
                 self.active_view = GuiShellView::Setup;
                 self.select_configuration_tab(GuiConfigurationTab::Connection);
                 self.push_system_chat_message("Public server browser opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("File", "Exit") => {
+            MenuActionId::Exit => {
                 self.push_transient_notification(
                     GuiTransientNotificationLevel::Warning,
                     "Exit requested.".to_owned(),
@@ -87,64 +91,34 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("Playback", "Play") => self.begin_playback_pause_state(false),
-            ("Playback", "Pause") => self.begin_playback_pause_state(true),
-            ("Playback", "Toggle Pause") => self.begin_playback_pause_toggle(),
-            ("Playback", "Seek") => {
-                self.clear_action_error_and_refresh();
-                true
+            MenuActionId::Play => self.begin_playback_pause_state(false),
+            MenuActionId::Pause => self.begin_playback_pause_state(true),
+            MenuActionId::TogglePause => self.begin_playback_pause_toggle(),
+            MenuActionId::Seek | MenuActionId::UndoSeek | MenuActionId::SetOffset => {
+                self.request_main_window_playback_control()
             }
-            ("Playback", "Undo Seek") => {
-                self.clear_action_error_and_refresh();
-                true
-            }
-            ("Playback", "Shared Playlist") => {
+            MenuActionId::SharedPlaylist => {
                 self.active_view = GuiShellView::Room;
                 self.push_system_chat_message("Shared playlist opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("Advanced", "Trusted Domains") => {
+            MenuActionId::TrustedDomains => {
                 self.active_view = GuiShellView::Setup;
                 self.select_configuration_tab(GuiConfigurationTab::PrivacyChat);
                 self.push_system_chat_message("Trusted domains opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("Advanced", "Create Controlled Room") => self.begin_create_controlled_room_edit(),
-            ("Advanced", "Identify As Controller") => self.begin_controller_auth_edit(),
-            ("Advanced", "Set Offset") => {
-                self.clear_action_error_and_refresh();
-                true
-            }
-            ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
-            ("Window", "Show Chat") => {
-                self.active_view = GuiShellView::Room;
-                self.push_system_chat_message("Main window section opened: Show Chat.".to_owned());
-                self.clear_action_error_and_refresh();
-                true
-            }
-            ("Window", "Show Playlist") => {
-                self.active_view = GuiShellView::Room;
-                self.push_system_chat_message(
-                    "Main window section opened: Show Playlist.".to_owned(),
-                );
-                self.clear_action_error_and_refresh();
-                true
-            }
-            ("Window", "Show Users") => {
-                self.active_view = GuiShellView::Room;
-                self.push_system_chat_message("Main window section opened: Show Users.".to_owned());
-                self.clear_action_error_and_refresh();
-                true
-            }
-            ("Window", "Playback Buttons") => self.toggle_main_window_playback_buttons(),
-            ("Window", "Autoplay") => self.toggle_main_window_autoplay_controls(),
-            ("Window", "Hide Empty Rooms") => self.toggle_main_window_hide_empty_rooms(),
-            ("Help", "About") => self.announce_about_dialog_requested(),
-            ("Help", "Manual / Command Help") => self.announce_help_requested(),
-            ("Help", "Check for Updates") => self.begin_update_check(true),
-            _ => self.record_action_error("The selected menu action is not mapped yet."),
+            MenuActionId::CreateControlledRoom => self.begin_create_controlled_room_edit(),
+            MenuActionId::IdentifyAsController => self.begin_controller_auth_edit(),
+            MenuActionId::TlsCertificates => self.announce_tls_certificate_prompt_required(),
+            MenuActionId::TogglePlaybackButtons => self.toggle_main_window_playback_buttons(),
+            MenuActionId::ToggleAutoplayControls => self.toggle_main_window_autoplay_controls(),
+            MenuActionId::ToggleHideEmptyRooms => self.toggle_main_window_hide_empty_rooms(),
+            MenuActionId::About => self.announce_about_dialog_requested(),
+            MenuActionId::Help => self.announce_help_requested(),
+            MenuActionId::CheckForUpdates => self.begin_update_check(true),
         }
     }
 
@@ -258,7 +232,7 @@ impl SorotteGuiShellAppState {
         let room_value = room.unwrap_or_default();
         let _ = self
             .configuration
-            .apply_text_value("Connection", "Room", &room_value);
+            .apply_text_value(SettingId::ConnectionRoom, &room_value);
         let controlled_room_active = room_value.starts_with('+');
         self.main_window.room_name = if room_value.is_empty() {
             NO_ROOM_JOINED_LABEL.to_owned()
@@ -560,22 +534,18 @@ impl SorotteGuiShellAppState {
             show_autoplay_controls: snapshot.show_autoplay_controls,
         };
         self.pending_local_ready_target = pending_local_ready_target;
-        self.set_menu_action_selected(
-            "Window",
-            "Playback Buttons",
+        self.set_menu_action_checked(
+            MenuActionId::TogglePlaybackButtons,
             self.main_window.show_playback_buttons,
         );
-        self.set_menu_action_selected(
-            "Window",
-            "Autoplay",
+        self.set_menu_action_checked(
+            MenuActionId::ToggleAutoplayControls,
             self.main_window.show_autoplay_controls,
         );
-        self.set_menu_action_selected(
-            "Window",
-            "Hide Empty Rooms",
+        self.set_menu_action_checked(
+            MenuActionId::ToggleHideEmptyRooms,
             self.main_window.hide_empty_rooms,
         );
-
         self.selection.selected_main_window_user = previously_selected_username
             .as_deref()
             .and_then(|username| {

@@ -7,7 +7,9 @@ use sorotte_client_app::app_boundary::commands::{
 use sorotte_client_core::ClientSession;
 
 use super::runtime_bridge::{GuiPlexPlaylistJobCancellationReason, GuiRuntimeRequest};
-use super::shell_state::{GuiDraftRuntimeSnapshot, GuiShellAction, SorotteGuiShellAppState};
+use super::shell_state::{
+    GuiDraftRuntimeSnapshot, GuiShellAction, MenuActionId, SettingId, SorotteGuiShellAppState,
+};
 use super::support::{configured_room_name_text, joined_room_name_text, normalized_editable_text};
 use super::ui_state::GuiUpdateIndicatorAction;
 
@@ -84,9 +86,25 @@ impl GuiShellDispatchPlan {
                     });
                 }
                 GuiShellAction::TriggerSelectedMenuAction => {
+                    if let Some(action_id) =
+                        selected_menu_action.and_then(|(section_index, action_index)| {
+                            state.menus.action_id_at(section_index, action_index)
+                        })
+                    {
+                        plan.shell_actions
+                            .push(GuiShellAction::InvokeMenuAction(action_id));
+                        if menu_action_starts_update_check(state, action_id) {
+                            push_update_check_request(&mut plan, state, true);
+                        }
+                    } else {
+                        plan.shell_actions
+                            .push(GuiShellAction::TriggerSelectedMenuAction);
+                    }
+                }
+                GuiShellAction::InvokeMenuAction(action_id) => {
                     plan.shell_actions
-                        .push(GuiShellAction::TriggerSelectedMenuAction);
-                    if selected_menu_action_starts_update_check(state, selected_menu_action) {
+                        .push(GuiShellAction::InvokeMenuAction(action_id));
+                    if menu_action_starts_update_check(state, action_id) {
                         push_update_check_request(&mut plan, state, true);
                     }
                 }
@@ -118,6 +136,14 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);
                 }
+                GuiShellAction::RetryPlayerSettings => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RetryPlayerSettings);
+                }
+                GuiShellAction::RetryChatOsdIntegration => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RetryChatOsdIntegration);
+                }
                 GuiShellAction::RequestSeekPreparationKeepWaiting => {
                     if state
                         .seek_preparation
@@ -148,8 +174,6 @@ impl GuiShellDispatchPlan {
                     }
                 }
                 GuiShellAction::SetPluginEnabled { plugin, enabled } => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetPluginEnabled { plugin, enabled });
                     plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetPluginEnabled { plugin, enabled });
                 }
@@ -210,40 +234,26 @@ impl GuiShellDispatchPlan {
                         .push(GuiRuntimeRequest::ClearMediaMatchCache);
                 }
                 GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(
-                            enabled,
-                        ));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchWireSharingEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchWireSharingEnabled(enabled));
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(enabled));
                 }
                 GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(
-                            enabled,
-                        ));
-                    plan.runtime_requests.push(
+                    plan.pre_shell_runtime_requests.push(
                         GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled),
                     );
                 }
                 GuiShellAction::SetMediaMatchAutoplayPolicy(policy) => {
-                    plan.shell_actions
-                        .push(GuiShellAction::SetMediaMatchAutoplayPolicy(policy));
-                    plan.runtime_requests
+                    plan.pre_shell_runtime_requests
                         .push(GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(policy));
                 }
                 GuiShellAction::StartPlexAuth => {
@@ -385,20 +395,15 @@ fn push_update_check_request(
         });
 }
 
-fn selected_menu_action_starts_update_check(
+fn menu_action_starts_update_check(
     state: &SorotteGuiShellAppState,
-    selected_menu_action: Option<(usize, usize)>,
+    action_id: MenuActionId,
 ) -> bool {
-    let Some((section_index, action_index)) = selected_menu_action else {
-        return false;
-    };
-    let Some(section) = state.menus.sections.get(section_index) else {
-        return false;
-    };
-    let Some(action) = section.actions.get(action_index) else {
-        return false;
-    };
-    action.enabled && matches!((section.title, action.label), ("Help", "Check for Updates"))
+    action_id == MenuActionId::CheckForUpdates
+        && state
+            .menus
+            .action(action_id)
+            .is_some_and(|action| action.enabled)
 }
 
 fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShellDispatchPlan {
@@ -770,7 +775,7 @@ fn configured_room_for_local_commands(state: &SorotteGuiShellAppState) -> String
     configured_room_name_text(
         state
             .configuration
-            .control_value("Connection", "Room")
+            .control_value(SettingId::ConnectionRoom)
             .unwrap_or_default(),
     )
     .unwrap_or_default()

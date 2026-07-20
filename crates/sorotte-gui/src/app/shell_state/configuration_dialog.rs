@@ -3,6 +3,594 @@ use sorotte_secret::SecretValue;
 
 use super::super::GuiLaunchMode;
 
+macro_rules! define_setting_ids {
+    ($($variant:ident => ($section:literal, $label:literal, $automation_id:literal)),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub(in crate::app) enum SettingId {
+            $($variant),+
+        }
+
+        impl SettingId {
+            pub(in crate::app) const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            pub(in crate::app) const fn section(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $section),+
+                }
+            }
+
+            pub(in crate::app) const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label),+
+                }
+            }
+
+            pub(in crate::app) const fn automation_id(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $automation_id),+
+                }
+            }
+
+            pub(in crate::app) fn from_automation_id(value: &str) -> Option<Self> {
+                match value {
+                    $($automation_id => Some(Self::$variant)),+,
+                    _ => None,
+                }
+            }
+
+            pub(in crate::app) fn section_automation_id(self) -> &'static str {
+                let id = self.automation_id();
+                if id.starts_with("settings.connection.") || id.starts_with("settings.player.") {
+                    "settings.section.connection"
+                } else if id.starts_with("settings.playback.") {
+                    "settings.section.playback"
+                } else if id.starts_with("settings.privacy.") {
+                    "settings.section.privacy"
+                } else if id.starts_with("settings.sync.") {
+                    "settings.section.sync"
+                } else if id.starts_with("settings.streaming.") {
+                    "settings.section.streaming"
+                } else if id.starts_with("settings.media_library.") {
+                    "settings.section.media_library"
+                } else if id.starts_with("settings.chat.") {
+                    "settings.section.chat"
+                } else if id.starts_with("settings.osd.") {
+                    "settings.section.osd"
+                } else {
+                    "settings.section.general"
+                }
+            }
+        }
+    };
+}
+
+define_setting_ids! {
+    ConnectionHost => ("Connection", "Host", "settings.connection.host"),
+    ConnectionPort => ("Connection", "Port", "settings.connection.port"),
+    ConnectionUsername => ("Connection", "Username", "settings.connection.username"),
+    ConnectionRoom => ("Connection", "Room", "settings.connection.room"),
+    ConnectionServerPassword => (
+        "Connection",
+        "Server Password",
+        "settings.connection.server_password"
+    ),
+    PlayerExecutable => ("Connection", "Player Path", "settings.player.executable"),
+    PlayerArguments => ("Connection", "Player Arguments", "settings.player.arguments"),
+    ConnectionPublicServerCount => (
+        "Connection",
+        "Public Servers",
+        "settings.connection.public_server_count"
+    ),
+    ConnectionRoomHistory => (
+        "Connection",
+        "Room History",
+        "settings.connection.room_history"
+    ),
+    ConnectionRoomHistoryCount => (
+        "Connection",
+        "Room History Count",
+        "settings.connection.room_history_count"
+    ),
+    PlaybackReadyAtStart => (
+        "Readiness",
+        "Ready At Start",
+        "settings.playback.ready_at_start"
+    ),
+    PlaybackAutoplay => ("Readiness", "Autoplay", "settings.playback.autoplay"),
+    PlaybackRequireSameFilenames => (
+        "Readiness",
+        "Require Same Filenames",
+        "settings.playback.require_same_filenames"
+    ),
+    PlaybackSharedPlaylists => (
+        "Readiness",
+        "Shared Playlists",
+        "settings.playback.shared_playlists"
+    ),
+    PlaybackPauseOnLeave => (
+        "Readiness",
+        "Pause On Leave",
+        "settings.playback.pause_on_leave"
+    ),
+    PlaybackLoopPlaylist => (
+        "Readiness",
+        "Loop At End Of Playlist",
+        "settings.playback.loop_playlist"
+    ),
+    PlaybackLoopSingleFiles => (
+        "Readiness",
+        "Loop Single Files",
+        "settings.playback.loop_single_files"
+    ),
+    PlaybackUnpauseAction => (
+        "Readiness",
+        "Unpause Action",
+        "settings.playback.unpause_action"
+    ),
+    PlaybackAutoplayMinUsers => (
+        "Readiness",
+        "Autoplay Min Users",
+        "settings.playback.autoplay_min_users"
+    ),
+    PrivacyFilename => (
+        "Privacy",
+        "Filename Privacy",
+        "settings.privacy.filename"
+    ),
+    PrivacyFilesize => (
+        "Privacy",
+        "Filesize Privacy",
+        "settings.privacy.filesize"
+    ),
+    PrivacyTrustedDomainsOnly => (
+        "Privacy",
+        "Trusted Domains Only",
+        "settings.privacy.trusted_domains_only"
+    ),
+    PrivacyTrustedDomains => (
+        "Privacy",
+        "Trusted Domains",
+        "settings.privacy.trusted_domains"
+    ),
+    PrivacyTrustedDomainCount => (
+        "Privacy",
+        "Trusted Domain Count",
+        "settings.privacy.trusted_domain_count"
+    ),
+    SyncRewindOnDesync => ("Desync", "Rewind On Desync", "settings.sync.rewind_on_desync"),
+    SyncFastforwardOnDesync => (
+        "Desync",
+        "Fastforward On Desync",
+        "settings.sync.fastforward_on_desync"
+    ),
+    SyncSlowOnDesync => ("Desync", "Slow On Desync", "settings.sync.slow_on_desync"),
+    SyncDontSlowDownWithMe => (
+        "Desync",
+        "Dont Slow Down With Me",
+        "settings.sync.dont_slow_down_with_me"
+    ),
+    SyncRewindThreshold => (
+        "Desync",
+        "Rewind Threshold",
+        "settings.sync.rewind_threshold"
+    ),
+    SyncFastforwardThreshold => (
+        "Desync",
+        "Fastforward Threshold",
+        "settings.sync.fastforward_threshold"
+    ),
+    SyncSlowdownThreshold => (
+        "Desync",
+        "Slowdown Threshold",
+        "settings.sync.slowdown_threshold"
+    ),
+    StreamingQuality => ("Streaming", "Quality", "settings.streaming.quality"),
+    StreamingCustomFormat => (
+        "Streaming",
+        "Custom Format",
+        "settings.streaming.custom_format"
+    ),
+    StreamingBufferTargetSeconds => (
+        "Streaming",
+        "Buffer Target Seconds",
+        "settings.streaming.buffer_target_seconds"
+    ),
+    StreamingReadAheadSeconds => (
+        "Streaming",
+        "Read Ahead Seconds",
+        "settings.streaming.read_ahead_seconds"
+    ),
+    StreamingMemoryCacheMib => (
+        "Streaming",
+        "Memory Cache MiB",
+        "settings.streaming.memory_cache_mib"
+    ),
+    StreamingDiskCache => ("Streaming", "Disk Cache", "settings.streaming.disk_cache"),
+    StreamingRecoveryPolicy => (
+        "Streaming",
+        "Recovery Policy",
+        "settings.streaming.recovery_policy"
+    ),
+    StreamingMaximumCatchupRate => (
+        "Streaming",
+        "Maximum Catchup Rate",
+        "settings.streaming.maximum_catchup_rate"
+    ),
+    StreamingHardSeekThresholdSeconds => (
+        "Streaming",
+        "Hard Seek Threshold Seconds",
+        "settings.streaming.hard_seek_threshold_seconds"
+    ),
+    StreamingMaximumHardSeeks => (
+        "Streaming",
+        "Maximum Hard Seeks",
+        "settings.streaming.maximum_hard_seeks"
+    ),
+    StreamingStabilityIntervalSeconds => (
+        "Streaming",
+        "Stability Interval Seconds",
+        "settings.streaming.stability_interval_seconds"
+    ),
+    StreamingRecoveryRetryBudget => (
+        "Streaming",
+        "Recovery Retry Budget",
+        "settings.streaming.recovery_retry_budget"
+    ),
+    StreamingRecoveryCooldownSeconds => (
+        "Streaming",
+        "Recovery Cooldown Seconds",
+        "settings.streaming.recovery_cooldown_seconds"
+    ),
+    StreamingRoomBufferingPolicy => (
+        "Streaming",
+        "Room Buffering Policy",
+        "settings.streaming.room_buffering_policy"
+    ),
+    StreamingRoomQuorumPercent => (
+        "Streaming",
+        "Room Quorum Percent",
+        "settings.streaming.room_quorum_percent"
+    ),
+    StreamingRoomMaximumPauseSeconds => (
+        "Streaming",
+        "Room Maximum Pause Seconds",
+        "settings.streaming.room_maximum_pause_seconds"
+    ),
+    StreamingStartSynchronization => (
+        "Streaming",
+        "Start Synchronization",
+        "settings.streaming.start_synchronization"
+    ),
+    StreamingStartQuorumPercent => (
+        "Streaming",
+        "Start Quorum Percent",
+        "settings.streaming.start_quorum_percent"
+    ),
+    StreamingStartTimeoutSeconds => (
+        "Streaming",
+        "Start Timeout Seconds",
+        "settings.streaming.start_timeout_seconds"
+    ),
+    StreamingStartTimeoutAction => (
+        "Streaming",
+        "Start Timeout Action",
+        "settings.streaming.start_timeout_action"
+    ),
+    StreamingQualityDowngradeSuggestions => (
+        "Streaming",
+        "Quality Downgrade Suggestions",
+        "settings.streaming.quality_downgrade_suggestions"
+    ),
+    StreamingEffectiveMpvOptions => (
+        "Streaming",
+        "Effective mpv Options",
+        "settings.streaming.effective_mpv_options"
+    ),
+    MediaLibraryDirectories => (
+        "Media Search",
+        "Directories",
+        "settings.media_library.directories"
+    ),
+    MediaLibraryDirectoryCount => (
+        "Media Search",
+        "Directory Count",
+        "settings.media_library.directory_count"
+    ),
+    MediaLibraryFirstFileTimeout => (
+        "Media Search",
+        "First File Timeout",
+        "settings.media_library.first_file_timeout"
+    ),
+    MediaLibrarySearchTimeout => (
+        "Media Search",
+        "Search Timeout",
+        "settings.media_library.search_timeout"
+    ),
+    MediaLibraryDoubleCheckInterval => (
+        "Media Search",
+        "Double Check Interval",
+        "settings.media_library.double_check_interval"
+    ),
+    MediaLibraryWarningThreshold => (
+        "Media Search",
+        "Warning Threshold",
+        "settings.media_library.warning_threshold"
+    ),
+    ChatInputEnabled => ("Chat", "Chat Input", "settings.chat.input_enabled"),
+    ChatOutputEnabled => ("Chat", "Chat Output", "settings.chat.output_enabled"),
+    ChatDirectInput => ("Chat", "Direct Input", "settings.chat.direct_input"),
+    ChatMoveOsd => ("Chat", "Move OSD", "settings.chat.move_osd"),
+    ChatInputPosition => ("Chat", "Input Position", "settings.chat.input_position"),
+    ChatOutputMode => ("Chat", "Output Mode", "settings.chat.output_mode"),
+    ChatMaxLines => ("Chat", "Max Lines", "settings.chat.max_lines"),
+    ChatInputFont => ("Chat", "Input Font", "settings.chat.input_font"),
+    ChatInputFontSize => ("Chat", "Input Font Size", "settings.chat.input_font_size"),
+    ChatInputFontWeight => (
+        "Chat",
+        "Input Font Weight",
+        "settings.chat.input_font_weight"
+    ),
+    ChatInputColor => ("Chat", "Input Color", "settings.chat.input_color"),
+    ChatOutputFont => ("Chat", "Output Font", "settings.chat.output_font"),
+    ChatOutputFontSize => (
+        "Chat",
+        "Output Font Size",
+        "settings.chat.output_font_size"
+    ),
+    ChatOutputFontWeight => (
+        "Chat",
+        "Output Font Weight",
+        "settings.chat.output_font_weight"
+    ),
+    ChatTopMargin => ("Chat", "Top Margin", "settings.chat.top_margin"),
+    ChatLeftMargin => ("Chat", "Left Margin", "settings.chat.left_margin"),
+    ChatBottomMargin => ("Chat", "Bottom Margin", "settings.chat.bottom_margin"),
+    ChatOsdMargin => ("Chat", "OSD Margin", "settings.chat.osd_margin"),
+    OsdShow => ("OSD", "Show OSD", "settings.osd.show"),
+    OsdShowDuration => ("OSD", "Show Duration", "settings.osd.show_duration"),
+    OsdShowSameRoom => ("OSD", "Show Same Room", "settings.osd.show_same_room"),
+    OsdShowWarnings => ("OSD", "Show Warnings", "settings.osd.show_warnings"),
+    OsdShowSlowdown => ("OSD", "Show Slowdown", "settings.osd.show_slowdown"),
+    OsdShowNoncontroller => (
+        "OSD",
+        "Show Noncontroller",
+        "settings.osd.show_noncontroller"
+    ),
+    OsdShowDifferentRoom => (
+        "OSD",
+        "Show Different Room",
+        "settings.osd.show_different_room"
+    ),
+    OsdShowContactInfo => (
+        "OSD",
+        "Show Contact Info",
+        "settings.osd.show_contact_info"
+    ),
+    OsdNotificationTimeout => (
+        "OSD",
+        "Notification Timeout",
+        "settings.osd.notification_timeout"
+    ),
+    OsdAlertTimeout => ("OSD", "Alert Timeout", "settings.osd.alert_timeout"),
+    OsdChatTimeout => ("OSD", "Chat Timeout", "settings.osd.chat_timeout"),
+    GeneralLanguage => ("System", "Language", "settings.general.language"),
+    GeneralCheckForUpdatesAutomatically => (
+        "System",
+        "Check for updates automatically",
+        "settings.general.check_for_updates_automatically"
+    ),
+    GeneralUpdateChannel => ("System", "Update Channel", "settings.general.update_channel"),
+    GeneralAutosaveJoinsToList => (
+        "System",
+        "Autosave Joins To List",
+        "settings.general.autosave_joins_to_list"
+    ),
+    GeneralForceGuiPrompt => (
+        "System",
+        "Force GUI Prompt",
+        "settings.general.force_gui_prompt"
+    ),
+    DiagnosticsSupportedLanguages => (
+        "System",
+        "Supported Languages",
+        "settings.diagnostics.supported_languages"
+    ),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(
+    dead_code,
+    reason = "Immediate feature transactions share this apply taxonomy but are not editable SettingId controls."
+)]
+pub(in crate::app) enum GuiSettingApplyRequirement {
+    Immediate,
+    OnSave,
+    Reconnect,
+    PlayerSettingsRetryAvailable,
+    RestartPlayer,
+    RestartApplication,
+}
+
+impl GuiSettingApplyRequirement {
+    pub(in crate::app) const fn label(self) -> &'static str {
+        match self {
+            Self::Immediate => "Applies immediately",
+            Self::OnSave => "Applies when saved",
+            Self::Reconnect => "Reconnect required",
+            Self::PlayerSettingsRetryAvailable => "Retry mpv streaming settings in place",
+            Self::RestartPlayer => "Player restart required",
+            Self::RestartApplication => "Sorotte restart required",
+        }
+    }
+
+    pub(in crate::app) const fn automation_id(self) -> &'static str {
+        match self {
+            Self::Immediate => "settings.apply.immediate",
+            Self::OnSave => "settings.apply.on_save",
+            Self::Reconnect => "settings.apply.reconnect",
+            Self::PlayerSettingsRetryAvailable => "settings.apply.retry_player_settings",
+            Self::RestartPlayer => "settings.apply.restart_player",
+            Self::RestartApplication => "settings.apply.restart_application",
+        }
+    }
+}
+
+impl SettingId {
+    pub(in crate::app) const fn apply_requirement(self) -> GuiSettingApplyRequirement {
+        match self {
+            Self::ConnectionHost
+            | Self::ConnectionPort
+            | Self::ConnectionUsername
+            | Self::ConnectionRoom
+            | Self::ConnectionServerPassword
+            | Self::PlaybackReadyAtStart
+            | Self::PlaybackAutoplay
+            | Self::PlaybackRequireSameFilenames
+            | Self::PlaybackSharedPlaylists
+            | Self::PlaybackPauseOnLeave
+            | Self::PlaybackLoopPlaylist
+            | Self::PlaybackLoopSingleFiles
+            | Self::PlaybackUnpauseAction
+            | Self::PlaybackAutoplayMinUsers
+            | Self::PrivacyFilename
+            | Self::PrivacyFilesize
+            | Self::PrivacyTrustedDomainsOnly
+            | Self::PrivacyTrustedDomains
+            | Self::PrivacyTrustedDomainCount
+            | Self::SyncRewindOnDesync
+            | Self::SyncFastforwardOnDesync
+            | Self::SyncSlowOnDesync
+            | Self::SyncDontSlowDownWithMe
+            | Self::SyncRewindThreshold
+            | Self::SyncFastforwardThreshold
+            | Self::SyncSlowdownThreshold
+            | Self::ChatInputEnabled
+            | Self::OsdShowDuration
+            | Self::OsdShowSameRoom
+            | Self::OsdShowWarnings
+            | Self::OsdShowSlowdown
+            | Self::OsdShowNoncontroller
+            | Self::OsdShowDifferentRoom
+            | Self::StreamingQuality
+            | Self::StreamingBufferTargetSeconds
+            | Self::StreamingRecoveryPolicy
+            | Self::StreamingMaximumCatchupRate
+            | Self::StreamingHardSeekThresholdSeconds
+            | Self::StreamingMaximumHardSeeks
+            | Self::StreamingStabilityIntervalSeconds
+            | Self::StreamingRecoveryRetryBudget
+            | Self::StreamingRecoveryCooldownSeconds
+            | Self::StreamingRoomBufferingPolicy
+            | Self::StreamingRoomQuorumPercent
+            | Self::StreamingRoomMaximumPauseSeconds
+            | Self::StreamingStartSynchronization
+            | Self::StreamingStartQuorumPercent
+            | Self::StreamingStartTimeoutSeconds
+            | Self::StreamingStartTimeoutAction
+            | Self::StreamingQualityDowngradeSuggestions => GuiSettingApplyRequirement::Reconnect,
+            Self::PlayerExecutable | Self::PlayerArguments => {
+                GuiSettingApplyRequirement::RestartPlayer
+            }
+            Self::GeneralLanguage | Self::GeneralForceGuiPrompt => {
+                GuiSettingApplyRequirement::RestartApplication
+            }
+            Self::ConnectionPublicServerCount
+            | Self::ConnectionRoomHistory
+            | Self::ConnectionRoomHistoryCount
+            | Self::ChatDirectInput
+            | Self::ChatOutputEnabled
+            | Self::ChatMoveOsd
+            | Self::ChatInputPosition
+            | Self::ChatOutputMode
+            | Self::ChatMaxLines
+            | Self::ChatInputFont
+            | Self::ChatInputFontSize
+            | Self::ChatInputFontWeight
+            | Self::ChatInputColor
+            | Self::ChatOutputFont
+            | Self::ChatOutputFontSize
+            | Self::ChatOutputFontWeight
+            | Self::ChatTopMargin
+            | Self::ChatLeftMargin
+            | Self::ChatBottomMargin
+            | Self::ChatOsdMargin
+            | Self::OsdShow
+            | Self::OsdShowContactInfo
+            | Self::OsdNotificationTimeout
+            | Self::OsdAlertTimeout
+            | Self::OsdChatTimeout
+            | Self::StreamingCustomFormat
+            | Self::StreamingReadAheadSeconds
+            | Self::StreamingMemoryCacheMib
+            | Self::StreamingDiskCache
+            | Self::StreamingEffectiveMpvOptions
+            | Self::MediaLibraryDirectories
+            | Self::MediaLibraryDirectoryCount
+            | Self::MediaLibraryFirstFileTimeout
+            | Self::MediaLibrarySearchTimeout
+            | Self::MediaLibraryDoubleCheckInterval
+            | Self::MediaLibraryWarningThreshold
+            | Self::GeneralCheckForUpdatesAutomatically
+            | Self::GeneralUpdateChannel
+            | Self::GeneralAutosaveJoinsToList
+            | Self::DiagnosticsSupportedLanguages => GuiSettingApplyRequirement::OnSave,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum GuiSettingValueOrigin {
+    StoredOverride,
+    ApplicationDefault,
+    DraftChange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) struct GuiResolvedSettingValue<T> {
+    pub(in crate::app) stored_override: Option<T>,
+    pub(in crate::app) effective: T,
+}
+
+impl<T> GuiResolvedSettingValue<T> {
+    pub(in crate::app) fn origin(&self) -> GuiSettingValueOrigin {
+        if self.stored_override.is_some() {
+            GuiSettingValueOrigin::StoredOverride
+        } else {
+            GuiSettingValueOrigin::ApplicationDefault
+        }
+    }
+}
+
+impl<T: PartialEq> GuiResolvedSettingValue<T> {
+    pub(in crate::app) fn origin_against_persisted(
+        &self,
+        persisted: &Self,
+    ) -> GuiSettingValueOrigin {
+        if self.stored_override != persisted.stored_override {
+            GuiSettingValueOrigin::DraftChange
+        } else {
+            self.origin()
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::app) enum SecretDraft {
+    Unchanged,
+    Replace(SecretValue),
+    Clear,
+}
+
+impl std::fmt::Debug for SecretDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unchanged => formatter.write_str("Unchanged"),
+            Self::Replace(_) => formatter.write_str("Replace([REDACTED])"),
+            Self::Clear => formatter.write_str("Clear"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiConnectionSettingsSection {
     pub(in crate::app) host: Option<String>,
@@ -26,8 +614,8 @@ pub(in crate::app) struct GuiReadinessSection {
     pub(in crate::app) pause_on_leave: bool,
     pub(in crate::app) loop_at_end_of_playlist: bool,
     pub(in crate::app) loop_single_files: bool,
-    pub(in crate::app) unpause_action_label: String,
-    pub(in crate::app) autoplay_min_users_label: String,
+    pub(in crate::app) unpause_action: GuiResolvedSettingValue<String>,
+    pub(in crate::app) autoplay_min_users: GuiResolvedSettingValue<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +754,7 @@ impl GuiDialogControlKind {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiDialogControl {
+    pub(in crate::app) id: SettingId,
     pub(in crate::app) label: &'static str,
     pub(in crate::app) kind: GuiDialogControlKind,
     pub(in crate::app) value: String,
@@ -180,6 +769,7 @@ impl std::fmt::Debug for GuiDialogControl {
         };
         formatter
             .debug_struct("GuiDialogControl")
+            .field("id", &self.id)
             .field("label", &self.label)
             .field("kind", &self.kind)
             .field("value", &value)
@@ -245,10 +835,8 @@ pub(in crate::app) struct GuiDialogSection {
 }
 
 impl GuiDialogSection {
-    pub(in crate::app) fn control_mut(&mut self, label: &str) -> Option<&mut GuiDialogControl> {
-        self.controls
-            .iter_mut()
-            .find(|control| control.label == label)
+    pub(in crate::app) fn control_mut(&mut self, id: SettingId) -> Option<&mut GuiDialogControl> {
+        self.controls.iter_mut().find(|control| control.id == id)
     }
 }
 
@@ -273,4 +861,5 @@ pub(in crate::app) struct FirstRunConfigurationDialogDraft {
     pub(in crate::app) ignored_startup_exception_count: usize,
     pub(in crate::app) sections: Vec<GuiDialogSection>,
     pub(in crate::app) settings: StoredClientSettingsMvp,
+    pub(in crate::app) server_password: SecretDraft,
 }

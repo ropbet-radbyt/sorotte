@@ -89,6 +89,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     stale_main_window.shared_playlist_enabled = true;
     stale_main_window.playlist = vec!["episode2.mkv".to_owned()];
     stale_main_window.can_set_ready = true;
+    stale_main_window.can_manage_playlist = true;
     stale_main_window.playback_paused = true;
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         stale_main_window
@@ -105,8 +106,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Window",
-                action_label: "Show Playlist",
+                id: MenuActionId::SharedPlaylist,
                 enabled: true,
             }],
             tls_prompt_expected: state.menus.tls_prompt_expected,
@@ -120,21 +120,14 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(
         state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| action.enabled)
     );
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged public-server connect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let reconnect_actions = handle.drain_actions();
@@ -148,30 +141,17 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         reconnect_actions.iter().any(|action| matches!(
             action,
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
-                if !snapshot.shared_playlist_enabled
-                    && snapshot.playlist.is_empty()
+                if snapshot.playlist.is_empty()
                     && !snapshot.can_set_ready
                     && !snapshot.playback_paused
         )),
-        "public-server reconnect should clear stale session-owned main-window state before the new server replies"
-    );
-    assert!(
-        reconnect_actions.iter().any(|action| matches!(
-            action,
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot)
-                if snapshot.action_overrides.contains(&MenuActionRuntimeOverride {
-                    section_title: "Window",
-                    action_label: "Show Playlist",
-                    enabled: false,
-                })
-        )),
-        "public-server reconnect should clear stale playlist menu state before the new server replies"
+        "public-server reconnect should clear stale dynamic session state before the new server replies"
     );
     for action in reconnect_actions {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert!(!state.main_window.shared_playlist_enabled);
+    assert!(state.main_window.shared_playlist_enabled);
     assert!(state.main_window.playlist.is_empty());
     assert!(!state.main_window.playback.can_set_ready);
     assert!(!state.main_window.playback_paused);
@@ -179,15 +159,7 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(
         state
             .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Playlist")
-            })
+            .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| !action.enabled)
     );
 
@@ -325,7 +297,8 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged public-server reconnect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let connect_actions = handle.drain_actions();
@@ -540,7 +513,8 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged failover connect should capture submitted settings"),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     for action in handle.drain_actions() {

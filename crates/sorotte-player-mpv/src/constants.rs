@@ -71,5 +71,34 @@ pub(crate) const MPV_OBS_EOF_REACHED_ID: u64 = 14;
 pub(crate) const MPV_OBS_YTDL_IS_LIVE_ID: u64 = 15;
 pub(crate) const MPV_OBS_METADATA_ID: u64 = 16;
 pub(crate) const LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL: i64 = 1;
-pub(crate) const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "syncplayintf";
+pub(crate) const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "sorotte_syncplayintf";
+pub(crate) const LEGACY_SYNCPLAYINTF_PROTOCOL: &str = "sorotte-syncplayintf-v1";
+pub(crate) const LEGACY_SYNCPLAYINTF_SET_OPTIONS_MESSAGE: &str = "set_sorotte_syncplayintf_options";
+pub(crate) const LEGACY_SYNCPLAYINTF_PING_MESSAGE: &str = "sorotte_syncplayintf_ping";
+pub(crate) const LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE: &str = "sorotte_syncplayintf_heartbeat";
+pub(crate) const LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE: &str = "sorotte_syncplayintf_release";
 pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT: &str = "syncplayintf-chat";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED: &str =
+    "sorotte-syncplayintf-options-applied";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG: &str = "sorotte-syncplayintf-pong";
+pub(crate) const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED: &str =
+    "sorotte-syncplayintf-lease-expired";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_SCRIPT_NAME: &str = "sorotte_network_options";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_PROTOCOL: &str = "sorotte-network-options-v3";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CONFIGURE_MESSAGE: &str =
+    "sorotte_network_options_configure";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_HEARTBEAT_MESSAGE: &str =
+    "sorotte_network_options_heartbeat";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_RELEASE_MESSAGE: &str = "sorotte_network_options_release";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_APPLY_ACTIVE_MESSAGE: &str =
+    "sorotte_network_options_apply_active";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED: &str =
+    "sorotte-network-options-configured";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP: &str =
+    "sorotte-network-options-ownership";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT: &str =
+    "sorotte-network-options-heartbeat";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT: &str =
+    "sorotte-network-options-active-result";
+pub(crate) const SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT: &str =
+    "sorotte-network-options-transition-result";

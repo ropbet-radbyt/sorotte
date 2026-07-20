@@ -7,13 +7,11 @@ fn gui_shell_app_state_updates_dialog_expectations_from_configuration_edits_with
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Privacy",
-        label: "Trusted Domains Only",
+        id: SettingId::PrivacyTrustedDomainsOnly,
         value: true,
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "System",
-        label: "Auto Update",
+        id: SettingId::GeneralCheckForUpdatesAutomatically,
         value: true,
     }));
 
@@ -58,15 +56,14 @@ fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_t
     assert_eq!(
         state
             .configuration
-            .control_value("Privacy", "Trusted Domains Only"),
+            .control_value(SettingId::PrivacyTrustedDomainsOnly),
         Some("yes")
     );
     assert!(!state.menus.tls_prompt_expected);
 
     for value in [false, true] {
         assert!(state.apply(GuiShellAction::EditConfigurationBool {
-            section: "Privacy",
-            label: "Trusted Domains Only",
+            id: SettingId::PrivacyTrustedDomainsOnly,
             value,
         }));
         assert_eq!(state.menus.tls_prompt_expected, value);

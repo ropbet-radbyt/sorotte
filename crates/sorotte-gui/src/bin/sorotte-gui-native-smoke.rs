@@ -69,6 +69,15 @@ struct GuiLaunchConfig<'a> {
     drop_target: Option<&'a str>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct GuiLaunchTestOverrides<'a> {
+    theme: Option<&'a str>,
+    appdata_root: Option<&'a Path>,
+    config_storage_browse_path: Option<&'a Path>,
+    disable_startup_saved_connect: bool,
+    player_settings_degraded: bool,
+}
+
 struct MockSessionServer {
     address: String,
     port: u16,
@@ -100,6 +109,26 @@ const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const MAIN_WINDOW_ROOM_BROWSER_NAME: &str = "Room Browser";
+const ROOM_SURFACE_AUTOMATION_ID: &str = "main-window-root";
+const SETUP_SURFACE_AUTOMATION_ID: &str = "configuration-root";
+const CONFIG_CONNECTION_TAB_AUTOMATION_ID: &str = "configuration:tab:connection";
+const CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID: &str = "configuration:tab:playback-search";
+const CONFIG_PRIVACY_CHAT_TAB_AUTOMATION_ID: &str = "configuration:tab:privacy-chat";
+const CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID: &str = "configuration:tab:interface-system";
+const CONFIG_SAVE_AUTOMATION_ID: &str = "config-command:save";
+const CONFIG_RELOAD_AUTOMATION_ID: &str = "config-command:reload";
+const CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID: &str = "config-command:clear-gui-data";
+const CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID: &str = "config-command:confirm-clear-gui-data";
+const CONFIG_CONNECT_ONCE_AUTOMATION_ID: &str = "config-command:connect-once";
+const MODAL_TLS_TRUST_AUTOMATION_ID: &str = "shell:modal:tls:trust";
+const MODAL_CLOSE_AUTOMATION_ID: &str = "shell:modal:close";
+const MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID: &str = "shell:modal:player-setup:retry";
+const MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID: &str =
+    "shell:modal:player-setup:open-settings";
+const PUBLIC_SERVER_EDIT_LABEL_AUTOMATION_ID: &str = "public-servers:edit:label";
+const PUBLIC_SERVER_EDIT_ADDRESS_AUTOMATION_ID: &str = "public-servers:edit:address";
+const PUBLIC_SERVER_EDIT_COMMIT_AUTOMATION_ID: &str = "public-servers:edit:commit";
+const PUBLIC_SERVER_CONNECT_AUTOMATION_ID: &str = "public-servers:command:connect";
 #[cfg(target_os = "windows")]
 const MAIN_WINDOW_CONTROLS_CONTAINER_NAME: &str = "Controls";
 #[cfg(target_os = "windows")]
@@ -116,15 +145,15 @@ const SMOKE_WINDOW_WIDTH: i32 = 1700;
 #[cfg(target_os = "windows")]
 const SMOKE_WINDOW_HEIGHT: i32 = 1100;
 const CONFIG_HOST_VALUE: &str = "syncplay.example";
-const CONFIG_HOST_EDIT_INDEX: usize = 0;
+const CONFIG_HOST_AUTOMATION_ID: &str = "settings.connection.host";
 const CONFIG_PORT_VALUE: &str = "8999";
-const CONFIG_PORT_EDIT_INDEX: usize = 1;
+const CONFIG_PORT_AUTOMATION_ID: &str = "settings.connection.port";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
-const CONFIG_USERNAME_EDIT_INDEX: usize = 2;
+const CONFIG_USERNAME_AUTOMATION_ID: &str = "settings.connection.username";
 const CONFIG_ROOM_VALUE: &str = "smoke-room";
-const CONFIG_ROOM_EDIT_INDEX: usize = 3;
+const CONFIG_ROOM_AUTOMATION_ID: &str = "settings.connection.room";
 const CONFIG_PLAYER_PATH_VALUE: &str = "C:\\Windows\\System32\\notepad.exe";
-const CONFIG_PLAYER_PATH_EDIT_INDEX: usize = 5;
+const CONFIG_PLAYER_PATH_AUTOMATION_ID: &str = "settings.player.executable";
 const CONFIG_REWIND_THRESHOLD_VALUE: &str = "1.25";
 const CONFIG_FASTFORWARD_THRESHOLD_VALUE: &str = "3.5";
 const CONFIG_SLOWDOWN_THRESHOLD_VALUE: &str = "2.25";
@@ -160,13 +189,41 @@ mod native_smoke_accessibility;
 mod native_smoke_cli;
 #[path = "sorotte-gui-native-smoke/native_smoke_setup.rs"]
 mod native_smoke_setup;
+#[path = "sorotte-gui-native-smoke/visual_artifacts.rs"]
+mod visual_artifacts;
 
 use native_smoke_accessibility::*;
 use native_smoke_cli::*;
 use native_smoke_setup::*;
 
+#[cfg(target_os = "windows")]
+fn enable_native_smoke_dpi_awareness() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
+
+    // SAFETY: This is called before the smoke runner initializes COM, discovers windows, or
+    // performs any coordinate-sensitive UI Automation/GDI work.
+    unsafe {
+        SetProcessDPIAware();
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "windows")]
+    enable_native_smoke_dpi_awareness();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--visual-suite") {
+        match visual_artifacts::run_visual_suite_from_args(&args) {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("sorotte-gui visual suite failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{}", native_smoke_usage());
         return;

@@ -77,6 +77,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         check_for_updates_automatically: Some(true),
         ..StoredClientSettingsMvp::default()
     };
+    persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
@@ -191,25 +192,25 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     assert_eq!(
         persisted_state
             .configuration
-            .control_value("Readiness", "Unpause Action"),
+            .control_value(SettingId::PlaybackUnpauseAction),
         Some("IfMinUsersReady")
     );
     assert_eq!(
         persisted_state
             .configuration
-            .control_value("Readiness", "Autoplay Min Users"),
+            .control_value(SettingId::PlaybackAutoplayMinUsers),
         Some("4")
     );
     assert_eq!(
         persisted_state
             .configuration
-            .control_value("Privacy", "Trusted Domain Count"),
+            .control_value(SettingId::PrivacyTrustedDomainCount),
         Some("1")
     );
     assert_eq!(
         persisted_state
             .configuration
-            .control_value("System", "Language"),
+            .control_value(SettingId::GeneralLanguage),
         Some("es")
     );
     assert_eq!(persisted_state.media_search.directories.len(), 2);
@@ -220,25 +221,13 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     assert!(persisted_state.main_window.shared_playlist_enabled);
     assert!(persisted_state.menus.tls_prompt_expected);
     assert!(!persisted_state.menus.update_notice_expected);
-    let window = persisted_state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .expect("window menu should exist after reload");
     assert!(
-        window
-            .actions
+        persisted_state
+            .menus
+            .sections
             .iter()
-            .find(|action| action.label == "Show Chat")
-            .is_some_and(|action| action.enabled)
-    );
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|action| action.label == "Show Playlist")
-            .is_some_and(|action| action.enabled)
+            .flat_map(|section| &section.actions)
+            .all(|action| !matches!(action.label, "Show Chat" | "Show Playlist" | "Show Users"))
     );
 
     let mut no_runtime_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);

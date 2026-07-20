@@ -32,13 +32,14 @@ use sorotte_client_app::app_boundary::{
         load_sorotte_ini_stored_client_settings_mvp_from_path,
     },
     state::{
-        ClientConfig, StoredClientSettingsMvp,
+        ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
+        StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
 use sorotte_client_core::PlayerCommandCause;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
-use sorotte_player_mpv::MpvAdapter;
+use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
     auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
@@ -61,10 +62,9 @@ use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
-    apply_effective_streaming_options_to_active_network_media,
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter,
+    apply_effective_streaming_options_to_active_network_media_classified,
     configure_effective_streaming_options_for_network_media,
-    managed_mpv_settings_decision_from_settings,
+    configure_sorotte_chat_osd_integration, managed_mpv_settings_decision_from_settings,
 };
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
@@ -75,17 +75,18 @@ use super::runtime_stack::{
     GuiSessionTransportDriver, GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
-    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState,
-    GuiMediaSourceProviderId, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
+    FirstRunConfigurationDialogDraft, GuiMediaMatchRemediationRuntimeSnapshot,
+    GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState, GuiMediaSourceProviderId,
+    GuiPersistedSettingsPatch, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
     GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
-    GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
-    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+    GuiSettingApplyRequirement, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SettingId,
+    SorotteGuiShellAppState,
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
     gui_startup_public_server_outcome_with_fetcher,
-    resolve_sorotte_gui_config_path_legacy_compatible,
+    resolve_sorotte_gui_config_path_legacy_compatible, should_hydrate_startup_public_servers,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
 use super::stream_support::{
@@ -106,12 +107,7 @@ pub(super) struct StartupPublicServerHydrationContext {
 
 impl StartupPublicServerHydrationContext {
     fn from_settings(settings: &StoredClientSettingsMvp) -> Option<Self> {
-        if settings.check_for_updates_automatically != Some(true)
-            || settings
-                .public_servers
-                .as_ref()
-                .is_some_and(|servers| !servers.is_empty())
-        {
+        if !should_hydrate_startup_public_servers(settings) {
             return None;
         }
         let language = settings
@@ -133,10 +129,204 @@ pub(super) struct StartupPublicServerHydrationState {
     pub(super) context: Option<StartupPublicServerHydrationContext>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum GuiPlayerIntegrationHealth {
+    #[default]
+    Ready,
+    BridgeDegraded {
+        reason: String,
+        retryable_in_place: bool,
+    },
+}
+
+impl GuiPlayerIntegrationHealth {
+    fn from_sorotte_bridge_health(health: SorotteBridgeHealth) -> Self {
+        match health {
+            SorotteBridgeHealth::Disabled
+            | SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering => Self::Ready,
+            SorotteBridgeHealth::Degraded(failure) => Self::BridgeDegraded {
+                retryable_in_place: failure.retryable_in_place(),
+                reason: failure.reason,
+            },
+        }
+    }
+
+    fn bridge_degraded_reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::BridgeDegraded { reason, .. } => Some(reason),
+        }
+    }
+
+    fn bridge_retryable_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::BridgeDegraded {
+                retryable_in_place: true,
+                ..
+            }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum GuiCorePlayerConfigurationHealth {
+    #[default]
+    Ready,
+    StreamingDegraded {
+        reason: String,
+        retryable_in_place: bool,
+        origin: GuiStreamingDegradationOrigin,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GuiStreamingDegradationOrigin {
+    ExplicitApply,
+    AuthoritativeMediaTransition,
+    NetworkOptionsHook,
+}
+
+impl GuiCorePlayerConfigurationHealth {
+    fn streaming_degraded_reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::StreamingDegraded { reason, .. } => Some(reason),
+        }
+    }
+
+    fn streaming_retryable_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamingDegraded {
+                retryable_in_place: true,
+                ..
+            }
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct GuiPlayerApplyState {
+    /// The last process target and launch arguments that actually became active.
+    pub(super) applied_process_target: Option<GuiPlayerProcessTarget>,
+    /// The effective streaming options last accepted by the active mpv runtime.
+    pub(super) applied_streaming_options: Option<Vec<EffectiveMpvStreamingOption>>,
+    /// The mpv UI properties last accepted by the attached mpv process.
+    pub(super) applied_mpv_ui_settings: Option<LegacySyncplayUiSettings>,
+    /// The Lua bridge settings last acknowledged independently of mpv UI-property application.
+    pub(super) acknowledged_bridge_settings: Option<LegacySyncplayUiSettings>,
+    /// The exact Lua settings generation acknowledged for `acknowledged_bridge_settings`.
+    pub(super) acknowledged_bridge_generation: Option<u64>,
+    /// A process or streaming apply failed and still needs a core player retry/restart.
+    pub(super) core_reapply_required: bool,
+    /// An explicit apply was superseded by a newer authoritative media transition. The ordered
+    /// transition result owns whether the desired streaming baseline may be promoted.
+    pub(super) streaming_apply_awaiting_transition: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GuiPlayerProcessTarget {
+    None,
+    TestPlayer,
+    ExplicitMpvIpc {
+        ipc_path: String,
+    },
+    ManagedMpv {
+        requested_player_path: String,
+        program: PathBuf,
+        extra_args: Vec<String>,
+    },
+    UnsupportedConfiguredPlayer {
+        player_path: String,
+    },
+}
+
+impl From<&GuiPlayerLaunchRuntimeState> for GuiPlayerProcessTarget {
+    fn from(launch_state: &GuiPlayerLaunchRuntimeState) -> Self {
+        match launch_state {
+            GuiPlayerLaunchRuntimeState::None => Self::None,
+            GuiPlayerLaunchRuntimeState::TestPlayer => Self::TestPlayer,
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { ipc_path, .. } => Self::ExplicitMpvIpc {
+                ipc_path: ipc_path.clone(),
+            },
+            GuiPlayerLaunchRuntimeState::ManagedMpv(config) => Self::ManagedMpv {
+                requested_player_path: config.requested_player_path.clone(),
+                program: config.program.clone(),
+                extra_args: config.extra_args.clone(),
+            },
+            GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { player_path } => {
+                Self::UnsupportedConfiguredPlayer {
+                    player_path: player_path.clone(),
+                }
+            }
+        }
+    }
+}
+
+impl GuiPlayerApplyState {
+    fn process_target_is_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        self.applied_process_target.as_ref() == Some(&GuiPlayerProcessTarget::from(desired))
+    }
+
+    fn streaming_options_are_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        desired.effective_mpv_streaming_options() == self.applied_streaming_options.as_deref()
+    }
+
+    fn mpv_ui_settings_are_applied(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        desired.mpv_ui_settings() == self.applied_mpv_ui_settings.as_ref()
+    }
+
+    fn bridge_settings_are_acknowledged(&self, desired: &GuiPlayerLaunchRuntimeState) -> bool {
+        let desired_settings = desired.mpv_ui_settings();
+        desired_settings == self.acknowledged_bridge_settings.as_ref()
+            && desired_settings.is_none_or(|settings| {
+                !settings.uses_syncplayintf_bridge()
+                    || self.acknowledged_bridge_generation.is_some()
+            })
+    }
+
+    fn record_core_apply(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.record_process_target_applied(launch_state);
+        self.record_streaming_options_applied(launch_state);
+    }
+
+    fn record_process_target_applied(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.applied_process_target = Some(GuiPlayerProcessTarget::from(launch_state));
+    }
+
+    fn record_streaming_options_applied(&mut self, launch_state: &GuiPlayerLaunchRuntimeState) {
+        self.applied_streaming_options = launch_state
+            .effective_mpv_streaming_options()
+            .map(<[_]>::to_vec);
+        self.core_reapply_required = false;
+        self.streaming_apply_awaiting_transition = false;
+    }
+
+    fn mark_streaming_apply_failed(&mut self) {
+        self.core_reapply_required = true;
+        self.streaming_apply_awaiting_transition = false;
+    }
+
+    fn mark_streaming_apply_superseded(&mut self) {
+        self.core_reapply_required = false;
+        self.streaming_apply_awaiting_transition = true;
+    }
+
+    fn clear_integration_baselines(&mut self) {
+        self.applied_mpv_ui_settings = None;
+        self.acknowledged_bridge_settings = None;
+        self.acknowledged_bridge_generation = None;
+    }
+}
+
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
     pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
+    pub(super) active_session_settings: Option<StoredClientSettingsRuntimeSnapshot>,
+    pub(super) active_session_configured_settings: Option<StoredClientSettingsRuntimeSnapshot>,
     pub(super) session_generation: u64,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
@@ -157,8 +347,18 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
+    pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
+    pub(super) core_player_configuration_health: GuiCorePlayerConfigurationHealth,
+    /// A degraded network-options hook is independent of the active file's policy result. Keep
+    /// this reason even when another player-configuration issue is currently projected.
+    pub(super) network_options_hook_failure_reason: Option<String>,
+    pub(super) network_options_runtime_health_revision: Option<u64>,
+    #[cfg(test)]
+    pub(super) test_queue_network_options_hook_recovery_before_player_commands: bool,
+    pub(super) pending_apply_requirements_refresh_required: bool,
+    pub(super) player_integration_health: GuiPlayerIntegrationHealth,
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) player_local_file_placeholder: bool,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
@@ -235,6 +435,292 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
     pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
+}
+
+impl GuiPersistedConfigRuntimeOwner {
+    /// Settings that are allowed to influence ordinary runtime work right now.
+    ///
+    /// A connected session is pinned to its explicit active snapshot. Detached work uses the
+    /// last saved configuration. Merely editing the Settings draft must not alter playback,
+    /// privacy, media lookup, or integration behavior until Save/reconnect or an explicit
+    /// immediate feature action applies a scoped patch.
+    pub(in crate::app::runtime_owner) fn runtime_operation_settings(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> StoredClientSettingsMvp {
+        self.active_session_settings
+            .as_ref()
+            .map(|runtime_settings| runtime_settings.settings.clone())
+            .unwrap_or_else(|| state.saved_configuration.clone())
+    }
+
+    pub(in crate::app::runtime_owner) fn runtime_shared_playlist_enabled(
+        &self,
+        state: &SorotteGuiShellAppState,
+    ) -> bool {
+        stored_client_settings_runtime_snapshot_legacy_compatible(
+            &self.runtime_operation_settings(state),
+        )
+        .config
+        .playback
+        .shared_playlist_enabled
+    }
+
+    pub(in crate::app::runtime_owner) fn apply_patch_to_active_session_settings(
+        &mut self,
+        patch: &GuiPersistedSettingsPatch,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let mut settings = active_settings.settings.clone();
+            patch.apply_to(&mut settings);
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    /// Promotes fields whose taxonomy says they become effective on an ordinary successful Save
+    /// and that are consumed directly by connected runtime work. Connection, playback/privacy,
+    /// player, streaming, and application-restart fields deliberately remain pinned until their
+    /// stronger lifecycle boundary is crossed.
+    pub(in crate::app) fn promote_on_save_runtime_fields(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let mut settings = active_settings.settings.clone();
+            settings.media_search_directories = saved_settings.media_search_directories.clone();
+            settings.folder_search_first_file_timeout_seconds =
+                saved_settings.folder_search_first_file_timeout_seconds;
+            settings.folder_search_timeout_seconds = saved_settings.folder_search_timeout_seconds;
+            settings.folder_search_double_check_interval_seconds =
+                saved_settings.folder_search_double_check_interval_seconds;
+            settings.folder_search_warning_threshold_seconds =
+                saved_settings.folder_search_warning_threshold_seconds;
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    pub(in crate::app) fn promote_restart_player_runtime_fields(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        for active_settings in [
+            self.active_session_settings.as_mut(),
+            self.active_session_configured_settings.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let settings = FirstRunConfigurationDialogDraft::merge_apply_requirement_from_settings(
+                &active_settings.settings,
+                saved_settings,
+                GuiSettingApplyRequirement::RestartPlayer,
+            );
+            Self::replace_active_runtime_settings_preserving_controlled_room_password(
+                active_settings,
+                &settings,
+            );
+        }
+    }
+
+    pub(in crate::app) fn adopt_saved_player_launch_state_when_inactive(
+        &mut self,
+        saved_settings: &StoredClientSettingsMvp,
+    ) {
+        if self.player_apply_state.applied_process_target.is_some() || self.player.is_some() {
+            return;
+        }
+        if let Ok(launch_state) = Self::configured_player_launch_state_from_lookup_and_settings(
+            &env_trimmed,
+            Some(saved_settings),
+        ) {
+            self.player_launch_state = launch_state;
+        }
+    }
+
+    fn replace_active_runtime_settings_preserving_controlled_room_password(
+        active_settings: &mut StoredClientSettingsRuntimeSnapshot,
+        settings: &StoredClientSettingsMvp,
+    ) {
+        let controlled_room_password = active_settings
+            .controlled_room_password_override
+            .clone()
+            .or_else(|| {
+                active_settings
+                    .config
+                    .connection
+                    .controlled_room_password
+                    .clone()
+            });
+        let mut replacement = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+        if let Some(password) = controlled_room_password {
+            replacement.controlled_room_password_override = Some(password.clone());
+            replacement.config.connection.controlled_room_password = Some(password);
+        }
+        *active_settings = replacement;
+    }
+
+    fn comparable_settings_for_runtime_snapshot(
+        snapshot: &StoredClientSettingsRuntimeSnapshot,
+    ) -> StoredClientSettingsMvp {
+        let mut settings = snapshot.settings.clone();
+        if let (Some(room), Some(password)) = (
+            snapshot.config.connection.room.as_ref(),
+            snapshot
+                .controlled_room_password_override
+                .as_ref()
+                .or(snapshot.config.connection.controlled_room_password.as_ref()),
+        ) {
+            settings.room = Some(format!("{}:{}", room.as_str(), password.expose_secret()));
+        }
+        settings
+    }
+
+    fn settings_differ_for_apply_requirement(
+        saved_settings: &StoredClientSettingsMvp,
+        active_settings: &StoredClientSettingsRuntimeSnapshot,
+        requirement: GuiSettingApplyRequirement,
+    ) -> bool {
+        let saved_snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(saved_settings);
+        let saved_settings = Self::comparable_settings_for_runtime_snapshot(&saved_snapshot);
+        let active_settings = Self::comparable_settings_for_runtime_snapshot(active_settings);
+        let saved = FirstRunConfigurationDialogDraft::from_stored_settings(&saved_settings);
+        let active = FirstRunConfigurationDialogDraft::from_stored_settings(&active_settings);
+        SettingId::ALL
+            .iter()
+            .copied()
+            .filter(|id| id.apply_requirement() == requirement)
+            .any(|id| {
+                if id == SettingId::ConnectionServerPassword {
+                    return saved_settings.server_password != active_settings.server_password;
+                }
+                saved.control_value(id) != active.control_value(id)
+            })
+    }
+
+    pub(in crate::app) fn pending_apply_requirements_for_settings(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        saved_settings: &StoredClientSettingsMvp,
+    ) -> Vec<GuiSettingApplyRequirement> {
+        let mut requirements = BTreeSet::new();
+        if self.session_projects_to_shell
+            && self
+                .active_session_configured_settings
+                .as_ref()
+                .or(self.active_session_settings.as_ref())
+                .is_some_and(|active| {
+                    Self::settings_differ_for_apply_requirement(
+                        saved_settings,
+                        active,
+                        GuiSettingApplyRequirement::Reconnect,
+                    )
+                })
+        {
+            requirements.insert(GuiSettingApplyRequirement::Reconnect);
+        }
+
+        let desired_player_launch_state =
+            Self::configured_player_launch_state_from_lookup_and_settings(
+                &env_trimmed,
+                Some(saved_settings),
+            );
+        let core_player_state_is_active =
+            self.player_apply_state.applied_process_target.is_some() || self.player.is_some();
+        let process_target_differs = core_player_state_is_active
+            && desired_player_launch_state
+                .as_ref()
+                .map_or(true, |desired| {
+                    !self.player_apply_state.process_target_is_applied(desired)
+                });
+        let streaming_options_differ = core_player_state_is_active
+            && !self.player_apply_state.streaming_apply_awaiting_transition
+            && desired_player_launch_state
+                .as_ref()
+                .map_or(true, |desired| {
+                    !self
+                        .player_apply_state
+                        .streaming_options_are_applied(desired)
+                });
+        let retryable_streaming_degradation_on_attached_target = self.player.is_some()
+            && self.player_apply_state.core_reapply_required
+            && desired_player_launch_state
+                .as_ref()
+                .is_ok_and(|desired| self.player_apply_state.process_target_is_applied(desired))
+            && matches!(
+                self.core_player_configuration_health,
+                GuiCorePlayerConfigurationHealth::StreamingDegraded {
+                    retryable_in_place: true,
+                    ..
+                }
+            );
+        let streaming_apply_awaiting_on_attached_target = self.player.is_some()
+            && self.player_apply_state.streaming_apply_awaiting_transition
+            && desired_player_launch_state
+                .as_ref()
+                .is_ok_and(|desired| self.player_apply_state.process_target_is_applied(desired));
+        if streaming_apply_awaiting_on_attached_target {
+            requirements.insert(GuiSettingApplyRequirement::PlayerSettingsRetryAvailable);
+        } else if self.player_apply_state.core_reapply_required
+            || process_target_differs
+            || streaming_options_differ
+        {
+            requirements.insert(if retryable_streaming_degradation_on_attached_target {
+                GuiSettingApplyRequirement::PlayerSettingsRetryAvailable
+            } else {
+                GuiSettingApplyRequirement::RestartPlayer
+            });
+        }
+
+        let saved_language = saved_settings
+            .language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en");
+        let active_language = projected_state
+            .active_application_language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en");
+        if saved_language != active_language
+            || saved_settings.force_gui_prompt.unwrap_or(false)
+                != projected_state
+                    .active_application_force_gui_prompt
+                    .unwrap_or(false)
+        {
+            requirements.insert(GuiSettingApplyRequirement::RestartApplication);
+        }
+
+        requirements.into_iter().collect()
+    }
+
+    pub(in crate::app) fn pending_apply_requirements_action(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        saved_settings: &StoredClientSettingsMvp,
+    ) -> GuiShellAction {
+        GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
+            self.pending_apply_requirements_for_settings(projected_state, saved_settings),
+        )
+    }
 }
 
 pub(super) const ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION: Duration = Duration::from_secs(5);

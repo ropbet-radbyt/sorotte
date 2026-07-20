@@ -10,15 +10,27 @@ use std::{
 use sorotte_client_app::app_boundary::state::{
     ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
 };
-use sorotte_player_api::PlayerAdapter;
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_api::{PlayerAdapter, PlayerError};
+use sorotte_player_mpv::{
+    LegacySyncplayUiSettings, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
+    SorotteBridgeFailureKind, SorotteBridgeHealth, is_unsupported_mpv_version_error,
+};
 use sorotte_secret::RedactedCommandArgs;
 
 use super::child_process::configure_gui_child_process;
 
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
-const LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER: &str = "-- sorotte-chat-input-bridge";
+const MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX: &str = "mpv upgrade required: ";
+
+pub(crate) fn mpv_upgrade_required_diagnostic(error: &PlayerError) -> Option<String> {
+    is_unsupported_mpv_version_error(error)
+        .then(|| format!("{MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX}{error}"))
+}
+
+pub(crate) fn message_requires_mpv_upgrade(message: &str) -> bool {
+    message.contains(MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedMpvSettingsDecision {
@@ -55,18 +67,12 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
     }
 }
 
-impl ManagedMpvLaunchConfig {
-    pub(crate) fn matches_process_target(&self, other: &Self) -> bool {
-        self.requested_player_path == other.requested_player_path
-            && self.program == other.program
-            && self.extra_args == other.extra_args
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
     child: Child,
     ipc_cleanup_path: Option<PathBuf>,
+    #[cfg(test)]
+    drop_observer: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ManagedMpvProcessGuard {
@@ -74,6 +80,27 @@ impl ManagedMpvProcessGuard {
         self.child
             .try_wait()
             .map_err(|error| format!("failed checking GUI-owned mpv process state: {error}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_child(child: Child) -> Self {
+        Self {
+            child,
+            ipc_cleanup_path: None,
+            drop_observer: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_child_with_drop_observer(
+        child: Child,
+        drop_observer: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            child,
+            ipc_cleanup_path: None,
+            drop_observer: Some(drop_observer),
+        }
     }
 }
 
@@ -83,6 +110,10 @@ impl Drop for ManagedMpvProcessGuard {
         let _ = self.child.wait();
         if let Some(path) = self.ipc_cleanup_path.as_ref() {
             let _ = fs::remove_file(path);
+        }
+        #[cfg(test)]
+        if let Some(observer) = self.drop_observer.as_ref() {
+            observer.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -125,34 +156,58 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
     }))
 }
 
-pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SorotteChatOsdIntegrationOutcome {
+    pub(crate) bridge_health: SorotteBridgeHealth,
+    pub(crate) mpv_ui_settings_applied: bool,
+}
+
+pub(crate) fn configure_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
     ui_settings: &LegacySyncplayUiSettings,
-) -> Result<(), String> {
-    player
-        .configure_legacy_syncplay_ui_settings(ui_settings.clone())
-        .map_err(|error| format!("failed to configure mpv OSD/chat settings: {error}"))?;
-    player
-        .set_option_string("drag-and-drop", "no")
-        .map_err(|error| format!("failed to disable mpv drag-and-drop handling: {error}"))?;
+) -> SorotteChatOsdIntegrationOutcome {
+    configure_sorotte_chat_osd_integration_inner(player, ui_settings, false)
+}
+
+pub(crate) fn retry_sorotte_chat_osd_integration(
+    player: &mut MpvAdapter,
+    ui_settings: &LegacySyncplayUiSettings,
+) -> SorotteChatOsdIntegrationOutcome {
+    configure_sorotte_chat_osd_integration_inner(player, ui_settings, true)
+}
+
+fn configure_sorotte_chat_osd_integration_inner(
+    player: &mut MpvAdapter,
+    ui_settings: &LegacySyncplayUiSettings,
+    retry: bool,
+) -> SorotteChatOsdIntegrationOutcome {
+    if let Err(error) = player.configure_legacy_syncplay_ui_settings(ui_settings.clone()) {
+        return SorotteChatOsdIntegrationOutcome {
+            bridge_health: player.mark_sorotte_bridge_degraded(
+                SorotteBridgeFailureKind::IpcCommand,
+                format!("failed to configure mpv OSD/chat settings: {error}"),
+            ),
+            mpv_ui_settings_applied: false,
+        };
+    }
+    if let Err(error) = player.set_option_string("drag-and-drop", "no") {
+        eprintln!("warning: failed to disable mpv drag-and-drop handling: {error}");
+    }
     if let Err(error) = player.set_option_string("ytdl", "yes") {
         eprintln!(
             "warning: failed to enable mpv yt-dlp hook via GUI JSON IPC: {}",
             error
         );
     }
-    if (ui_settings.chat_output_enabled || ui_settings.chat_input_enabled)
-        && let Some(script_path) = find_legacy_syncplayintf_script_path()
-        && let Err(error) = player.load_legacy_syncplayintf_script(&script_path)
-    {
-        eprintln!(
-            "warning: failed to load legacy mpv syncplayintf.lua from '{}' via GUI JSON IPC: {}",
-            script_path.display(),
-            error
-        );
+    let bridge_health = if retry {
+        player.retry_bundled_sorotte_bridge()
+    } else {
+        player.configure_bundled_sorotte_bridge()
+    };
+    SorotteChatOsdIntegrationOutcome {
+        bridge_health,
+        mpv_ui_settings_applied: true,
     }
-
-    Ok(())
 }
 
 pub(crate) fn configure_effective_streaming_options_for_network_media(
@@ -166,11 +221,11 @@ pub(crate) fn configure_effective_streaming_options_for_network_media(
     );
 }
 
-pub(crate) fn apply_effective_streaming_options_to_active_network_media(
+pub(crate) fn apply_effective_streaming_options_to_active_network_media_classified(
     player: &mut MpvAdapter,
-) -> Result<(), String> {
+) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, String> {
     player
-        .apply_network_media_options_to_active_media()
+        .apply_network_media_options_to_active_media_classified()
         .map_err(|error| format!("failed to update active mpv network-media options: {error}"))
 }
 
@@ -226,23 +281,17 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     let guard = ManagedMpvProcessGuard {
         child,
         ipc_cleanup_path,
+        #[cfg(test)]
+        drop_observer: None,
     };
-    let mut adapter = connect_mpv_adapter_with_retry(
-        &ipc_path,
-        connect_timeout,
-        connect_poll_interval,
-    )
-    .map_err(|error| {
-        format!(
-            "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
-            config.program.display(),
-            ipc_path
-        )
-    })?;
-    adapter.configure_ytdl_live_probe_environment(
-        downloader_path.map(Path::to_path_buf),
-        path_prefixes.to_vec(),
-    );
+    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
+        .map_err(|error| {
+            format!(
+                "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
+                config.program.display(),
+                ipc_path
+            )
+        })?;
     Ok((adapter, guard))
 }
 
@@ -398,76 +447,6 @@ fn timeout_ms_from_stored_client_setting(value: Option<i64>, default_ms: u64) ->
         .unwrap_or(default_ms)
 }
 
-fn legacy_syncplayintf_script_candidate_paths() -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    vec![
-        manifest_dir.join("../../resources/syncplayintf.lua"),
-        manifest_dir
-            .join("../../.interop-cache/syncplay-legacy/syncplay/resources/syncplayintf.lua"),
-        manifest_dir.join("../../../syncplay/syncplay/resources/syncplayintf.lua"),
-    ]
-}
-
-fn legacy_syncplayintf_chat_input_bridge_source() -> &'static str {
-    r#"
--- sorotte-chat-input-bridge
-local syncplay_rust_original_handle_enter = handle_enter
-function handle_enter()
-    if repl_active and line ~= '' then
-        local syncplay_rust_chat_line = line
-        if opts['backslashSubstituteCharacter'] ~= nil then
-            syncplay_rust_chat_line = string.gsub(syncplay_rust_chat_line, opts['backslashSubstituteCharacter'], "\\")
-        end
-        mp.commandv("script-message", "syncplayintf-chat", syncplay_rust_chat_line)
-    end
-    syncplay_rust_original_handle_enter()
-end
-"#
-}
-
-fn legacy_syncplayintf_script_source_with_chat_input_bridge(source: &str) -> String {
-    if source.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER) {
-        return source.to_owned();
-    }
-
-    let mut patched = source.to_owned();
-    if !patched.ends_with('\n') {
-        patched.push('\n');
-    }
-    patched.push_str(legacy_syncplayintf_chat_input_bridge_source());
-    patched
-}
-
-fn prepare_legacy_syncplayintf_script_path(source_path: &Path) -> Result<PathBuf, String> {
-    let source = fs::read_to_string(source_path).map_err(|error| {
-        format!(
-            "failed to read syncplayintf.lua from '{}': {error}",
-            source_path.display()
-        )
-    })?;
-    if source.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER) {
-        return Ok(source_path.to_path_buf());
-    }
-
-    let patched = legacy_syncplayintf_script_source_with_chat_input_bridge(&source);
-    let target_path =
-        std::env::temp_dir().join(format!("sorotte-syncplayintf-{}.lua", std::process::id()));
-    fs::write(&target_path, patched).map_err(|error| {
-        format!(
-            "failed to write patched syncplayintf.lua to '{}': {error}",
-            target_path.display()
-        )
-    })?;
-    Ok(target_path)
-}
-
-fn find_legacy_syncplayintf_script_path() -> Option<PathBuf> {
-    let source_path = legacy_syncplayintf_script_candidate_paths()
-        .into_iter()
-        .find(|candidate| candidate.is_file())?;
-    Some(prepare_legacy_syncplayintf_script_path(&source_path).unwrap_or(source_path))
-}
-
 #[cfg(windows)]
 fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
     &["mpv.exe", "mpv.com"]
@@ -599,11 +578,29 @@ fn connect_mpv_adapter_with_retry(
     timeout: Duration,
     poll_interval: Duration,
 ) -> Result<MpvAdapter, String> {
+    connect_mpv_adapter_with_retry_using(ipc_path, timeout, poll_interval, |path| {
+        MpvAdapter::with_json_ipc(path)
+    })
+}
+
+fn connect_mpv_adapter_with_retry_using<F>(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut connect: F,
+) -> Result<MpvAdapter, String>
+where
+    F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+{
     let started = std::time::Instant::now();
     let mut last_error = None;
     while started.elapsed() < timeout {
-        match MpvAdapter::with_json_ipc(ipc_path) {
+        match connect(ipc_path) {
             Ok(adapter) => return Ok(adapter),
+            Err(error) if is_unsupported_mpv_version_error(&error) => {
+                return Err(mpv_upgrade_required_diagnostic(&error)
+                    .expect("unsupported mpv versions must produce upgrade guidance"));
+            }
             Err(error) => {
                 last_error = Some(error.to_string());
                 std::thread::sleep(poll_interval);
@@ -649,13 +646,70 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvLaunchConfig,
-        ManagedMpvSettingsDecision, autodetect_mpv_player_path_legacy_compatible_from_lookup,
-        legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
+        ManagedMpvLaunchConfig, ManagedMpvSettingsDecision,
+        autodetect_mpv_player_path_legacy_compatible_from_lookup,
+        connect_mpv_adapter_with_retry_using, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-    use sorotte_player_mpv::LegacySyncplayUiSettings;
+    use sorotte_player_api::PlayerError;
+    use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+
+    #[test]
+    fn managed_attach_fails_fast_with_clear_mpv_upgrade_guidance() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            |_| {
+                attempts += 1;
+                Err(PlayerError::OperationFailed(format!(
+                    "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+                    sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+                )))
+            },
+        );
+
+        let error = match result {
+            Ok(_) => panic!("an unsupported mpv version must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            attempts, 1,
+            "a permanent version failure must not be retried"
+        );
+        assert!(error.starts_with("mpv upgrade required:"));
+        assert!(error.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(error.contains("upgrade mpv"));
+        assert!(!error.contains("timed out"));
+    }
+
+    #[test]
+    fn managed_attach_still_retries_transient_connection_failures() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            |_| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(PlayerError::OperationFailed(
+                        "mpv endpoint is still starting".to_owned(),
+                    ))
+                } else {
+                    Ok(MpvAdapter::default())
+                }
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
 
     #[test]
     fn managed_mpv_launch_config_debug_redacts_free_form_arguments() {
@@ -752,16 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_syncplayintf_script_bridge_patch_is_idempotent() {
-        let source = "function handle_enter()\nend\n";
-        let once = legacy_syncplayintf_script_source_with_chat_input_bridge(source);
-        let twice = legacy_syncplayintf_script_source_with_chat_input_bridge(&once);
-
-        assert!(once.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
-        assert_eq!(once, twice);
-    }
-
-    #[test]
     fn managed_mpv_launch_args_preserve_local_cache_defaults_before_extra_args() {
         let args = managed_mpv_launch_args(
             r"\\.\pipe\sorotte-gui-mpv-test",
@@ -783,6 +827,30 @@ mod tests {
                 r"--input-ipc-server=\\.\pipe\sorotte-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn managed_mpv_launch_args_preserve_positional_network_media_after_ipc_setup() {
+        let positional_media = "https://media.example.test/active.m3u8";
+        let args = managed_mpv_launch_args(
+            r"\\.\pipe\sorotte-gui-mpv-test",
+            &["--profile=syncplay".to_owned(), positional_media.to_owned()],
+            None,
+        );
+
+        assert_eq!(args.last().map(String::as_str), Some(positional_media));
+        let ipc_argument_index = args
+            .iter()
+            .position(|argument| argument.starts_with("--input-ipc-server="))
+            .expect("managed mpv args should configure JSON IPC");
+        let positional_media_index = args
+            .iter()
+            .position(|argument| argument == positional_media)
+            .expect("managed mpv args should retain positional media");
+        assert!(
+            ipc_argument_index < positional_media_index,
+            "mpv must receive IPC setup before the positional media target"
         );
     }
 

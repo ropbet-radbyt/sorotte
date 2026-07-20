@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -22,7 +21,9 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_config_plan_legacy_compatible,
     },
 };
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_mpv::{
+    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailureKind, SorotteBridgeHealth,
+};
 
 use crate::client_args::LegacyClientArgOverrides;
 use crate::client_config::ClientLoopConfig;
@@ -59,7 +60,4 @@ pub(super) use self::persistence::{
 pub(super) use self::player_defaults::apply_stored_legacy_startup_player_defaults_if_arg_absent;
 pub(super) use self::ui_settings::apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible;
 #[cfg(test)]
-pub(super) use self::ui_settings::{
-    LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
-};
+pub(super) use self::ui_settings::legacy_syncplay_ui_settings_from_stored_settings;

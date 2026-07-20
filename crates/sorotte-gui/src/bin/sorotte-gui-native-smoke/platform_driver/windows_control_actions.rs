@@ -4,7 +4,7 @@ use super::super::{
     MAIN_WINDOW_CONTROLS_CONTAINER_NAME, MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID,
     MAIN_WINDOW_ROOM_BROWSER_NAME, bool_label,
 };
-use super::windows_control_names::{is_local_ready_button_request, matches_control_name};
+use super::windows_control_names::{is_local_ready_button_request, matches_control_identity};
 use super::{NativeControlKind, PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
@@ -55,7 +55,8 @@ impl PlatformNativeGuiDriver {
                 let Some(current_name) = Self::automation_element_name(&element) else {
                     continue;
                 };
-                if !matches_control_name(name, &current_name) {
+                let automation_id = Self::automation_element_automation_id(&element);
+                if !matches_control_identity(name, &current_name, &automation_id) {
                     continue;
                 }
 
@@ -81,7 +82,6 @@ impl PlatformNativeGuiDriver {
                     continue;
                 }
 
-                let automation_id = Self::automation_element_automation_id(&element);
                 let rect = Self::automation_element_bounding_rect(&element);
                 if control_kind == NativeControlKind::Button
                     && is_local_ready_button_request(name)
@@ -232,7 +232,8 @@ impl PlatformNativeGuiDriver {
                     let Some(current_name) = Self::automation_element_name(&element) else {
                         continue;
                     };
-                    if !matches_control_name(name, &current_name) {
+                    let automation_id = Self::automation_element_automation_id(&element);
+                    if !matches_control_identity(name, &current_name, &automation_id) {
                         continue;
                     }
 
@@ -296,13 +297,16 @@ impl PlatformNativeGuiDriver {
                 thread::sleep(Duration::from_millis(80));
                 let wheel_result = Self::send_mouse_wheel(wheel_delta)
                     .map_err(|error| format!("failed to send mouse-wheel input: {error}"));
+                // Keep the cursor over the target until egui has processed the wheel event.
+                // Restoring it immediately can move hover outside the ScrollArea before the
+                // next frame routes the queued input.
+                thread::sleep(Duration::from_millis(120));
                 // SAFETY: `original_cursor` was populated by `GetCursorPos` above; restoring it
                 // is best-effort cleanup for the native smoke interaction.
                 unsafe {
                     let _ = SetCursorPos(original_cursor.x, original_cursor.y);
                 }
                 wheel_result?;
-                thread::sleep(Duration::from_millis(120));
                 Ok(())
             },
         )

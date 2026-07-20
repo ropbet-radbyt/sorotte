@@ -11,7 +11,7 @@ use crate::app::{
     GuiSeekPreparationState, GuiShellAction, GuiShellModal, GuiShellView, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode,
-    MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    MainWindowRuntimeSnapshot, SettingId, SorotteGuiShellAppState,
 };
 
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;

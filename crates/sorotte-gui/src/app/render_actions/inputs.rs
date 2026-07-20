@@ -43,15 +43,11 @@ impl GuiWidgetEguiRenderer {
         if node.id == "plugins:media-matching:setting:runtime-tolerance" {
             return Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(value));
         }
-        let (section, label, kind) = Self::configuration_control_identity(state, node)?;
+        let (id, kind) = Self::configuration_control_identity(state, node)?;
         if kind != GuiDialogControlKind::Checkbox {
             return None;
         }
-        Some(GuiShellAction::EditConfigurationBool {
-            section,
-            label,
-            value,
-        })
+        Some(GuiShellAction::EditConfigurationBool { id, value })
     }
 
     pub(in crate::app) fn actions_for_text_input_node(
@@ -80,8 +76,7 @@ impl GuiWidgetEguiRenderer {
             let mut actions = Vec::new();
             if changed {
                 actions.push(GuiShellAction::EditConfigurationText {
-                    section: "Connection",
-                    label: "Room",
+                    id: SettingId::ConnectionRoom,
                     value: value.to_owned().into(),
                 });
             }
@@ -191,7 +186,7 @@ impl GuiWidgetEguiRenderer {
             return (!actions.is_empty()).then_some(actions);
         }
 
-        if let Some((section, label, kind)) = Self::configuration_control_identity(state, node) {
+        if let Some((id, kind)) = Self::configuration_control_identity(state, node) {
             if matches!(
                 kind,
                 GuiDialogControlKind::TextInput
@@ -202,8 +197,7 @@ impl GuiWidgetEguiRenderer {
             ) && changed
             {
                 return Some(vec![GuiShellAction::EditConfigurationText {
-                    section,
-                    label,
+                    id,
                     value: GuiConfigurationTextValue::for_control(kind, value),
                 }]);
             }
@@ -249,12 +243,12 @@ impl GuiWidgetEguiRenderer {
         state: &SorotteGuiShellAppState,
         node: &GuiWidgetNode,
     ) -> Option<Vec<String>> {
-        let (section, label, kind) = Self::configuration_control_identity(state, node)?;
+        let (id, kind) = Self::configuration_control_identity(state, node)?;
         if kind != GuiDialogControlKind::Select {
             return None;
         }
-        Some(match (section, label) {
-            ("Readiness", "Unpause Action") => [
+        Some(match id {
+            SettingId::PlaybackUnpauseAction => [
                 "IfAlreadyReady",
                 "IfOthersReady",
                 "IfMinUsersReady",
@@ -263,7 +257,7 @@ impl GuiWidgetEguiRenderer {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            ("Readiness", "Autoplay Min Users") => {
+            SettingId::PlaybackAutoplayMinUsers => {
                 let mut options = ["app-default", "0", "1", "2", "3", "4", "5"]
                     .into_iter()
                     .map(str::to_owned)
@@ -276,13 +270,13 @@ impl GuiWidgetEguiRenderer {
                 }
                 options
             }
-            ("Privacy", "Filename Privacy") | ("Privacy", "Filesize Privacy") => {
+            SettingId::PrivacyFilename | SettingId::PrivacyFilesize => {
                 ["SendRaw", "SendHashed", "DoNotSend"]
                     .into_iter()
                     .map(str::to_owned)
                     .collect()
             }
-            ("Streaming", "Quality") => [
+            SettingId::StreamingQuality => [
                 "auto",
                 "best",
                 "balanced",
@@ -295,13 +289,13 @@ impl GuiWidgetEguiRenderer {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            ("Streaming", "Recovery Policy") => {
+            SettingId::StreamingRecoveryPolicy => {
                 ["preserve-content", "balanced", "stay-closest", "pause-room"]
                     .into_iter()
                     .map(str::to_owned)
                     .collect()
             }
-            ("Streaming", "Room Buffering Policy") => [
+            SettingId::StreamingRoomBufferingPolicy => [
                 "independent",
                 "pause-controller",
                 "pause-eligible",
@@ -310,31 +304,31 @@ impl GuiWidgetEguiRenderer {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            ("Streaming", "Start Synchronization") => {
+            SettingId::StreamingStartSynchronization => {
                 ["immediate", "wait-controller", "wait-all", "quorum"]
                     .into_iter()
                     .map(str::to_owned)
                     .collect()
             }
-            ("Streaming", "Start Timeout Action") => {
+            SettingId::StreamingStartTimeoutAction => {
                 ["continue", "remain-paused", "ask-controller"]
                     .into_iter()
                     .map(str::to_owned)
                     .collect()
             }
-            ("Chat", "Input Position") => ["Top", "Middle", "Bottom"]
+            SettingId::ChatInputPosition => ["Top", "Middle", "Bottom"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            ("Chat", "Output Mode") => ["Chatroom", "Scrolling"]
+            SettingId::ChatOutputMode => ["Chatroom", "Scrolling"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            ("System", "Language") => SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY
+            SettingId::GeneralLanguage => SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY
                 .split('/')
                 .map(str::to_owned)
                 .collect(),
-            ("System", "Update Channel") => {
+            SettingId::GeneralUpdateChannel => {
                 ["stable", "dev"].into_iter().map(str::to_owned).collect()
             }
             _ => return None,

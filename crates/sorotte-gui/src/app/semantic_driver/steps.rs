@@ -282,7 +282,7 @@ impl GuiSemanticStep {
         let pending = match token {
             "none" => return Ok(None),
             "save-configuration" => GuiPendingOperationKind::SaveConfiguration,
-            "reset-configuration" => GuiPendingOperationKind::ResetConfiguration,
+            "discard-configuration-changes" => GuiPendingOperationKind::DiscardConfigurationChanges,
             "reload-configuration" => GuiPendingOperationKind::ReloadConfiguration,
             "clear-gui-data" => GuiPendingOperationKind::ClearGuiData,
             "change-config-storage-root" => GuiPendingOperationKind::ChangeConfigStorageRoot,
@@ -308,6 +308,8 @@ impl GuiSemanticStep {
             "launch-failed" => Ok(GuiPlayerSetupIssueKind::LaunchFailed),
             "ipc-attach-failed" => Ok(GuiPlayerSetupIssueKind::IpcAttachFailed),
             "exited-after-launch" => Ok(GuiPlayerSetupIssueKind::ExitedAfterLaunch),
+            "player-settings-degraded" => Ok(GuiPlayerSetupIssueKind::PlayerSettingsDegraded),
+            "bridge-degraded" => Ok(GuiPlayerSetupIssueKind::BridgeDegraded),
             _ => Err(format!("unknown player-setup issue label {token:?}")),
         }
     }
@@ -605,7 +607,11 @@ impl GuiSemanticStep {
                     );
                 }
                 Self::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
-                    issue: Some(GuiPlayerSetupIssue { kind, message }),
+                    issue: Some(GuiPlayerSetupIssue {
+                        retry_available: kind != GuiPlayerSetupIssueKind::NotConfigured,
+                        kind,
+                        message,
+                    }),
                 })
             }
             "apply-seek-preparation-runtime" => {

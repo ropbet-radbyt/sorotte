@@ -1,10 +1,57 @@
 use super::*;
 
 impl GuiRuntimeRequest {
+    fn preview_persisted_settings_actions(&self) -> Option<Vec<GuiShellAction>> {
+        let patch = match self {
+            Self::SetPluginEnabled { plugin, enabled } => {
+                GuiPersistedSettingsPatch::PluginEnabled {
+                    plugin: *plugin,
+                    enabled: *enabled,
+                }
+            }
+            Self::SetMediaMatchFingerprintingEnabled(enabled) => {
+                GuiPersistedSettingsPatch::MediaMatchFingerprintingEnabled(*enabled)
+            }
+            Self::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
+                GuiPersistedSettingsPatch::MediaMatchBackgroundWarmupEnabled(*enabled)
+            }
+            Self::SetMediaMatchWireSharingEnabled(enabled) => {
+                GuiPersistedSettingsPatch::MediaMatchWireSharingEnabled(*enabled)
+            }
+            Self::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
+                GuiPersistedSettingsPatch::MediaMatchRuntimeToleranceEnabled(*enabled)
+            }
+            Self::SetMediaMatchAutoplayPolicy(policy) => {
+                GuiPersistedSettingsPatch::MediaMatchAutoplayPolicy(*policy)
+            }
+            Self::TogglePlexSync(enabled) => GuiPersistedSettingsPatch::PlexSyncEnabled(*enabled),
+            Self::TogglePlexStreaming(enabled) => {
+                GuiPersistedSettingsPatch::PlexStreamingEnabled(*enabled)
+            }
+            Self::DisconnectPlex => GuiPersistedSettingsPatch::PlexDisconnected,
+            _ => return None,
+        };
+        let mut actions = vec![GuiShellAction::ApplyGuiPersistedSettingsPatch(patch)];
+        if let Self::SetPluginEnabled { plugin, enabled } = self {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: format!(
+                    "{} plugin {}.",
+                    plugin.label(),
+                    if *enabled { "enabled" } else { "disabled" }
+                ),
+            });
+        }
+        Some(actions)
+    }
+
     pub(in crate::app) fn preview_actions_for_state(
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Vec<GuiShellAction> {
+        if let Some(actions) = self.preview_persisted_settings_actions() {
+            return actions;
+        }
         match self {
             Self::CheckForUpdates { user_initiated, .. } => {
                 vec![GuiShellAction::BeginUpdateCheck {
@@ -42,6 +89,14 @@ impl GuiRuntimeRequest {
             Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
+            Self::RetryPlayerSettings => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv streaming settings in place.".to_owned(),
+            }],
+            Self::RetryChatOsdIntegration => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv Chat/OSD integration in place.".to_owned(),
             }],
             Self::SetPluginEnabled { plugin, enabled } => {
                 vec![GuiShellAction::PushTransientNotification {
@@ -208,13 +263,14 @@ impl GuiRuntimeRequest {
                 }
             }
             Self::TogglePlaybackPause => vec![GuiShellAction::CompletePlaybackPauseToggle],
-            Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
-                if state.pending_saved_server_connect_saves_configuration =>
-            {
+            Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer {
+                intent: GuiSavedServerConnectIntent::SaveAndConnect,
+                submitted_settings,
+            }) => {
                 vec![
                     GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
                         GuiSavedConfigurationRuntimeSnapshot {
-                            settings: state.configuration.to_stored_settings(),
+                            settings: submitted_settings.clone(),
                         },
                     ),
                     GuiShellAction::CompleteSavedServerConnect,
@@ -225,6 +281,9 @@ impl GuiRuntimeRequest {
     }
 
     pub(in crate::app) fn preview_actions(&self) -> Vec<GuiShellAction> {
+        if let Some(actions) = self.preview_persisted_settings_actions() {
+            return actions;
+        }
         match self {
             Self::CheckForUpdates { user_initiated, .. } => {
                 vec![GuiShellAction::BeginUpdateCheck {
@@ -272,6 +331,14 @@ impl GuiRuntimeRequest {
             Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
+            Self::RetryPlayerSettings => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv streaming settings in place.".to_owned(),
+            }],
+            Self::RetryChatOsdIntegration => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv Chat/OSD integration in place.".to_owned(),
             }],
             Self::SetPluginEnabled { plugin, enabled } => {
                 vec![GuiShellAction::PushTransientNotification {

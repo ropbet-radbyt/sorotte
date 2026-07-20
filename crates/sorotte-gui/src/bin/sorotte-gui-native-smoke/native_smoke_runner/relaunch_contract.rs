@@ -50,7 +50,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             invoke_named_control_with_wait(
                 driver,
                 window,
-                "Trust Certificate",
+                MODAL_TLS_TRUST_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
@@ -81,7 +81,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_named_control_enabled_state(
                 driver,
                 window,
-                "Retry mpv",
+                MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID,
                 NativeControlKind::Button,
                 true,
                 step_timeout,
@@ -89,7 +89,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             invoke_named_control_with_wait(
                 driver,
                 window,
-                "Open Settings",
+                MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
@@ -115,31 +115,37 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         navigate_to_view_with_fallback(
             driver,
             window,
-            "Configuration",
+            SETUP_SURFACE_AUTOMATION_ID,
             "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
         )?;
-        select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
+        select_top_tab_with_wait(
+            driver,
+            window,
+            CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+            "Host",
+            step_timeout,
+        )?;
         let editable_count = driver.editable_text_input_count(window)?;
         if editable_count < 6 {
             return Err(format!(
                 "expected at least 6 editable configuration text fields after relaunch, found {editable_count}"
             ));
         }
-        for (edit_index, expected_value) in [
-            (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
-            (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
-            (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
+        for (automation_id, expected_value) in [
+            (CONFIG_USERNAME_AUTOMATION_ID, CONFIG_USERNAME_VALUE),
+            (CONFIG_ROOM_AUTOMATION_ID, CONFIG_ROOM_VALUE),
+            (CONFIG_PLAYER_PATH_AUTOMATION_ID, CONFIG_PLAYER_PATH_VALUE),
         ] {
-            wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
+            wait_for_named_edit_value(driver, window, automation_id, expected_value, step_timeout)?;
         }
         steps.push("config-reload-persisted".to_owned());
         select_top_tab_with_wait(
             driver,
             window,
-            "Privacy & Chat",
+            CONFIG_PRIVACY_CHAT_TAB_AUTOMATION_ID,
             "Trusted Domains Only",
             step_timeout,
         )?;
@@ -147,25 +153,24 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         select_top_tab_with_wait(
             driver,
             window,
-            "Playback & Search",
+            CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
             "Rewind On Desync",
             step_timeout,
         )?;
         select_top_tab_with_wait(
             driver,
             window,
-            "Interface & System",
+            CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
             "Show OSD",
             step_timeout,
         )?;
         wait_for_accessible_name(driver, window, "Language", step_timeout)?;
-        wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
         steps.push("trusted-domains-persisted".to_owned());
 
         navigate_to_view_with_fallback(
             driver,
             window,
-            "Configuration",
+            SETUP_SURFACE_AUTOMATION_ID,
             "view: setup",
             "Advanced",
             "Trusted Domains",
@@ -174,10 +179,18 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         invoke_named_control_with_wait(
             driver,
             window,
-            "Clear GUI Data",
+            CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID,
             NativeControlKind::Button,
             step_timeout,
         )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID,
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        steps.push("clear-gui-data-confirmed".to_owned());
         wait_for_pending_operation_to_finish(
             driver,
             window,
@@ -204,18 +217,24 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 ));
             }
         }
-        select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
-        for edit_index in [
-            CONFIG_HOST_EDIT_INDEX,
-            CONFIG_PORT_EDIT_INDEX,
-            CONFIG_USERNAME_EDIT_INDEX,
-            CONFIG_ROOM_EDIT_INDEX,
-            CONFIG_PLAYER_PATH_EDIT_INDEX,
+        select_top_tab_with_wait(
+            driver,
+            window,
+            CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+            "Host",
+            step_timeout,
+        )?;
+        for automation_id in [
+            CONFIG_HOST_AUTOMATION_ID,
+            CONFIG_PORT_AUTOMATION_ID,
+            CONFIG_USERNAME_AUTOMATION_ID,
+            CONFIG_ROOM_AUTOMATION_ID,
+            CONFIG_PLAYER_PATH_AUTOMATION_ID,
         ] {
-            let value = driver.get_edit_value_by_index(window, edit_index)?;
+            let value = driver.get_named_edit_value(window, automation_id)?;
             if !value.is_empty() && value != "(unset)" {
                 return Err(format!(
-                    "expected first-run configuration edit [{edit_index}] to be blank after clear-GUI-data, got {value:?}"
+                    "expected first-run configuration field {automation_id:?} to be blank after clear-GUI-data, got {value:?}"
                 ));
             }
         }
@@ -256,7 +275,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 invoke_named_control_with_wait(
                     driver,
                     first_run_window,
-                    "Trust Certificate",
+                    MODAL_TLS_TRUST_AUTOMATION_ID,
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
@@ -291,7 +310,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_named_control_enabled_state(
                 driver,
                 first_run_window,
-                "Connect",
+                CONFIG_CONNECT_ONCE_AUTOMATION_ID,
                 NativeControlKind::Button,
                 false,
                 step_timeout,
@@ -299,7 +318,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_named_control_enabled_state(
                 driver,
                 first_run_window,
-                "Retry mpv",
+                MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID,
                 NativeControlKind::Button,
                 false,
                 step_timeout,
@@ -377,7 +396,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 invoke_named_control_with_wait(
                     driver,
                     migration_window,
-                    "Trust Certificate",
+                    MODAL_TLS_TRUST_AUTOMATION_ID,
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
@@ -414,23 +433,23 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             navigate_to_view_with_fallback(
                 driver,
                 migration_window,
-                "Configuration",
+                SETUP_SURFACE_AUTOMATION_ID,
                 "view: setup",
                 "Advanced",
                 "Trusted Domains",
                 step_timeout,
             )?;
-            wait_for_edit_value_by_index(
+            wait_for_named_edit_value(
                 driver,
                 migration_window,
-                CONFIG_HOST_EDIT_INDEX,
+                CONFIG_HOST_AUTOMATION_ID,
                 "gui-only.example",
                 step_timeout,
             )?;
-            wait_for_edit_value_by_index(
+            wait_for_named_edit_value(
                 driver,
                 migration_window,
-                CONFIG_PORT_EDIT_INDEX,
+                CONFIG_PORT_AUTOMATION_ID,
                 "9002",
                 step_timeout,
             )?;

@@ -487,7 +487,7 @@ fn runtime_owner_routes_startup_check_through_update_coordinator() {
 }
 
 #[test]
-fn startup_due_update_and_empty_public_server_cache_complete_independently() {
+fn startup_due_update_and_uninitialized_public_server_cache_complete_independently() {
     assert_startup_remote_jobs_complete_independently(true);
     assert_startup_remote_jobs_complete_independently(false);
 }
@@ -514,7 +514,7 @@ fn assert_startup_remote_jobs_complete_independently(update_completes_first: boo
         language: Some("fr".to_owned()),
         update_channel: Some("dev".to_owned()),
         last_checked_for_updates: None,
-        public_servers: Some(Vec::new()),
+        public_servers: None,
         ..StoredClientSettingsMvp::default()
     };
     let mut projected_state = SorotteGuiShellAppState::from_stored_settings(&settings);

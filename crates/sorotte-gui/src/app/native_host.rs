@@ -16,12 +16,14 @@ use super::runtime_bridge::{
     GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiNoopRuntimePump, GuiPendingRoomChangeRequest,
     GuiPreviewRuntimeBridge, GuiQueuedRuntimeOwner,
 };
-use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use super::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiPersistedConfigRuntimeOwner};
 use super::runtime_queue::{
     GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiRuntimeThreadUnavailablePump,
     GuiThreadedRuntimeOwnerPump,
 };
-use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SorotteGuiShellAppState};
+use super::shell_state::{
+    GuiShellAction, GuiTransientNotificationLevel, MenuActionId, SorotteGuiShellAppState,
+};
 use super::startup::sorotte_gui_qsettings_root_from_env;
 use super::startup_support::env_trimmed;
 use super::support::{nonempty_room_name_text, normalized_editable_text};
@@ -48,6 +50,15 @@ pub(in crate::app) struct GuiNativeApp {
     playback_prompt: Option<GuiPlaybackPromptKind>,
     playback_prompt_buffer: String,
     playback_prompt_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiNativeShellEffect {
+    PickMediaFiles,
+    CloseWindow,
+    OpenPlaybackPrompt(GuiPlaybackPromptKind),
+    RequestUndoSeek,
+    OpenHelp,
 }
 
 pub(in crate::app) struct GuiEframeNativeHost {

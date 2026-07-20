@@ -3,7 +3,7 @@ setting	public-server	Alpha	alpha.example:8999
 setting	public-server	Beta	beta.example:9000
 assert-selected	configuration-root	true
 activate	configuration:tab:interface-system
-enter-text	config:System:Language	false	fr
+enter-text	settings.general.language	false	fr
 clear-notifications
 activate	configuration:tab:connection
 assert-selected	configuration-root	true
@@ -12,7 +12,7 @@ assert-pending	refresh-public-servers
 complete-pending-runtime
 assert-pending	none
 clear-notifications
-activate	menus:action:4:2
+activate	menu.check_for_updates
 assert-value	shell:open-modal	(none)
 assert-value	shell:update-indicator:title	Checking for updates
 assert-value	menus:update:message	Checking for updates

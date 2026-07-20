@@ -1,6 +1,36 @@
 use super::*;
 
 impl GuiNativeApp {
+    pub(super) fn native_effect_for_applied_action(
+        action: &GuiShellAction,
+        action_applied: bool,
+    ) -> Option<GuiNativeShellEffect> {
+        if !action_applied {
+            return None;
+        }
+
+        match action {
+            GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia) => {
+                Some(GuiNativeShellEffect::PickMediaFiles)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::Exit) => {
+                Some(GuiNativeShellEffect::CloseWindow)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::Seek) => Some(
+                GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Seek),
+            ),
+            GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek) => {
+                Some(GuiNativeShellEffect::RequestUndoSeek)
+            }
+            GuiShellAction::InvokeMenuAction(MenuActionId::SetOffset) => Some(
+                GuiNativeShellEffect::OpenPlaybackPrompt(GuiPlaybackPromptKind::Offset),
+            ),
+            GuiShellAction::InvokeMenuAction(MenuActionId::Help)
+            | GuiShellAction::AnnounceHelpRequested => Some(GuiNativeShellEffect::OpenHelp),
+            _ => None,
+        }
+    }
+
     pub(in crate::app) fn new(
         creation_context: &eframe::CreationContext<'_>,
         state: SorotteGuiShellAppState,
@@ -31,6 +61,22 @@ impl GuiNativeApp {
             playback_prompt: None,
             playback_prompt_buffer: String::new(),
             playback_prompt_error: None,
+        }
+    }
+
+    pub(super) fn apply_test_theme_override_from_lookup<F>(ctx: &egui::Context, lookup: &F)
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        match lookup("SOROTTE_GUI_TEST_THEME")
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("dark") => ctx.set_visuals(egui::Visuals::dark()),
+            Some("light") => ctx.set_visuals(egui::Visuals::light()),
+            _ => {}
         }
     }
 

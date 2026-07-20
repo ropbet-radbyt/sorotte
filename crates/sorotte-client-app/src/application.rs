@@ -38,6 +38,7 @@ use crate::{
 };
 
 const PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
+const PLAYER_INTEGRATION_MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 
 type ApplicationPlexSyncEngine = PlexSyncEngine<PlexHttpClient>;
 
@@ -340,6 +341,24 @@ impl<P> ClientApplication<P>
 where
     P: PlayerAdapter,
 {
+    async fn await_worker_with_player_integration_maintenance<T>(
+        &mut self,
+        mut worker: tokio::task::JoinHandle<T>,
+    ) -> Result<T, tokio::task::JoinError> {
+        let mut tick = tokio::time::interval(PLAYER_INTEGRATION_MAINTENANCE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                result = &mut worker => return result,
+                _ = tick.tick() => {
+                    self.runtime
+                        .with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
+                }
+            }
+        }
+    }
+
     pub fn with_default_session(player: P) -> Self {
         Self::new(ClientSession::default(), player)
     }
@@ -390,7 +409,7 @@ where
 
         let config = config.clone();
         let client_identifier = client_identifier.to_owned();
-        match tokio::task::spawn_blocking(move || {
+        let worker = tokio::task::spawn_blocking(move || {
             let client = PlexHttpClient::new(&client_identifier)?;
             let (cache, cache_load_error) = load_plex_match_cache(cache_path.as_deref());
             Ok::<_, sorotte_plex::PlexError>((
@@ -402,8 +421,10 @@ where
                 },
                 cache_load_error,
             ))
-        })
-        .await
+        });
+        match self
+            .await_worker_with_player_integration_maintenance(worker)
+            .await
         {
             Ok(Ok((service, cache_load_error))) => {
                 self.plex = Some(service);
@@ -424,6 +445,8 @@ where
     }
 
     pub async fn pump_plex_service(&mut self) -> Vec<ClientEvent> {
+        self.runtime
+            .with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
         let watch_event = self.current_plex_watch_event();
         let Some(plex) = self.plex.as_mut() else {
             return Vec::new();
@@ -482,7 +505,10 @@ where
         };
         let mut events = Vec::new();
         if let Some(worker) = plex.worker.take() {
-            match worker.await {
+            match self
+                .await_worker_with_player_integration_maintenance(worker)
+                .await
+            {
                 Ok(result) => {
                     plex.engine = Some(result.engine);
                     if let Some(message) = result.cache_save_error {
@@ -499,12 +525,14 @@ where
             return events;
         };
         let cache_path = plex.cache_path.take();
-        match tokio::task::spawn_blocking(move || {
+        let worker = tokio::task::spawn_blocking(move || {
             let before = engine.cache().clone();
             let _ = engine.tick(None, SystemTime::now());
             plex_cache_save_error_if_changed(&engine, cache_path.as_deref(), &before)
-        })
-        .await
+        });
+        match self
+            .await_worker_with_player_integration_maintenance(worker)
+            .await
         {
             Ok(Some(message)) => events.push(ClientEvent::Notification(message)),
             Ok(None) => {}
@@ -1858,6 +1886,10 @@ fn protocol_player_error(error: ProtocolError) -> PlayerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Default)]
     struct TestPlayer {
@@ -1865,11 +1897,22 @@ mod tests {
         paused: bool,
         open_error: Option<String>,
         pause_error: Option<String>,
+        maintenance_calls: Arc<AtomicUsize>,
+        blocking_maintenance_calls: Arc<AtomicUsize>,
     }
 
     impl PlayerAdapter for TestPlayer {
         fn name(&self) -> &'static str {
             "client-application-test"
+        }
+
+        fn maintain_runtime_integrations(&mut self) {
+            self.blocking_maintenance_calls
+                .fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn maintain_runtime_leases_nonblocking(&mut self) {
+            self.maintenance_calls.fetch_add(1, Ordering::SeqCst);
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
@@ -2733,5 +2776,69 @@ mod tests {
 
         assert!(events.is_empty());
         assert!(!application.plex_service_enabled());
+    }
+
+    #[tokio::test]
+    async fn worker_wait_keeps_player_integrations_maintained() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        let maintenance_calls =
+            application.with_player_io(|player| Arc::clone(&player.maintenance_calls));
+        let (release_worker, wait_for_release) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            wait_for_release
+                .await
+                .expect("maintenance observer should release the worker");
+            42_u8
+        });
+        let observer = tokio::spawn(async move {
+            while maintenance_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            let _ = release_worker.send(());
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            application.await_worker_with_player_integration_maintenance(worker),
+        )
+        .await
+        .expect("maintenance-aware worker should not stall")
+        .expect("maintenance-aware worker should join");
+
+        assert_eq!(result, 42);
+        observer.await.expect("maintenance observer should finish");
+        assert!(
+            application
+                .with_player_io(|player| { player.maintenance_calls.load(Ordering::SeqCst) })
+                >= 1,
+            "maintenance must run before the pending worker is released"
+        );
+        assert_eq!(
+            application.with_player_io(|player| {
+                player.blocking_maintenance_calls.load(Ordering::SeqCst)
+            }),
+            0,
+            "an async worker wait must not invoke potentially blocking player maintenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_plex_pump_uses_only_nonblocking_player_maintenance() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+
+        assert!(application.pump_plex_service().await.is_empty());
+        assert_eq!(
+            application.with_player_io(|player| player.maintenance_calls.load(Ordering::SeqCst)),
+            1
+        );
+        assert_eq!(
+            application.with_player_io(|player| {
+                player.blocking_maintenance_calls.load(Ordering::SeqCst)
+            }),
+            0,
+            "an async Plex pump must not invoke potentially blocking player maintenance"
+        );
     }
 }

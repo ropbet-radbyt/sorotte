@@ -743,6 +743,19 @@ impl PlayerMediaLoadOutcome {
 
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Performs strictly nonblocking lease renewal and event servicing.
+    ///
+    /// Async owners may call this while selecting over unrelated I/O. Implementations must not
+    /// wait for player responses, sleep, run configuration retries, or perform active-media
+    /// recovery from this hook. Potentially blocking recovery remains the responsibility of
+    /// [`Self::maintain_runtime_integrations`].
+    fn maintain_runtime_leases_nonblocking(&mut self) {}
+    /// Advances adapter-owned integrations that require bounded background servicing while the
+    /// application is pumping the player outside an async I/O selection branch.
+    ///
+    /// This hook may perform bounded synchronous player operations. Async owners should use
+    /// [`Self::maintain_runtime_leases_nonblocking`] instead.
+    fn maintain_runtime_integrations(&mut self) {}
     fn capabilities(&self) -> PlayerCapabilities {
         PlayerCapabilities::NONE
     }

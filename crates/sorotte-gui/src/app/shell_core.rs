@@ -9,10 +9,10 @@ use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
     GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginEnablementState,
-    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
-    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
-    SorotteGuiShellAppState,
+    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiValidationState, MainWindowShellState,
+    MediaSearchWorkflowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState,
+    PublicServerBrowserShellState, SettingId, SorotteGuiShellAppState,
 };
 use super::support::{
     configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
@@ -41,6 +41,8 @@ impl SorotteGuiShellAppState {
             });
         let mut state = Self {
             active_view: GuiShellView::Setup,
+            active_application_language: shell_settings.language.clone(),
+            active_application_force_gui_prompt: shell_settings.force_gui_prompt,
             selected_configuration_tab: GuiConfigurationTab::Connection,
             selected_plugin: GuiPluginSelection::default(),
             plugin_enablement: GuiPluginEnablementState::from_stored_settings(&shell_settings),
@@ -52,9 +54,10 @@ impl SorotteGuiShellAppState {
             config_storage: GuiConfigStorageRuntimeSnapshot::default(),
             commands: GuiCommandAvailabilityState::default(),
             pending_operation: None,
+            clear_gui_data_confirmation_visible: false,
             pending_config_storage_target: None,
             pending_local_ready_target: None,
-            pending_saved_server_connect_saves_configuration: false,
+            pending_saved_server_connect_intent: None,
             outgoing_chat_message: None,
             main_window_room_change_expanded: false,
             new_main_window_user_draft: String::new(),
@@ -72,6 +75,7 @@ impl SorotteGuiShellAppState {
             update_check: GuiUpdateCheckState::default(),
             runtime_validation_issues: Vec::new(),
             notifications: Vec::new(),
+            pending_apply_requirements: Vec::new(),
             validation: GuiValidationState::default(),
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,
@@ -104,7 +108,7 @@ impl SorotteGuiShellAppState {
     pub(super) fn saved_session_connect_target(&self) -> Option<GuiSavedSessionConnectTarget> {
         let raw_host = self
             .configuration
-            .control_value("Connection", "Host")
+            .control_value(SettingId::ConnectionHost)
             .unwrap_or_default()
             .trim();
         if raw_host.is_empty() {
@@ -119,7 +123,7 @@ impl SorotteGuiShellAppState {
 
         let raw_port = self
             .configuration
-            .control_value("Connection", "Port")
+            .control_value(SettingId::ConnectionPort)
             .unwrap_or_default()
             .trim();
         let port = if raw_port.is_empty() {
@@ -182,12 +186,28 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn connect_blocked_by_player_setup_issue(&self) -> bool {
         self.configuration.launch_mode == super::GuiLaunchMode::FirstRun
-            && self.player_setup_issue.is_some()
+            && self.player_setup_issue.as_ref().is_some_and(|issue| {
+                !matches!(
+                    issue.kind,
+                    GuiPlayerSetupIssueKind::PlayerSettingsDegraded
+                        | GuiPlayerSetupIssueKind::BridgeDegraded
+                )
+            })
     }
 
     pub(super) fn player_setup_connect_block_message(&self) -> Option<String> {
         if !self.connect_blocked_by_player_setup_issue() {
             return None;
+        }
+        if self
+            .player_setup_issue
+            .as_ref()
+            .is_some_and(|issue| super::mpv_launch::message_requires_mpv_upgrade(&issue.message))
+        {
+            return Some(format!(
+                "Upgrade mpv to {} or newer, then retry mpv before connecting.",
+                sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+            ));
         }
         Some(
             "Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path."
@@ -196,22 +216,31 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn player_setup_issue_title(&self) -> Option<&'static str> {
-        self.player_setup_issue
-            .as_ref()
-            .map(|issue| match issue.kind {
+        self.player_setup_issue.as_ref().map(|issue| {
+            if super::mpv_launch::message_requires_mpv_upgrade(&issue.message) {
+                return "mpv upgrade required";
+            }
+            match issue.kind {
                 GuiPlayerSetupIssueKind::NotConfigured => "mpv setup required",
                 GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer => "Unsupported player",
                 GuiPlayerSetupIssueKind::MissingBinary => "Configured mpv not found",
                 GuiPlayerSetupIssueKind::LaunchFailed => "mpv failed to launch",
                 GuiPlayerSetupIssueKind::IpcAttachFailed => "mpv did not respond",
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => "mpv closed unexpectedly",
-            })
+                GuiPlayerSetupIssueKind::PlayerSettingsDegraded => {
+                    "mpv streaming settings incomplete"
+                }
+                GuiPlayerSetupIssueKind::BridgeDegraded => "mpv Chat/OSD integration unavailable",
+            }
+        })
     }
 
     pub(super) fn player_setup_issue_summary(&self) -> Option<&'static str> {
-        self.player_setup_issue
-            .as_ref()
-            .map(|issue| match issue.kind {
+        self.player_setup_issue.as_ref().map(|issue| {
+            if super::mpv_launch::message_requires_mpv_upgrade(&issue.message) {
+                return "The configured mpv does not meet Sorotte's supported-version requirement and must be upgraded.";
+            }
+            match issue.kind {
                 GuiPlayerSetupIssueKind::NotConfigured => {
                     "Sorotte needs mpv before it can play media."
                 }
@@ -230,13 +259,40 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::ExitedAfterLaunch => {
                     "mpv exited after it had already been launched."
                 }
-            })
+                GuiPlayerSetupIssueKind::PlayerSettingsDegraded => {
+                    "mpv is ready, but some streaming settings could not be applied to the active media."
+                }
+                GuiPlayerSetupIssueKind::BridgeDegraded => {
+                    "mpv is ready, but Chat/OSD integration could not be configured."
+                }
+            }
+        })
+    }
+
+    pub(super) fn player_setup_retry_label(&self) -> &'static str {
+        match self.player_setup_issue.as_ref().map(|issue| issue.kind) {
+            Some(GuiPlayerSetupIssueKind::BridgeDegraded) => "Retry Chat/OSD integration",
+            Some(GuiPlayerSetupIssueKind::PlayerSettingsDegraded) => "Retry mpv settings",
+            _ => "Retry mpv",
+        }
+    }
+
+    pub(super) fn player_setup_retry_action(&self) -> GuiShellAction {
+        match self.player_setup_issue.as_ref().map(|issue| issue.kind) {
+            Some(GuiPlayerSetupIssueKind::PlayerSettingsDegraded) => {
+                GuiShellAction::RetryPlayerSettings
+            }
+            Some(GuiPlayerSetupIssueKind::BridgeDegraded) => {
+                GuiShellAction::RetryChatOsdIntegration
+            }
+            _ => GuiShellAction::RetryPlayerLaunch,
+        }
     }
 
     pub(super) fn player_setup_retry_available(&self) -> bool {
         self.player_setup_issue
             .as_ref()
-            .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::NotConfigured)
+            .is_some_and(|issue| issue.retry_available)
             && self.pending_operation.is_none()
     }
 
@@ -499,13 +555,20 @@ impl SorotteGuiShellAppState {
         self.selected_configuration_tab = tab;
     }
 
-    pub(super) fn configuration_tab_for_section(section: &str) -> Option<GuiConfigurationTab> {
-        match section {
-            "Connection" => Some(GuiConfigurationTab::Connection),
-            "Readiness" | "Desync" | "Media Search" => Some(GuiConfigurationTab::PlaybackSearch),
-            "Privacy" | "Chat" => Some(GuiConfigurationTab::PrivacyChat),
-            "OSD" | "System" => Some(GuiConfigurationTab::InterfaceSystem),
-            _ => None,
+    pub(super) fn configuration_tab_for_setting(id: SettingId) -> GuiConfigurationTab {
+        match id.section_automation_id() {
+            "settings.section.connection" => GuiConfigurationTab::Connection,
+            "settings.section.playback"
+            | "settings.section.sync"
+            | "settings.section.streaming"
+            | "settings.section.media_library" => GuiConfigurationTab::PlaybackSearch,
+            "settings.section.privacy" | "settings.section.chat" => {
+                GuiConfigurationTab::PrivacyChat
+            }
+            "settings.section.osd" | "settings.section.general" => {
+                GuiConfigurationTab::InterfaceSystem
+            }
+            _ => unreachable!("every SettingId maps to a settings section"),
         }
     }
 
@@ -608,50 +671,45 @@ impl SorotteGuiShellAppState {
         });
     }
 
-    pub(super) fn set_menu_action_enabled(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-        enabled: bool,
-    ) {
-        let Some(action) = self
-            .menus
-            .sections
-            .iter_mut()
-            .find(|section| section.title == section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.label == action_label)
-            })
-        else {
+    pub(super) fn set_menu_action_enabled(&mut self, action_id: MenuActionId, enabled: bool) {
+        let Some(action) = self.menus.action_mut(action_id) else {
             return;
         };
         action.enabled = enabled;
     }
 
-    pub(super) fn set_menu_action_selected(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-        selected: bool,
-    ) {
-        let Some(action) = self
-            .menus
-            .sections
-            .iter_mut()
-            .find(|section| section.title == section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.label == action_label)
-            })
-        else {
+    pub(super) fn menu_action_available_now(&self, action_id: MenuActionId) -> bool {
+        let playback_controls_available =
+            self.pending_operation.is_none() && !self.main_window.playlist.is_empty();
+        match action_id {
+            MenuActionId::OpenMedia => {
+                self.pending_operation.is_none() && self.media_open_runtime_available()
+            }
+            MenuActionId::Play | MenuActionId::Pause | MenuActionId::TogglePause => {
+                playback_controls_available && self.main_window.playback.can_toggle_pause
+            }
+            MenuActionId::Seek => playback_controls_available && self.main_window.playback.can_seek,
+            MenuActionId::UndoSeek => {
+                playback_controls_available && self.main_window.playback.can_undo_seek
+            }
+            MenuActionId::SharedPlaylist => {
+                self.pending_operation.is_none() && self.main_window.playback.can_manage_playlist
+            }
+            MenuActionId::SetOffset => {
+                playback_controls_available && self.main_window.playback.can_set_offset
+            }
+            _ => self
+                .menus
+                .action(action_id)
+                .is_some_and(|action| action.enabled),
+        }
+    }
+
+    pub(super) fn set_menu_action_checked(&mut self, action_id: MenuActionId, checked: bool) {
+        let Some(action) = self.menus.action_mut(action_id) else {
             return;
         };
-        action.is_selected = selected;
+        action.is_checked = checked;
     }
 
     pub(super) fn set_runtime_menu_action_override(
@@ -661,10 +719,7 @@ impl SorotteGuiShellAppState {
         if let Some(existing) = self
             .runtime_menu_action_overrides
             .iter_mut()
-            .find(|existing| {
-                existing.section_title == action_override.section_title
-                    && existing.action_label == action_override.action_label
-            })
+            .find(|existing| existing.id == action_override.id)
         {
             existing.enabled = action_override.enabled;
             return;
@@ -672,16 +727,9 @@ impl SorotteGuiShellAppState {
         self.runtime_menu_action_overrides.push(action_override);
     }
 
-    pub(super) fn clear_runtime_menu_action_override(
-        &mut self,
-        section_title: &'static str,
-        action_label: &'static str,
-    ) {
+    pub(super) fn clear_runtime_menu_action_override(&mut self, action_id: MenuActionId) {
         self.runtime_menu_action_overrides
-            .retain(|action_override| {
-                action_override.section_title != section_title
-                    || action_override.action_label != action_label
-            });
+            .retain(|action_override| action_override.id != action_id);
     }
 
     pub(super) fn remember_runtime_menu_action_override(
@@ -690,24 +738,13 @@ impl SorotteGuiShellAppState {
         action_override: &MenuActionRuntimeOverride,
     ) {
         let baseline_enabled = baseline_menus
-            .sections
-            .iter()
-            .find(|section| section.title == action_override.section_title)
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == action_override.action_label)
-            })
+            .action(action_override.id)
             .map(|action| action.enabled);
         let Some(baseline_enabled) = baseline_enabled else {
             return;
         };
         if action_override.enabled == baseline_enabled {
-            self.clear_runtime_menu_action_override(
-                action_override.section_title,
-                action_override.action_label,
-            );
+            self.clear_runtime_menu_action_override(action_override.id);
             return;
         }
         self.set_runtime_menu_action_override(action_override.clone());
@@ -721,15 +758,7 @@ impl SorotteGuiShellAppState {
         self.runtime_menu_action_overrides
             .retain(|action_override| {
                 baseline_menus
-                    .sections
-                    .iter()
-                    .find(|section| section.title == action_override.section_title)
-                    .and_then(|section| {
-                        section
-                            .actions
-                            .iter()
-                            .find(|action| action.label == action_override.action_label)
-                    })
+                    .action(action_override.id)
                     .is_some_and(|action| action.enabled != action_override.enabled)
             });
     }
@@ -742,7 +771,9 @@ impl SorotteGuiShellAppState {
         let chat_unavailable_reason =
             self.chat_send_unavailable_reason_from_settings(&settings, true);
         GuiCommandAvailabilityState {
-            can_save_configuration: !busy && self.validation.issues.is_empty(),
+            can_save_configuration: !busy
+                && self.validation.issues.is_empty()
+                && self.has_unsaved_configuration_changes(),
             can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
             can_connect_saved_server: !busy
@@ -766,30 +797,36 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
         let busy = self.pending_operation.is_some();
+        let playback_controls_available = !busy && !self.main_window.playlist.is_empty();
         let can_open_media_file = !busy && self.media_open_runtime_available();
-        self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
-        self.set_menu_action_enabled("Playback", "Play", can_toggle_pause);
-        self.set_menu_action_enabled("Playback", "Pause", can_toggle_pause);
-        self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
+        self.set_menu_action_enabled(MenuActionId::OpenMedia, can_open_media_file);
         self.set_menu_action_enabled(
-            "Playback",
-            "Seek",
-            !busy && self.main_window.playback.can_seek,
+            MenuActionId::Play,
+            playback_controls_available && can_toggle_pause,
         );
         self.set_menu_action_enabled(
-            "Playback",
-            "Undo Seek",
-            !busy && self.main_window.playback.can_undo_seek,
+            MenuActionId::Pause,
+            playback_controls_available && can_toggle_pause,
         );
         self.set_menu_action_enabled(
-            "Playback",
-            "Shared Playlist",
+            MenuActionId::TogglePause,
+            playback_controls_available && can_toggle_pause,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::Seek,
+            playback_controls_available && self.main_window.playback.can_seek,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::UndoSeek,
+            playback_controls_available && self.main_window.playback.can_undo_seek,
+        );
+        self.set_menu_action_enabled(
+            MenuActionId::SharedPlaylist,
             !busy && self.main_window.playback.can_manage_playlist,
         );
         self.set_menu_action_enabled(
-            "Advanced",
-            "Set Offset",
-            !busy && self.main_window.playback.can_set_offset,
+            MenuActionId::SetOffset,
+            playback_controls_available && self.main_window.playback.can_set_offset,
         );
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
@@ -798,13 +835,9 @@ impl SorotteGuiShellAppState {
     pub(super) fn sync_dialog_menu_actions_from_runtime_state(&mut self) {
         let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
         for action_override in runtime_menu_action_overrides {
-            self.set_menu_action_enabled(
-                action_override.section_title,
-                action_override.action_label,
-                action_override.enabled,
-            );
+            self.set_menu_action_enabled(action_override.id, action_override.enabled);
         }
-        self.set_menu_action_enabled("Help", "About", self.menus.about_dialog_available);
+        self.set_menu_action_enabled(MenuActionId::About, self.menus.about_dialog_available);
     }
 
     pub(super) fn open_newly_expected_modal_if_needed(
@@ -836,5 +869,48 @@ impl SorotteGuiShellAppState {
         for (index, directory) in self.media_search.directories.iter_mut().enumerate() {
             directory.is_selected = self.selection.selected_media_search_directory == Some(index);
         }
+    }
+}
+
+#[cfg(test)]
+mod mpv_version_presentation_tests {
+    use super::*;
+    use crate::app::shell_state::GuiPlayerSetupIssue;
+    use sorotte_player_api::PlayerError;
+
+    #[test]
+    fn unsupported_mpv_version_has_upgrade_specific_setup_guidance() {
+        let version_error = PlayerError::OperationFailed(format!(
+            "Sorotte requires mpv {} or newer, but the connected mpv reports mpv 0.40.0; upgrade mpv and try again",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        ));
+        let detail = crate::app::mpv_launch::mpv_upgrade_required_diagnostic(&version_error)
+            .expect("unsupported version errors should produce upgrade guidance");
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        state.player_setup_issue = Some(GuiPlayerSetupIssue {
+            kind: GuiPlayerSetupIssueKind::IpcAttachFailed,
+            message: format!("mpv JSON IPC attach failed: {detail}"),
+            retry_available: true,
+        });
+
+        assert_eq!(
+            state.player_setup_issue_title(),
+            Some("mpv upgrade required")
+        );
+        assert_eq!(
+            state.player_setup_issue_summary(),
+            Some(
+                "The configured mpv does not meet Sorotte's supported-version requirement and must be upgraded."
+            )
+        );
+        let block_message = state
+            .player_setup_connect_block_message()
+            .expect("an unsupported player should block connection");
+        assert!(block_message.contains(&format!(
+            "Upgrade mpv to {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(block_message.contains("retry mpv"));
     }
 }

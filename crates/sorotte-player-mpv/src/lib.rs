@@ -1,9 +1,28 @@
 mod adapter;
+mod bridge;
+mod bridge_resource;
 mod constants;
 mod ipc;
 mod legacy_ui;
-mod live_probe;
 mod players;
+#[cfg(feature = "test-support")]
+mod test_support;
+
+use sorotte_player_api::PlayerError;
+
+/// Oldest mpv release supported by Sorotte's JSON IPC adapter.
+pub const MINIMUM_SUPPORTED_MPV_VERSION: &str = "0.41.0";
+pub(crate) const UNSUPPORTED_MPV_VERSION_ERROR_PREFIX: &str = "Sorotte requires mpv ";
+
+/// Returns whether an adapter error specifically rejects an unsupported or unverifiable mpv
+/// version.
+pub fn is_unsupported_mpv_version_error(error: &PlayerError) -> bool {
+    matches!(
+        error,
+        PlayerError::OperationFailed(message)
+            if message.starts_with(UNSUPPORTED_MPV_VERSION_ERROR_PREFIX)
+    )
+}
 
 /// Maximum absolute position error accepted when an mpv seek is acknowledged.
 ///
@@ -12,7 +31,17 @@ mod players;
 /// generation and an observation that `seeking` is false.
 pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
-pub use adapter::MpvAdapter;
+pub use adapter::{
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
+    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
+    MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
+};
+pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
+pub use bridge_resource::{
+    materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_bridge_in,
+    materialize_bundled_sorotte_network_options_hook,
+    materialize_bundled_sorotte_network_options_hook_in,
+};
 pub use ipc::MpvIpcConnectionEvent;
 pub use legacy_ui::{LegacySyncplayOsdKind, LegacySyncplayUiSettings};
 pub use players::{ConnectedMpvPlayer, SimulatedPlayer};

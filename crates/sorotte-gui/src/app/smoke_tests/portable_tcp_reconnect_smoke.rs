@@ -391,7 +391,8 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ConnectPublicServer,
+        GuiPendingCompletionRequest::from_state(&state)
+            .expect("staged reconnect should capture its submitted public server"),
     ));
     let reconnect_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(

@@ -1,6 +1,7 @@
 use sorotte_client_app::app_boundary::state::AutoplayThresholdOverride;
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
+use crate::app::SettingId;
 use crate::app::semantic_smoke::gui_semantic_scenario_named;
 
 #[test]
@@ -13,7 +14,17 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
 
     let stored = driver.state().configuration.to_stored_settings();
     let saved = &driver.state().saved_configuration;
-    assert_eq!(stored.host.as_deref(), Some("syncplay.pl"));
+    assert!(
+        driver
+            .widget(SettingId::ConnectionHost.automation_id())
+            .is_ok(),
+        "typed setting automation ID should resolve"
+    );
+    assert!(
+        driver.widget("config:Connection:Host").is_err(),
+        "semantic driver must not retain visible-label setting IDs"
+    );
+    assert_eq!(stored.host.as_deref(), Some("syncplay.example"));
     assert_eq!(stored.port, Some(8999));
     assert_eq!(stored.username.as_deref(), Some("smoke-user"));
     assert_eq!(stored.room.as_deref(), Some("smoke-room"));
@@ -122,7 +133,8 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.force_gui_prompt, Some(true));
     assert!(driver.state().menus.tls_prompt_expected);
     assert!(!driver.state().menus.update_notice_expected);
-    assert_eq!(driver.state().selected_public_server_index(), Some(0));
+    assert_eq!(stored.public_servers, Some(Vec::new()));
+    assert_eq!(driver.state().selected_public_server_index(), None);
     assert_eq!(
         driver.state().selection.selected_media_search_directory,
         Some(0)
@@ -217,7 +229,7 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
             .player_setup_issue
             .as_ref()
             .map(|issue| issue.kind.label()),
-        Some("missing-binary")
+        Some("bridge-degraded")
     );
     assert!(
         driver
@@ -226,15 +238,15 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
             .enabled
     );
     assert!(
-        !driver
-            .widget("config-command:connect")
-            .expect("connect button should exist")
-            .enabled
-    );
-    assert!(
         driver.state().notifications.iter().any(|notification| {
             notification.message == "Retrying mpv launch with the current player settings."
         }),
         "retry button should route through runtime preview dispatch"
+    );
+    assert!(
+        driver.state().notifications.iter().any(|notification| {
+            notification.message == "Retrying mpv Chat/OSD integration in place."
+        }),
+        "degraded retry button should route through the distinct integration request"
     );
 }

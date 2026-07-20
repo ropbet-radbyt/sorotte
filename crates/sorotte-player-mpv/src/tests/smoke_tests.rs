@@ -1,5 +1,241 @@
 use super::*;
 
+#[test]
+#[ignore = "opt-in real-mpv bridge test; set SOROTTE_TEST_MPV_BIN"]
+fn real_mpv_bridge_lifecycle_over_json_ipc() {
+    use std::{
+        path::PathBuf,
+        process::{Child, Command, Stdio},
+        thread::sleep,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    struct RealMpvGuard {
+        child: Child,
+        cleanup_path: Option<PathBuf>,
+    }
+
+    impl Drop for RealMpvGuard {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            if let Some(path) = self.cleanup_path.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    fn connect_with_retry(endpoint: &str) -> MpvAdapter {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last_error = None;
+        while Instant::now() < deadline {
+            match MpvAdapter::with_json_ipc(endpoint) {
+                Ok(adapter) => return adapter,
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        panic!(
+            "real mpv JSON IPC did not become ready: {}",
+            last_error.as_deref().unwrap_or("<no attempt>")
+        );
+    }
+
+    fn wait_for_network_outcome(
+        adapter: &mut MpvAdapter,
+    ) -> MpvNetworkMediaOptionsTransitionOutcome {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(outcome) = adapter.take_network_media_options_transition_outcome() {
+                return outcome;
+            }
+            sleep(Duration::from_millis(25));
+        }
+        panic!("real mpv did not publish a network-options transition outcome");
+    }
+
+    let mpv_bin = std::env::var_os("SOROTTE_TEST_MPV_BIN")
+        .map(PathBuf::from)
+        .expect("set SOROTTE_TEST_MPV_BIN to an mpv executable before running this ignored test");
+    assert!(
+        mpv_bin.is_file(),
+        "mpv binary must exist: {}",
+        mpv_bin.display()
+    );
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    #[cfg(windows)]
+    let (endpoint, cleanup_path) = (
+        format!(
+            r"\\.\pipe\sorotte-real-bridge-{}-{unique}",
+            std::process::id()
+        ),
+        None,
+    );
+    #[cfg(not(windows))]
+    let (endpoint, cleanup_path) = {
+        let path = std::env::temp_dir().join(format!(
+            "sorotte-real-bridge-{}-{unique}.sock",
+            std::process::id()
+        ));
+        (path.to_string_lossy().into_owned(), Some(path))
+    };
+
+    let child = Command::new(&mpv_bin)
+        .arg("--no-config")
+        .arg("--no-terminal")
+        .arg("--idle=yes")
+        .arg("--force-window=no")
+        .arg(format!("--input-ipc-server={endpoint}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("real mpv should launch");
+    let _guard = RealMpvGuard {
+        child,
+        cleanup_path,
+    };
+
+    let mut owner = connect_with_retry(&endpoint);
+    let mut settings = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    owner
+        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .expect("core mpv UI settings should apply");
+    assert_eq!(
+        owner.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready,
+        "load-script, canonical ping/pong discovery, and exact settings acknowledgement must work"
+    );
+
+    settings.chat_input_enabled = false;
+    owner
+        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .expect("dynamic input disable should apply");
+    assert_eq!(
+        owner.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    settings.chat_input_enabled = true;
+    owner
+        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .expect("dynamic input re-enable should apply");
+    assert_eq!(
+        owner.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+
+    let mut contender = connect_with_retry(&endpoint);
+    contender.set_test_sorotte_bridge_owner_id("real-mpv-contending-owner");
+    contender
+        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .expect("contender core mpv settings should apply independently");
+    let contender_task = std::thread::spawn(move || {
+        let health = contender.configure_bundled_sorotte_bridge();
+        (contender, health)
+    });
+    let heartbeat_deadline = Instant::now() + Duration::from_secs(4);
+    while !contender_task.is_finished() && Instant::now() < heartbeat_deadline {
+        let _ = owner.take_playback_telemetry_update();
+        sleep(Duration::from_millis(100));
+    }
+    let (mut contender, contender_health) = contender_task
+        .join()
+        .expect("contender bridge task should not panic");
+    assert!(
+        matches!(
+            &contender_health,
+            SorotteBridgeHealth::Degraded(failure)
+                if failure.kind == SorotteBridgeFailureKind::LeaseBusy
+        ),
+        "a duplicate live owner must degrade only bridge integration: {contender_health:?}"
+    );
+
+    owner.release_sorotte_bridge_best_effort();
+    sleep(Duration::from_millis(200));
+    assert_eq!(
+        contender.retry_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready,
+        "graceful release should allow immediate in-place takeover"
+    );
+
+    contender.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        contender
+            .apply_network_media_options_to_active_media_classified()
+            .expect("the core network hook should load, acknowledge, and own the idle player"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+    );
+
+    let mut hook_contender = connect_with_retry(&endpoint);
+    hook_contender.set_test_sorotte_bridge_owner_id("real-mpv-network-hook-contender");
+    hook_contender.configure_network_media_options([("cache-secs", "90")]);
+    let busy_error = hook_contender
+        .apply_network_media_options_to_active_media_classified()
+        .expect_err("a live different core-hook owner must reject takeover");
+    assert!(busy_error.to_string().contains("owned by"));
+    assert!(hook_contender.is_connected());
+
+    hook_contender
+        .open_file("https://127.0.0.1:9/sorotte-network-hook-smoke.m3u8")
+        .expect("real mpv should accept the asynchronous network load request");
+    assert_eq!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
+        "the on-load hook should apply the owned option map to network media"
+    );
+
+    let missing_local = std::env::temp_dir().join(format!(
+        "sorotte-network-hook-local-{}-{unique}.mkv",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&missing_local);
+    hook_contender
+        .open_file(&missing_local.to_string_lossy())
+        .expect("real mpv should accept the asynchronous local load request");
+    assert_eq!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
+        "local on-load must complete the installed policy without a file-local write"
+    );
+
+    sleep(Duration::from_millis(2_200));
+    assert!(matches!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
+            if error.to_string().contains("lease expired")
+    ));
+    assert!(
+        contender.is_connected(),
+        "lease expiry must not detach playback"
+    );
+    assert!(matches!(
+        hook_contender
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an expired lease should allow the contender to take over"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
+            | MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
+    ));
+    hook_contender.release_sorotte_bridge_best_effort();
+
+    settings.chat_input_enabled = false;
+    contender
+        .configure_legacy_syncplay_ui_settings(settings)
+        .expect("new owner should dynamically disable input");
+    assert_eq!(
+        contender.configure_bundled_sorotte_bridge(),
+        SorotteBridgeHealth::Ready
+    );
+    contender.release_sorotte_bridge_best_effort();
+}
+
 #[cfg(windows)]
 #[test]
 #[ignore = "local smoke test; requires standalone mpv binary and media file"]

@@ -411,30 +411,101 @@ impl SorotteGuiShellAppState {
                 ),
             ]);
         }
+        let mut playback_children = vec![
+            GuiWidgetNode::leaf(
+                "main-window:playback-paused",
+                "Playback",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.main_window.playback_paused).to_owned()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::layout(
+                "main-window:controls:playback-actions",
+                "Playback Controls",
+                GuiLayoutMode::CompactButtonWrap {
+                    button_width: 40.0,
+                    button_height: 36.0,
+                    gap: 8.0,
+                },
+                control_buttons,
+            ),
+        ];
+        if self.main_window.show_autoplay_controls {
+            let autoplay_controls_available = self.pending_operation.is_none();
+            let threshold_controls_available = autoplay_controls_available
+                && self.main_window.playback.can_adjust_autoplay_threshold;
+            let countdown = self
+                .main_window
+                .autoplay_countdown_seconds
+                .map_or_else(|| "idle".to_owned(), |seconds| format!("{seconds}s"));
+            playback_children.push(GuiWidgetNode::layout(
+                "main-window:controls:autoplay",
+                "Autoplay",
+                GuiLayoutMode::Stack,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-toggle",
+                        "Autoplay",
+                        GuiWidgetKind::Checkbox,
+                        Some(bool_label(self.main_window.autoplay_active).to_owned()),
+                        autoplay_controls_available
+                            && self.main_window.playback.can_toggle_autoplay,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-threshold",
+                        "Minimum ready users",
+                        GuiWidgetKind::Status,
+                        Some(self.main_window.autoplay_threshold.to_string()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-countdown",
+                        "Countdown",
+                        GuiWidgetKind::Status,
+                        Some(countdown),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::layout(
+                        "main-window:controls:autoplay-threshold-actions",
+                        "Autoplay threshold",
+                        GuiLayoutMode::CompactButtonWrap {
+                            button_width: 40.0,
+                            button_height: 36.0,
+                            gap: 8.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "main-window:control:autoplay-threshold-down",
+                                "−",
+                                GuiWidgetKind::Button,
+                                None,
+                                threshold_controls_available
+                                    && self.main_window.autoplay_threshold > 2,
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:control:autoplay-threshold-up",
+                                "+",
+                                GuiWidgetKind::Button,
+                                None,
+                                threshold_controls_available
+                                    && self.main_window.autoplay_threshold < 99,
+                                false,
+                            ),
+                        ],
+                    ),
+                ],
+            ));
+        }
         let playlist_playback_footer = GuiWidgetNode::layout(
             "main-window:playlist-playback",
             "Playback",
             GuiLayoutMode::Stack,
-            vec![
-                GuiWidgetNode::leaf(
-                    "main-window:playback-paused",
-                    "Playback",
-                    GuiWidgetKind::Status,
-                    Some(bool_label(self.main_window.playback_paused).to_owned()),
-                    true,
-                    false,
-                ),
-                GuiWidgetNode::layout(
-                    "main-window:controls:playback-actions",
-                    "Playback Controls",
-                    GuiLayoutMode::CompactButtonWrap {
-                        button_width: 40.0,
-                        button_height: 36.0,
-                        gap: 8.0,
-                    },
-                    control_buttons,
-                ),
-            ],
+            playback_children,
         );
 
         let playlist_surface_children = [Some(playlist_header.clone())]

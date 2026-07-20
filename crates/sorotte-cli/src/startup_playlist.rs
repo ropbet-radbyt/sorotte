@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::anyhow;
+use sorotte_client_app::app_boundary::application::ClientApplication;
+use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::{
     PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload, encode_message_line,
 };
@@ -33,10 +35,14 @@ pub(super) fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatib
     ])
 }
 
-pub(super) async fn emit_startup_playlist_load_from_file_legacy_compatible(
+pub(super) async fn emit_startup_playlist_load_from_file_legacy_compatible<P>(
+    runtime: &mut ClientApplication<P>,
     writer: &mut (impl AsyncWrite + Unpin),
     playlist_path: &str,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<bool>
+where
+    P: PlayerAdapter,
+{
     let lines = protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(Path::new(
         playlist_path,
     ))?;
@@ -44,7 +50,11 @@ pub(super) async fn emit_startup_playlist_load_from_file_legacy_compatible(
         return Ok(false);
     }
     for line in &lines {
-        crate::protocol_io::write_protocol_line(writer, line).await?;
+        crate::session_runner::await_with_player_integration_maintenance(
+            runtime,
+            crate::protocol_io::write_protocol_line(writer, line),
+        )
+        .await?;
     }
     Ok(true)
 }

@@ -1,6 +1,6 @@
 use crate::app::render_io::GuiDroppedFilesTarget;
 use crate::app::{
-    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot,
+    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, SettingId,
     semantic_driver::GuiSemanticStep,
 };
 
@@ -24,6 +24,42 @@ fn normalize_script_line_endings_converts_crlf_to_lf() {
 }
 
 #[test]
+fn builtin_semantic_setting_ids_match_the_typed_setting_catalog() {
+    for scenario_name in gui_semantic_scenario_names() {
+        let script = gui_semantic_scenario_script(scenario_name)
+            .unwrap_or_else(|| panic!("{scenario_name} should expose its built-in script"));
+        assert!(
+            !script.contains("config:"),
+            "{scenario_name} must not use legacy visible-label setting IDs",
+        );
+        for (line_index, line) in script.lines().enumerate() {
+            let Some(widget_id) = line.split('\t').nth(1) else {
+                continue;
+            };
+            if matches!(
+                widget_id,
+                "settings.connection.server_password.remove"
+                    | "settings.connection.server_password.status"
+            ) {
+                continue;
+            }
+            let Some(setting_id) = widget_id.strip_prefix("settings.") else {
+                continue;
+            };
+            let automation_id = format!(
+                "settings.{}",
+                setting_id.strip_suffix(".validation").unwrap_or(setting_id),
+            );
+            assert!(
+                SettingId::from_automation_id(&automation_id).is_some(),
+                "{scenario_name}:{} uses unknown setting ID {widget_id}",
+                line_index + 1,
+            );
+        }
+    }
+}
+
+#[test]
 fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert_eq!(
         gui_semantic_scenario_names(),
@@ -41,6 +77,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             "live-python-peer-connect-flow",
             "live-python-peer-controlled-room-flow",
             "seek-preparation-flow",
+            "readiness-v2-flow",
         ]
     );
     assert!(
@@ -56,7 +93,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         gui_semantic_scenario_script("localized-runtime-flow")
             .expect("localized runtime scenario should expose a script")
-            .contains("config:System:Language\tfalse\tfr")
+            .contains("settings.general.language\tfalse\tfr")
     );
     assert!(
         gui_semantic_scenario_script("runtime-chat-flow")
@@ -109,11 +146,16 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             .contains("Buffer refill 65%")
     );
     assert!(
+        gui_semantic_scenario_script("readiness-v2-flow")
+            .expect("readiness V2 scenario should expose a script")
+            .contains("apply-main-window-readiness-v2\talice\tready\tplayable")
+    );
+    assert!(
         gui_semantic_scenario_script("missing-scenario").is_none(),
         "unknown semantic scenario scripts should not resolve"
     );
     let descriptors = gui_semantic_scenario_descriptors();
-    assert_eq!(descriptors.len(), 13);
+    assert_eq!(descriptors.len(), 14);
     assert_eq!(descriptors[0].name, "configuration-surface-flow");
     assert!(descriptors[0].description.contains("configuration fields"));
     assert!(
@@ -192,6 +234,17 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             .script
             .contains("+interop-room:447CE7E3548D")
     );
+    assert_eq!(descriptors[13].name, "readiness-v2-flow");
+    assert!(
+        descriptors[13]
+            .description
+            .contains("technical playability")
+    );
+    assert!(
+        descriptors[13]
+            .script
+            .contains("apply-main-window-readiness-v2")
+    );
     assert!(
         gui_semantic_scenario_named("missing-scenario").is_none(),
         "unknown semantic scenarios should not resolve"
@@ -202,7 +255,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
 # comment\n\
 activate\tconfiguration-root\n\
 assert-selected\tconfiguration-root\ttrue\n\
-assert-value\tconfig:Connection:Host\t<none>\n\
+assert-value\tsettings.connection.host\t<none>\n\
 assert-pending\tnone\n\
 complete-pending\n\
 complete-pending-runtime\n\
@@ -218,7 +271,7 @@ clear-notifications\n",
         vec![
             GuiSemanticStep::activate("configuration-root"),
             GuiSemanticStep::assert_widget_selected("configuration-root", true),
-            GuiSemanticStep::assert_widget_value("config:Connection:Host", None),
+            GuiSemanticStep::assert_widget_value("settings.connection.host", None),
             GuiSemanticStep::assert_pending(None),
             GuiSemanticStep::CompletePending,
             GuiSemanticStep::CompletePendingRuntime,
@@ -234,6 +287,7 @@ clear-notifications\n",
                 issue: Some(GuiPlayerSetupIssue {
                     kind: GuiPlayerSetupIssueKind::MissingBinary,
                     message: "Configured player path C:/missing/mpv.exe was not found.".to_owned(),
+                    retry_available: true,
                 }),
             }),
             GuiSemanticStep::CloseModal,
@@ -339,8 +393,8 @@ setting\thost\tfile-script.example\n\
 setting\tport\t8999\n\
 setting\tpublic-server\tMirror\tmirror.example:8999\n\
 assert-selected\tconfiguration-root\ttrue\n\
-assert-value\tconfig:Connection:Host\tfile-script.example\n\
-assert-value\tconfig:Connection:Port\t8999\n\
+assert-value\tsettings.connection.host\tfile-script.example\n\
+assert-value\tsettings.connection.port\t8999\n\
 assert-label\tpublic-servers:row:0\tMirror\n",
     )
     .expect("semantic script file should be created");
@@ -377,7 +431,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         run_gui_semantic_scenario_named("missing-scenario")
             .expect_err("unknown scenario should fail")
             .contains(
-                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, player-setup-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow, seek-preparation-flow"
+                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, player-setup-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow, seek-preparation-flow, readiness-v2-flow"
             )
     );
 }
@@ -420,6 +474,7 @@ fn sorotte_gui_semantic_cli_wrapper_runs_explicit_args() {
     assert!(listed.contains("detached-runtime-ownership-flow"));
     assert!(listed.contains("live-python-peer-connect-flow"));
     assert!(listed.contains("live-python-peer-controlled-room-flow"));
+    assert!(listed.contains("readiness-v2-flow"));
 
     let printed =
         run_sorotte_gui_semantic_cli_from_args(["--print-script", "configuration-surface-flow"])
@@ -442,8 +497,8 @@ fn sorotte_gui_semantic_cli_wrapper_runs_explicit_args() {
         "\
 # delta script\n\
 activate\tconfiguration:tab:connection\n\
-enter-text\tconfig:Connection:Host\tfalse\toverride.example\n\
-assert-value\tconfig:Connection:Host\toverride.example\n",
+enter-text\tsettings.connection.host\tfalse\toverride.example\n\
+assert-value\tsettings.connection.host\toverride.example\n",
     )
     .expect("semantic append script file should be created");
     let append_script_path_string = append_script_path.to_string_lossy().into_owned();
@@ -470,7 +525,7 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
     assert!(described.starts_with("{\"result\":\"ok\",\"scenarios\":["));
     assert!(described.contains("\"name\":\"configuration-surface-flow\""));
     assert!(described.contains("\"description\":\"Edits configuration fields, surfaces validation and command availability, saves, then exercises public-server and media-search pending flows.\""));
-    assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
+    assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\thost\\tpersisted.example\\nsetting\\tserver-password\\tsemantic-password\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
     assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
     assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));
     assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the legacy non-transport Windows smoke path\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
@@ -489,6 +544,9 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
     assert!(described.contains("\"name\":\"live-python-peer-controlled-room-flow\""));
     assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
     assert!(described.contains("\"script\":\"# Live Python reference-peer controlled-room flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\t+interop-room:447CE7E3548D:AB-123-456\\nsetting\\tshared-playlist-enabled\\ttrue"));
+    assert!(described.contains("\"name\":\"readiness-v2-flow\""));
+    assert!(described.contains("\"description\":\"Separates user readiness intent, technical playability, room readiness, start eligibility, membership revisions, and operation-correlated pending state while retaining the legacy fallback.\""));
+    assert!(described.contains("\"script\":\"# Readiness V2 presentation and legacy fallback\\nsetting\\tusername\\talice\\nsetting\\troom\\troom1"));
 }
 
 #[test]

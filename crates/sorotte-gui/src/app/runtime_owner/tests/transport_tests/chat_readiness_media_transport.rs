@@ -44,24 +44,9 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     )));
     assert!(startup_actions.iter().any(|action| matches!(
         action,
-        GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-            action_overrides,
-            tls_prompt_expected,
-            update_notice_expected,
-            about_dialog_available,
-        }) if *tls_prompt_expected == state.menus.tls_prompt_expected
-            && *update_notice_expected == state.menus.update_notice_expected
-            && *about_dialog_available == state.menus.about_dialog_available
-            && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Window"
-                    && override_action.action_label == "Show Chat"
-                    && !override_action.enabled)
-    )));
-    assert!(startup_actions.iter().any(|action| matches!(
-        action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -79,20 +64,6 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     for action in startup_actions {
         assert!(state.apply(action));
     }
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Chat")
-            })
-            .is_some_and(|action| !action.enabled)
-    );
     assert!(!state.commands.can_send_chat_message);
 
     let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
@@ -141,19 +112,14 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
             && *update_notice_expected == state.menus.update_notice_expected
             && *about_dialog_available == state.menus.about_dialog_available
             && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Window"
-                    && override_action.action_label == "Show Chat"
-                    && override_action.enabled)
-            && action_overrides.iter().any(|override_action|
-                override_action.section_title == "Advanced"
-                    && override_action.action_label == "Create Controlled Room"
+                override_action.id == MenuActionId::CreateControlledRoom
                     && override_action.enabled)
     )));
     assert!(hello_actions.iter().any(|action| matches!(
         action,
         GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
+                can_save_configuration: false,
                 can_reset_configuration: false,
                 can_reload_configuration: true,
                 can_connect_public_server: false,
@@ -175,20 +141,6 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     let outbound_protocol_lines =
         without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines());
     assert!(outbound_protocol_lines.is_empty());
-    assert!(
-        state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Window")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Show Chat")
-            })
-            .is_some_and(|action| action.enabled)
-    );
     assert!(state.commands.can_send_chat_message);
 
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned())));

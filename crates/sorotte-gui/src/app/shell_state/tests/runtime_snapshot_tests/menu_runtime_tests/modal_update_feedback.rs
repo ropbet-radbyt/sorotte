@@ -44,11 +44,15 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
 
     assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
 
     assert!(state.apply(GuiShellAction::AnnounceHelpRequested));
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert!(state.notifications.is_empty());
+    assert!(state.notifications.iter().any(|notification| {
+        notification
+            .message
+            .contains("Opening the Sorotte client guide")
+    }));
 }
 
 #[test]
@@ -201,18 +205,11 @@ fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
         MenuDialogRuntimeSnapshot {
             action_overrides: vec![
                 MenuActionRuntimeOverride {
-                    section_title: "Playback",
-                    action_label: "Toggle Pause",
+                    id: MenuActionId::TogglePause,
                     enabled: false,
                 },
                 MenuActionRuntimeOverride {
-                    section_title: "Window",
-                    action_label: "Show Chat",
-                    enabled: true,
-                },
-                MenuActionRuntimeOverride {
-                    section_title: "Help",
-                    action_label: "Check for Updates",
+                    id: MenuActionId::CheckForUpdates,
                     enabled: false,
                 },
             ],
@@ -243,19 +240,6 @@ fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
             .find(|action| action.label == "Seek")
             .is_some_and(|action| !action.enabled && !action.is_selected)
     );
-    let window = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .expect("window section should exist");
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|action| action.label == "Show Chat")
-            .is_some_and(|action| action.enabled)
-    );
     assert!(state.menus.tls_prompt_expected);
     assert!(!state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
@@ -275,25 +259,10 @@ fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
 }
 
 #[test]
-fn gui_shell_app_state_rejects_invalid_menu_dialog_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
-
-    assert!(!state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: vec![MenuActionRuntimeOverride {
-                section_title: "Invalid",
-                action_label: "Missing",
-                enabled: true,
-            }],
-            tls_prompt_expected: false,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        },
-    )));
+fn gui_shell_app_state_rejects_unknown_menu_automation_ids_before_dispatch() {
     assert_eq!(
-        state.validation.last_action_error.as_deref(),
-        Some("No menu action exists for 'Invalid / Missing' in the runtime snapshot.")
+        MenuActionId::from_automation_id("menu.invalid_missing"),
+        None
     );
 }
 
@@ -303,13 +272,13 @@ fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Port",
+        id: SettingId::ConnectionPort,
         value: "70000".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
         GuiFeedbackRuntimeSnapshot {
             validation_issues: vec![GuiValidationIssue {
+                setting_id: None,
                 scope: "Runtime".to_owned(),
                 label: "Sync".to_owned(),
                 message: "Server health degraded.".to_owned(),
@@ -370,6 +339,7 @@ fn gui_shell_app_state_rejects_invalid_gui_feedback_runtime_snapshots() {
         !state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
             GuiFeedbackRuntimeSnapshot {
                 validation_issues: vec![GuiValidationIssue {
+                    setting_id: None,
                     scope: "   ".to_owned(),
                     label: "Sync".to_owned(),
                     message: "Degraded.".to_owned(),

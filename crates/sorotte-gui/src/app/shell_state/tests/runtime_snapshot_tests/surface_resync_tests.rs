@@ -15,7 +15,7 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
     let initial_tree = state.shell_widget_tree();
     assert!(
         initial_tree
-            .find("menus:action:0:0")
+            .find("menu.open_media")
             .is_some_and(|node| !node.enabled)
     );
     assert!(
@@ -54,7 +54,7 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
     let runtime_tree = state.shell_widget_tree();
     assert!(
         runtime_tree
-            .find("menus:action:0:0")
+            .find("menu.open_media")
             .is_some_and(|node| node.enabled)
     );
     assert!(
@@ -83,6 +83,9 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
         section_index: 0,
         action_index: 0,
     }));
+    state.pending_operation = Some(GuiPendingOperationState {
+        kind: GuiPendingOperationKind::RefreshPublicServers,
+    });
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
@@ -103,25 +106,19 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
     )));
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Readiness",
-        label: "Shared Playlists",
+        id: SettingId::PlaybackSharedPlaylists,
         value: true,
     }));
 
     assert!(state.main_window.shared_playlist_enabled);
     assert!(!state.main_window.playback.can_manage_playlist);
-    let window = state
-        .menus
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .expect("window section should exist");
     assert!(
-        window
-            .actions
+        state
+            .menus
+            .sections
             .iter()
-            .find(|item| item.label == "Show Playlist")
-            .is_some_and(|item| item.enabled)
+            .flat_map(|section| &section.actions)
+            .all(|item| item.label != "Show Playlist")
     );
     assert!(state.menus.tls_prompt_expected);
     assert!(state.menus.update_notice_expected);
@@ -398,8 +395,7 @@ fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuratio
     )));
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Chat",
-        label: "Chat Input",
+        id: SettingId::ChatInputEnabled,
         value: true,
     }));
 
@@ -446,8 +442,7 @@ fn gui_shell_app_state_preserves_same_label_playlist_identity_source_and_undo_me
     state.playlist_entry_id_undo_snapshot = Some(vec![undo_entry_id]);
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Chat",
-        label: "Chat Input",
+        id: SettingId::ChatInputEnabled,
         value: false,
     }));
     assert_eq!(state.main_window.playlist[0].entry_id, entry_id);
@@ -519,8 +514,7 @@ fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_
     )));
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "MergedRoom".to_owned().into(),
     }));
 
@@ -588,8 +582,7 @@ fn gui_shell_app_state_preserves_connected_room_surface_across_configuration_roo
     )));
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Connection",
-        label: "Room",
+        id: SettingId::ConnectionRoom,
         value: "DraftRoom".to_owned().into(),
     }));
 

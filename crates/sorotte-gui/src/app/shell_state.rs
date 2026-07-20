@@ -31,6 +31,7 @@ mod browser_support;
 mod configuration_dialog;
 mod configuration_dialog_projection;
 mod main_window;
+mod menu;
 
 pub(super) use self::actions::GuiShellAction;
 pub(super) use self::browser_support::{
@@ -43,7 +44,8 @@ pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
     GuiConfigurationTextValue, GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl,
     GuiDialogControlKind, GuiDialogSection, GuiMediaSearchSection, GuiOsdSection,
-    GuiPrivacySection, GuiReadinessSection, GuiStreamingSection, GuiSystemSection,
+    GuiPrivacySection, GuiReadinessSection, GuiResolvedSettingValue, GuiSettingApplyRequirement,
+    GuiSettingValueOrigin, GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
 };
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
@@ -56,12 +58,15 @@ pub(super) use self::main_window::{
     MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
     MainWindowUserRow,
 };
+pub(in crate::app) use self::menu::MenuActionId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuActionShellItem {
+    pub(super) id: MenuActionId,
     pub(super) label: &'static str,
     pub(super) enabled: bool,
     pub(super) is_selected: bool,
+    pub(super) is_checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,8 +85,7 @@ pub(super) struct MenuDialogShellState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuActionRuntimeOverride {
-    pub(super) section_title: &'static str,
-    pub(super) action_label: &'static str,
+    pub(super) id: MenuActionId,
     pub(super) enabled: bool,
 }
 
@@ -144,6 +148,8 @@ pub(super) enum GuiPlayerSetupIssueKind {
     LaunchFailed,
     IpcAttachFailed,
     ExitedAfterLaunch,
+    PlayerSettingsDegraded,
+    BridgeDegraded,
 }
 
 impl GuiPlayerSetupIssueKind {
@@ -156,6 +162,8 @@ impl GuiPlayerSetupIssueKind {
             Self::LaunchFailed => "launch-failed",
             Self::IpcAttachFailed => "ipc-attach-failed",
             Self::ExitedAfterLaunch => "exited-after-launch",
+            Self::PlayerSettingsDegraded => "player-settings-degraded",
+            Self::BridgeDegraded => "bridge-degraded",
         }
     }
 }
@@ -164,6 +172,7 @@ impl GuiPlayerSetupIssueKind {
 pub(super) struct GuiPlayerSetupIssue {
     pub(super) kind: GuiPlayerSetupIssueKind,
     pub(super) message: String,
+    pub(super) retry_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -813,6 +822,176 @@ impl GuiPluginSelection {
     }
 }
 
+/// A successfully persisted, feature-owned settings change.
+///
+/// Each variant deliberately owns only the listed fields. Applying one of these patches to the
+/// saved settings and to the raw editable settings preserves unrelated draft values and the
+/// separately tracked `SecretDraft`.
+#[derive(Clone, PartialEq)]
+pub(super) enum GuiPersistedSettingsPatch {
+    PluginEnabled {
+        plugin: GuiPluginSelection,
+        enabled: bool,
+    },
+    MediaMatchFingerprintingEnabled(bool),
+    MediaMatchBackgroundWarmupEnabled(bool),
+    MediaMatchWireSharingEnabled(bool),
+    MediaMatchRuntimeToleranceEnabled(bool),
+    MediaMatchAutoplayPolicy(MediaMatchAutoplayPolicy),
+    PlexAuthenticated {
+        user_token: SecretValue,
+        sync_enabled: bool,
+        clear_selected_server: bool,
+    },
+    PlexServerSelected {
+        machine_identifier: String,
+        uri: String,
+        access_token: SecretValue,
+    },
+    PlexSyncEnabled(bool),
+    PlexStreamingEnabled(bool),
+    PlexDisconnected,
+}
+
+impl std::fmt::Debug for GuiPersistedSettingsPatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PluginEnabled { plugin, enabled } => formatter
+                .debug_struct("PluginEnabled")
+                .field("plugin", plugin)
+                .field("enabled", enabled)
+                .finish(),
+            Self::MediaMatchFingerprintingEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchFingerprintingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchBackgroundWarmupEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchBackgroundWarmupEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchWireSharingEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchWireSharingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchRuntimeToleranceEnabled(enabled) => formatter
+                .debug_tuple("MediaMatchRuntimeToleranceEnabled")
+                .field(enabled)
+                .finish(),
+            Self::MediaMatchAutoplayPolicy(policy) => formatter
+                .debug_tuple("MediaMatchAutoplayPolicy")
+                .field(policy)
+                .finish(),
+            Self::PlexAuthenticated {
+                user_token,
+                sync_enabled,
+                clear_selected_server,
+            } => formatter
+                .debug_struct("PlexAuthenticated")
+                .field("user_token", user_token)
+                .field("sync_enabled", sync_enabled)
+                .field("clear_selected_server", clear_selected_server)
+                .finish(),
+            Self::PlexServerSelected {
+                machine_identifier,
+                access_token,
+                ..
+            } => formatter
+                .debug_struct("PlexServerSelected")
+                .field("machine_identifier", machine_identifier)
+                .field("uri", &sorotte_secret::REDACTED_SECRET)
+                .field("access_token", access_token)
+                .finish(),
+            Self::PlexSyncEnabled(enabled) => formatter
+                .debug_tuple("PlexSyncEnabled")
+                .field(enabled)
+                .finish(),
+            Self::PlexStreamingEnabled(enabled) => formatter
+                .debug_tuple("PlexStreamingEnabled")
+                .field(enabled)
+                .finish(),
+            Self::PlexDisconnected => formatter.write_str("PlexDisconnected"),
+        }
+    }
+}
+
+impl GuiPersistedSettingsPatch {
+    pub(super) fn apply_to(&self, settings: &mut StoredClientSettingsMvp) {
+        match self {
+            Self::PluginEnabled { plugin, enabled } => match plugin {
+                GuiPluginSelection::StreamSupport => {
+                    settings.stream_support_plugin_enabled = Some(*enabled);
+                }
+                GuiPluginSelection::MediaMatching => {
+                    settings.media_matching_plugin_enabled = Some(*enabled);
+                }
+                GuiPluginSelection::Plex => {
+                    settings.plex_plugin_enabled = Some(*enabled);
+                }
+            },
+            Self::MediaMatchFingerprintingEnabled(enabled) => {
+                settings.media_match_fingerprinting_enabled = Some(*enabled);
+            }
+            Self::MediaMatchBackgroundWarmupEnabled(enabled) => {
+                settings.media_match_background_warmup_enabled = Some(*enabled);
+            }
+            Self::MediaMatchWireSharingEnabled(enabled) => {
+                settings.media_match_wire_sharing_enabled = Some(*enabled);
+            }
+            Self::MediaMatchRuntimeToleranceEnabled(enabled) => {
+                settings.media_match_runtime_tolerance_enabled = Some(*enabled);
+            }
+            Self::MediaMatchAutoplayPolicy(policy) => {
+                settings.media_match_autoplay_policy =
+                    Some(media_match_autoplay_policy_label(*policy).to_owned());
+            }
+            Self::PlexAuthenticated {
+                user_token,
+                sync_enabled,
+                clear_selected_server,
+            } => {
+                settings.plex_user_token = Some(user_token.clone());
+                settings.plex_sync_enabled = Some(*sync_enabled);
+                if *clear_selected_server {
+                    settings.plex_selected_server_id = None;
+                    settings.plex_selected_server_url = None;
+                    settings.plex_selected_server_token = None;
+                }
+            }
+            Self::PlexServerSelected {
+                machine_identifier,
+                uri,
+                access_token,
+            } => {
+                settings.plex_selected_server_id = Some(machine_identifier.clone());
+                settings.plex_selected_server_url = Some(uri.clone());
+                settings.plex_selected_server_token = Some(access_token.clone());
+            }
+            Self::PlexSyncEnabled(enabled) => settings.plex_sync_enabled = Some(*enabled),
+            Self::PlexStreamingEnabled(enabled) => {
+                settings.plex_streaming_enabled = Some(*enabled);
+            }
+            Self::PlexDisconnected => {
+                settings.plex_sync_enabled = Some(false);
+                settings.plex_streaming_enabled = Some(false);
+                settings.plex_user_token = None;
+                settings.plex_selected_server_id = None;
+                settings.plex_selected_server_url = None;
+                settings.plex_selected_server_token = None;
+            }
+        }
+    }
+
+    pub(super) fn clears_plex_identity_on_disk(&self) -> bool {
+        matches!(
+            self,
+            Self::PlexAuthenticated {
+                clear_selected_server: true,
+                ..
+            } | Self::PlexDisconnected
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GuiPluginEnablementState {
     pub(super) stream_support_enabled: bool,
@@ -877,6 +1056,8 @@ pub(super) struct GuiErrorRuntimeSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SorotteGuiShellAppState {
     pub(super) active_view: GuiShellView,
+    pub(super) active_application_language: Option<String>,
+    pub(super) active_application_force_gui_prompt: Option<bool>,
     pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) selected_plugin: GuiPluginSelection,
     pub(super) plugin_enablement: GuiPluginEnablementState,
@@ -888,9 +1069,10 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
     pub(super) commands: GuiCommandAvailabilityState,
     pub(super) pending_operation: Option<GuiPendingOperationState>,
+    pub(super) clear_gui_data_confirmation_visible: bool,
     pub(super) pending_config_storage_target: Option<GuiConfigStorageChangeTarget>,
     pub(super) pending_local_ready_target: Option<bool>,
-    pub(super) pending_saved_server_connect_saves_configuration: bool,
+    pub(super) pending_saved_server_connect_intent: Option<GuiSavedServerConnectIntent>,
     pub(super) outgoing_chat_message: Option<String>,
     pub(super) main_window_room_change_expanded: bool,
     pub(super) new_main_window_user_draft: String,
@@ -908,6 +1090,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) update_check: GuiUpdateCheckState,
     pub(super) runtime_validation_issues: Vec<GuiValidationIssue>,
     pub(super) notifications: Vec<GuiTransientNotification>,
+    pub(super) pending_apply_requirements: Vec<GuiSettingApplyRequirement>,
     pub(super) validation: GuiValidationState,
     pub(super) last_media_dialog_directory: Option<String>,
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,
@@ -1054,8 +1237,7 @@ pub(super) enum GuiConfigStorageChangeTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiFocusedConfigurationControlRuntimeSnapshot {
-    pub(super) section: String,
-    pub(super) label: String,
+    pub(super) setting_id: String,
     pub(super) activation_count: usize,
 }
 
@@ -1076,8 +1258,7 @@ pub(super) struct GuiMainWindowUserEditSessionRuntimeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiTextEditSessionRuntimeSnapshot {
-    pub(super) section: String,
-    pub(super) label: String,
+    pub(super) setting_id: String,
     pub(super) buffer: GuiConfigurationTextValue,
     pub(super) is_dirty: bool,
 }
@@ -1135,8 +1316,7 @@ impl GuiInteractionRuntimeSnapshot {
             selected_public_server_index: state.selected_public_server_index(),
             focused_configuration_control: state.focused_configuration_control.as_ref().map(
                 |focused| GuiFocusedConfigurationControlRuntimeSnapshot {
-                    section: focused.section.to_owned(),
-                    label: focused.label.to_owned(),
+                    setting_id: focused.id.automation_id().to_owned(),
                     activation_count: focused.activation_count,
                 },
             ),
@@ -1157,8 +1337,7 @@ impl GuiInteractionRuntimeSnapshot {
             ),
             text_edit_session: state.text_edit_session.as_ref().map(|session| {
                 GuiTextEditSessionRuntimeSnapshot {
-                    section: session.section.to_owned(),
-                    label: session.label.to_owned(),
+                    setting_id: session.id.automation_id().to_owned(),
                     buffer: session.buffer.clone(),
                     is_dirty: session.is_dirty,
                 }
@@ -1232,7 +1411,7 @@ impl GuiDialogControlKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiPendingOperationKind {
     SaveConfiguration,
-    ResetConfiguration,
+    DiscardConfigurationChanges,
     ReloadConfiguration,
     ClearGuiData,
     ChangeConfigStorageRoot,
@@ -1250,7 +1429,7 @@ impl GuiPendingOperationKind {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::SaveConfiguration => "save-configuration",
-            Self::ResetConfiguration => "reset-configuration",
+            Self::DiscardConfigurationChanges => "discard-configuration-changes",
             Self::ReloadConfiguration => "reload-configuration",
             Self::ClearGuiData => "clear-gui-data",
             Self::ChangeConfigStorageRoot => "change-config-storage-root",
@@ -1272,10 +1451,15 @@ pub(super) struct GuiPendingOperationState {
     pub(super) kind: GuiPendingOperationKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiSavedServerConnectIntent {
+    ConnectOnce,
+    SaveAndConnect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiFocusedConfigurationControlState {
-    pub(super) section: &'static str,
-    pub(super) label: &'static str,
+    pub(super) id: SettingId,
     pub(super) kind: GuiDialogControlKind,
     pub(super) activation_count: usize,
 }
@@ -1300,8 +1484,7 @@ pub(super) struct GuiMainWindowUserEditSessionState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiTextEditSessionState {
-    pub(super) section: &'static str,
-    pub(super) label: &'static str,
+    pub(super) id: SettingId,
     pub(super) buffer: GuiConfigurationTextValue,
     pub(super) is_dirty: bool,
 }
@@ -1384,9 +1567,34 @@ pub(super) struct GuiTransientNotification {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiValidationIssue {
+    pub(super) setting_id: Option<SettingId>,
     pub(super) scope: String,
     pub(super) label: String,
     pub(super) message: String,
+}
+
+impl GuiValidationIssue {
+    pub(super) fn for_setting(id: SettingId, message: impl Into<String>) -> Self {
+        Self {
+            setting_id: Some(id),
+            scope: id.section().to_owned(),
+            label: id.label().to_owned(),
+            message: message.into(),
+        }
+    }
+
+    pub(super) fn external(
+        scope: impl Into<String>,
+        label: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            setting_id: None,
+            scope: scope.into(),
+            label: label.into(),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

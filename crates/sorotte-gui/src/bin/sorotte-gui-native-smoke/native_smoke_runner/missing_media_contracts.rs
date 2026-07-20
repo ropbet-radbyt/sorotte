@@ -79,7 +79,7 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             invoke_named_control_with_wait(
                 driver,
                 window,
-                "Trust Certificate",
+                MODAL_TLS_TRUST_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
@@ -89,13 +89,11 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
             .is_err()
         {
-            navigate_to_view_with_fallback(
+            navigate_to_view_with_wait(
                 driver,
                 window,
-                "Main Window",
+                ROOM_SURFACE_AUTOMATION_ID,
                 "view: room",
-                "Window",
-                "Show Users",
                 step_timeout,
             )?;
         }
@@ -136,13 +134,11 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             .is_err()
         {
             wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
-            navigate_to_view_with_fallback(
+            navigate_to_view_with_wait(
                 driver,
                 window,
-                "Main Window",
+                ROOM_SURFACE_AUTOMATION_ID,
                 "view: room",
-                "Window",
-                "Show Users",
                 step_timeout,
             )?;
         }
@@ -273,19 +269,17 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             invoke_named_control_with_wait(
                 driver,
                 window,
-                "Trust Certificate",
+                MODAL_TLS_TRUST_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
             wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         }
-        navigate_to_view_with_fallback(
+        navigate_to_view_with_wait(
             driver,
             window,
-            "Main Window",
+            ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            "Window",
-            "Show Users",
             step_timeout,
         )?;
 
@@ -335,13 +329,11 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             .is_err()
         {
             wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
-            navigate_to_view_with_fallback(
+            navigate_to_view_with_wait(
                 driver,
                 window,
-                "Main Window",
+                ROOM_SURFACE_AUTOMATION_ID,
                 "view: room",
-                "Window",
-                "Show Users",
                 step_timeout,
             )?;
         }

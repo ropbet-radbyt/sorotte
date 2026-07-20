@@ -68,6 +68,14 @@ macro_rules! impl_player_wrapper {
                 $name
             }
 
+            fn maintain_runtime_leases_nonblocking(&mut self) {
+                self.0.maintain_runtime_leases_nonblocking();
+            }
+
+            fn maintain_runtime_integrations(&mut self) {
+                self.0.maintain_runtime_integrations();
+            }
+
             fn capabilities(&self) -> PlayerCapabilities {
                 self.0.capabilities()
             }

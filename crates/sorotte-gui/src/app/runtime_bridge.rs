@@ -11,8 +11,9 @@ use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
     GuiConfigStorageChangeTarget, GuiMediaSourceProviderId, GuiPendingOperationKind,
-    GuiPluginSelection, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
-    GuiTransientNotificationLevel, SorotteGuiShellAppState, shuffle_playlist_entries_in_place,
+    GuiPersistedSettingsPatch, GuiPluginSelection, GuiSavedConfigurationRuntimeSnapshot,
+    GuiSavedServerConnectIntent, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
+    SorotteGuiShellAppState, shuffle_playlist_entries_in_place,
 };
 use super::support::format_offset_command;
 

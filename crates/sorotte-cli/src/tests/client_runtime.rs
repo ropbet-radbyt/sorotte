@@ -1,4 +1,5 @@
 use super::*;
+use crate::local_runtime_actions::CliNetworkOptionsHealthReporter;
 
 #[test]
 fn normalize_controlled_room_input_extracts_canonical_room_and_password() {
@@ -108,21 +109,6 @@ fn legacy_syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_sup
 }
 
 #[test]
-fn legacy_syncplayintf_script_source_with_chat_input_bridge_appends_once() {
-    let source = "function handle_enter()\nend\n";
-
-    let patched =
-        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(source);
-    assert!(patched.contains(source));
-    assert!(patched.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
-    assert!(patched.contains(r#"mp.commandv("script-message", "syncplayintf-chat""#));
-
-    let repatched =
-        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(&patched);
-    assert_eq!(repatched, patched);
-}
-
-#[test]
 fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_settings() {
     let config = test_client_loop_config();
     let settings = StoredClientSettingsMvp {
@@ -159,6 +145,456 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
             ..LegacySyncplayUiSettings::default()
         }
     );
+}
+
+#[test]
+fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
+    let config = test_client_loop_config();
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        notification_timeout_ms: 3_000,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+    let settings = StoredClientSettingsMvp {
+        chat_move_osd: Some(false),
+        notification_timeout_seconds: Some(9),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let (mut runtime, bridge_health) =
+        create_client_runtime_with_prepared_mpv_for_test(&config, Some(&settings), player)
+            .expect("an optional bridge failure must not abort CLI runtime construction");
+
+    let SorotteBridgeHealth::Degraded(failure) = bridge_health else {
+        panic!("unacknowledged bridge settings should report degraded health");
+    };
+    assert!(
+        !failure.reason.trim().is_empty(),
+        "the CLI warning must include a useful bridge failure reason"
+    );
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        runtime
+            .player()
+            .legacy_syncplay_ui_settings()
+            .notification_timeout_ms,
+        9_000
+    );
+
+    runtime
+        .with_player_io(|player| {
+            player.open_file("C:/media/degraded-bridge.mkv")?;
+            player.set_paused(false)?;
+            player.set_position(12.5)?;
+            let _ = player.take_playback_telemetry_update();
+            Ok::<(), PlayerError>(())
+        })
+        .expect(
+            "open, pause, seek, and telemetry polling must remain available while the bridge is degraded",
+        );
+    assert!(
+        runtime.player().is_connected(),
+        "telemetry polling must not disturb the healthy core mpv transport"
+    );
+}
+
+#[test]
+fn cli_production_finish_seam_retains_connected_player_on_script_load_degradation() {
+    let config = test_client_loop_config();
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        notification_timeout_ms: 7_777,
+        ..LegacySyncplayUiSettings::default()
+    });
+    let expected_health = SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
+        kind: SorotteBridgeFailureKind::ScriptLoad,
+        reason: "injected bundled bridge script load failure".to_owned(),
+    });
+
+    let (mut runtime, health) = create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test(
+        &config,
+        None,
+        player,
+        |_player, _settings| expected_health.clone(),
+    )
+    .expect("a ScriptLoad-only degradation must not abort production runtime construction");
+
+    assert_eq!(health, expected_health);
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        runtime
+            .player()
+            .legacy_syncplay_ui_settings()
+            .notification_timeout_ms,
+        7_777,
+        "the connected player passed into the production finish seam must be retained"
+    );
+    runtime
+        .with_player_io(|player| {
+            player.open_file("C:/media/script-load-degraded.mkv")?;
+            player.set_paused(true)
+        })
+        .expect("core playback must remain available after ScriptLoad degradation");
+}
+
+#[test]
+fn cli_optional_osd_setup_failure_clears_bridge_readiness_and_player_chat_state() {
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let mut player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+    assert!(player.legacy_syncplayintf_options_ready());
+
+    let health = apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+        &mut player,
+        Some(&StoredClientSettingsMvp {
+            chat_move_osd: Some(true),
+            ..StoredClientSettingsMvp::default()
+        }),
+    );
+
+    assert!(matches!(
+        health,
+        SorotteBridgeHealth::Degraded(ref failure)
+            if failure.kind == SorotteBridgeFailureKind::IpcCommand
+    ));
+    assert_eq!(player.sorotte_bridge_health(), health);
+    assert!(
+        player.is_connected(),
+        "the fake IPC transport remains healthy"
+    );
+    assert!(
+        !player.legacy_syncplayintf_options_ready(),
+        "degraded integration must stop player-originated chat polling immediately"
+    );
+}
+
+#[test]
+fn cli_runtime_rejects_transport_loss_during_optional_bridge_setup() {
+    let config = test_client_loop_config();
+    let baseline = LegacySyncplayUiSettings {
+        chat_move_osd: false,
+        ..LegacySyncplayUiSettings::default()
+    };
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
+
+    let result = create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test(
+        &config,
+        None,
+        player,
+        |player, _settings| {
+            player.mark_test_ipc_unhealthy("test transport failed during bridge setup");
+            player.mark_sorotte_bridge_degraded(
+                SorotteBridgeFailureKind::IpcCommand,
+                "optional bridge command failed after transport loss",
+            )
+        },
+    );
+
+    let Err(error) = result else {
+        panic!("a previously healthy mpv transport becoming unavailable must remain fatal");
+    };
+    let message = error.to_string();
+    assert!(message.contains("mpv JSON IPC became unavailable"));
+    assert!(message.contains("optional bridge command failed after transport loss"));
+}
+
+#[test]
+fn cli_runtime_contains_healthy_active_network_option_rejection() {
+    let config = test_client_loop_config();
+    let player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+    );
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(91.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut bridge_setup_called = false;
+
+    let (mut runtime, bridge_health, streaming_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            None,
+            Some(&settings),
+            player,
+            |_player, _settings| {
+                bridge_setup_called = true;
+                SorotteBridgeHealth::Ready
+            },
+        )
+        .expect("a server-side option rejection over healthy IPC must not abort CLI startup");
+
+    assert!(
+        bridge_setup_called,
+        "optional Chat/OSD setup must still run"
+    );
+    assert_eq!(bridge_health, SorotteBridgeHealth::Ready);
+    let warning = streaming_warning.expect("the partial streaming apply must remain visible");
+    assert!(warning.starts_with(
+        "warning: mpv playback is ready, but streaming options could not be applied to the active media:"
+    ));
+    assert!(warning.contains("invalid parameter"));
+    assert!(warning.contains("desired options will be used for future network loads"));
+    assert!(runtime.player().is_connected());
+
+    runtime
+        .with_player_io(|player| {
+            player.set_paused(true)?;
+            player.set_position(12.5)?;
+            player.open_file("https://media.example.test/future.m3u8")?;
+            player.apply_network_media_options_to_active_media()?;
+            let _ = player.take_playback_telemetry_update();
+            Ok::<(), PlayerError>(())
+        })
+        .expect(
+            "pause, seek, network loads, telemetry, and a later streaming retry must remain available",
+        );
+    assert!(runtime.player().is_connected());
+}
+
+fn effective_streaming_option_map(
+    settings: &StoredClientSettingsMvp,
+    player_args: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    ClientConfig::resolve(settings)
+        .config
+        .playback
+        .streaming
+        .effective_mpv_options(player_args)
+        .into_iter()
+        .map(|option| (option.name, option.effective_value))
+        .collect()
+}
+
+fn logged_file_local_option_map(commands: &[Value]) -> std::collections::BTreeMap<String, String> {
+    commands
+        .iter()
+        .map(|command| {
+            let command = command
+                .as_array()
+                .expect("file-local command log entries should be arrays");
+            assert_eq!(
+                command.first().and_then(Value::as_str),
+                Some("set_property")
+            );
+            let name = command
+                .get(1)
+                .and_then(Value::as_str)
+                .and_then(|property| property.strip_prefix("file-local-options/"))
+                .expect("logged property should be file-local");
+            let value = command
+                .get(2)
+                .and_then(Value::as_str)
+                .expect("file-local option value should be a string");
+            (name.to_owned(), value.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_network_media() {
+    let config = test_client_loop_config();
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(31.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let overrides = LegacyClientArgOverrides {
+        player_args: vec![
+            "--script-opts".to_owned(),
+            "integration-source=https://example.test/value".to_owned(),
+            "C:/media/local-intro.mkv".to_owned(),
+            "https://media.example.test/main-stream.m3u8".to_owned(),
+            "--cache-secs=91".to_owned(),
+        ],
+        ..LegacyClientArgOverrides::default()
+    };
+    let expected_options = effective_streaming_option_map(&settings, &overrides.player_args);
+    let (player, commands, transition_trigger) =
+        MpvAdapter::with_external_network_media_transition_test_ipc(
+            LegacySyncplayUiSettings::default(),
+        );
+
+    let (mut runtime, bridge_health, startup_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            Some(&overrides),
+            Some(&settings),
+            player,
+            |_player, _settings| SorotteBridgeHealth::Ready,
+        )
+        .expect("local launch media should leave network-only options staged");
+
+    assert_eq!(bridge_health, SorotteBridgeHealth::Ready);
+    assert!(startup_warning.is_none());
+    assert!(
+        commands
+            .lock()
+            .expect("transition command log should not be poisoned")
+            .is_empty(),
+        "network-only options must not alter the initially active local item"
+    );
+
+    transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
+    publish_pending_local_file_updates(
+        &mut runtime,
+        &config,
+        &mut CliNetworkOptionsHealthReporter::default(),
+    )
+    .expect("the CLI runtime pump should publish and configure the queued network item");
+
+    let commands = commands
+        .lock()
+        .expect("transition command log should not be poisoned");
+    assert_eq!(logged_file_local_option_map(&commands), expected_options);
+    assert_eq!(
+        runtime
+            .last_local_file_update()
+            .and_then(|update| update.path.as_deref()),
+        Some("https://media.example.test/main-stream.m3u8")
+    );
+    assert!(runtime.player().is_connected());
+    assert!(
+        runtime
+            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
+            .is_none(),
+        "the CLI pump should consume the successful transition outcome"
+    );
+}
+
+#[test]
+fn cli_runtime_contains_external_network_option_rejection_during_file_update_pump() {
+    let config = test_client_loop_config();
+    let settings = StoredClientSettingsMvp {
+        streaming_read_ahead_seconds: Some(31.0),
+        ..StoredClientSettingsMvp::default()
+    };
+    let overrides = LegacyClientArgOverrides {
+        player_args: vec![
+            "C:/media/local-intro.mkv".to_owned(),
+            "https://media.example.test/main-stream.m3u8".to_owned(),
+        ],
+        ..LegacyClientArgOverrides::default()
+    };
+    let (player, commands, transition_trigger) =
+        MpvAdapter::with_rejected_external_network_media_transition_test_ipc(
+            LegacySyncplayUiSettings::default(),
+        );
+    let (mut runtime, _bridge_health, startup_warning) =
+        create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+            &config,
+            Some(&overrides),
+            Some(&settings),
+            player,
+            |_player, _settings| SorotteBridgeHealth::Ready,
+        )
+        .expect("the initially active local item should not exercise network-only options");
+    assert!(startup_warning.is_none());
+
+    transition_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
+    publish_pending_local_file_updates(
+        &mut runtime,
+        &config,
+        &mut CliNetworkOptionsHealthReporter::default(),
+    )
+    .expect("a healthy mpv option rejection must not abort the CLI session");
+
+    assert!(runtime.player().is_connected());
+    assert_eq!(
+        commands
+            .lock()
+            .expect("transition command log should not be poisoned")
+            .len(),
+        1,
+        "the first rejected option must stop the remaining partial apply"
+    );
+    assert!(
+        runtime
+            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
+            .is_none(),
+        "the CLI pump should consume the adapter failure after surfacing its warning"
+    );
+}
+
+#[test]
+fn cli_runtime_keeps_unhealthy_transport_during_initial_streaming_apply_fatal() {
+    let config = test_client_loop_config();
+    let mut player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
+        LegacySyncplayUiSettings::default(),
+    );
+    player.mark_test_ipc_unhealthy("test transport unavailable before streaming setup");
+    let mut bridge_setup_called = false;
+
+    let result = create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
+        &config,
+        None,
+        None,
+        player,
+        |_player, _settings| {
+            bridge_setup_called = true;
+            SorotteBridgeHealth::Ready
+        },
+    );
+
+    let Err(error) = result else {
+        panic!("an unhealthy mpv transport must remain fatal during CLI startup");
+    };
+    assert!(
+        !bridge_setup_called,
+        "bridge setup must not mask core IPC loss"
+    );
+    let message = error.to_string();
+    assert!(message.contains("failed updating active mpv network-media options"));
+    assert!(
+        message.contains("mpv IPC connection is not connected"),
+        "fatal startup error should identify the unhealthy transport: {message}"
+    );
+}
+
+#[test]
+fn cli_can_materialize_embedded_bridge_without_an_executable_or_source_tree_resource() {
+    let unique_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let cache_root = std::env::temp_dir().join(format!(
+        "sorotte-cli-embedded-mpv-bridge-{}-{unique_suffix}",
+        std::process::id()
+    ));
+
+    let first = sorotte_player_mpv::materialize_bundled_sorotte_bridge_in(&cache_root)
+        .expect("the CLI dependency must materialize its embedded bridge");
+    let second = sorotte_player_mpv::materialize_bundled_sorotte_bridge_in(&cache_root)
+        .expect("materializing the same embedded bridge should be idempotent");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first.file_name().and_then(|name| name.to_str()),
+        Some("sorotte_syncplayintf.lua")
+    );
+    assert_eq!(
+        first.parent().and_then(Path::parent),
+        Some(cache_root.as_path()),
+        "the resource should live under a content-address directory in the requested cache"
+    );
+    let content_hash = first
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .expect("the materialized bridge should have a content-address directory");
+    assert_eq!(content_hash.len(), 64);
+    assert!(
+        content_hash
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    );
+    let script = std::fs::read_to_string(&first)
+        .expect("the materialized embedded bridge should be readable");
+    assert!(script.contains("sorotte-syncplayintf-v1"));
+    assert!(script.contains("sorotte_syncplayintf"));
+
+    let _ = std::fs::remove_dir_all(cache_root);
 }
 
 #[test]

@@ -95,7 +95,9 @@ use self::language_support::{
     set_legacy_runtime_language_for_process_legacy_compatible,
 };
 #[cfg(test)]
-use self::local_runtime_actions::run_planned_local_runtime_action_legacy_compatible;
+use self::local_runtime_actions::{
+    publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
+};
 use self::mpv_startup::spawn_legacy_external_player_if_requested_legacy_compatible;
 #[cfg(test)]
 use self::mpv_startup::{
@@ -117,6 +119,9 @@ use self::mpv_startup::{
 use self::mpv_startup::{
     apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
     create_client_runtime_with_managed_mpv_support,
+    create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
+    create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
+    create_client_runtime_with_prepared_mpv_for_test,
     legacy_player_path_compatibility_warning_line_legacy_compatible,
 };
 #[cfg(all(test, windows))]
@@ -153,11 +158,8 @@ use self::session_runner::{
 use self::startup_playlist::protocol_lines_for_startup_playlist_load_from_file_legacy_compatible;
 #[cfg(test)]
 use self::stored_settings::{
-    LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER,
     apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
-    legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
-    parse_sorotte_ini_stored_client_settings_mvp,
+    legacy_syncplay_ui_settings_from_stored_settings, parse_sorotte_ini_stored_client_settings_mvp,
     resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
     upsert_sorotte_ini_stored_client_settings_mvp,
 };

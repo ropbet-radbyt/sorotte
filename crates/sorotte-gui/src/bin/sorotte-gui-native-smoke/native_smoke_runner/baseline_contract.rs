@@ -11,6 +11,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     let step_timeout = timeout.min(Duration::from_millis(4_000));
     let config_persist_timeout = timeout.min(Duration::from_millis(8_000));
     let media_search_directory_value = media_search_browse_path.display().to_string();
+    let saved_config_host_value = "saved.syncplay.example";
     let mut steps = Vec::new();
 
     let initial_view =
@@ -19,7 +20,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         navigate_to_view_with_fallback(
             driver,
             window,
-            "Configuration",
+            SETUP_SURFACE_AUTOMATION_ID,
             "view: setup",
             "Advanced",
             "Trusted Domains",
@@ -45,7 +46,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         wait_for_named_control_enabled_state(
             driver,
             window,
-            "Retry mpv",
+            MODAL_PLAYER_SETUP_RETRY_AUTOMATION_ID,
             NativeControlKind::Button,
             true,
             step_timeout,
@@ -53,7 +54,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         wait_for_named_control_enabled_state(
             driver,
             window,
-            "Open Settings",
+            MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID,
             NativeControlKind::Button,
             true,
             step_timeout,
@@ -61,7 +62,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         invoke_named_control_with_wait(
             driver,
             window,
-            "Open Settings",
+            MODAL_PLAYER_SETUP_OPEN_SETTINGS_AUTOMATION_ID,
             NativeControlKind::Button,
             step_timeout,
         )?;
@@ -86,20 +87,18 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Trust Certificate",
+        MODAL_TLS_TRUST_AUTOMATION_ID,
         NativeControlKind::Button,
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
     steps.push("tls-certificate-prompt-completed".to_owned());
 
-    navigate_to_view_with_fallback(
+    navigate_to_view_with_wait(
         driver,
         window,
-        "Main Window",
+        ROOM_SURFACE_AUTOMATION_ID,
         "view: room",
-        "Window",
-        "Show Users",
         step_timeout,
     )?;
     wait_for_named_control_enabled_state(
@@ -125,40 +124,52 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     navigate_to_view_with_fallback(
         driver,
         window,
-        "Configuration",
+        SETUP_SURFACE_AUTOMATION_ID,
         "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
     )?;
-    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
-    for (edit_index, expected_value) in [
-        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
-        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
-        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
-        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
-        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
-    ] {
-        let current_value = driver.get_edit_value_by_index(window, edit_index)?;
-        if current_value != expected_value {
-            driver.set_edit_value_by_index(window, edit_index, expected_value)?;
-        }
-    }
-    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
-    for (edit_index, expected_value) in [
-        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
-        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
-        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
-        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
-        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
-    ] {
-        wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
-    }
-    driver.set_edit_value_by_index(window, CONFIG_PORT_EDIT_INDEX, "70000")?;
-    wait_for_edit_value_by_index(
+    select_top_tab_with_wait(
         driver,
         window,
-        CONFIG_PORT_EDIT_INDEX,
+        CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+        "Host",
+        step_timeout,
+    )?;
+    for (automation_id, expected_value) in [
+        (CONFIG_HOST_AUTOMATION_ID, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_AUTOMATION_ID, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_AUTOMATION_ID, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_AUTOMATION_ID, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_AUTOMATION_ID, CONFIG_PLAYER_PATH_VALUE),
+    ] {
+        let current_value = driver.get_named_edit_value(window, automation_id)?;
+        if current_value != expected_value {
+            driver.set_named_edit_value(window, automation_id, expected_value, false)?;
+        }
+    }
+    select_top_tab_with_wait(
+        driver,
+        window,
+        CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+        "Host",
+        step_timeout,
+    )?;
+    for (automation_id, expected_value) in [
+        (CONFIG_HOST_AUTOMATION_ID, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_AUTOMATION_ID, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_AUTOMATION_ID, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_AUTOMATION_ID, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_AUTOMATION_ID, CONFIG_PLAYER_PATH_VALUE),
+    ] {
+        wait_for_named_edit_value(driver, window, automation_id, expected_value, step_timeout)?;
+    }
+    driver.set_named_edit_value(window, CONFIG_PORT_AUTOMATION_ID, "70000", false)?;
+    wait_for_named_edit_value(
+        driver,
+        window,
+        CONFIG_PORT_AUTOMATION_ID,
         "70000",
         step_timeout,
     )?;
@@ -171,12 +182,25 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "Save: disabled", step_timeout)?;
     steps.push("config-validation-visible".to_owned());
-    driver.set_edit_value_by_index(window, CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE)?;
-    wait_for_edit_value_by_index(
+    driver.set_named_edit_value(window, CONFIG_PORT_AUTOMATION_ID, CONFIG_PORT_VALUE, false)?;
+    wait_for_named_edit_value(
         driver,
         window,
-        CONFIG_PORT_EDIT_INDEX,
+        CONFIG_PORT_AUTOMATION_ID,
         CONFIG_PORT_VALUE,
+        step_timeout,
+    )?;
+    driver.set_named_edit_value(
+        window,
+        CONFIG_HOST_AUTOMATION_ID,
+        saved_config_host_value,
+        false,
+    )?;
+    wait_for_named_edit_value(
+        driver,
+        window,
+        CONFIG_HOST_AUTOMATION_ID,
+        saved_config_host_value,
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "Status: clean", step_timeout)?;
@@ -185,7 +209,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Save",
+        CONFIG_SAVE_AUTOMATION_ID,
         NativeControlKind::Button,
         step_timeout,
     )?;
@@ -196,11 +220,11 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "Busy: no", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Save: enabled", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Save: disabled", step_timeout)?;
     let config_persist_result = wait_for_file_contains(
         config_path,
         &[
-            "host = syncplay.example",
+            "host = saved.syncplay.example",
             "port = 8999",
             "name = smoke-user",
             "room = smoke-room",
@@ -242,7 +266,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Connect",
+        PUBLIC_SERVER_CONNECT_AUTOMATION_ID,
         NativeControlKind::Button,
         true,
         step_timeout,
@@ -278,27 +302,43 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             "expected at least 2 editable public-server edit-session fields, found {edit_count}"
         ));
     }
-    driver.set_named_edit_value(window, "Label", CUSTOM_SERVER_LABEL, false)?;
-    driver.set_named_edit_value(window, "Address", CUSTOM_SERVER_ADDRESS, false)?;
-    wait_for_named_edit_value(driver, window, "Label", CUSTOM_SERVER_LABEL, step_timeout)?;
+    driver.set_named_edit_value(
+        window,
+        PUBLIC_SERVER_EDIT_LABEL_AUTOMATION_ID,
+        CUSTOM_SERVER_LABEL,
+        false,
+    )?;
+    driver.set_named_edit_value(
+        window,
+        PUBLIC_SERVER_EDIT_ADDRESS_AUTOMATION_ID,
+        CUSTOM_SERVER_ADDRESS,
+        false,
+    )?;
     wait_for_named_edit_value(
         driver,
         window,
-        "Address",
+        PUBLIC_SERVER_EDIT_LABEL_AUTOMATION_ID,
+        CUSTOM_SERVER_LABEL,
+        step_timeout,
+    )?;
+    wait_for_named_edit_value(
+        driver,
+        window,
+        PUBLIC_SERVER_EDIT_ADDRESS_AUTOMATION_ID,
         CUSTOM_SERVER_ADDRESS,
         step_timeout,
     )?;
     invoke_named_control_with_wait(
         driver,
         window,
-        "Save Changes",
+        PUBLIC_SERVER_EDIT_COMMIT_AUTOMATION_ID,
         NativeControlKind::Button,
         step_timeout,
     )?;
     wait_for_named_control_count(
         driver,
         window,
-        "Save Changes",
+        PUBLIC_SERVER_EDIT_COMMIT_AUTOMATION_ID,
         NativeControlKind::Button,
         0,
         step_timeout,
@@ -324,7 +364,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Connect",
+        PUBLIC_SERVER_CONNECT_AUTOMATION_ID,
         NativeControlKind::Button,
         true,
         step_timeout,
@@ -334,20 +374,20 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     navigate_to_view_with_fallback(
         driver,
         window,
-        "Configuration",
+        SETUP_SURFACE_AUTOMATION_ID,
         "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
     )?;
-    for (edit_index, expected_value) in [
-        (CONFIG_HOST_EDIT_INDEX, CUSTOM_SERVER_HOST),
-        (CONFIG_PORT_EDIT_INDEX, CUSTOM_SERVER_PORT),
+    for (automation_id, expected_value) in [
+        (CONFIG_HOST_AUTOMATION_ID, CUSTOM_SERVER_HOST),
+        (CONFIG_PORT_AUTOMATION_ID, CUSTOM_SERVER_PORT),
     ] {
-        let actual = driver.get_edit_value_by_index(window, edit_index)?;
+        let actual = driver.get_named_edit_value(window, automation_id)?;
         if actual != expected_value {
             return Err(format!(
-                "custom public-server selection did not update configuration edit field [{edit_index}]: expected {expected_value:?}, got {actual:?}"
+                "custom public-server selection did not update configuration field {automation_id:?}: expected {expected_value:?}, got {actual:?}"
             ));
         }
     }
@@ -448,13 +488,19 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     navigate_to_view_with_fallback(
         driver,
         window,
-        "Configuration",
+        SETUP_SURFACE_AUTOMATION_ID,
         "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
     )?;
-    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
+    select_top_tab_with_wait(
+        driver,
+        window,
+        CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+        "Host",
+        step_timeout,
+    )?;
     steps.push("surface-configuration".to_owned());
 
     upsert_sorotte_ini_stored_client_settings_mvp_at_path(
@@ -470,7 +516,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Reload",
+        CONFIG_RELOAD_AUTOMATION_ID,
         NativeControlKind::Button,
         step_timeout,
     )?;
@@ -485,20 +531,26 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         &media_search_directory_value,
         config_persist_timeout,
     )?;
-    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
-    for (edit_index, expected_value) in [
-        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
-        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
-        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
-        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
-        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
+    select_top_tab_with_wait(
+        driver,
+        window,
+        CONFIG_CONNECTION_TAB_AUTOMATION_ID,
+        "Host",
+        step_timeout,
+    )?;
+    for (automation_id, expected_value) in [
+        (CONFIG_HOST_AUTOMATION_ID, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_AUTOMATION_ID, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_AUTOMATION_ID, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_AUTOMATION_ID, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_AUTOMATION_ID, CONFIG_PLAYER_PATH_VALUE),
     ] {
-        wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
+        wait_for_named_edit_value(driver, window, automation_id, expected_value, step_timeout)?;
     }
     select_top_tab_with_wait(
         driver,
         window,
-        "Privacy & Chat",
+        CONFIG_PRIVACY_CHAT_TAB_AUTOMATION_ID,
         "Trusted Domains Only",
         step_timeout,
     )?;
@@ -506,7 +558,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     select_top_tab_with_wait(
         driver,
         window,
-        "Playback & Search",
+        CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
         "Ready At Start",
         step_timeout,
     )?;
@@ -515,12 +567,11 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     select_top_tab_with_wait(
         driver,
         window,
-        "Interface & System",
+        CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
         "Show OSD",
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "Language", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
     steps.push("config-reload-persisted".to_owned());
     steps.push("trusted-domains-persisted".to_owned());
     steps.push("config-readiness-persisted".to_owned());
@@ -533,7 +584,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     if select_top_tab_with_wait(
         driver,
         window,
-        "Playback & Search",
+        CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
         "Shared Playlists",
         step_timeout,
     )
@@ -666,8 +717,17 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         })?;
     }
     wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
+    wait_for_accessible_name(driver, window, "modal: about", step_timeout)?;
+    wait_for_accessible_name(driver, window, "About Sorotte", step_timeout)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        MODAL_CLOSE_AUTOMATION_ID,
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    steps.push("about-routes-to-setup".to_owned());
+    steps.push("about-opens-and-closes-modal".to_owned());
 
     Ok(steps)
 }

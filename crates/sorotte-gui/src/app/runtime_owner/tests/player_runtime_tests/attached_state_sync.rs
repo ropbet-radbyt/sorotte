@@ -116,6 +116,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         config_path: None,
         legacy_projection: None,
         session: None,
+        active_session_settings: None,
+        active_session_configured_settings: None,
         session_generation: 0,
         session_projects_to_shell: false,
         session_transport: None,
@@ -138,8 +140,15 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
             state: player_state.clone(),
         }))),
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
+        player_apply_state: Default::default(),
         managed_mpv_process: None,
         player_unavailability_reason: None,
+        core_player_configuration_health: Default::default(),
+        network_options_hook_failure_reason: None,
+        network_options_runtime_health_revision: None,
+        test_queue_network_options_hook_recovery_before_player_commands: false,
+        pending_apply_requirements_refresh_required: false,
+        player_integration_health: crate::app::runtime_owner::GuiPlayerIntegrationHealth::Ready,
         player_local_file: None,
         player_local_file_placeholder: false,
         last_published_local_file: None,
@@ -247,41 +256,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                 rooms: browser_runtime_rooms("(no room joined)", false, true),
                 ..Default::default()
             }),
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                action_overrides: vec![
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Play",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Pause",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Toggle Pause",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Playback",
-                        action_label: "Seek",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Advanced",
-                        action_label: "Set Offset",
-                        enabled: true,
-                    },
-                ],
-                tls_prompt_expected: false,
-                update_notice_expected: false,
-                about_dialog_available: true,
-            }),
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                 command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
+                    can_save_configuration: false,
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: false,
@@ -308,8 +285,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     assert!(state.commands.can_toggle_pause);
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        section: "Chat",
-        label: "Chat Output",
+        id: SettingId::ChatOutputEnabled,
         value: false,
     }));
     assert!(

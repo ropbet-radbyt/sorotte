@@ -10,6 +10,13 @@ fn ensure_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Res
     Ok(())
 }
 
+async fn wait_with_player_integration_maintenance(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    duration: Duration,
+) {
+    await_with_player_integration_maintenance(runtime, tokio::time::sleep(duration)).await;
+}
+
 async fn run_reconnect_backoff(
     runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
@@ -36,7 +43,7 @@ async fn run_reconnect_backoff(
             "active reconnect backoff plan did not include a sleep delay"
         ));
     };
-    tokio::time::sleep(Duration::from_secs_f64(delay_seconds)).await;
+    wait_with_player_integration_maintenance(runtime, Duration::from_secs_f64(delay_seconds)).await;
     *retries = plan.next_retries;
     Ok(false)
 }
@@ -127,6 +134,7 @@ where
     notification_sink: F,
     file_difference_sink: G,
     plex_config: PlexClientConfig,
+    network_options_health_reporter: CliNetworkOptionsHealthReporter,
     retries: u32,
 }
 
@@ -138,6 +146,20 @@ where
     endpoint: String,
     retry_state: ClientNetworkLoopRetryState<F, G>,
     _managed_mpv_process_guard: Option<ManagedMpvProcessGuard>,
+}
+
+fn release_cli_runtime_sorotte_bridge_best_effort(runtime: &mut ClientApplication<MpvAdapter>) {
+    runtime.with_player_io(MpvAdapter::release_sorotte_bridge_best_effort);
+}
+
+impl<F, G> Drop for ClientNetworkLoopBootstrapState<F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    fn drop(&mut self) {
+        release_cli_runtime_sorotte_bridge_best_effort(&mut self.retry_state.runtime);
+    }
 }
 
 struct ClientNetworkLoopStartupExecutionPlan {
@@ -210,6 +232,7 @@ where
             notification_sink,
             file_difference_sink,
             plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
+            network_options_health_reporter: CliNetworkOptionsHealthReporter::default(),
             retries: 0_u32,
         },
         _managed_mpv_process_guard: managed_mpv_process_guard,
@@ -239,6 +262,7 @@ where
             file_difference_sink: &mut retry_state.file_difference_sink,
             diagnostics_config,
             plex_config: &retry_state.plex_config,
+            network_options_health_reporter: &mut retry_state.network_options_health_reporter,
         },
         retries: &mut retry_state.retries,
         network_start,
@@ -312,7 +336,10 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    Ok(match TcpStream::connect(endpoint).await {
+    let connect_result =
+        await_with_player_integration_maintenance(launch.runtime, TcpStream::connect(endpoint))
+            .await;
+    Ok(match connect_result {
         Ok(stream) => (
             client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
                 run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
@@ -352,6 +379,7 @@ where
         file_difference_sink,
         diagnostics_config,
         plex_config,
+        network_options_health_reporter,
     } = launch;
     let (attempt_execution_plan, connect_error) =
         client_network_loop_transport_attempt_execution_plan_legacy_compatible(
@@ -366,6 +394,7 @@ where
                 file_difference_sink,
                 diagnostics_config,
                 plex_config,
+                network_options_health_reporter,
             },
         )
         .await?;
@@ -435,4 +464,45 @@ pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides_and_st
         stored_settings,
     )
     .await
+}
+
+#[cfg(test)]
+mod shutdown_release_tests {
+    use super::*;
+
+    #[test]
+    fn cli_external_player_shutdown_restores_osd_before_releasing_bridge() {
+        let (player, commands) = MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
+            sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            Some(("top".to_owned(), 16)),
+        );
+        assert_eq!(
+            player.sorotte_bridge_health(),
+            sorotte_player_mpv::SorotteBridgeHealth::Ready,
+        );
+        let mut runtime = ClientApplication::with_default_session(player);
+
+        release_cli_runtime_sorotte_bridge_best_effort(&mut runtime);
+
+        let commands = commands
+            .lock()
+            .expect("cleanup command log should not be poisoned")
+            .clone();
+        assert_eq!(commands.len(), 3, "CLI cleanup should queue three commands");
+        assert_eq!(
+            commands[0],
+            serde_json::json!(["set_property", "osd-align-y", "top"])
+        );
+        assert_eq!(
+            commands[1],
+            serde_json::json!(["set_property", "osd-margin-y", 16])
+        );
+        assert_eq!(commands[2][2], "sorotte_syncplayintf_release");
+
+        assert_eq!(
+            runtime.player().sorotte_bridge_health(),
+            sorotte_player_mpv::SorotteBridgeHealth::Disabled
+        );
+        assert!(!runtime.player().legacy_syncplayintf_options_ready());
+    }
 }

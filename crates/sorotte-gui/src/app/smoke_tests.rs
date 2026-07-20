@@ -17,7 +17,7 @@ use super::runtime_bridge::{
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
-    GuiPendingOperationKind, GuiShellAction, GuiShellView, SorotteGuiShellAppState,
+    GuiPendingOperationKind, GuiShellAction, GuiShellView, SettingId, SorotteGuiShellAppState,
 };
 use super::{GuiPreviewRuntimeBridge, upsert_sorotte_ini_stored_client_settings_mvp_at_path};
 

@@ -103,6 +103,10 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn toggle_main_window_hide_empty_rooms(&mut self) -> bool {
         self.main_window.hide_empty_rooms = !self.main_window.hide_empty_rooms;
+        self.set_menu_action_checked(
+            super::shell_state::MenuActionId::ToggleHideEmptyRooms,
+            self.main_window.hide_empty_rooms,
+        );
         self.clear_action_error_and_refresh();
         true
     }

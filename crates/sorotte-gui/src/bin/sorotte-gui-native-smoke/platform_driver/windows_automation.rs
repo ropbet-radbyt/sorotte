@@ -1,4 +1,4 @@
-use super::{PlatformNativeGuiDriver, PlatformWindowHandle};
+use super::{NativeAccessibilityNode, PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
     pub(super) fn with_ui_automation<T, F>(
@@ -168,6 +168,19 @@ impl PlatformNativeGuiDriver {
         }
     }
 
+    pub(super) fn automation_element_has_keyboard_focus(
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+    ) -> bool {
+        // SAFETY: The interface is owned by the current UI Automation traversal; unavailable
+        // focus state is represented as false in the diagnostic snapshot.
+        unsafe {
+            element
+                .CurrentHasKeyboardFocus()
+                .map(|focused| focused.as_bool())
+                .unwrap_or(false)
+        }
+    }
+
     pub(super) fn automation_element_is_offscreen(
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
     ) -> bool {
@@ -237,19 +250,6 @@ impl PlatformNativeGuiDriver {
                 .map(|flag| flag.as_bool())
                 .unwrap_or(true)
         }
-    }
-
-    pub(super) fn set_automation_value(
-        pattern: &windows::Win32::UI::Accessibility::IUIAutomationValuePattern,
-        value: &str,
-    ) -> Result<(), String> {
-        use windows::core::BSTR;
-
-        let value_bstr = BSTR::from(value);
-        // SAFETY: The pattern was obtained from the active UI Automation element; BSTR is owned
-        // for the duration of the call and HRESULT failures are returned to the caller.
-        unsafe { pattern.SetValue(&value_bstr) }
-            .map_err(|error| format!("failed to set UI Automation value: {error}"))
     }
 
     pub(super) fn automation_value(
@@ -413,6 +413,44 @@ impl PlatformNativeGuiDriver {
             names.sort();
             names.dedup();
             Ok(names)
+        })
+    }
+
+    pub(super) fn collect_accessibility_nodes(
+        window: PlatformWindowHandle,
+    ) -> Result<Vec<NativeAccessibilityNode>, String> {
+        Self::with_ui_automation(window, "accessibility snapshot", |automation, root| {
+            let elements = Self::collect_subtree_elements(automation, root)?;
+            let length = Self::automation_element_count(&elements)?;
+            let mut nodes = Vec::with_capacity(length.max(0) as usize);
+            for index in 0..length {
+                let Some(element) = Self::automation_element_at(&elements, index) else {
+                    continue;
+                };
+                let name = Self::automation_element_name(&element).unwrap_or_default();
+                let automation_id = Self::automation_element_automation_id(&element);
+                let Some(control_type) = Self::automation_element_control_type(&element) else {
+                    continue;
+                };
+                let bounds = Self::automation_element_bounding_rect(&element).and_then(|rect| {
+                    (rect.right > rect.left && rect.bottom > rect.top).then_some([
+                        rect.left,
+                        rect.top,
+                        rect.right,
+                        rect.bottom,
+                    ])
+                });
+                nodes.push(NativeAccessibilityNode {
+                    name,
+                    automation_id,
+                    control_type: control_type.0,
+                    enabled: Self::automation_element_is_enabled(&element),
+                    focused: Self::automation_element_has_keyboard_focus(&element),
+                    offscreen: Self::automation_element_is_offscreen(&element),
+                    bounds,
+                });
+            }
+            Ok(nodes)
         })
     }
 }

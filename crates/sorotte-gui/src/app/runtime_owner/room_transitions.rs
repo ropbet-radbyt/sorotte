@@ -18,6 +18,18 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_default_room
             .clone()
             .or_else(|| {
+                self.active_session_settings
+                    .as_ref()
+                    .and_then(|runtime_settings| {
+                        runtime_settings
+                            .config
+                            .connection
+                            .room
+                            .as_ref()
+                            .map(|room| room.as_str().to_owned())
+                    })
+            })
+            .or_else(|| {
                 projected_state
                     .saved_session_connect_target()
                     .map(|target| target.room)
@@ -73,8 +85,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         vec![GuiShellAction::EditConfigurationText {
-            section: "Connection",
-            label: "Room",
+            id: SettingId::ConnectionRoom,
             value: next_room.to_owned().into(),
         }]
     }

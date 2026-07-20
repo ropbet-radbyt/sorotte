@@ -183,24 +183,44 @@ impl GuiWidgetEguiRenderer {
                 GuiConfigurationTab::InterfaceSystem,
             )],
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
-            "config-command:connect" => vec![GuiShellAction::BeginSavedServerConnect],
+            "config-command:connect-once" => vec![GuiShellAction::BeginConnectOnce],
+            "config-command:save-and-connect" => vec![GuiShellAction::BeginSaveAndConnect],
             "config-command:disconnect" => vec![GuiShellAction::BeginSessionDisconnect],
             "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
-            "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
+            "config-command:discard" => vec![GuiShellAction::BeginDiscardConfigurationChanges],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "config-command:confirm-clear-gui-data" => vec![GuiShellAction::ConfirmClearGuiData],
+            "config-command:cancel-clear-gui-data" => {
+                vec![GuiShellAction::DismissClearGuiDataConfirmation]
+            }
+            "settings.connection.server_password.change" => {
+                if matches!(
+                    &state.configuration.server_password,
+                    SecretDraft::Replace(_)
+                ) {
+                    vec![GuiShellAction::CancelServerPasswordChange]
+                } else {
+                    vec![
+                        GuiShellAction::BeginServerPasswordChange,
+                        GuiShellAction::FocusConfigurationControl(
+                            SettingId::ConnectionServerPassword,
+                        ),
+                        GuiShellAction::BeginConfigurationTextEdit(
+                            SettingId::ConnectionServerPassword,
+                        ),
+                    ]
+                }
+            }
+            "settings.connection.server_password.remove" => {
+                vec![GuiShellAction::RemoveServerPassword]
+            }
             "config-storage:root:default" => vec![GuiShellAction::BeginConfigStorageDefaultReset],
             "configuration:alert:close" => vec![GuiShellAction::DismissSetupAlert],
             "configuration:alert:fix-player-path" => vec![
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
-                GuiShellAction::FocusConfigurationControl {
-                    section: "Connection",
-                    label: "Player Path",
-                },
-                GuiShellAction::BeginConfigurationTextEdit {
-                    section: "Connection",
-                    label: "Player Path",
-                },
+                GuiShellAction::FocusConfigurationControl(SettingId::PlayerExecutable),
+                GuiShellAction::BeginConfigurationTextEdit(SettingId::PlayerExecutable),
             ],
             "config-player-setup:autodetect" | "main-window:player-setup:autodetect" => {
                 Self::actions_for_player_setup_autodetect()
@@ -209,7 +229,7 @@ impl GuiWidgetEguiRenderer {
                 Self::actions_for_player_setup_choose_path(state)
             }
             "config-player-setup:retry" | "main-window:player-setup:retry" => {
-                vec![GuiShellAction::RetryPlayerLaunch]
+                vec![state.player_setup_retry_action()]
             }
             "config-stream-support:import-downloader"
             | "plugins:stream-support:import-downloader" => {
@@ -289,20 +309,29 @@ impl GuiWidgetEguiRenderer {
                 GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
             ],
-            "main-window:connection:connect" => vec![GuiShellAction::BeginSavedServerConnect],
+            "main-window:connection:connect" => vec![GuiShellAction::BeginConnectOnce],
             "main-window:connection:disconnect" => {
                 vec![GuiShellAction::BeginSessionDisconnect]
             }
             "main-window:room-actions:toggle" => {
                 vec![GuiShellAction::ToggleMainWindowRoomChange]
             }
+            "shell:quick:open-media-file" => {
+                vec![GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia)]
+            }
             "main-window:control:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
             "main-window:control:play" => vec![GuiShellAction::BeginPlaybackResume],
             "main-window:control:pause" => vec![GuiShellAction::BeginPlaybackPause],
             "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
-            "main-window:control:seek" => vec![GuiShellAction::RequestSeekPrompt],
-            "main-window:control:undo-seek" => vec![GuiShellAction::RequestPlaybackUndoSeek],
-            "main-window:control:set-offset" => vec![GuiShellAction::RequestOffsetPrompt],
+            "main-window:control:seek" => {
+                vec![GuiShellAction::InvokeMenuAction(MenuActionId::Seek)]
+            }
+            "main-window:control:undo-seek" => {
+                vec![GuiShellAction::InvokeMenuAction(MenuActionId::UndoSeek)]
+            }
+            "main-window:control:set-offset" => {
+                vec![GuiShellAction::InvokeMenuAction(MenuActionId::SetOffset)]
+            }
             "main-window:seek-preparation:keep-waiting" => {
                 vec![GuiShellAction::RequestSeekPreparationKeepWaiting]
             }
@@ -541,7 +570,7 @@ impl GuiWidgetEguiRenderer {
                 }
                 actions
             }
-            "shell:modal:player-setup:retry" => vec![GuiShellAction::RetryPlayerLaunch],
+            "shell:modal:player-setup:retry" => vec![state.player_setup_retry_action()],
             "shell:modal:player-setup:open-settings" => vec![
                 GuiShellAction::CloseModal,
                 GuiShellAction::SwitchView(GuiShellView::Setup),
@@ -575,13 +604,15 @@ impl GuiWidgetEguiRenderer {
                 }]
             }
             _ => {
-                if let Some((section_index, action_index)) = Self::menu_action_identity(node) {
+                if let Some(action_id) = Self::menu_action_identity(node)
+                    && let Some((section_index, action_index)) = state.menus.action_index(action_id)
+                {
                     vec![
                         GuiShellAction::SelectMenuAction {
                             section_index,
                             action_index,
                         },
-                        GuiShellAction::TriggerSelectedMenuAction,
+                        GuiShellAction::InvokeMenuAction(action_id),
                     ]
                 } else {
                     Vec::new()
@@ -626,8 +657,7 @@ impl GuiWidgetEguiRenderer {
         let message = format!("Player Path updated to detected mpv binary: {path}");
         vec![
             GuiShellAction::EditConfigurationText {
-                section: "Connection",
-                label: "Player Path",
+                id: SettingId::PlayerExecutable,
                 value: path.into(),
             },
             GuiShellAction::PushTransientNotification {
@@ -648,8 +678,7 @@ impl GuiWidgetEguiRenderer {
         let message = format!("Player Path updated to: {path}");
         vec![
             GuiShellAction::EditConfigurationText {
-                section: "Connection",
-                label: "Player Path",
+                id: SettingId::PlayerExecutable,
                 value: path.into(),
             },
             GuiShellAction::PushTransientNotification {

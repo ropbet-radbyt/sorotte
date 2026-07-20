@@ -48,9 +48,7 @@ pub(super) fn normalized_runtime_language_tag_or_default(language: Option<&str>)
 
 impl SorotteGuiShellAppState {
     pub(super) fn runtime_language_tag_legacy_compatible(&self) -> &'static str {
-        normalized_runtime_language_tag_or_default(
-            self.configuration.to_stored_settings().language.as_deref(),
-        )
+        normalized_runtime_language_tag_or_default(self.active_application_language.as_deref())
     }
 }
 

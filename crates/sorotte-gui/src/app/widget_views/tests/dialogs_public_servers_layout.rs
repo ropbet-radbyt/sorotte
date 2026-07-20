@@ -17,18 +17,31 @@ fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
 
     let tree = state.menu_dialog_widget_tree();
     let pause = tree
-        .find("menus:action:1:0")
+        .find("menu.play")
         .expect("playback toggle action should exist");
     assert_eq!(pause.kind, GuiWidgetKind::Button);
     assert!(!pause.enabled);
-    assert!(pause.selected);
+    assert!(!pause.selected);
+    assert!(
+        tree.find("menu.toggle_playback_buttons")
+            .is_some_and(|action| action.selected),
+        "checkable Window state must be independent from menu-row selection"
+    );
+    assert!(
+        tree.find("menu.toggle_autoplay_controls")
+            .is_some_and(|action| action.selected)
+    );
+    assert!(
+        tree.find("menu.toggle_hide_empty_rooms")
+            .is_some_and(|action| !action.selected)
+    );
 
     let about = tree
         .find("menus:dialog:about")
         .expect("about dialog status should exist");
     assert_eq!(about.kind, GuiWidgetKind::Status);
     assert!(about.enabled);
-    assert!(!about.selected);
+    assert!(about.selected);
     assert_eq!(about.value.as_deref(), Some("yes"));
     assert!(tree.find("menus:about:summary").is_some());
 }
@@ -144,12 +157,12 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     );
     assert!(
         connection_configuration
-            .find("config-section:Connection")
+            .find("settings.section.connection")
             .is_some()
     );
     assert!(
         connection_configuration
-            .find("config-section:Desync")
+            .find("settings.section.sync")
             .is_some(),
         "connection setup should keep playback/search tuning reachable"
     );
@@ -176,7 +189,7 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
             max_columns: 3,
         })
     );
-    let connection_section = configuration.find("config-section:Connection").unwrap();
+    let connection_section = configuration.find("settings.section.connection").unwrap();
     assert_eq!(connection_section.column_span, 2);
     assert!(
         configuration.find("public-servers-root").is_some(),
@@ -204,7 +217,7 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     let room_panel = main_window.find("main-window:connection").unwrap();
     assert_eq!(room_panel.label, "Room");
     assert_eq!(room_panel.min_content_height, Some(320.0));
-    assert!(main_window.find("main-window:browser").is_none());
+    assert!(main_window.find("main-window:browser").is_some());
     let playlist = main_window.find("main-window:playlist").unwrap();
     assert_eq!(playlist.min_content_height, Some(220.0));
     let chat = main_window.find("main-window:chat").unwrap();

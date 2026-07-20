@@ -881,7 +881,7 @@ fn client_message_events_from_syncplayintf_queue_pending_chat_requests() {
         r#"{"request_id":6,"error":"success"}"#,
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
-        r#"{"event":"client-message","args":["syncplayintf-chat","hello \\ world"]}"#,
+        r#"{"event":"client-message","args":["syncplayintf-chat","{\"protocol\":\"sorotte-syncplayintf-v1\",\"bridgeInstanceId\":\"test-bridge\",\"ownerId\":\"test-owner\",\"attachmentId\":\"test-attachment\",\"text\":\"hello \\\\ world\"}"]}"#,
         r#"{"request_id":9,"error":"success","data":false}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
@@ -891,5 +891,22 @@ fn client_message_events_from_syncplayintf_queue_pending_chat_requests() {
         adapter.take_pending_chat_request(),
         Some("hello \\ world".to_owned())
     );
+    assert_eq!(adapter.take_pending_chat_request(), None);
+}
+
+#[test]
+fn endpoint_attachment_reset_discards_queued_syncplayintf_chat() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"event":"client-message","args":["syncplayintf-chat","{\"protocol\":\"sorotte-syncplayintf-v1\",\"bridgeInstanceId\":\"test-bridge\",\"ownerId\":\"test-owner\",\"attachmentId\":\"test-attachment\",\"text\":\"old endpoint\"}"]}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+    adapter.enable_test_legacy_chat_input();
+
+    adapter
+        .set_paused(false)
+        .expect("a command should pump the queued client-message event");
+    adapter.reset_test_legacy_syncplayintf_attachment();
+
     assert_eq!(adapter.take_pending_chat_request(), None);
 }

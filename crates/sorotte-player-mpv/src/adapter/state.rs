@@ -39,8 +39,29 @@ impl fmt::Debug for MpvAdapter {
                 "network_media_option_count",
                 &self.network_media_options.len(),
             )
-            .field("loadfile_options_syntax", &self.loadfile_options_syntax)
-            .field("mpv_version", &self.mpv_version)
+            .field(
+                "network_media_options_embedded_generation",
+                &self
+                    .network_media_options_embedded_load
+                    .as_ref()
+                    .map(|embedded| embedded.media_generation),
+            )
+            .field(
+                "network_media_options_apply_identity_present",
+                &self.network_media_options_apply_identity.is_some(),
+            )
+            .field(
+                "pending_network_options_hook_health_transition_count",
+                &self.pending_network_options_hook_health_transitions.len(),
+            )
+            .field(
+                "pending_network_media_policy_outcome_count",
+                &self.pending_network_media_policy_outcomes.len(),
+            )
+            .field(
+                "network_media_options_runtime_health_revision",
+                &self.network_media_options_runtime_health_revision,
+            )
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
                 "pending_playback_telemetry_update",
@@ -101,27 +122,19 @@ impl fmt::Debug for MpvAdapter {
                 "latest_cached_seekable_window",
                 &self.latest_cached_seekable_window,
             )
-            .field(
-                "ytdl_live_probe_executable_configured",
-                &self.ytdl_live_probe_executable.is_some(),
-            )
-            .field(
-                "ytdl_live_probe_path_prefix_count",
-                &self.ytdl_live_probe_path_prefixes.len(),
-            )
-            .field(
-                "ytdl_live_probe_started",
-                &self.ytdl_live_probe_identity.is_some(),
-            )
-            .field(
-                "pending_ytdl_live_probe",
-                &self.pending_ytdl_live_probe.is_some(),
-            )
             .field("playback_restart_sequence", &self.playback_restart_sequence)
             .field("next_command_id", &self.next_command_id)
             .field(
                 "legacy_syncplay_ui_settings",
                 &self.legacy_syncplay_ui_settings,
+            )
+            .field(
+                "last_simulated_legacy_syncplay_osd_message",
+                &self.last_simulated_legacy_syncplay_osd_message,
+            )
+            .field(
+                "legacy_syncplay_osd_placement_overridden",
+                &self.legacy_syncplay_osd_placement_restore.is_some(),
             )
             .field(
                 "legacy_syncplayintf_script_loaded",
@@ -135,6 +148,24 @@ impl fmt::Debug for MpvAdapter {
                 "legacy_syncplayintf_script_name",
                 &self.legacy_syncplayintf_script_name,
             )
+            .field(
+                "legacy_syncplayintf_bridge_instance_id",
+                &self.legacy_syncplayintf_bridge_instance_id,
+            )
+            .field(
+                "legacy_syncplayintf_pending_options_generation",
+                &self.legacy_syncplayintf_pending_options_generation,
+            )
+            .field(
+                "legacy_syncplayintf_acknowledged_options_generation",
+                &self.legacy_syncplayintf_acknowledged_options_generation,
+            )
+            .field(
+                "legacy_syncplayintf_lease_reacquire_required",
+                &self.legacy_syncplayintf_lease_reacquire_required,
+            )
+            .field("sorotte_bridge_health", &self.sorotte_bridge_health)
+            .field("ipc_endpoint", &self.ipc_endpoint)
             .field("simulation_mode", &self.simulation_mode)
             .field("ipc_attached", &self.ipc_client.is_some())
             .field(
@@ -173,8 +204,32 @@ impl Default for MpvAdapter {
             window_minimized: false,
             current_path: None,
             network_media_options: BTreeMap::new(),
-            loadfile_options_syntax: None,
-            mpv_version: None,
+            network_media_options_hook_enabled: true,
+            network_media_options_hook_loaded: false,
+            network_media_options_generation: 1,
+            network_media_options_hook_configured_generation: None,
+            network_media_options_hook_configuration_error: None,
+            network_media_options_hook_last_heartbeat_at: None,
+            network_media_options_hook_pending_heartbeat: None,
+            network_media_options_hook_pending_event_poll_command_id: None,
+            next_network_media_options_hook_heartbeat_nonce: 1,
+            network_media_options_hook_instance_id: None,
+            network_media_options_hook_last_accepted_load_sequence: None,
+            network_media_options_hook_health: MpvNetworkOptionsHookHealth::Pending,
+            network_media_options_hook_ownership_possible: false,
+            network_media_options_hook_configuration_in_progress: false,
+            network_media_options_policy_state: MpvNetworkMediaPolicyState::Unknown,
+            network_media_options_runtime_health_revision: 0,
+            pending_network_media_options_hook_active_result: None,
+            deferred_network_media_options_hook_transition_result: None,
+            network_media_options_embedded_load: None,
+            network_media_options_apply_identity: None,
+            next_network_media_options_apply_attempt_id: 1,
+            network_media_options_event_batch_depth: 0,
+            deferred_network_media_options_observation: None,
+            next_network_options_event_sequence: 1,
+            pending_network_options_hook_health_transitions: VecDeque::new(),
+            pending_network_media_policy_outcomes: VecDeque::new(),
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
@@ -203,16 +258,36 @@ impl Default for MpvAdapter {
             latest_cached_seekable_window: None,
             path_metadata_generation: None,
             duration_metadata_generation: None,
-            ytdl_live_probe_executable: None,
-            ytdl_live_probe_path_prefixes: Vec::new(),
-            ytdl_live_probe_identity: None,
-            pending_ytdl_live_probe: None,
             playback_restart_sequence: 0,
             next_command_id: 1,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
+            last_simulated_legacy_syncplay_osd_message: None,
+            legacy_syncplay_osd_placement_restore: None,
             legacy_syncplayintf_script_loaded: false,
             legacy_syncplayintf_options_applied: false,
             legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
+            legacy_syncplayintf_bridge_instance_id: None,
+            legacy_syncplayintf_owner_id: (*LEGACY_SYNCPLAYINTF_OWNER_ID).clone(),
+            legacy_syncplayintf_attachment_id: format!(
+                "detached-{}",
+                NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT.fetch_add(1, Ordering::Relaxed)
+            ),
+            legacy_syncplayintf_next_options_generation: 1,
+            legacy_syncplayintf_pending_options_generation: None,
+            legacy_syncplayintf_acknowledged_options_generation: None,
+            legacy_syncplayintf_options_ack_error: None,
+            legacy_syncplayintf_next_ping_nonce: 1,
+            legacy_syncplayintf_pending_ping_nonce: None,
+            legacy_syncplayintf_last_heartbeat_at: None,
+            legacy_syncplayintf_pending_heartbeat_command_id: None,
+            legacy_syncplayintf_last_discovery_at: None,
+            legacy_syncplayintf_lease_reacquire_required: false,
+            legacy_syncplayintf_runtime_rediscovery_required: false,
+            legacy_syncplayintf_runtime_recovery_attempts: 0,
+            legacy_syncplayintf_runtime_recovery_failure: None,
+            sorotte_bridge_health: SorotteBridgeHealth::Disabled,
+            pending_sorotte_bridge_health_transitions: VecDeque::new(),
+            ipc_endpoint: None,
             simulation_mode: false,
             ipc_client: None,
             pending_ipc_connection_events: VecDeque::new(),

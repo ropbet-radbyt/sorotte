@@ -13,7 +13,7 @@ use sorotte_client_core::PrivacyMode;
 use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
 use super::shell_state::{
     GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiPendingOperationKind,
-    GuiValidationIssue, GuiValidationState, SorotteGuiShellAppState,
+    GuiValidationIssue, GuiValidationState, SettingId, SorotteGuiShellAppState,
     playlist_entries_multiline_text,
 };
 use super::support::{
@@ -112,7 +112,7 @@ impl SorotteGuiShellAppState {
         let Some(session) = self.text_edit_session.as_mut() else {
             return;
         };
-        let Some(control) = self.configuration.control(session.section, session.label) else {
+        let Some(control) = self.configuration.control(session.id) else {
             self.text_edit_session = None;
             return;
         };
@@ -191,17 +191,16 @@ impl SorotteGuiShellAppState {
         let Some(session) = self.text_edit_session.as_ref() else {
             return;
         };
-        let Some(control) = self.configuration.control(session.section, session.label) else {
+        let Some(control) = self.configuration.control(session.id) else {
             return;
         };
         let activation_count = self
             .focused_configuration_control
             .as_ref()
-            .filter(|focused| focused.section == session.section && focused.label == session.label)
+            .filter(|focused| focused.id == session.id)
             .map_or(0, |focused| focused.activation_count);
         self.focused_configuration_control = Some(GuiFocusedConfigurationControlState {
-            section: session.section,
-            label: session.label,
+            id: session.id,
             kind: control.kind,
             activation_count,
         });
@@ -211,7 +210,7 @@ impl SorotteGuiShellAppState {
         let Some(focused) = self.focused_configuration_control.as_mut() else {
             return;
         };
-        let Some(control) = self.configuration.control(focused.section, focused.label) else {
+        let Some(control) = self.configuration.control(focused.id) else {
             self.focused_configuration_control = None;
             return;
         };
@@ -262,7 +261,9 @@ impl SorotteGuiShellAppState {
         };
         match pending.kind {
             GuiPendingOperationKind::SaveConfiguration => self.cancel_configuration_save(),
-            GuiPendingOperationKind::ResetConfiguration => self.cancel_configuration_reset(),
+            GuiPendingOperationKind::DiscardConfigurationChanges => {
+                self.cancel_discard_configuration_changes()
+            }
             GuiPendingOperationKind::ReloadConfiguration => self.cancel_configuration_reload(),
             GuiPendingOperationKind::ClearGuiData => self.cancel_clear_gui_data(),
             GuiPendingOperationKind::ChangeConfigStorageRoot => {
@@ -285,6 +286,7 @@ impl SorotteGuiShellAppState {
         self.commands = self.command_availability_without_runtime_override();
         self.runtime_command_availability_override
             .apply_to(&mut self.commands);
+        self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
     }
 
     pub(super) fn validation_issues(&self) -> Vec<GuiValidationIssue> {
@@ -292,21 +294,18 @@ impl SorotteGuiShellAppState {
 
         self.push_u16_validation_issue(
             &mut issues,
-            "Connection",
-            "Port",
+            SettingId::ConnectionPort,
             "must be a valid TCP port from 1 to 65535.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Readiness",
-            "Unpause Action",
+            SettingId::PlaybackUnpauseAction,
             |value| parse_unpause_action_mode_legacy_compatible(value).is_some(),
             "must be a supported unpause action mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Readiness",
-            "Autoplay Min Users",
+            SettingId::PlaybackAutoplayMinUsers,
             |value| {
                 value == "app-default"
                     || parse_autoplay_min_users_override_legacy_compatible(value).is_some()
@@ -315,64 +314,55 @@ impl SorotteGuiShellAppState {
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Privacy",
-            "Filename Privacy",
+            SettingId::PrivacyFilename,
             |value| PrivacyMode::from_legacy_name(value).is_some(),
             "must be a supported privacy mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Privacy",
-            "Filesize Privacy",
+            SettingId::PrivacyFilesize,
             |value| PrivacyMode::from_legacy_name(value).is_some(),
             "must be a supported privacy mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Privacy",
-            "Trusted Domains",
+            SettingId::PrivacyTrustedDomains,
             |value| parse_trusted_domains_text(value).is_some(),
             "must be a comma/semicolon-separated list or legacy bracketed list.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Quality",
+            SettingId::StreamingQuality,
             |value| StreamingQualityPreset::parse(value).is_some(),
             "must be a supported streaming quality preset.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Recovery Policy",
+            SettingId::StreamingRecoveryPolicy,
             |value| StreamingRecoveryPolicy::parse(value).is_some(),
             "must be a supported recovery policy.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Room Buffering Policy",
+            SettingId::StreamingRoomBufferingPolicy,
             |value| RoomBufferingPolicy::parse(value).is_some(),
             "must be a supported room buffering policy.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Start Synchronization",
+            SettingId::StreamingStartSynchronization,
             |value| StartSynchronizationPolicy::parse(value).is_some(),
             "must be a supported start synchronization policy.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Start Timeout Action",
+            SettingId::StreamingStartTimeoutAction,
             |value| StartTimeoutAction::parse(value).is_some(),
             "must be continue, remain-paused, or ask-controller.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Maximum Catchup Rate",
+            SettingId::StreamingMaximumCatchupRate,
             |value| {
                 value
                     .parse::<f64>()
@@ -380,11 +370,13 @@ impl SorotteGuiShellAppState {
             },
             "must be between 1.0 and 1.25.",
         );
-        for label in ["Room Quorum Percent", "Start Quorum Percent"] {
+        for id in [
+            SettingId::StreamingRoomQuorumPercent,
+            SettingId::StreamingStartQuorumPercent,
+        ] {
             self.push_parse_validation_issue(
                 &mut issues,
-                "Streaming",
-                label,
+                id,
                 |value| {
                     value.parse::<f64>().is_ok_and(|value| {
                         value.is_finite() && (0.0..=100.0).contains(&value) && value > 0.0
@@ -393,34 +385,34 @@ impl SorotteGuiShellAppState {
                 "must be greater than 0 and no more than 100.",
             );
         }
-        for label in ["Maximum Hard Seeks", "Recovery Retry Budget"] {
+        for id in [
+            SettingId::StreamingMaximumHardSeeks,
+            SettingId::StreamingRecoveryRetryBudget,
+        ] {
             self.push_parse_validation_issue(
                 &mut issues,
-                "Streaming",
-                label,
+                id,
                 |value| value.parse::<u64>().is_ok(),
                 "must be a non-negative whole number.",
             );
         }
         self.push_parse_validation_issue(
             &mut issues,
-            "Streaming",
-            "Memory Cache MiB",
+            SettingId::StreamingMemoryCacheMib,
             |value| value.parse::<u64>().is_ok_and(|value| value > 0),
             "must be a positive whole number.",
         );
-        for label in [
-            "Buffer Target Seconds",
-            "Read Ahead Seconds",
-            "Hard Seek Threshold Seconds",
-            "Stability Interval Seconds",
-            "Room Maximum Pause Seconds",
-            "Start Timeout Seconds",
+        for id in [
+            SettingId::StreamingBufferTargetSeconds,
+            SettingId::StreamingReadAheadSeconds,
+            SettingId::StreamingHardSeekThresholdSeconds,
+            SettingId::StreamingStabilityIntervalSeconds,
+            SettingId::StreamingRoomMaximumPauseSeconds,
+            SettingId::StreamingStartTimeoutSeconds,
         ] {
             self.push_parse_validation_issue(
                 &mut issues,
-                "Streaming",
-                label,
+                id,
                 |value| {
                     value
                         .parse::<f64>()
@@ -431,110 +423,101 @@ impl SorotteGuiShellAppState {
         }
         if self
             .configuration
-            .control_value("Streaming", "Quality")
+            .control_value(SettingId::StreamingQuality)
             .is_some_and(|value| value.eq_ignore_ascii_case("custom"))
             && self
                 .configuration
-                .control_value("Streaming", "Custom Format")
+                .control_value(SettingId::StreamingCustomFormat)
                 .and_then(normalized_editable_text)
                 .is_none()
         {
-            issues.push(GuiValidationIssue {
-                scope: "Streaming".to_owned(),
-                label: "Custom Format".to_owned(),
-                message: "must be set when the custom quality preset is selected.".to_owned(),
-            });
+            issues.push(GuiValidationIssue::for_setting(
+                SettingId::StreamingCustomFormat,
+                "must be set when the custom quality preset is selected.",
+            ));
         }
         let buffer_target = self
             .configuration
-            .control_value("Streaming", "Buffer Target Seconds")
+            .control_value(SettingId::StreamingBufferTargetSeconds)
             .and_then(|value| value.parse::<f64>().ok());
         let read_ahead = self
             .configuration
-            .control_value("Streaming", "Read Ahead Seconds")
+            .control_value(SettingId::StreamingReadAheadSeconds)
             .and_then(|value| value.parse::<f64>().ok());
         if buffer_target
             .zip(read_ahead)
             .is_some_and(|(target, read_ahead)| read_ahead < target)
         {
-            issues.push(GuiValidationIssue {
-                scope: "Streaming".to_owned(),
-                label: "Read Ahead Seconds".to_owned(),
-                message: "must be at least the buffer target.".to_owned(),
-            });
+            issues.push(GuiValidationIssue::for_setting(
+                SettingId::StreamingReadAheadSeconds,
+                "must be at least the buffer target.",
+            ));
         }
         self.push_parse_validation_issue(
             &mut issues,
-            "Chat",
-            "Input Position",
+            SettingId::ChatInputPosition,
             |value| matches!(value, "Top" | "Middle" | "Bottom"),
             "must be Top, Middle, or Bottom.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "Chat",
-            "Output Mode",
+            SettingId::ChatOutputMode,
             |value| matches!(value, "Chatroom" | "Scrolling"),
             "must be Chatroom or Scrolling.",
         );
-        for (section, label) in [
-            ("Desync", "Rewind Threshold"),
-            ("Desync", "Fastforward Threshold"),
-            ("Desync", "Slowdown Threshold"),
-            ("Streaming", "Recovery Cooldown Seconds"),
-            ("Media Search", "First File Timeout"),
-            ("Media Search", "Search Timeout"),
-            ("Media Search", "Double Check Interval"),
-            ("Media Search", "Warning Threshold"),
+        for id in [
+            SettingId::SyncRewindThreshold,
+            SettingId::SyncFastforwardThreshold,
+            SettingId::SyncSlowdownThreshold,
+            SettingId::StreamingRecoveryCooldownSeconds,
+            SettingId::MediaLibraryFirstFileTimeout,
+            SettingId::MediaLibrarySearchTimeout,
+            SettingId::MediaLibraryDoubleCheckInterval,
+            SettingId::MediaLibraryWarningThreshold,
         ] {
             self.push_nonnegative_f64_validation_issue(
                 &mut issues,
-                section,
-                label,
+                id,
                 "must be a finite non-negative number.",
             );
         }
-        for (section, label, message) in [
-            ("Chat", "Input Font Size", "must be a positive integer."),
-            ("Chat", "Output Font Size", "must be a positive integer."),
+        for (id, message) in [
+            (SettingId::ChatInputFontSize, "must be a positive integer."),
+            (SettingId::ChatOutputFontSize, "must be a positive integer."),
         ] {
-            self.push_positive_i64_validation_issue(&mut issues, section, label, message);
+            self.push_positive_i64_validation_issue(&mut issues, id, message);
         }
-        for (section, label) in [
-            ("Chat", "Input Font Weight"),
-            ("Chat", "Output Font Weight"),
-            ("Chat", "Top Margin"),
-            ("Chat", "Left Margin"),
-            ("Chat", "Bottom Margin"),
-            ("Chat", "OSD Margin"),
-            ("OSD", "Notification Timeout"),
-            ("OSD", "Alert Timeout"),
-            ("OSD", "Chat Timeout"),
+        for id in [
+            SettingId::ChatInputFontWeight,
+            SettingId::ChatOutputFontWeight,
+            SettingId::ChatTopMargin,
+            SettingId::ChatLeftMargin,
+            SettingId::ChatBottomMargin,
+            SettingId::ChatOsdMargin,
+            SettingId::OsdNotificationTimeout,
+            SettingId::OsdAlertTimeout,
+            SettingId::OsdChatTimeout,
         ] {
             self.push_nonnegative_i64_validation_issue(
                 &mut issues,
-                section,
-                label,
+                id,
                 "must be a non-negative integer.",
             );
         }
         self.push_positive_i64_validation_issue(
             &mut issues,
-            "Chat",
-            "Max Lines",
+            SettingId::ChatMaxLines,
             "must be a positive integer.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "System",
-            "Language",
+            SettingId::GeneralLanguage,
             |value| normalized_legacy_runtime_language_tag_legacy_compatible(value).is_some(),
             "must be one of the supported legacy language tags.",
         );
         self.push_parse_validation_issue(
             &mut issues,
-            "System",
-            "Update Channel",
+            SettingId::GeneralUpdateChannel,
             |value| matches!(value.to_ascii_lowercase().as_str(), "stable" | "dev"),
             "must be stable or dev.",
         );
@@ -542,11 +525,10 @@ impl SorotteGuiShellAppState {
         let mut seen_directories = std::collections::BTreeSet::new();
         for directory in &self.media_search.directories {
             if !seen_directories.insert(directory.path.clone()) {
-                issues.push(GuiValidationIssue {
-                    scope: "Media Search".to_owned(),
-                    label: "Directories".to_owned(),
-                    message: "contains duplicate search directories.".to_owned(),
-                });
+                issues.push(GuiValidationIssue::for_setting(
+                    SettingId::MediaLibraryDirectories,
+                    "contains duplicate search directories.",
+                ));
                 break;
             }
         }
@@ -555,11 +537,11 @@ impl SorotteGuiShellAppState {
             let (host, _) =
                 parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
             if host.trim().is_empty() {
-                issues.push(GuiValidationIssue {
-                    scope: "Public Servers".to_owned(),
-                    label: "Address".to_owned(),
-                    message: format!("'{}' is not a valid server address.", row.address),
-                });
+                issues.push(GuiValidationIssue::external(
+                    "Public Servers",
+                    "Address",
+                    format!("'{}' is not a valid server address.", row.address),
+                ));
             }
         }
 
@@ -569,37 +551,30 @@ impl SorotteGuiShellAppState {
     pub(super) fn push_parse_validation_issue(
         &self,
         issues: &mut Vec<GuiValidationIssue>,
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         is_valid: impl FnOnce(&str) -> bool,
         message: &'static str,
     ) {
-        let Some(value) = self.configuration.control_value(section, label) else {
+        let Some(value) = self.configuration.control_value(id) else {
             return;
         };
         let Some(normalized) = normalized_editable_text(value) else {
             return;
         };
         if !is_valid(&normalized) {
-            issues.push(GuiValidationIssue {
-                scope: section.to_owned(),
-                label: label.to_owned(),
-                message: message.to_owned(),
-            });
+            issues.push(GuiValidationIssue::for_setting(id, message));
         }
     }
 
     pub(super) fn push_u16_validation_issue(
         &self,
         issues: &mut Vec<GuiValidationIssue>,
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         message: &'static str,
     ) {
         self.push_parse_validation_issue(
             issues,
-            section,
-            label,
+            id,
             |value| value.parse::<u16>().is_ok_and(|parsed| parsed > 0),
             message,
         );
@@ -608,14 +583,12 @@ impl SorotteGuiShellAppState {
     pub(super) fn push_nonnegative_f64_validation_issue(
         &self,
         issues: &mut Vec<GuiValidationIssue>,
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         message: &'static str,
     ) {
         self.push_parse_validation_issue(
             issues,
-            section,
-            label,
+            id,
             |value| {
                 value
                     .parse::<f64>()
@@ -628,14 +601,12 @@ impl SorotteGuiShellAppState {
     pub(super) fn push_positive_i64_validation_issue(
         &self,
         issues: &mut Vec<GuiValidationIssue>,
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         message: &'static str,
     ) {
         self.push_parse_validation_issue(
             issues,
-            section,
-            label,
+            id,
             |value| value.parse::<i64>().is_ok_and(|parsed| parsed > 0),
             message,
         );
@@ -644,14 +615,12 @@ impl SorotteGuiShellAppState {
     pub(super) fn push_nonnegative_i64_validation_issue(
         &self,
         issues: &mut Vec<GuiValidationIssue>,
-        section: &'static str,
-        label: &'static str,
+        id: SettingId,
         message: &'static str,
     ) {
         self.push_parse_validation_issue(
             issues,
-            section,
-            label,
+            id,
             |value| value.parse::<i64>().is_ok_and(|parsed| parsed >= 0),
             message,
         );

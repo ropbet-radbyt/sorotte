@@ -120,15 +120,12 @@ impl GuiCommandAvailabilityRuntimeOverride {
         snapshot: &GuiCommandAvailabilityState,
     ) -> Self {
         Self {
-            can_save_configuration: (baseline.can_save_configuration
-                != snapshot.can_save_configuration)
-                .then_some(snapshot.can_save_configuration),
-            can_reset_configuration: (baseline.can_reset_configuration
-                != snapshot.can_reset_configuration)
-                .then_some(snapshot.can_reset_configuration),
-            can_reload_configuration: (baseline.can_reload_configuration
-                != snapshot.can_reload_configuration)
-                .then_some(snapshot.can_reload_configuration),
+            // Settings persistence commands are owned entirely by the local draft state. A
+            // runtime snapshot can disable session operations, but must not leave a stale clean,
+            // dirty, valid, or busy decision attached to Save/Discard/Reload.
+            can_save_configuration: None,
+            can_reset_configuration: None,
+            can_reload_configuration: None,
             can_connect_saved_server: (baseline.can_connect_saved_server
                 != snapshot.can_connect_saved_server)
                 .then_some(snapshot.can_connect_saved_server),
@@ -156,15 +153,6 @@ impl GuiCommandAvailabilityRuntimeOverride {
     }
 
     pub(in crate::app) fn apply_to(&self, command_availability: &mut GuiCommandAvailabilityState) {
-        if let Some(value) = self.can_save_configuration {
-            command_availability.can_save_configuration = value;
-        }
-        if let Some(value) = self.can_reset_configuration {
-            command_availability.can_reset_configuration = value;
-        }
-        if let Some(value) = self.can_reload_configuration {
-            command_availability.can_reload_configuration = value;
-        }
         if let Some(value) = self.can_connect_saved_server {
             command_availability.can_connect_saved_server = value;
         }
@@ -195,15 +183,9 @@ impl GuiCommandAvailabilityRuntimeOverride {
         &mut self,
         baseline: &GuiCommandAvailabilityState,
     ) {
-        if self.can_save_configuration == Some(baseline.can_save_configuration) {
-            self.can_save_configuration = None;
-        }
-        if self.can_reset_configuration == Some(baseline.can_reset_configuration) {
-            self.can_reset_configuration = None;
-        }
-        if self.can_reload_configuration == Some(baseline.can_reload_configuration) {
-            self.can_reload_configuration = None;
-        }
+        self.can_save_configuration = None;
+        self.can_reset_configuration = None;
+        self.can_reload_configuration = None;
         if self.can_connect_saved_server == Some(baseline.can_connect_saved_server) {
             self.can_connect_saved_server = None;
         }
@@ -235,9 +217,10 @@ impl GuiFocusedConfigurationControlState {
     #[cfg(test)]
     pub(in crate::app) fn render_lines(&self) -> Vec<String> {
         vec![format!(
-            "[Control Focus] focused={} / {}, kind={}, activations={}",
-            self.section,
-            self.label,
+            "[Control Focus] focused={} ({} / {}), kind={}, activations={}",
+            self.id.automation_id(),
+            self.id.section(),
+            self.id.label(),
             self.kind.label(),
             self.activation_count
         )]
@@ -292,9 +275,10 @@ impl GuiTextEditSessionState {
     #[cfg(test)]
     pub(in crate::app) fn render_lines(&self) -> Vec<String> {
         vec![format!(
-            "[Text Edit] editing={} / {}, dirty={}, buffer={}",
-            self.section,
-            self.label,
+            "[Text Edit] editing={} ({} / {}), dirty={}, buffer={}",
+            self.id.automation_id(),
+            self.id.section(),
+            self.id.label(),
             bool_label(self.is_dirty),
             self.buffer
         )]

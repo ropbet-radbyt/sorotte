@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use super::FirstRunConfigurationDialogDraft;
+use super::{
+    FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, SecretDraft, SettingId,
+};
+use crate::app::shell_state::{GuiSettingApplyRequirement, GuiSettingValueOrigin};
 
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use sorotte_client_core::UnpauseActionMode;
@@ -10,37 +13,33 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
     let mut draft =
         FirstRunConfigurationDialogDraft::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(draft.apply_text_value("Connection", "Host", "syncplay.example"));
-    assert!(draft.apply_text_value("Connection", "Port", "8995"));
-    assert!(draft.apply_text_value("Connection", "Server Password", "secret"));
-    assert!(draft.apply_text_value("Connection", "Player Path", "C:/Program Files/mpv/mpv.exe"));
+    assert!(draft.apply_text_value(SettingId::ConnectionHost, "syncplay.example"));
+    assert!(draft.apply_text_value(SettingId::ConnectionPort, "8995"));
+    draft.begin_server_password_change();
+    assert!(draft.apply_text_value(SettingId::ConnectionServerPassword, "secret"));
+    assert!(draft.apply_text_value(SettingId::PlayerExecutable, "C:/Program Files/mpv/mpv.exe"));
+    assert!(draft.apply_text_value(SettingId::PlayerArguments, "--profile=fast --no-border"));
+    assert!(draft.apply_text_value(SettingId::ConnectionRoomHistory, "main-room\nbackup-room"));
+    assert!(draft.apply_bool_value(SettingId::PlaybackAutoplay, true));
+    assert!(draft.apply_bool_value(SettingId::PlaybackLoopPlaylist, true));
+    assert!(draft.apply_bool_value(SettingId::PlaybackLoopSingleFiles, true));
+    assert!(draft.apply_text_value(SettingId::PlaybackUnpauseAction, "Always"));
+    assert!(draft.apply_text_value(SettingId::PlaybackAutoplayMinUsers, "3"));
     assert!(draft.apply_text_value(
-        "Connection",
-        "Player Arguments",
-        "--profile=fast --no-border"
-    ));
-    assert!(draft.apply_text_value("Connection", "Room History", "main-room\nbackup-room"));
-    assert!(draft.apply_bool_value("Readiness", "Autoplay", true));
-    assert!(draft.apply_bool_value("Readiness", "Loop At End Of Playlist", true));
-    assert!(draft.apply_bool_value("Readiness", "Loop Single Files", true));
-    assert!(draft.apply_text_value("Readiness", "Unpause Action", "Always"));
-    assert!(draft.apply_text_value("Readiness", "Autoplay Min Users", "3"));
-    assert!(draft.apply_text_value(
-        "Privacy",
-        "Trusted Domains",
+        SettingId::PrivacyTrustedDomains,
         "youtube.com\n*.example.com/videos"
     ));
-    assert!(draft.apply_text_value("Media Search", "Directories", "C:/Media\nD:/Archive"));
-    assert!(draft.apply_text_value("Chat", "Input Position", "Bottom"));
-    assert!(draft.apply_text_value("Chat", "Output Mode", "Scrolling"));
-    assert!(draft.apply_text_value("Chat", "Input Font Size", "24"));
-    assert!(draft.apply_text_value("Chat", "Output Font Weight", "50"));
-    assert!(draft.apply_text_value("OSD", "Notification Timeout", "3"));
-    assert!(draft.apply_bool_value("OSD", "Show Slowdown", true));
-    assert!(draft.apply_bool_value("System", "Autosave Joins To List", true));
-    assert!(draft.apply_bool_value("System", "Force GUI Prompt", true));
-    assert!(draft.apply_text_value("System", "Language", "pt-br"));
-    assert!(draft.apply_text_value("System", "Update Channel", "DEV"));
+    assert!(draft.apply_text_value(SettingId::MediaLibraryDirectories, "C:/Media\nD:/Archive"));
+    assert!(draft.apply_text_value(SettingId::ChatInputPosition, "Bottom"));
+    assert!(draft.apply_text_value(SettingId::ChatOutputMode, "Scrolling"));
+    assert!(draft.apply_text_value(SettingId::ChatInputFontSize, "24"));
+    assert!(draft.apply_text_value(SettingId::ChatOutputFontWeight, "50"));
+    assert!(draft.apply_text_value(SettingId::OsdNotificationTimeout, "3"));
+    assert!(draft.apply_bool_value(SettingId::OsdShowSlowdown, true));
+    assert!(draft.apply_bool_value(SettingId::GeneralAutosaveJoinsToList, true));
+    assert!(draft.apply_bool_value(SettingId::GeneralForceGuiPrompt, true));
+    assert!(draft.apply_text_value(SettingId::GeneralLanguage, "pt-br"));
+    assert!(draft.apply_text_value(SettingId::GeneralUpdateChannel, "DEV"));
 
     let saved = draft.to_stored_settings();
     assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
@@ -96,15 +95,15 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
     assert_eq!(saved.language.as_deref(), Some("pt_BR"));
     assert_eq!(saved.update_channel.as_deref(), Some("dev"));
     assert_eq!(
-        draft.control_value("Privacy", "Trusted Domain Count"),
+        draft.control_value(SettingId::PrivacyTrustedDomainCount),
         Some("2")
     );
     assert_eq!(
-        draft.control_value("Media Search", "Directory Count"),
+        draft.control_value(SettingId::MediaLibraryDirectoryCount),
         Some("2")
     );
     assert_eq!(
-        draft.control_value("Connection", "Player Arguments"),
+        draft.control_value(SettingId::PlayerArguments),
         Some("--profile=fast --no-border")
     );
 }
@@ -114,7 +113,7 @@ fn configuration_draft_rejects_readonly_control_edits() {
     let mut draft =
         FirstRunConfigurationDialogDraft::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(!draft.apply_text_value("Connection", "Public Servers", "5"));
+    assert!(!draft.apply_text_value(SettingId::ConnectionPublicServerCount, "5"));
     assert_eq!(draft.to_stored_settings().public_servers, None);
 }
 
@@ -134,14 +133,153 @@ fn configuration_draft_refreshes_player_arguments_when_player_path_changes() {
         });
 
     assert_eq!(
-        draft.control_value("Connection", "Player Arguments"),
+        draft.control_value(SettingId::PlayerArguments),
         Some("--idle=yes")
     );
 
-    assert!(draft.apply_text_value("Connection", "Player Path", "C:/Program Files/mpv/mpv.exe"));
+    assert!(draft.apply_text_value(SettingId::PlayerExecutable, "C:/Program Files/mpv/mpv.exe"));
 
     assert_eq!(
-        draft.control_value("Connection", "Player Arguments"),
+        draft.control_value(SettingId::PlayerArguments),
         Some("--profile=fast")
+    );
+}
+
+#[test]
+fn configuration_draft_noop_round_trip_preserves_settings_and_catalogs_every_id() {
+    let settings = StoredClientSettingsMvp {
+        host: Some("sync.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room: Some("main".to_owned()),
+        server_password: Some("secret".into()),
+        player_path: Some("mpv".to_owned()),
+        autoplay_initial_state: Some(true),
+        shared_playlist_enabled: Some(false),
+        trusted_domains: Some(vec!["media.example".to_owned()]),
+        media_search_directories: Some(vec!["C:/Media".to_owned()]),
+        language: Some("en".to_owned()),
+        update_channel: Some("stable".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let draft = FirstRunConfigurationDialogDraft::from_stored_settings(&settings);
+
+    assert_eq!(draft.to_stored_settings(), settings);
+    assert_eq!(
+        draft
+            .sections
+            .iter()
+            .flat_map(|section| &section.controls)
+            .count(),
+        SettingId::ALL.len()
+    );
+    for &id in SettingId::ALL {
+        let control = draft
+            .control(id)
+            .expect("every SettingId must be projected");
+        assert_eq!(control.id, id);
+        assert_eq!(SettingId::from_automation_id(id.automation_id()), Some(id));
+    }
+}
+
+#[test]
+fn configuration_secret_draft_preserves_replaces_clears_and_cancels() {
+    let original = StoredClientSettingsMvp {
+        server_password: Some("original-secret".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+
+    assert_eq!(draft.server_password, SecretDraft::Unchanged);
+    assert_eq!(
+        draft.control_value(SettingId::ConnectionServerPassword),
+        Some("")
+    );
+    assert_eq!(draft.to_stored_settings(), original);
+
+    draft.begin_server_password_change();
+    assert!(draft.apply_text_value(SettingId::ConnectionServerPassword, "replacement-secret"));
+    assert_eq!(
+        draft
+            .to_stored_settings()
+            .server_password
+            .as_ref()
+            .map(|value| value.expose_secret()),
+        Some("replacement-secret")
+    );
+
+    draft.cancel_server_password_change();
+    assert_eq!(draft.to_stored_settings(), original);
+
+    draft.remove_server_password();
+    assert_eq!(draft.server_password, SecretDraft::Clear);
+    assert_eq!(draft.to_stored_settings().server_password, None);
+}
+
+#[test]
+fn configuration_effective_defaults_retain_their_override_origin() {
+    let defaults =
+        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert_eq!(defaults.readiness.unpause_action.effective, "IfOthersReady");
+    assert_eq!(
+        defaults.readiness.unpause_action.origin(),
+        GuiSettingValueOrigin::ApplicationDefault
+    );
+    assert_eq!(
+        defaults.readiness.autoplay_min_users.origin(),
+        GuiSettingValueOrigin::ApplicationDefault
+    );
+
+    let overridden =
+        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
+            unpause_action: Some(UnpauseActionMode::Always),
+            autoplay_min_users: Some(AutoplayThresholdOverride::Set(2)),
+            ..StoredClientSettingsMvp::default()
+        });
+    assert_eq!(
+        overridden.readiness.unpause_action.origin(),
+        GuiSettingValueOrigin::StoredOverride
+    );
+    assert_eq!(
+        overridden.readiness.autoplay_min_users.origin(),
+        GuiSettingValueOrigin::StoredOverride
+    );
+    assert_eq!(
+        overridden
+            .readiness
+            .unpause_action
+            .origin_against_persisted(&defaults.readiness.unpause_action),
+        GuiSettingValueOrigin::DraftChange
+    );
+    assert_eq!(
+        defaults
+            .readiness
+            .unpause_action
+            .origin_against_persisted(&defaults.readiness.unpause_action),
+        GuiSettingValueOrigin::ApplicationDefault
+    );
+}
+
+#[test]
+fn changed_setting_ids_include_secret_intent_and_same_length_server_replacement() {
+    let original = StoredClientSettingsMvp {
+        server_password: Some("saved-secret".into()),
+        public_servers: Some(vec![("One".to_owned(), "one.example:8999".to_owned())]),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+    draft.remove_server_password();
+    draft.settings.public_servers = Some(vec![("Two".to_owned(), "two.example:8999".to_owned())]);
+
+    let changed = draft.changed_setting_ids_against(&original);
+    assert!(changed.contains(&SettingId::ConnectionServerPassword));
+    assert!(changed.contains(&SettingId::ConnectionPublicServerCount));
+    assert_eq!(
+        SettingId::ConnectionServerPassword.apply_requirement(),
+        GuiSettingApplyRequirement::Reconnect
+    );
+    assert_eq!(
+        SettingId::ConnectionPublicServerCount.apply_requirement(),
+        GuiSettingApplyRequirement::OnSave
     );
 }

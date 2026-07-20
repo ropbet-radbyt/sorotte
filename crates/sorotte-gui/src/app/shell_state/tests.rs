@@ -7,22 +7,24 @@ use super::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
-    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPlaylistDefaultSourceId,
-    GuiPlaylistEntryId, GuiPlaylistResolutionStep, GuiPlaylistSourcePolicy,
-    GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
-    GuiPlaylistTextEditSessionRuntimeSnapshot, GuiPlaylistTextEditSessionState,
-    GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot, GuiPluginSelection,
-    GuiPublicServerEditSessionRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot,
+    GuiMediaSourceProviderId, GuiPendingOperationKind, GuiPendingOperationState,
+    GuiPlaylistDefaultSourceId, GuiPlaylistEntryId, GuiPlaylistResolutionStep,
+    GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState,
+    GuiPlaylistSourceStatus, GuiPlaylistTextEditSessionRuntimeSnapshot,
+    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot,
+    GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
     GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTextEditSessionState,
     GuiTransientNotification, GuiTransientNotificationLevel, GuiUrlEditSessionRuntimeSnapshot,
     GuiUrlEditSessionState, GuiValidationIssue, GuiWidgetKind, MainWindowChatRow,
     MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, MainWindowShellState, MediaSearchDirectoryRow,
-    MediaSearchWorkflowShellState, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    MenuDialogShellState, PublicServerBrowserRow, PublicServerBrowserShellState,
-    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, browser_stream_target_kind,
-    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
+    MediaSearchWorkflowShellState, MenuActionId, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, MenuDialogShellState, PublicServerBrowserRow,
+    PublicServerBrowserShellState, SettingId, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
+    browser_stream_target_kind, playlist_entries_from_multiline_text,
+    save_playlist_entries_to_path,
 };
 
 use crate::app::widget_tree::GuiWidgetTextPreviewRenderer;
@@ -161,8 +163,10 @@ fn configuration_surface_defaults_to_first_run_mode() {
 
     assert_eq!(state.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.system.language_tag, "en");
-    assert_eq!(state.readiness.unpause_action_label, "IfAlreadyReady");
-    assert_eq!(state.readiness.autoplay_min_users_label, "app-default");
+    assert_eq!(state.readiness.unpause_action.stored_override, None);
+    assert_eq!(state.readiness.unpause_action.effective, "IfOthersReady");
+    assert_eq!(state.readiness.autoplay_min_users.stored_override, None);
+    assert_eq!(state.readiness.autoplay_min_users.effective, "0");
     assert!(state.chat.chat_input_enabled);
     assert!(state.chat.chat_output_enabled);
     assert_eq!(state.chat.chat_input_position_label, "Top");
@@ -263,10 +267,9 @@ fn gui_shell_app_state_opens_room_for_room_workflows_and_preserves_hidden_sessio
     );
     assert!(state.room_history_edit_session.is_some());
 
-    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
-        section: "Privacy",
-        label: "Trusted Domains",
-    }));
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl(
+        SettingId::PrivacyTrustedDomains,
+    )));
     assert_eq!(
         state.selected_configuration_tab,
         GuiConfigurationTab::PrivacyChat
@@ -367,8 +370,20 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
     assert_eq!(state.connection.room_history_count, 2);
     assert!(state.readiness.loop_at_end_of_playlist);
     assert!(state.readiness.loop_single_files);
-    assert_eq!(state.readiness.unpause_action_label, "IfMinUsersReady");
-    assert_eq!(state.readiness.autoplay_min_users_label, "3");
+    assert_eq!(
+        state.readiness.unpause_action.stored_override.as_deref(),
+        Some("IfMinUsersReady")
+    );
+    assert_eq!(state.readiness.unpause_action.effective, "IfMinUsersReady");
+    assert_eq!(
+        state
+            .readiness
+            .autoplay_min_users
+            .stored_override
+            .as_deref(),
+        Some("3")
+    );
+    assert_eq!(state.readiness.autoplay_min_users.effective, "3");
     assert_eq!(state.privacy.filename_privacy_mode_label, "SendHashed");
     assert_eq!(state.privacy.filesize_privacy_mode_label, "DoNotSend");
     assert_eq!(
@@ -531,20 +546,8 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
         .iter()
         .find(|section| section.title == "Window")
         .expect("window section should exist");
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|item| item.label == "Show Chat")
-            .is_some_and(|item| item.enabled)
-    );
-    assert!(
-        window
-            .actions
-            .iter()
-            .find(|item| item.label == "Show Playlist")
-            .is_some_and(|item| item.enabled)
-    );
+    assert_eq!(window.actions.len(), 3);
+    assert!(window.actions.iter().all(|item| item.enabled));
 
     assert!(state.tls_prompt_expected);
     assert!(!state.update_notice_expected);
@@ -552,38 +555,25 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
 }
 
 #[test]
-fn menu_dialog_shell_state_uses_legacy_chat_defaults() {
+fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() {
     let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp::default());
-    let show_chat_enabled = state
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .and_then(|section| {
-            section
-                .actions
-                .iter()
-                .find(|action| action.label == "Show Chat")
-        })
-        .is_some_and(|action| action.enabled);
-    assert!(show_chat_enabled);
+    assert!(state.action(MenuActionId::TogglePlaybackButtons).is_some());
+    assert!(state.action(MenuActionId::ToggleAutoplayControls).is_some());
+    assert!(state.action(MenuActionId::ToggleHideEmptyRooms).is_some());
+    assert!(
+        state
+            .sections
+            .iter()
+            .flat_map(|section| &section.actions)
+            .all(|action| action.label != "Show Chat")
+    );
 
     let explicit_false = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
         ..StoredClientSettingsMvp::default()
     });
-    let show_chat_enabled = explicit_false
-        .sections
-        .iter()
-        .find(|section| section.title == "Window")
-        .and_then(|section| {
-            section
-                .actions
-                .iter()
-                .find(|action| action.label == "Show Chat")
-        })
-        .is_some_and(|action| action.enabled);
-    assert!(!show_chat_enabled);
+    assert_eq!(state.sections, explicit_false.sections);
 }
 
 #[test]
@@ -644,51 +634,53 @@ fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
     assert_eq!(
         state
             .configuration
-            .control_value("Desync", "Rewind Threshold"),
+            .control_value(SettingId::SyncRewindThreshold),
         Some("1.25")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Media Search", "First File Timeout"),
+            .control_value(SettingId::MediaLibraryFirstFileTimeout),
         Some("3")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Media Search", "Search Timeout"),
+            .control_value(SettingId::MediaLibrarySearchTimeout),
         Some("30")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Media Search", "Double Check Interval"),
+            .control_value(SettingId::MediaLibraryDoubleCheckInterval),
         Some("2.5")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Media Search", "Warning Threshold"),
+            .control_value(SettingId::MediaLibraryWarningThreshold),
         Some("7.5")
     );
     assert_eq!(
-        state.configuration.control_value("Chat", "Input Font Size"),
+        state
+            .configuration
+            .control_value(SettingId::ChatInputFontSize),
         Some("24")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("Chat", "Output Font Size"),
+            .control_value(SettingId::ChatOutputFontSize),
         Some("26")
     );
     assert_eq!(
         state
             .configuration
-            .control_value("OSD", "Notification Timeout"),
+            .control_value(SettingId::OsdNotificationTimeout),
         Some("3")
     );
     assert!(state.validation.issues.is_empty());
-    assert!(state.commands.can_save_configuration);
+    assert!(!state.commands.can_save_configuration);
 }
 
 #[test]
@@ -697,24 +689,24 @@ fn configuration_validation_flags_invalid_chat_mode_controls() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Chat",
-        label: "Input Position",
+        id: SettingId::ChatInputPosition,
         value: "Sideways".to_owned().into(),
     }));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
-        section: "Chat",
-        label: "Input Font Size",
+        id: SettingId::ChatInputFontSize,
         value: "0".to_owned().into(),
     }));
 
     assert_eq!(state.validation.issues.len(), 2);
     assert!(state.validation.issues.iter().any(|issue| {
-        issue.scope == "Chat"
+        issue.setting_id == Some(SettingId::ChatInputPosition)
+            && issue.scope == "Chat"
             && issue.label == "Input Position"
             && issue.message == "must be Top, Middle, or Bottom."
     }));
     assert!(state.validation.issues.iter().any(|issue| {
-        issue.scope == "Chat"
+        issue.setting_id == Some(SettingId::ChatInputFontSize)
+            && issue.scope == "Chat"
             && issue.label == "Input Font Size"
             && issue.message == "must be a positive integer."
     }));
@@ -755,27 +747,27 @@ fn configuration_password_edit_values_redact_actions_controls_and_snapshots() {
     let secret = "configuration-password-debug-canary";
     let value = GuiConfigurationTextValue::for_control(GuiDialogControlKind::PasswordInput, secret);
     let control = GuiDialogControl {
+        id: SettingId::ConnectionServerPassword,
         label: "Server Password",
         kind: GuiDialogControlKind::PasswordInput,
         value: secret.to_owned(),
     };
     let edit = GuiTextEditSessionState {
-        section: "Connection",
-        label: "Server Password",
+        id: SettingId::ConnectionServerPassword,
         buffer: value.clone(),
         is_dirty: true,
     };
     let snapshot = GuiTextEditSessionRuntimeSnapshot {
-        section: "Connection".to_owned(),
-        label: "Server Password".to_owned(),
+        setting_id: SettingId::ConnectionServerPassword
+            .automation_id()
+            .to_owned(),
         buffer: value.clone(),
         is_dirty: true,
     };
     let actions = vec![
         GuiShellAction::UpdateConfigurationTextEdit(value.clone()),
         GuiShellAction::EditConfigurationText {
-            section: "Connection",
-            label: "Server Password",
+            id: SettingId::ConnectionServerPassword,
             value,
         },
     ];

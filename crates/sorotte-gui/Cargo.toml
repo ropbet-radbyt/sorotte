@@ -41,11 +41,14 @@ sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
 windows.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0.9"
+
+[dev-dependencies]
+sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
 
 [[bin]]
 name = "sorotte-gui-semantic-smoke"

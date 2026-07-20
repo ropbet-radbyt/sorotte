@@ -6,7 +6,7 @@
 - `sorotte-cli`: headless client for `mpv` automation and terminal workflows
 - `sorotte-server`: Syncplay-compatible server with persistence, TLS, MOTD, Docker, and release packaging support
 
-The current supported client target is `mpv`. Other player backends from the Python Syncplay project are not part of this Rust release line yet.
+The current supported client target is `mpv` 0.41.0 or newer. Older mpv releases are outside this Rust release line's supported compatibility floor. Other player backends from the Python Syncplay project are not part of this Rust release line yet.
 
 ## Quick Start
 
@@ -59,7 +59,7 @@ cargo run --release -p sorotte-cli -- --no-gui
 
 ## Current Limits
 
-- `mpv` is the supported player backend. `mpv.net`, MPC-HC, MPC-BE, VLC, MPlayer, IINA, and Memento are not implemented as first-class Rust adapters yet.
+- `mpv` 0.41.0 or newer is the supported player backend. Older mpv releases are unsupported; `mpv.net`, MPC-HC, MPC-BE, VLC, MPlayer, IINA, and Memento are not implemented as first-class Rust adapters.
 - Source builds are the primary install path for the client applications. The server has local packaging scripts and a container publishing workflow.
 - Real-player smoke tests depend on local `mpv` and media files, so they are not part of the default `cargo test --workspace` run.
 - Quality changes remain user-controlled, scheduled future starts are not implemented, and strong live-stream synchronization still requires a shared program-time origin; see the [stream synchronization guide](docs/STREAM_SYNCHRONIZATION.md).

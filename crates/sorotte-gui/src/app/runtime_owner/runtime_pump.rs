@@ -27,6 +27,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> SorotteGuiShellAppState {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
+        self.pump_sorotte_bridge_health_transitions();
         let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
@@ -72,6 +73,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.drain_player_chat_input(handle, &mut projected_state);
                 self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut self.test_queue_network_options_hook_recovery_before_player_commands)
+            && let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut)
+        {
+            player.inject_test_network_media_options_hook_recovery();
         }
         for command in handle.drain_client_commands() {
             let handled = match command {
@@ -134,6 +141,41 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state
     }
 
+    fn pump_sorotte_bridge_health_transitions(&mut self) {
+        let (transitions, current_acknowledgement) = self
+            .player
+            .as_mut()
+            .and_then(GuiOwnedPlayer::as_mpv_mut)
+            .map(|player| {
+                player.maintain_runtime_integrations();
+                let mut transitions = Vec::new();
+                while let Some(health) = player.take_sorotte_bridge_health_transition() {
+                    transitions.push(health);
+                }
+                let current_acknowledgement = (!transitions.is_empty()
+                    && matches!(
+                        player.sorotte_bridge_health(),
+                        SorotteBridgeHealth::Ready | SorotteBridgeHealth::Disabled
+                    ))
+                .then(|| {
+                    (
+                        player.legacy_syncplay_ui_settings().clone(),
+                        player.sorotte_bridge_acknowledged_generation(),
+                    )
+                });
+                (transitions, current_acknowledgement)
+            })
+            .unwrap_or_default();
+
+        for transition in transitions {
+            self.record_sorotte_bridge_health(transition);
+        }
+        if let Some((settings, generation)) = current_acknowledgement {
+            self.player_apply_state.acknowledged_bridge_settings = Some(settings);
+            self.player_apply_state.acknowledged_bridge_generation = generation;
+        }
+    }
+
     pub(super) fn reconcile_playlist_resolution_scope(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -170,7 +212,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let now = Instant::now();
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
-            let settings = projected_state.configuration.to_stored_settings();
+            let settings = projected_state.saved_configuration.clone();
             if remote_services::should_run_automatic_update_check(
                 Some(&settings),
                 std::time::SystemTime::now(),
@@ -184,9 +226,20 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        let settings = projected_state.configuration.to_stored_settings();
+        let settings = projected_state.saved_configuration.clone();
         let current_context = StartupPublicServerHydrationContext::from_settings(&settings);
         self.reconcile_startup_public_server_hydration_context(current_context.clone(), now);
+        if projected_state
+            .configuration
+            .settings
+            .public_servers
+            .is_some()
+        {
+            self.startup_remote_actions_rx = None;
+            self.startup_public_server_hydration.completed = true;
+            self.startup_public_server_hydration.next_retry_at = None;
+            return;
+        }
         self.pump_startup_public_server_outcome(handle, projected_state, now);
         if self.startup_remote_actions_rx.is_some()
             || self.startup_public_server_hydration.completed

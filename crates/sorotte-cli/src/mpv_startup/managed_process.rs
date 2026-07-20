@@ -6,6 +6,13 @@ pub(crate) struct ManagedMpvProcessGuard {
     ipc_cleanup_path: Option<PathBuf>,
 }
 
+struct FinishedClientRuntime {
+    runtime: ClientApplication<MpvAdapter>,
+    managed_guard: Option<ManagedMpvProcessGuard>,
+    bridge_health: SorotteBridgeHealth,
+    streaming_warning: Option<String>,
+}
+
 impl Drop for ManagedMpvProcessGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -24,13 +31,62 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
     ClientApplication<MpvAdapter>,
     Option<ManagedMpvProcessGuard>,
 )> {
-    let session = create_client_session(config);
-    let (mut player, managed_guard, managed_startup_media) =
+    let (player, managed_guard, managed_startup_media) =
         create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
-        &mut player,
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        streaming_warning,
+    } = finish_client_runtime_with_mpv(
+        config,
+        legacy_overrides,
         stored_settings,
+        player,
+        managed_guard,
+        managed_startup_media,
     )?;
+    if let Some(warning) = streaming_warning {
+        eprintln!("{warning}");
+    }
+    if let Some(warning) = sorotte_bridge_warning_line(&bridge_health) {
+        eprintln!("{warning}");
+    }
+    Ok((runtime, managed_guard))
+}
+
+fn finish_client_runtime_with_mpv(
+    config: &ClientLoopConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    player: MpvAdapter,
+    managed_guard: Option<ManagedMpvProcessGuard>,
+    managed_startup_media: Option<String>,
+) -> anyhow::Result<FinishedClientRuntime> {
+    finish_client_runtime_with_mpv_and_bridge_setup(
+        config,
+        legacy_overrides,
+        stored_settings,
+        player,
+        managed_guard,
+        managed_startup_media,
+        apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
+    )
+}
+
+fn finish_client_runtime_with_mpv_and_bridge_setup<F>(
+    config: &ClientLoopConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    mut player: MpvAdapter,
+    managed_guard: Option<ManagedMpvProcessGuard>,
+    managed_startup_media: Option<String>,
+    configure_bridge: F,
+) -> anyhow::Result<FinishedClientRuntime>
+where
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+{
+    let session = create_client_session(config);
     let streaming = stored_settings
         .map(ClientConfig::resolve)
         .map(|resolution| resolution.config.playback.streaming)
@@ -44,15 +100,132 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
             .iter()
             .map(|option| (option.name.clone(), option.effective_value.clone())),
     );
-    player
-        .apply_network_media_options_to_active_media()
-        .map_err(|error| anyhow!("failed updating active mpv network-media options: {error}"))?;
+    let streaming_warning = match player.apply_network_media_options_to_active_media() {
+        Ok(()) => None,
+        Err(error) if player.is_connected() => Some(active_network_options_warning_line(&error)),
+        Err(error) => {
+            return Err(anyhow!(
+                "failed updating active mpv network-media options: {error}"
+            ));
+        }
+    };
     if let Some(media) = managed_startup_media {
         player
             .open_file(&media)
             .map_err(|error| anyhow!("failed opening managed mpv startup media: {error}"))?;
     }
-    Ok((ClientApplication::new(session, player), managed_guard))
+    let player_was_connected = player.is_connected();
+    let bridge_health = configure_bridge(&mut player, stored_settings);
+    if player_was_connected && !player.is_connected() {
+        let detail = match &bridge_health {
+            SorotteBridgeHealth::Degraded(failure) => failure.reason.as_str(),
+            SorotteBridgeHealth::Disabled
+            | SorotteBridgeHealth::Ready
+            | SorotteBridgeHealth::Recovering => "the mpv JSON IPC transport became unhealthy",
+        };
+        return Err(anyhow!(
+            "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration: {detail}"
+        ));
+    }
+    Ok(FinishedClientRuntime {
+        runtime: ClientApplication::new(session, player),
+        managed_guard,
+        bridge_health,
+        streaming_warning,
+    })
+}
+
+fn active_network_options_warning_line(error: &PlayerError) -> String {
+    format!(
+        "warning: mpv playback is ready, but streaming options could not be applied to the active media: {error}; desired options will be used for future network loads"
+    )
+}
+
+fn sorotte_bridge_warning_line(health: &SorotteBridgeHealth) -> Option<String> {
+    let SorotteBridgeHealth::Degraded(failure) = health else {
+        return None;
+    };
+    Some(format!(
+        "warning: mpv is ready, but Chat/OSD integration could not be configured: {}",
+        failure.reason
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn create_client_runtime_with_prepared_mpv_for_test(
+    config: &ClientLoopConfig,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    player: MpvAdapter,
+) -> anyhow::Result<(ClientApplication<MpvAdapter>, SorotteBridgeHealth)> {
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        ..
+    } = finish_client_runtime_with_mpv(config, None, stored_settings, player, None, None)?;
+    debug_assert!(managed_guard.is_none());
+    Ok((runtime, bridge_health))
+}
+
+#[cfg(test)]
+pub(crate) fn create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test<F>(
+    config: &ClientLoopConfig,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    player: MpvAdapter,
+    configure_bridge: F,
+) -> anyhow::Result<(ClientApplication<MpvAdapter>, SorotteBridgeHealth)>
+where
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+{
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        ..
+    } = finish_client_runtime_with_mpv_and_bridge_setup(
+        config,
+        None,
+        stored_settings,
+        player,
+        None,
+        None,
+        configure_bridge,
+    )?;
+    debug_assert!(managed_guard.is_none());
+    Ok((runtime, bridge_health))
+}
+
+#[cfg(test)]
+pub(crate) fn create_client_runtime_with_prepared_mpv_and_startup_health_for_test<F>(
+    config: &ClientLoopConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+    player: MpvAdapter,
+    configure_bridge: F,
+) -> anyhow::Result<(
+    ClientApplication<MpvAdapter>,
+    SorotteBridgeHealth,
+    Option<String>,
+)>
+where
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+{
+    let FinishedClientRuntime {
+        runtime,
+        managed_guard,
+        bridge_health,
+        streaming_warning,
+    } = finish_client_runtime_with_mpv_and_bridge_setup(
+        config,
+        legacy_overrides,
+        stored_settings,
+        player,
+        None,
+        None,
+        configure_bridge,
+    )?;
+    debug_assert!(managed_guard.is_none());
+    Ok((runtime, bridge_health, streaming_warning))
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(
@@ -60,11 +233,11 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
 ) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>, Option<String>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
-        let mut adapter = create_mpv_adapter_from_path_or_disconnected(&ipc_path);
-        let ytdl_probe_executable = legacy_overrides
-            .and_then(|overrides| ytdl_probe_executable_from_mpv_args(&overrides.player_args));
-        adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable);
-        return Ok((adapter, None, None));
+        return Ok((
+            create_mpv_adapter_from_path_or_disconnected(&ipc_path),
+            None,
+            None,
+        ));
     }
 
     let mut managed_config = managed_mpv_launch_env_config_from_env();
@@ -88,12 +261,16 @@ fn create_mpv_adapter_from_path_or_disconnected(ipc_path: &str) -> MpvAdapter {
     match MpvAdapter::with_json_ipc(ipc_path) {
         Ok(adapter) => adapter,
         Err(err) => {
-            eprintln!(
-                "warning: failed to connect mpv JSON IPC at '{ipc_path}': {err}; player is disconnected"
-            );
+            eprintln!("{}", explicit_mpv_ipc_connection_warning(ipc_path, &err));
             MpvAdapter::default()
         }
     }
+}
+
+fn explicit_mpv_ipc_connection_warning(ipc_path: &str, error: &PlayerError) -> String {
+    format!(
+        "warning: failed to connect mpv JSON IPC at '{ipc_path}': {error}; player is disconnected"
+    )
 }
 
 fn spawn_managed_mpv_and_attach(
@@ -155,43 +332,17 @@ fn spawn_managed_mpv_and_attach(
         child,
         ipc_cleanup_path,
     };
-    let mut adapter =
-        connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval).map_err(
-            |err| {
-                anyhow!(
-                    "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
-                    mpv_bin.display(),
-                    ipc_path
-                )
-            },
-        )?;
-    adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable_from_mpv_args(
-        &config.extra_args,
-    ));
+    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
+        .map_err(|err| {
+            anyhow!(
+                "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
+                mpv_bin.display(),
+                ipc_path
+            )
+        })?;
 
     eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
-}
-
-fn ytdl_probe_executable_from_mpv_args(args: &[String]) -> Option<PathBuf> {
-    args.iter().enumerate().find_map(|(index, argument)| {
-        let option_value = ["--script-opts-append=", "--script-opts="]
-            .iter()
-            .find_map(|prefix| argument.strip_prefix(prefix))
-            .or_else(|| {
-                matches!(argument.as_str(), "--script-opts-append" | "--script-opts")
-                    .then(|| args.get(index + 1).map(String::as_str))
-                    .flatten()
-            })?;
-        option_value.split(',').find_map(|entry| {
-            entry
-                .trim()
-                .strip_prefix("ytdl_hook-ytdl_path=")
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-        })
-    })
 }
 
 #[cfg(test)]
@@ -218,11 +369,28 @@ pub(crate) fn connect_mpv_adapter_with_retry(
     timeout: Duration,
     poll_interval: Duration,
 ) -> anyhow::Result<MpvAdapter> {
+    connect_mpv_adapter_with_retry_using(ipc_path, timeout, poll_interval, |path| {
+        MpvAdapter::with_json_ipc(path)
+    })
+}
+
+fn connect_mpv_adapter_with_retry_using<F>(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut connect: F,
+) -> anyhow::Result<MpvAdapter>
+where
+    F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+{
     let started = std::time::Instant::now();
     let mut last_error = None;
     while started.elapsed() < timeout {
-        match MpvAdapter::with_json_ipc(ipc_path) {
+        match connect(ipc_path) {
             Ok(adapter) => return Ok(adapter),
+            Err(error) if sorotte_player_mpv::is_unsupported_mpv_version_error(&error) => {
+                return Err(anyhow!(error));
+            }
             Err(err) => {
                 last_error = Some(err.to_string());
                 std::thread::sleep(poll_interval);
@@ -237,6 +405,84 @@ pub(crate) fn connect_mpv_adapter_with_retry(
         poll_interval,
         last_error.as_deref().unwrap_or("<none>")
     ))
+}
+
+#[cfg(test)]
+mod version_requirement_tests {
+    use super::*;
+
+    #[test]
+    fn managed_attach_fails_fast_with_clear_mpv_upgrade_guidance() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            Duration::from_secs(5),
+            Duration::ZERO,
+            |_| {
+                attempts += 1;
+                Err(PlayerError::OperationFailed(format!(
+                    "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+                    sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+                )))
+            },
+        );
+
+        let error = match result {
+            Ok(_) => panic!("an unsupported mpv version must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            attempts, 1,
+            "a permanent version failure must not be retried"
+        );
+        assert!(error.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(error.contains("upgrade mpv"));
+        assert!(!error.contains("timed out"));
+    }
+
+    #[test]
+    fn explicit_attach_warning_preserves_mpv_upgrade_guidance() {
+        let error = PlayerError::OperationFailed(format!(
+            "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        ));
+
+        let warning = explicit_mpv_ipc_connection_warning("test-mpv-ipc", &error);
+
+        assert!(warning.starts_with("warning: failed to connect mpv JSON IPC"));
+        assert!(warning.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(warning.contains("upgrade mpv"));
+        assert!(warning.ends_with("player is disconnected"));
+    }
+
+    #[test]
+    fn managed_attach_still_retries_transient_connection_failures() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            Duration::from_secs(5),
+            Duration::ZERO,
+            |_| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(PlayerError::OperationFailed(
+                        "mpv endpoint is still starting".to_owned(),
+                    ))
+                } else {
+                    Ok(MpvAdapter::default())
+                }
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
 }
 
 fn generate_managed_mpv_ipc_path() -> anyhow::Result<(String, Option<PathBuf>)> {
@@ -275,37 +521,23 @@ fn ipc_cleanup_path_for_platform(path: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod ytdl_probe_configuration_tests {
+mod startup_health_tests {
     use super::*;
 
     #[test]
-    fn extracts_ytdl_hook_path_from_inline_and_separate_script_options() {
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
-            ]),
-            Some(PathBuf::from("C:/Tools/yt-dlp.exe"))
-        );
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts".to_owned(),
-                "osc-visibility=never,ytdl_hook-ytdl_path=/opt/sorotte/yt-dlp".to_owned(),
-            ]),
-            Some(PathBuf::from("/opt/sorotte/yt-dlp"))
-        );
-    }
+    fn degraded_bridge_health_produces_a_scoped_nonfatal_warning() {
+        let health = SorotteBridgeHealth::Degraded(sorotte_player_mpv::SorotteBridgeFailure {
+            kind: sorotte_player_mpv::SorotteBridgeFailureKind::AcknowledgementTimeout,
+            reason: "settings acknowledgement timed out".to_owned(),
+        });
 
-    #[test]
-    fn absent_or_empty_ytdl_hook_path_uses_adapter_path_fallback() {
         assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&["--fullscreen".to_owned()]),
-            None
+            sorotte_bridge_warning_line(&health).as_deref(),
+            Some(
+                "warning: mpv is ready, but Chat/OSD integration could not be configured: settings acknowledgement timed out"
+            )
         );
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts-append=ytdl_hook-ytdl_path=".to_owned(),
-            ]),
-            None
-        );
+        assert!(sorotte_bridge_warning_line(&SorotteBridgeHealth::Ready).is_none());
+        assert!(sorotte_bridge_warning_line(&SorotteBridgeHealth::Disabled).is_none());
     }
 }
