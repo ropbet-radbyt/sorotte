@@ -6,7 +6,7 @@ This project is intended to be built from source. The server also has packaging 
 
 - Rust `1.96.0` with `rustfmt` and `clippy`
 - PowerShell for the provided scripts
-- `mpv` for client playback
+- `mpv` 0.41.0 or newer for client playback
 - Python with `twisted`, `pyopenssl`, and `service_identity` for compatibility and server release verification
 - Docker if you want to build or run the server container
 

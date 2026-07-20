@@ -233,11 +233,11 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
 ) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>, Option<String>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
-        let mut adapter = create_mpv_adapter_from_path_or_disconnected(&ipc_path);
-        let ytdl_probe_executable = legacy_overrides
-            .and_then(|overrides| ytdl_probe_executable_from_mpv_args(&overrides.player_args));
-        adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable);
-        return Ok((adapter, None, None));
+        return Ok((
+            create_mpv_adapter_from_path_or_disconnected(&ipc_path),
+            None,
+            None,
+        ));
     }
 
     let mut managed_config = managed_mpv_launch_env_config_from_env();
@@ -261,12 +261,16 @@ fn create_mpv_adapter_from_path_or_disconnected(ipc_path: &str) -> MpvAdapter {
     match MpvAdapter::with_json_ipc(ipc_path) {
         Ok(adapter) => adapter,
         Err(err) => {
-            eprintln!(
-                "warning: failed to connect mpv JSON IPC at '{ipc_path}': {err}; player is disconnected"
-            );
+            eprintln!("{}", explicit_mpv_ipc_connection_warning(ipc_path, &err));
             MpvAdapter::default()
         }
     }
+}
+
+fn explicit_mpv_ipc_connection_warning(ipc_path: &str, error: &PlayerError) -> String {
+    format!(
+        "warning: failed to connect mpv JSON IPC at '{ipc_path}': {error}; player is disconnected"
+    )
 }
 
 fn spawn_managed_mpv_and_attach(
@@ -328,43 +332,17 @@ fn spawn_managed_mpv_and_attach(
         child,
         ipc_cleanup_path,
     };
-    let mut adapter =
-        connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval).map_err(
-            |err| {
-                anyhow!(
-                    "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
-                    mpv_bin.display(),
-                    ipc_path
-                )
-            },
-        )?;
-    adapter.configure_ytdl_live_probe_executable(ytdl_probe_executable_from_mpv_args(
-        &config.extra_args,
-    ));
+    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
+        .map_err(|err| {
+            anyhow!(
+                "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
+                mpv_bin.display(),
+                ipc_path
+            )
+        })?;
 
     eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
-}
-
-fn ytdl_probe_executable_from_mpv_args(args: &[String]) -> Option<PathBuf> {
-    args.iter().enumerate().find_map(|(index, argument)| {
-        let option_value = ["--script-opts-append=", "--script-opts="]
-            .iter()
-            .find_map(|prefix| argument.strip_prefix(prefix))
-            .or_else(|| {
-                matches!(argument.as_str(), "--script-opts-append" | "--script-opts")
-                    .then(|| args.get(index + 1).map(String::as_str))
-                    .flatten()
-            })?;
-        option_value.split(',').find_map(|entry| {
-            entry
-                .trim()
-                .strip_prefix("ytdl_hook-ytdl_path=")
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-        })
-    })
 }
 
 #[cfg(test)]
@@ -391,11 +369,28 @@ pub(crate) fn connect_mpv_adapter_with_retry(
     timeout: Duration,
     poll_interval: Duration,
 ) -> anyhow::Result<MpvAdapter> {
+    connect_mpv_adapter_with_retry_using(ipc_path, timeout, poll_interval, |path| {
+        MpvAdapter::with_json_ipc(path)
+    })
+}
+
+fn connect_mpv_adapter_with_retry_using<F>(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut connect: F,
+) -> anyhow::Result<MpvAdapter>
+where
+    F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+{
     let started = std::time::Instant::now();
     let mut last_error = None;
     while started.elapsed() < timeout {
-        match MpvAdapter::with_json_ipc(ipc_path) {
+        match connect(ipc_path) {
             Ok(adapter) => return Ok(adapter),
+            Err(error) if sorotte_player_mpv::is_unsupported_mpv_version_error(&error) => {
+                return Err(anyhow!(error));
+            }
             Err(err) => {
                 last_error = Some(err.to_string());
                 std::thread::sleep(poll_interval);
@@ -410,6 +405,84 @@ pub(crate) fn connect_mpv_adapter_with_retry(
         poll_interval,
         last_error.as_deref().unwrap_or("<none>")
     ))
+}
+
+#[cfg(test)]
+mod version_requirement_tests {
+    use super::*;
+
+    #[test]
+    fn managed_attach_fails_fast_with_clear_mpv_upgrade_guidance() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            Duration::from_secs(5),
+            Duration::ZERO,
+            |_| {
+                attempts += 1;
+                Err(PlayerError::OperationFailed(format!(
+                    "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+                    sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+                )))
+            },
+        );
+
+        let error = match result {
+            Ok(_) => panic!("an unsupported mpv version must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            attempts, 1,
+            "a permanent version failure must not be retried"
+        );
+        assert!(error.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(error.contains("upgrade mpv"));
+        assert!(!error.contains("timed out"));
+    }
+
+    #[test]
+    fn explicit_attach_warning_preserves_mpv_upgrade_guidance() {
+        let error = PlayerError::OperationFailed(format!(
+            "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        ));
+
+        let warning = explicit_mpv_ipc_connection_warning("test-mpv-ipc", &error);
+
+        assert!(warning.starts_with("warning: failed to connect mpv JSON IPC"));
+        assert!(warning.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(warning.contains("upgrade mpv"));
+        assert!(warning.ends_with("player is disconnected"));
+    }
+
+    #[test]
+    fn managed_attach_still_retries_transient_connection_failures() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            Duration::from_secs(5),
+            Duration::ZERO,
+            |_| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(PlayerError::OperationFailed(
+                        "mpv endpoint is still starting".to_owned(),
+                    ))
+                } else {
+                    Ok(MpvAdapter::default())
+                }
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
 }
 
 fn generate_managed_mpv_ipc_path() -> anyhow::Result<(String, Option<PathBuf>)> {
@@ -448,7 +521,7 @@ fn ipc_cleanup_path_for_platform(path: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod ytdl_probe_configuration_tests {
+mod startup_health_tests {
     use super::*;
 
     #[test]
@@ -466,36 +539,5 @@ mod ytdl_probe_configuration_tests {
         );
         assert!(sorotte_bridge_warning_line(&SorotteBridgeHealth::Ready).is_none());
         assert!(sorotte_bridge_warning_line(&SorotteBridgeHealth::Disabled).is_none());
-    }
-
-    #[test]
-    fn extracts_ytdl_hook_path_from_inline_and_separate_script_options() {
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
-            ]),
-            Some(PathBuf::from("C:/Tools/yt-dlp.exe"))
-        );
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts".to_owned(),
-                "osc-visibility=never,ytdl_hook-ytdl_path=/opt/sorotte/yt-dlp".to_owned(),
-            ]),
-            Some(PathBuf::from("/opt/sorotte/yt-dlp"))
-        );
-    }
-
-    #[test]
-    fn absent_or_empty_ytdl_hook_path_uses_adapter_path_fallback() {
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&["--fullscreen".to_owned()]),
-            None
-        );
-        assert_eq!(
-            ytdl_probe_executable_from_mpv_args(&[
-                "--script-opts-append=ytdl_hook-ytdl_path=".to_owned(),
-            ]),
-            None
-        );
     }
 }

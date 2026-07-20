@@ -11,7 +11,6 @@ use std::{
     sync::{
         LazyLock,
         atomic::{AtomicU64, Ordering},
-        mpsc::TryRecvError,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +25,7 @@ use sorotte_player_api::{
 };
 use sorotte_secret::SecretValue;
 
+use self::state::MpvObservedState;
 use crate::bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
 use crate::bridge_resource::{
     materialize_bundled_sorotte_bridge, materialize_bundled_sorotte_network_options_hook,
@@ -37,12 +37,6 @@ use crate::ipc::{MpvIpcConnectionEvent, MpvJsonIpcClient};
 use crate::legacy_ui::{
     LegacySyncplayOsdKind, LegacySyncplayUiSettings, sanitize_legacy_syncplay_script_message_text,
 };
-use crate::live_probe::{
-    PendingYtdlLiveProbe, YtdlLiveMetadataCapability, YtdlLiveProbeOutcome, spawn_ytdl_live_probe,
-    youtube_live_probe_execution_target,
-};
-
-use self::state::MpvObservedState;
 
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
@@ -51,7 +45,6 @@ const MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES: usize = 16;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
-const YTDL_LIVE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
@@ -65,6 +58,7 @@ const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::fr
 const NETWORK_OPTIONS_HOOK_OWNER_LEASE_MS: u64 = 2_000;
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_millis(750);
+const MINIMUM_SUPPORTED_MPV_VERSION_COMPONENTS: (u64, u64, u64) = (0, 41, 0);
 static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     let started_at = SystemTime::now()
@@ -442,13 +436,6 @@ enum TrackedCommandSupersession {
     PauseOrPlay,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MpvLoadfileOptionsSyntax {
-    Legacy,
-    InsertionIndex,
-    Unknown,
-}
-
 pub struct MpvAdapter {
     paused: bool,
     logical_pause_explicit: bool,
@@ -504,8 +491,6 @@ pub struct MpvAdapter {
         VecDeque<SequencedNetworkOptionsEvent<MpvNetworkOptionsHookHealthTransition>>,
     pending_network_media_policy_outcomes:
         VecDeque<SequencedNetworkOptionsEvent<MpvNetworkMediaPolicyOutcome>>,
-    loadfile_options_syntax: Option<MpvLoadfileOptionsSyntax>,
-    mpv_version: Option<(u64, u64)>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
@@ -534,10 +519,6 @@ pub struct MpvAdapter {
     latest_cached_seekable_window: Option<PlayerSeekableRange>,
     path_metadata_generation: Option<PlayerMediaGeneration>,
     duration_metadata_generation: Option<PlayerMediaGeneration>,
-    ytdl_live_probe_executable: Option<PathBuf>,
-    ytdl_live_probe_path_prefixes: Vec<PathBuf>,
-    ytdl_live_probe_identity: Option<(PlayerMediaGeneration, String)>,
-    pending_ytdl_live_probe: Option<PendingYtdlLiveProbe>,
     playback_restart_sequence: u64,
     next_command_id: u64,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
@@ -579,13 +560,16 @@ impl MpvAdapter {
 
     pub fn connect_json_ipc(&mut self, path: impl AsRef<Path>) -> Result<(), PlayerError> {
         let endpoint = path.as_ref().to_path_buf();
-        let mut client =
-            MpvJsonIpcClient::connect(&endpoint).map_err(PlayerError::OperationFailed)?;
-        let version = match client.get_property_string_classified(MPV_PROPERTY_VERSION) {
-            Ok(version) => version,
-            Err(error) if error.is_property_unavailable() => None,
-            Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
-        };
+        let client = MpvJsonIpcClient::connect(&endpoint).map_err(PlayerError::OperationFailed)?;
+        self.initialize_json_ipc_attachment(endpoint, client)
+    }
+
+    fn initialize_json_ipc_attachment(
+        &mut self,
+        endpoint: PathBuf,
+        mut client: MpvJsonIpcClient,
+    ) -> Result<(), PlayerError> {
+        Self::require_supported_mpv_version(&mut client)?;
         self.release_sorotte_bridge_best_effort();
         self.collect_ipc_connection_events();
         self.simulation_mode = false;
@@ -594,12 +578,45 @@ impl MpvAdapter {
         self.reset_legacy_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
-        self.loadfile_options_syntax = None;
         self.reset_network_media_options_attachment_state();
-        self.mpv_version = version
-            .as_deref()
-            .and_then(Self::parse_mpv_major_minor_version);
         self.legacy_syncplay_osd_placement_restore = None;
+        Ok(())
+    }
+
+    fn require_supported_mpv_version(client: &mut MpvJsonIpcClient) -> Result<(), PlayerError> {
+        let reported_version = match client.get_property_string_classified(MPV_PROPERTY_VERSION) {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                return Err(PlayerError::OperationFailed(format!(
+                    "{}{minimum} or newer, but the connected mpv did not report an mpv-version; upgrade mpv and try again",
+                    crate::UNSUPPORTED_MPV_VERSION_ERROR_PREFIX,
+                    minimum = crate::MINIMUM_SUPPORTED_MPV_VERSION,
+                )));
+            }
+            Err(error) if error.is_property_unavailable() => {
+                return Err(PlayerError::OperationFailed(format!(
+                    "{}{minimum} or newer, but the connected mpv does not expose the mpv-version property; upgrade mpv and try again",
+                    crate::UNSUPPORTED_MPV_VERSION_ERROR_PREFIX,
+                    minimum = crate::MINIMUM_SUPPORTED_MPV_VERSION,
+                )));
+            }
+            Err(error) => return Err(PlayerError::OperationFailed(error.into_message())),
+        };
+        let parsed_version = Self::parse_mpv_version(&reported_version).ok_or_else(|| {
+            PlayerError::OperationFailed(format!(
+                "{}{minimum} or newer, but the connected mpv reported an unrecognized mpv-version; install an official supported mpv build and try again",
+                crate::UNSUPPORTED_MPV_VERSION_ERROR_PREFIX,
+                minimum = crate::MINIMUM_SUPPORTED_MPV_VERSION,
+            ))
+        })?;
+        if parsed_version < MINIMUM_SUPPORTED_MPV_VERSION_COMPONENTS {
+            let (major, minor, patch) = parsed_version;
+            return Err(PlayerError::OperationFailed(format!(
+                "{}{minimum} or newer, but the connected mpv reports mpv {major}.{minor}.{patch}; upgrade mpv and try again",
+                crate::UNSUPPORTED_MPV_VERSION_ERROR_PREFIX,
+                minimum = crate::MINIMUM_SUPPORTED_MPV_VERSION,
+            )));
+        }
         Ok(())
     }
 
@@ -999,40 +1016,6 @@ impl MpvAdapter {
 
     pub fn current_path(&self) -> Option<&str> {
         self.current_path.as_deref()
-    }
-
-    /// Selects the yt-dlp executable used to recover live-timeline metadata
-    /// from stock mpv releases older than 0.39.
-    ///
-    /// When unset, the bounded probe tries `yt-dlp` and then `youtube-dl`
-    /// through the process `PATH`. A configured path is authoritative and is
-    /// never silently replaced with another executable.
-    pub fn configure_ytdl_live_probe_executable(&mut self, executable: Option<PathBuf>) {
-        self.configure_ytdl_live_probe_environment(executable, Vec::new());
-    }
-
-    /// Configures the bounded legacy live probe without changing the process
-    /// environment inherited by Sorotte itself.
-    pub fn configure_ytdl_live_probe_environment(
-        &mut self,
-        executable: Option<PathBuf>,
-        mut path_prefixes: Vec<PathBuf>,
-    ) {
-        if let Some(parent) = executable.as_deref().and_then(Path::parent)
-            && !parent.as_os_str().is_empty()
-            && !path_prefixes.iter().any(|prefix| prefix == parent)
-        {
-            path_prefixes.insert(0, parent.to_path_buf());
-        }
-        self.ytdl_live_probe_executable = executable;
-        self.ytdl_live_probe_path_prefixes = path_prefixes;
-        if self.pending_ytdl_live_probe.is_none()
-            && self.ytdl_live_probe_identity.is_none()
-            && let (Some(generation), Some(target)) =
-                (self.active_media_generation, self.current_path.clone())
-        {
-            self.maybe_start_ytdl_live_probe(generation, &target);
-        }
     }
 
     /// Configures options that mpv should apply only while playing network media.
@@ -2013,114 +1996,29 @@ impl MpvAdapter {
             .collect()
     }
 
-    fn detect_loadfile_options_syntax(&mut self) -> MpvLoadfileOptionsSyntax {
-        if let Some(syntax) = self.loadfile_options_syntax {
-            return syntax;
-        }
-        let syntax = self
-            .mpv_version
-            .map(Self::loadfile_options_syntax_from_version_components)
-            .or_else(|| {
-                self.ipc_client
-                    .as_mut()
-                    .and_then(|client| {
-                        client
-                            .get_property_string(MPV_PROPERTY_VERSION)
-                            .ok()
-                            .flatten()
-                    })
-                    .as_deref()
-                    .and_then(Self::loadfile_options_syntax_from_version)
-            })
-            .unwrap_or(MpvLoadfileOptionsSyntax::Unknown);
-        self.loadfile_options_syntax = Some(syntax);
-        syntax
-    }
-
-    fn loadfile_options_syntax_from_version(version: &str) -> Option<MpvLoadfileOptionsSyntax> {
-        Self::parse_mpv_major_minor_version(version)
-            .map(Self::loadfile_options_syntax_from_version_components)
-    }
-
-    fn parse_mpv_major_minor_version(version: &str) -> Option<(u64, u64)> {
+    fn parse_mpv_version(version: &str) -> Option<(u64, u64, u64)> {
         version
             .split(|character: char| !(character.is_ascii_digit() || character == '.'))
-            .filter(|part| part.contains('.'))
+            .filter(|part| part.bytes().filter(|byte| *byte == b'.').count() >= 2)
             .find_map(|part| {
                 let mut components = part.split('.');
                 Some((
+                    components.next()?.parse::<u64>().ok()?,
                     components.next()?.parse::<u64>().ok()?,
                     components.next()?.parse::<u64>().ok()?,
                 ))
             })
     }
 
-    fn loadfile_options_syntax_from_version_components(
-        (major, minor): (u64, u64),
-    ) -> MpvLoadfileOptionsSyntax {
-        if major > 0 || minor >= 38 {
-            MpvLoadfileOptionsSyntax::InsertionIndex
-        } else {
-            MpvLoadfileOptionsSyntax::Legacy
-        }
-    }
-
     fn send_network_media_loadfile(&mut self, path: &str) -> Result<(), PlayerError> {
         let options = Value::Object(self.network_media_options_map());
-        let modern_command = || {
-            json!([
-                MPV_COMMAND_LOADFILE,
-                path,
-                MPV_LOADFILE_REPLACE,
-                -1,
-                options.clone()
-            ])
-        };
-        let legacy_command = || {
-            json!([
-                MPV_COMMAND_LOADFILE,
-                path,
-                MPV_LOADFILE_REPLACE,
-                options.clone()
-            ])
-        };
-
-        match self.detect_loadfile_options_syntax() {
-            MpvLoadfileOptionsSyntax::InsertionIndex => {
-                self.send_ipc_command_if_attached(modern_command())
-            }
-            MpvLoadfileOptionsSyntax::Legacy => self.send_ipc_command_if_attached(legacy_command()),
-            MpvLoadfileOptionsSyntax::Unknown => {
-                let Some(ipc_client) = self.ipc_client.as_mut() else {
-                    return self.send_ipc_command_if_attached(modern_command());
-                };
-                let modern_result =
-                    ipc_client.send_compatibility_probe_expect_success(modern_command());
-                self.drain_ipc_events_if_attached();
-                match modern_result {
-                    Ok(()) => {
-                        self.loadfile_options_syntax =
-                            Some(MpvLoadfileOptionsSyntax::InsertionIndex);
-                        Ok(())
-                    }
-                    Err(primary_error) if primary_error.is_server_rejection() => {
-                        let primary_message = primary_error.message().to_owned();
-                        let result = self.send_ipc_command_if_attached(legacy_command());
-                        if result.is_ok() {
-                            self.loadfile_options_syntax = Some(MpvLoadfileOptionsSyntax::Legacy);
-                            return Ok(());
-                        }
-                        Err(PlayerError::OperationFailed(format!(
-                            "mpv loadfile compatibility probe was rejected ({primary_message}); legacy fallback failed: {}",
-                            result.expect_err("failed result must contain its error")
-                        )))
-                    }
-                    Err(primary_error) => Err(PlayerError::OperationFailed(
-                        primary_error.message().to_owned(),
-                    )),
-                }
-            }
-        }
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_LOADFILE,
+            path,
+            MPV_LOADFILE_REPLACE,
+            -1,
+            options
+        ]))
     }
 
     pub fn paused(&self) -> bool {
@@ -3153,11 +3051,9 @@ impl MpvAdapter {
                 MPV_OBS_DEMUXER_CACHE_IDLE_ID,
                 MPV_PROPERTY_DEMUXER_CACHE_IDLE,
             ),
-            // Observe both forms: the full metadata map itself is observable
-            // on the oldest supported mpv, while current mpv can report the
-            // narrower subproperty without retransmitting unrelated tags.
-            // Stock mpv before 0.39 does not publish this tag at all and is
-            // covered by the bounded external probe below.
+            // Observe both forms: the full metadata map provides a resilient
+            // fallback while the narrower subproperty avoids retransmitting
+            // unrelated tags.
             (MPV_OBS_YTDL_IS_LIVE_ID, MPV_PROPERTY_YTDL_IS_LIVE),
             (MPV_OBS_METADATA_ID, MPV_PROPERTY_METADATA),
             (MPV_OBS_EOF_REACHED_ID, MPV_PROPERTY_EOF_REACHED),
@@ -3167,9 +3063,9 @@ impl MpvAdapter {
             let Some(ipc_client) = self.ipc_client.as_mut() else {
                 return;
             };
-            // These observations were added after the original adapter and
-            // are optional on older mpv builds. A rejected property must not
-            // prevent the remaining lifecycle properties from registering.
+            // Individual properties can be unavailable for a particular
+            // media source or build. One rejection must not prevent the
+            // remaining lifecycle properties from registering.
             let _ = ipc_client.observe_property(observer_id, property_name);
             self.drain_ipc_events_if_attached();
         }
@@ -3233,11 +3129,6 @@ impl MpvAdapter {
         if self.refresh_timeline_kind_from_metadata() {
             let update = self.transport_update();
             self.queue_transport_telemetry_update(update);
-        }
-        if let (Some(generation), Some(target)) =
-            (self.active_media_generation, polled_update.path.as_deref())
-        {
-            self.maybe_start_ytdl_live_probe(generation, target);
         }
         if Self::local_file_update_ready_for_sync(&polled_update) {
             self.record_local_file_update_if_changed(polled_update);
@@ -3418,7 +3309,6 @@ impl MpvAdapter {
         self.path_metadata_generation = Some(generation);
         self.duration_metadata_generation = Some(generation);
         self.refresh_timeline_kind_from_metadata();
-        self.maybe_start_ytdl_live_probe(generation, &requested_target);
         self.record_local_file_update_if_changed(polled_update.clone());
         self.pending_media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::success(
@@ -4001,10 +3891,9 @@ impl MpvAdapter {
         self.timeline_kind = if !uses_network_media_options(path) {
             PlayerTimelineKind::Vod
         } else if self.ytdl_is_live && self.ytdl_is_live_metadata_generation == Some(generation) {
-            // mpv 0.39+ publishes yt-dlp's per-file live flag as metadata.
-            // Older stock mpv reaches this branch only through Sorotte's
-            // generation-bound external probe. Only positive evidence bound
-            // to this load is sufficient for a sliding timeline.
+            // Supported mpv releases publish yt-dlp's per-file live flag as
+            // metadata. Only positive evidence bound to this load is
+            // sufficient for a sliding timeline.
             PlayerTimelineKind::SlidingLive
         } else if self.duration_metadata_generation != Some(generation) {
             return false;
@@ -4028,8 +3917,6 @@ impl MpvAdapter {
         self.latest_cached_seekable_window = None;
         self.path_metadata_generation = None;
         self.duration_metadata_generation = None;
-        self.ytdl_live_probe_identity = None;
-        self.pending_ytdl_live_probe = None;
     }
 
     fn nonnegative_u64_from_json(value: &Value) -> Option<u64> {
@@ -4068,83 +3955,9 @@ impl MpvAdapter {
         // demuxer changes; that must not turn a sliding timeline back into
         // VOD.
         self.ytdl_is_live |= is_live;
-        if is_live {
-            // A patched legacy hook can expose the native tag even though its
-            // version number selected the compatibility probe. Positive
-            // native evidence makes that duplicate process unnecessary.
-            self.pending_ytdl_live_probe = None;
-        }
         if self.refresh_timeline_kind_from_metadata() {
             let update = self.transport_update();
             self.queue_transport_telemetry_update(update);
-        }
-    }
-
-    fn maybe_start_ytdl_live_probe(
-        &mut self,
-        media_generation: PlayerMediaGeneration,
-        target: &str,
-    ) {
-        if YtdlLiveMetadataCapability::from_mpv_version(self.mpv_version)
-            != YtdlLiveMetadataCapability::ExternalProbeRequired
-            || self.active_media_generation != Some(media_generation)
-            || !self.active_file_loaded
-            || self.path_metadata_generation != Some(media_generation)
-            || self.duration_metadata_generation != Some(media_generation)
-            || self.observed_state.duration_seconds.is_some()
-            || self.timeline_kind != PlayerTimelineKind::Unknown
-            || self.ytdl_is_live
-            || self.ytdl_live_probe_identity.is_some()
-        {
-            return;
-        }
-
-        let target = target.trim().to_owned();
-        let Some(execution_target) =
-            youtube_live_probe_execution_target(&target).map(str::to_owned)
-        else {
-            return;
-        };
-        self.ytdl_live_probe_identity = Some((media_generation, target.clone()));
-        self.pending_ytdl_live_probe = Some(spawn_ytdl_live_probe(
-            self.ytdl_live_probe_executable.clone(),
-            self.ytdl_live_probe_path_prefixes.clone(),
-            media_generation,
-            target,
-            execution_target,
-            YTDL_LIVE_PROBE_TIMEOUT,
-        ));
-    }
-
-    fn poll_ytdl_live_probe_completion(&mut self) {
-        let completion = match self.pending_ytdl_live_probe.as_ref().map(|pending| {
-            pending
-                .completion_rx
-                .lock()
-                .map_err(|_| TryRecvError::Disconnected)?
-                .try_recv()
-        }) {
-            Some(Ok(completion)) => completion,
-            Some(Err(TryRecvError::Empty)) | None => return,
-            Some(Err(TryRecvError::Disconnected)) => {
-                self.pending_ytdl_live_probe = None;
-                return;
-            }
-        };
-        let Some(pending) = self.pending_ytdl_live_probe.take() else {
-            return;
-        };
-        if pending.media_generation != completion.media_generation
-            || pending.target != completion.target
-            || self.active_media_generation != Some(completion.media_generation)
-            || self.ytdl_live_probe_identity.as_ref()
-                != Some(&(completion.media_generation, completion.target.clone()))
-        {
-            return;
-        }
-
-        if completion.outcome == YtdlLiveProbeOutcome::IsLive(true) {
-            self.observe_ytdl_is_live_for_current_generation(true);
         }
     }
 
@@ -4318,11 +4131,6 @@ impl MpvAdapter {
                 self.observed_state.path = next_path.clone();
                 authoritative_path = next_path.clone();
                 self.path_metadata_generation = self.active_media_generation;
-                if let (Some(generation), Some(target)) =
-                    (self.active_media_generation, next_path.as_deref())
-                {
-                    self.maybe_start_ytdl_live_probe(generation, target);
-                }
                 true
             }
             MPV_PROPERTY_DURATION => {
@@ -4566,15 +4374,6 @@ impl MpvAdapter {
                 let update = self.transport_update();
                 self.queue_transport_telemetry_update(update);
             }
-            let probe_target = self
-                .pending_load_request
-                .clone()
-                .or_else(|| self.current_path.clone());
-            if let (Some(generation), Some(target)) =
-                (self.active_media_generation, probe_target.as_deref())
-            {
-                self.maybe_start_ytdl_live_probe(generation, target);
-            }
             self.maybe_emit_local_file_update_from_observed_state();
         }
         if authoritative_path_observed {
@@ -4594,7 +4393,6 @@ impl MpvAdapter {
         let retained_logical_pause = self.observed_state.logical_pause;
         let retained_playback_rate = self.observed_state.playback_rate;
         let retained_core_idle = self.observed_state.core_idle;
-        let requested_probe_target = self.pending_load_request.clone();
         let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
         let generation = playlist_entry_id
             .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
@@ -4639,9 +4437,6 @@ impl MpvAdapter {
         update.core_idle = retained_core_idle;
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update(update);
-        if let Some(target) = requested_probe_target.as_deref() {
-            self.maybe_start_ytdl_live_probe(generation, target);
-        }
         // A later start-file in the same buffered batch invalidates every earlier path even when
         // mpv has not emitted the replacement path yet. The batch reducer will let a following
         // path observation supersede this idle/loading marker before any option write begins.
@@ -4704,16 +4499,6 @@ impl MpvAdapter {
             let update = self.transport_update();
             self.queue_transport_telemetry_update(update);
         }
-        let initial_probe_target = self
-            .pending_load_request
-            .clone()
-            .or_else(|| self.current_path.clone());
-        if let (Some(generation), Some(target)) = (
-            self.active_media_generation,
-            initial_probe_target.as_deref(),
-        ) {
-            self.maybe_start_ytdl_live_probe(generation, target);
-        }
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
         let update = self.transport_update().with_phase(phase);
@@ -4745,9 +4530,6 @@ impl MpvAdapter {
         if self.refresh_timeline_kind_from_metadata() {
             let update = self.transport_update();
             self.queue_transport_telemetry_update(update);
-        }
-        if let Some(generation) = self.active_media_generation {
-            self.maybe_start_ytdl_live_probe(generation, &requested_target);
         }
         if let Some(path) = loaded_update.path.as_deref() {
             self.observe_authoritative_path_for_network_options(
@@ -5716,9 +5498,7 @@ impl MpvAdapter {
         self.reset_legacy_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
-        self.loadfile_options_syntax = None;
         self.reset_network_media_options_attachment_state();
-        self.mpv_version = None;
         self.legacy_syncplay_osd_placement_restore = None;
     }
 
@@ -5978,9 +5758,161 @@ impl MpvAdapter {
 }
 
 #[cfg(test)]
+mod version_policy_tests {
+    use super::*;
+    use std::{collections::VecDeque, io};
+
+    #[derive(Debug)]
+    struct VersionResponseTransport {
+        responses: VecDeque<String>,
+    }
+
+    impl VersionResponseTransport {
+        fn new(response: &str) -> Self {
+            Self {
+                responses: VecDeque::from([format!("{response}\n")]),
+            }
+        }
+    }
+
+    impl MpvJsonIpcTransport for VersionResponseTransport {
+        fn send_line_until(&mut self, _line: &str, _deadline: Instant) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    fn initialize_with_version_response(response: &str) -> (MpvAdapter, Result<(), PlayerError>) {
+        let client = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new(response)));
+        let mut adapter = MpvAdapter::default();
+        let result = adapter.initialize_json_ipc_attachment(PathBuf::from("test-mpv-ipc"), client);
+        (adapter, result)
+    }
+
+    fn operation_failure_message(result: Result<(), PlayerError>) -> String {
+        let error = result.expect_err("version policy should reject this attachment");
+        assert!(crate::is_unsupported_mpv_version_error(&error));
+        match error {
+            PlayerError::OperationFailed(message) => message,
+            other => panic!("unexpected version-policy error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_ipc_initialization_accepts_minimum_and_newer_mpv_versions() {
+        for reported in ["0.41.0", "mpv 0.41.1-UNKNOWN", "1.0.0"] {
+            let response = format!(r#"{{"request_id":1,"error":"success","data":"{reported}"}}"#);
+            let (adapter, result) = initialize_with_version_response(&response);
+
+            result.unwrap_or_else(|error| panic!("{reported} should be supported: {error}"));
+            assert!(adapter.ipc_client.is_some());
+            assert_eq!(adapter.ipc_endpoint, Some(PathBuf::from("test-mpv-ipc")));
+        }
+    }
+
+    #[test]
+    fn rejected_replacement_preserves_the_existing_supported_attachment() {
+        let (mut adapter, result) = initialize_with_version_response(
+            r#"{"request_id":1,"error":"success","data":"0.41.0"}"#,
+        );
+        result.expect("the initial supported attachment should succeed");
+        let replacement = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new(
+            r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        )));
+
+        let error = adapter
+            .initialize_json_ipc_attachment(PathBuf::from("unsupported-replacement"), replacement)
+            .expect_err("an unsupported replacement must be rejected");
+
+        assert!(crate::is_unsupported_mpv_version_error(&error));
+        assert!(adapter.ipc_client.is_some());
+        assert_eq!(adapter.ipc_endpoint, Some(PathBuf::from("test-mpv-ipc")));
+    }
+
+    #[test]
+    fn json_ipc_initialization_rejects_mpv_older_than_0_41_0() {
+        for reported in ["0.34.1", "0.40.99"] {
+            let response = format!(r#"{{"request_id":1,"error":"success","data":"{reported}"}}"#);
+            let (adapter, result) = initialize_with_version_response(&response);
+            let message = operation_failure_message(result);
+
+            assert!(message.contains("requires mpv 0.41.0 or newer"));
+            assert!(message.contains(&format!("reports mpv {reported}")));
+            assert!(message.contains("upgrade mpv"));
+            assert!(adapter.ipc_client.is_none());
+            assert!(adapter.ipc_endpoint.is_none());
+        }
+    }
+
+    #[test]
+    fn json_ipc_initialization_rejects_missing_or_unrecognized_versions() {
+        let cases = [
+            (
+                r#"{"request_id":1,"error":"property unavailable"}"#,
+                "does not expose the mpv-version property",
+            ),
+            (
+                r#"{"request_id":1,"error":"success","data":null}"#,
+                "did not report an mpv-version",
+            ),
+            (
+                r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
+                "reported an unrecognized mpv-version",
+            ),
+            (
+                r#"{"request_id":1,"error":"success","data":"0.41"}"#,
+                "reported an unrecognized mpv-version",
+            ),
+        ];
+
+        for (response, expected_reason) in cases {
+            let (adapter, result) = initialize_with_version_response(response);
+            let message = operation_failure_message(result);
+
+            assert!(message.contains("requires mpv 0.41.0 or newer"));
+            assert!(
+                message.contains(expected_reason),
+                "unexpected error: {message}"
+            );
+            assert!(adapter.ipc_client.is_none());
+            assert!(adapter.ipc_endpoint.is_none());
+        }
+    }
+
+    #[test]
+    fn unsupported_version_predicate_does_not_match_unrelated_operation_failures() {
+        assert!(!crate::is_unsupported_mpv_version_error(
+            &PlayerError::OperationFailed("mpv IPC connection timed out".to_owned())
+        ));
+        assert_eq!(crate::MINIMUM_SUPPORTED_MPV_VERSION, "0.41.0");
+    }
+
+    #[test]
+    fn protocol_failures_are_not_misclassified_as_version_rejections() {
+        let (_adapter, result) = initialize_with_version_response("not-json");
+        let error = result.expect_err("invalid IPC JSON must fail initialization");
+
+        assert!(!crate::is_unsupported_mpv_version_error(&error));
+        assert!(
+            matches!(error, PlayerError::OperationFailed(message) if message.contains("invalid mpv IPC JSON"))
+        );
+    }
+}
+
+#[cfg(test)]
 mod timeline_kind_tests {
     use super::*;
-    use crate::live_probe::{YtdlLiveProbeCompletion, YtdlLiveProbeOutcome};
 
     fn loaded_adapter(path: &str, duration_seconds: Option<f64>) -> MpvAdapter {
         let generation = PlayerMediaGeneration::new(41);
@@ -6019,22 +5951,6 @@ mod timeline_kind_tests {
         }));
     }
 
-    fn install_test_live_probe(
-        adapter: &mut MpvAdapter,
-        media_generation: PlayerMediaGeneration,
-        target: &str,
-    ) -> std::sync::mpsc::Sender<YtdlLiveProbeCompletion> {
-        let (completion_tx, completion_rx) = std::sync::mpsc::channel();
-        adapter.ytdl_live_probe_identity = Some((media_generation, target.to_owned()));
-        adapter.pending_ytdl_live_probe = Some(PendingYtdlLiveProbe {
-            media_generation,
-            target: target.to_owned(),
-            completion_rx: std::sync::Mutex::new(completion_rx),
-            cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        });
-        completion_tx
-    }
-
     #[test]
     fn youtube_live_metadata_is_positive_sliding_timeline_evidence() {
         let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
@@ -6049,7 +5965,7 @@ mod timeline_kind_tests {
     }
 
     #[test]
-    fn legacy_full_metadata_event_detects_youtube_live_media() {
+    fn full_metadata_event_detects_youtube_live_media() {
         let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=live", None);
 
         observe_full_metadata(
@@ -6059,137 +5975,6 @@ mod timeline_kind_tests {
 
         assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
         assert!(adapter.ytdl_is_live);
-    }
-
-    #[test]
-    fn current_generation_external_probe_promotes_stock_old_mpv_to_sliding_live() {
-        let target = "https://www.youtube.com/watch?v=live";
-        let mut adapter = loaded_adapter(target, None);
-        adapter.mpv_version = Some((0, 34));
-        let generation = adapter.active_media_generation.unwrap();
-        let completion_tx = install_test_live_probe(&mut adapter, generation, target);
-        completion_tx
-            .send(YtdlLiveProbeCompletion {
-                media_generation: generation,
-                target: target.to_owned(),
-                outcome: YtdlLiveProbeOutcome::IsLive(true),
-            })
-            .unwrap();
-
-        adapter.poll_ytdl_live_probe_completion();
-
-        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
-        assert!(adapter.ytdl_is_live);
-        assert_eq!(adapter.ytdl_is_live_metadata_generation, Some(generation));
-        assert!(adapter.pending_ytdl_live_probe.is_none());
-        assert!(
-            adapter
-                .pending_transport_telemetry_updates
-                .iter()
-                .any(|update| update.timeline_kind == Some(PlayerTimelineKind::SlidingLive))
-        );
-    }
-
-    #[test]
-    fn failed_or_timed_out_external_probe_never_guesses_live_or_vod() {
-        for outcome in [YtdlLiveProbeOutcome::Failed, YtdlLiveProbeOutcome::TimedOut] {
-            let target = "https://www.youtube.com/watch?v=unknown";
-            let mut adapter = loaded_adapter(target, None);
-            adapter.mpv_version = Some((0, 34));
-            let generation = adapter.active_media_generation.unwrap();
-            let completion_tx = install_test_live_probe(&mut adapter, generation, target);
-            completion_tx
-                .send(YtdlLiveProbeCompletion {
-                    media_generation: generation,
-                    target: target.to_owned(),
-                    outcome,
-                })
-                .unwrap();
-
-            adapter.poll_ytdl_live_probe_completion();
-
-            assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
-            assert!(!adapter.ytdl_is_live);
-            assert!(adapter.pending_ytdl_live_probe.is_none());
-        }
-    }
-
-    #[test]
-    fn external_probe_completion_from_prior_start_file_generation_is_inert() {
-        let old_target = "https://www.youtube.com/watch?v=old";
-        let mut adapter = loaded_adapter(old_target, None);
-        adapter.mpv_version = Some((0, 34));
-        let old_generation = adapter.active_media_generation.unwrap();
-        let completion_tx = install_test_live_probe(&mut adapter, old_generation, old_target);
-        let cancellation = adapter
-            .pending_ytdl_live_probe
-            .as_ref()
-            .map(|pending| std::sync::Arc::clone(&pending.cancellation))
-            .unwrap();
-        completion_tx
-            .send(YtdlLiveProbeCompletion {
-                media_generation: old_generation,
-                target: old_target.to_owned(),
-                outcome: YtdlLiveProbeOutcome::IsLive(true),
-            })
-            .unwrap();
-
-        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 9001 }));
-        adapter.poll_ytdl_live_probe_completion();
-
-        assert_ne!(adapter.active_media_generation, Some(old_generation));
-        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Unknown);
-        assert!(!adapter.ytdl_is_live);
-        assert_eq!(adapter.ytdl_is_live_metadata_generation, None);
-        assert!(adapter.pending_ytdl_live_probe.is_none());
-        assert!(adapter.ytdl_live_probe_identity.is_none());
-        assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
-    }
-
-    #[test]
-    fn unknown_or_native_mpv_versions_do_not_launch_the_legacy_probe() {
-        let target = "https://www.youtube.com/watch?v=live";
-        for version in [None, Some((0, 39)), Some((1, 0))] {
-            let mut adapter = loaded_adapter(target, None);
-            adapter.mpv_version = version;
-            let generation = adapter.active_media_generation.unwrap();
-
-            adapter.maybe_start_ytdl_live_probe(generation, target);
-
-            assert!(adapter.pending_ytdl_live_probe.is_none());
-            assert!(adapter.ytdl_live_probe_identity.is_none());
-        }
-    }
-
-    #[test]
-    fn old_mpv_probe_waits_for_a_loaded_durationless_generation_and_skips_vod() {
-        let target = "https://www.youtube.com/watch?v=live";
-        let mut adapter = loaded_adapter(target, None);
-        adapter.mpv_version = Some((0, 34));
-        adapter.ytdl_live_probe_executable =
-            Some(PathBuf::from("definitely-missing-sorotte-ytdl-live-probe"));
-        let generation = adapter.active_media_generation.unwrap();
-        adapter.active_file_loaded = false;
-
-        adapter.maybe_start_ytdl_live_probe(generation, target);
-        assert!(adapter.pending_ytdl_live_probe.is_none());
-
-        adapter.active_file_loaded = true;
-        adapter.duration_metadata_generation = None;
-        adapter.maybe_start_ytdl_live_probe(generation, target);
-        assert!(adapter.pending_ytdl_live_probe.is_none());
-
-        adapter.duration_metadata_generation = Some(generation);
-        adapter.maybe_start_ytdl_live_probe(generation, target);
-        assert!(adapter.pending_ytdl_live_probe.is_some());
-        adapter.reset_timeline_metadata();
-
-        let mut vod = loaded_adapter(target, Some(120.0));
-        vod.mpv_version = Some((0, 34));
-        let vod_generation = vod.active_media_generation.unwrap();
-        vod.maybe_start_ytdl_live_probe(vod_generation, target);
-        assert!(vod.pending_ytdl_live_probe.is_none());
-        assert!(vod.ytdl_live_probe_identity.is_none());
     }
 
     #[test]

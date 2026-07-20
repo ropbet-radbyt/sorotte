@@ -242,9 +242,10 @@ impl MpvJsonIpcClient {
         }
     }
 
-    /// Sends a command whose server-side rejection may indicate an older mpv
-    /// command shape. A canonical mpv rejection is returned without emitting a
-    /// connection-failure event so the caller can try its compatibility form.
+    /// Sends an optional integration command whose server-side rejection may
+    /// select another supported command surface. A canonical mpv rejection is
+    /// returned without emitting a connection-failure event so the caller can
+    /// try that alternative.
     /// Transport, timeout, protocol, and client-side failures remain recorded.
     pub(crate) fn send_compatibility_probe_expect_success(
         &mut self,
@@ -783,10 +784,6 @@ impl MpvIpcCommandFailure {
             MpvIpcCommandFailureKind::ServerRejected { server_error }
                 if server_error == crate::constants::MPV_RESPONSE_PROPERTY_UNAVAILABLE
         )
-    }
-
-    pub(crate) fn message(&self) -> &str {
-        &self.message
     }
 
     pub(crate) fn into_message(self) -> String {

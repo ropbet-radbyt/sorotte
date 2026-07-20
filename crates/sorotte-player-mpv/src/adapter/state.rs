@@ -62,8 +62,6 @@ impl fmt::Debug for MpvAdapter {
                 "network_media_options_runtime_health_revision",
                 &self.network_media_options_runtime_health_revision,
             )
-            .field("loadfile_options_syntax", &self.loadfile_options_syntax)
-            .field("mpv_version", &self.mpv_version)
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
                 "pending_playback_telemetry_update",
@@ -123,22 +121,6 @@ impl fmt::Debug for MpvAdapter {
             .field(
                 "latest_cached_seekable_window",
                 &self.latest_cached_seekable_window,
-            )
-            .field(
-                "ytdl_live_probe_executable_configured",
-                &self.ytdl_live_probe_executable.is_some(),
-            )
-            .field(
-                "ytdl_live_probe_path_prefix_count",
-                &self.ytdl_live_probe_path_prefixes.len(),
-            )
-            .field(
-                "ytdl_live_probe_started",
-                &self.ytdl_live_probe_identity.is_some(),
-            )
-            .field(
-                "pending_ytdl_live_probe",
-                &self.pending_ytdl_live_probe.is_some(),
             )
             .field("playback_restart_sequence", &self.playback_restart_sequence)
             .field("next_command_id", &self.next_command_id)
@@ -248,8 +230,6 @@ impl Default for MpvAdapter {
             next_network_options_event_sequence: 1,
             pending_network_options_hook_health_transitions: VecDeque::new(),
             pending_network_media_policy_outcomes: VecDeque::new(),
-            loadfile_options_syntax: None,
-            mpv_version: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
@@ -278,10 +258,6 @@ impl Default for MpvAdapter {
             latest_cached_seekable_window: None,
             path_metadata_generation: None,
             duration_metadata_generation: None,
-            ytdl_live_probe_executable: None,
-            ytdl_live_probe_path_prefixes: Vec::new(),
-            ytdl_live_probe_identity: None,
-            pending_ytdl_live_probe: None,
             playback_restart_sequence: 0,
             next_command_id: 1,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),

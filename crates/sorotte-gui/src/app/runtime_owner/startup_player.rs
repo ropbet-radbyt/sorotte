@@ -647,8 +647,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     );
                 }
                 Err(error) => {
+                    let detail = mpv_launch::mpv_upgrade_required_diagnostic(&error)
+                        .unwrap_or_else(|| error.to_string());
                     self.player_unavailability_reason = Some(format!(
-                        "mpv JSON IPC attach failed at '{ipc_path}': {error}"
+                        "mpv JSON IPC attach failed at '{ipc_path}': {detail}"
                     ));
                 }
             },

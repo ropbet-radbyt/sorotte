@@ -525,37 +525,6 @@ impl MpvJsonIpcTransport for NeverRespondingTransport {
 }
 
 #[derive(Debug)]
-struct VersionResponseThenTimeoutTransport {
-    writes: Arc<Mutex<Vec<String>>>,
-    version_response_sent: bool,
-}
-
-impl MpvJsonIpcTransport for VersionResponseThenTimeoutTransport {
-    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
-        self.writes
-            .lock()
-            .expect("timeout transport mutex should not be poisoned")
-            .push(line.to_owned());
-        Ok(())
-    }
-
-    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
-        if !self.version_response_sent {
-            self.version_response_sent = true;
-            line.clear();
-            line.push_str(r#"{"request_id":1,"error":"success","data":"custom-build"}"#);
-            line.push('\n');
-            return Ok(line.len());
-        }
-        line.clear();
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "compatibility probe timed out",
-        ))
-    }
-}
-
-#[derive(Debug)]
 struct DropObservedTransport {
     dropped: Arc<AtomicBool>,
 }
@@ -1928,10 +1897,7 @@ fn open_file_sends_mpv_loadfile_replace_command_when_attached() {
 
 #[test]
 fn open_network_file_scopes_configured_cache_options_to_the_load() {
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-    ]);
+    let (transport, state) = fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "30"), ("cache-pause-wait", "5")]);
 
@@ -1940,16 +1906,8 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
         .expect("attached mpv transport should accept network loadfile");
 
     let writes = state.writes();
-    let version_query: Value =
-        serde_json::from_str(writes[0].trim_end()).expect("valid version query");
-    assert_eq!(
-        version_query,
-        json!({
-            "command": ["get_property", "mpv-version"],
-            "request_id": 1
-        })
-    );
-    let payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+    assert_eq!(writes.len(), 1);
+    let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     assert_eq!(
         payload,
         json!({
@@ -1963,190 +1921,9 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
                     "cache-secs": "30"
                 }
             ],
-            "request_id": 2
+            "request_id": 1
         })
     );
-}
-
-#[test]
-fn open_network_file_uses_legacy_options_position_for_mpv_before_0_38() {
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"0.37.0"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-    ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    adapter
-        .open_file("https://media.example/legacy.m3u8")
-        .expect("legacy mpv should accept its four-argument loadfile shape");
-
-    let writes = state.writes();
-    let payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
-    assert_eq!(
-        payload,
-        json!({
-            "command": [
-                "loadfile",
-                "https://media.example/legacy.m3u8",
-                "replace",
-                {"cache-secs": "30"}
-            ],
-            "request_id": 2
-        })
-    );
-}
-
-#[test]
-fn open_network_file_unknown_version_falls_back_to_legacy_and_caches_result() {
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
-        r#"{"request_id":2,"error":"invalid parameter"}"#,
-        r#"{"request_id":3,"error":"success"}"#,
-        r#"{"request_id":4,"error":"success"}"#,
-    ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    adapter
-        .open_file("https://media.example/unknown.m3u8")
-        .expect("unknown old mpv should accept the fallback command");
-    adapter
-        .open_file("https://media.example/next.m3u8")
-        .expect("detected legacy syntax should be cached");
-
-    let writes = state.writes();
-    assert_eq!(writes.len(), 4, "the version must be queried only once");
-    let modern_attempt: Value =
-        serde_json::from_str(writes[1].trim_end()).expect("valid modern attempt");
-    assert_eq!(modern_attempt["command"][3], json!(-1));
-    let legacy_fallback: Value =
-        serde_json::from_str(writes[2].trim_end()).expect("valid legacy fallback");
-    assert!(legacy_fallback["command"][3].is_object());
-    let cached_legacy: Value =
-        serde_json::from_str(writes[3].trim_end()).expect("valid cached legacy command");
-    assert!(cached_legacy["command"][3].is_object());
-    assert_eq!(cached_legacy["request_id"], json!(4));
-
-    let connection_events = adapter.take_ipc_connection_events();
-    assert!(
-        matches!(
-            connection_events.as_slice(),
-            [MpvIpcConnectionEvent::Connected { .. }]
-        ),
-        "a successful compatibility fallback must not surface its expected modern-shape rejection: {connection_events:?}"
-    );
-}
-
-#[test]
-fn unknown_loadfile_syntax_does_not_fallback_after_primary_disconnect() {
-    let (transport, state) =
-        fake_transport_with_reads(&[r#"{"request_id":1,"error":"success","data":"custom-build"}"#]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    let error = adapter
-        .open_file("https://media.example/disconnect.m3u8")
-        .expect_err("EOF during the modern probe must fail without a legacy retry");
-
-    assert!(
-        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("unexpected EOF")),
-        "the primary disconnect error must be preserved: {error:?}"
-    );
-    assert_eq!(
-        state.writes().len(),
-        2,
-        "only the version query and primary loadfile probe may be written"
-    );
-    let events = adapter.take_ipc_connection_events();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. })),
-        "the primary disconnect must remain observable: {events:?}"
-    );
-}
-
-#[test]
-fn unknown_loadfile_syntax_does_not_fallback_after_primary_timeout() {
-    let writes = Arc::new(Mutex::new(Vec::new()));
-    let transport = VersionResponseThenTimeoutTransport {
-        writes: Arc::clone(&writes),
-        version_response_sent: false,
-    };
-    let mut adapter =
-        MpvAdapter::with_test_transport_and_ipc_timeout(transport, Duration::from_millis(20));
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    let error = adapter
-        .open_file("https://media.example/timeout.m3u8")
-        .expect_err("timeout during the modern probe must fail without a legacy retry");
-
-    assert!(
-        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("timed out")),
-        "the primary timeout error must be preserved: {error:?}"
-    );
-    assert_eq!(
-        writes
-            .lock()
-            .expect("timeout transport mutex should not be poisoned")
-            .len(),
-        2,
-        "only the version query and primary loadfile probe may be written"
-    );
-    let events = adapter.take_ipc_connection_events();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
-        "the primary timeout must remain observable: {events:?}"
-    );
-}
-
-#[test]
-fn unknown_loadfile_syntax_does_not_fallback_after_primary_protocol_corruption() {
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
-        "not-json",
-    ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    let error = adapter
-        .open_file("https://media.example/corrupt.m3u8")
-        .expect_err("protocol corruption during the modern probe must not retry");
-
-    assert!(
-        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("invalid mpv IPC JSON")),
-        "the primary protocol error must be preserved: {error:?}"
-    );
-    assert_eq!(
-        state.writes().len(),
-        2,
-        "only the version query and primary loadfile probe may be written"
-    );
-}
-
-#[test]
-fn unknown_loadfile_syntax_reports_both_probe_and_fallback_rejections() {
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"custom-build"}"#,
-        r#"{"request_id":2,"error":"invalid parameter"}"#,
-        r#"{"request_id":3,"error":"property unavailable"}"#,
-    ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.configure_network_media_options([("cache-secs", "30")]);
-
-    let error = adapter
-        .open_file("https://media.example/rejected.m3u8")
-        .expect_err("both rejected command shapes must fail the load");
-
-    assert!(
-        matches!(error, PlayerError::OperationFailed(ref message)
-            if message.contains("invalid parameter") && message.contains("property unavailable")),
-        "the final error must retain both compatibility failures: {error:?}"
-    );
-    assert_eq!(state.writes().len(), 3);
 }
 
 #[test]
@@ -2596,6 +2373,7 @@ fn run_core_hook_supersession_scenario(
     (apply, outcome, writes)
 }
 
+#[cfg(feature = "test-support")]
 fn superseded_network_options_adapter_awaiting_hook_result() -> MpvAdapter {
     let transport = NetworkOptionsHookScenarioTransport {
         writes: Arc::new(Mutex::new(Vec::new())),
@@ -4006,7 +3784,6 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
         r#"{"event":"file-loaded"}"#,
         r#"{"request_id":2,"error":"success"}"#,
         r#"{"request_id":3,"error":"invalid parameter"}"#,
-        r#"{"request_id":4,"error":"success","data":"0.40.0"}"#,
         r#"{"event":"property-change","name":"path","data":"C:/media/stale-local.mkv"}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/pre-start-network.m3u8"}"#,
         r#"{"event":"start-file","playlist_entry_id":999}"#,
@@ -4014,7 +3791,7 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
         r#"{"event":"start-file","playlist_entry_id":73}"#,
         r#"{"event":"property-change","name":"path","data":null}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/sorotte.m3u8"}"#,
-        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4070,9 +3847,9 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
     let requested_target = "https://media.example.test/requested-a.m3u8";
     let polled_external_target = "https://media.example.test/external-b.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
         r#"{"event":"start-file","playlist_entry_id":701}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
         r#"{"request_id":2,"error":"success"}"#,
         r#"{"request_id":3,"error":"success"}"#,
         r#"{"request_id":4,"error":"success"}"#,
@@ -4081,14 +3858,13 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success"}"#,
-        r#"{"request_id":11,"error":"success","data":"https://media.example.test/external-b.m3u8"}"#,
-        r#"{"request_id":12,"error":"success","data":10.0}"#,
-        r#"{"request_id":13,"error":"success","data":0}"#,
-        r#"{"request_id":14,"error":"success"}"#,
-        r#"{"request_id":15,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":16,"error":"success","data":20.0}"#,
-        r#"{"request_id":17,"error":"success","data":0}"#,
+        r#"{"request_id":10,"error":"success","data":"https://media.example.test/external-b.m3u8"}"#,
+        r#"{"request_id":11,"error":"success","data":10.0}"#,
+        r#"{"request_id":12,"error":"success","data":0}"#,
+        r#"{"request_id":13,"error":"success"}"#,
+        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":15,"error":"success","data":20.0}"#,
+        r#"{"request_id":16,"error":"success","data":0}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4139,7 +3915,7 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
 fn pending_sorotte_load_drains_matching_start_and_path_events_before_poll_response() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
         r#"{"request_id":2,"error":"success"}"#,
         r#"{"request_id":3,"error":"success"}"#,
         r#"{"request_id":4,"error":"success"}"#,
@@ -4148,13 +3924,12 @@ fn pending_sorotte_load_drains_matching_start_and_path_events_before_poll_respon
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":702}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":11,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":12,"error":"success","data":20.0}"#,
-        r#"{"request_id":13,"error":"success","data":0}"#,
-        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":10,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":11,"error":"success","data":20.0}"#,
+        r#"{"request_id":12,"error":"success","data":0}"#,
+        r#"{"request_id":13,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4328,7 +4103,7 @@ fn composite_poll_revalidates_path_after_newer_local_events_during_metadata_read
 fn nested_poll_from_final_query_events_outranks_captured_outer_path() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
         r#"{"request_id":2,"error":"success"}"#,
         r#"{"request_id":3,"error":"success"}"#,
         r#"{"request_id":4,"error":"success"}"#,
@@ -4337,16 +4112,15 @@ fn nested_poll_from_final_query_events_outranks_captured_outer_path() {
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success"}"#,
-        r#"{"request_id":11,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":10,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":12,"error":"success","data":20.0}"#,
-        r#"{"request_id":13,"error":"success","data":0}"#,
+        r#"{"request_id":11,"error":"success","data":20.0}"#,
+        r#"{"request_id":12,"error":"success","data":0}"#,
         r#"{"event":"file-loaded"}"#,
-        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":15,"error":"success","data":"C:/media/newer-b.mkv"}"#,
-        r#"{"request_id":16,"error":"success","data":10.0}"#,
-        r#"{"request_id":17,"error":"success","data":0}"#,
+        r#"{"request_id":13,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":14,"error":"success","data":"C:/media/newer-b.mkv"}"#,
+        r#"{"request_id":15,"error":"success","data":10.0}"#,
+        r#"{"request_id":16,"error":"success","data":0}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);

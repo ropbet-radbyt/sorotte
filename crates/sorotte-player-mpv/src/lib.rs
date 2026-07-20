@@ -4,10 +4,25 @@ mod bridge_resource;
 mod constants;
 mod ipc;
 mod legacy_ui;
-mod live_probe;
 mod players;
 #[cfg(feature = "test-support")]
 mod test_support;
+
+use sorotte_player_api::PlayerError;
+
+/// Oldest mpv release supported by Sorotte's JSON IPC adapter.
+pub const MINIMUM_SUPPORTED_MPV_VERSION: &str = "0.41.0";
+pub(crate) const UNSUPPORTED_MPV_VERSION_ERROR_PREFIX: &str = "Sorotte requires mpv ";
+
+/// Returns whether an adapter error specifically rejects an unsupported or unverifiable mpv
+/// version.
+pub fn is_unsupported_mpv_version_error(error: &PlayerError) -> bool {
+    matches!(
+        error,
+        PlayerError::OperationFailed(message)
+            if message.starts_with(UNSUPPORTED_MPV_VERSION_ERROR_PREFIX)
+    )
+}
 
 /// Maximum absolute position error accepted when an mpv seek is acknowledged.
 ///

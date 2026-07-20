@@ -898,7 +898,6 @@ impl PlayerAdapter for MpvAdapter {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.observe_unhealthy_ipc_transport();
-        self.poll_ytdl_live_probe_completion();
         self.pending_transport_telemetry_updates.pop_front()
     }
 

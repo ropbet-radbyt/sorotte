@@ -10,10 +10,10 @@ use std::{
 use sorotte_client_app::app_boundary::state::{
     ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
 };
-use sorotte_player_api::PlayerAdapter;
+use sorotte_player_api::{PlayerAdapter, PlayerError};
 use sorotte_player_mpv::{
     LegacySyncplayUiSettings, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
-    SorotteBridgeFailureKind, SorotteBridgeHealth,
+    SorotteBridgeFailureKind, SorotteBridgeHealth, is_unsupported_mpv_version_error,
 };
 use sorotte_secret::RedactedCommandArgs;
 
@@ -21,6 +21,16 @@ use super::child_process::configure_gui_child_process;
 
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
+const MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX: &str = "mpv upgrade required: ";
+
+pub(crate) fn mpv_upgrade_required_diagnostic(error: &PlayerError) -> Option<String> {
+    is_unsupported_mpv_version_error(error)
+        .then(|| format!("{MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX}{error}"))
+}
+
+pub(crate) fn message_requires_mpv_upgrade(message: &str) -> bool {
+    message.contains(MPV_UPGRADE_REQUIRED_DIAGNOSTIC_PREFIX)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedMpvSettingsDecision {
@@ -274,22 +284,14 @@ pub(crate) fn spawn_managed_mpv_and_attach(
         #[cfg(test)]
         drop_observer: None,
     };
-    let mut adapter = connect_mpv_adapter_with_retry(
-        &ipc_path,
-        connect_timeout,
-        connect_poll_interval,
-    )
-    .map_err(|error| {
-        format!(
-            "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
-            config.program.display(),
-            ipc_path
-        )
-    })?;
-    adapter.configure_ytdl_live_probe_environment(
-        downloader_path.map(Path::to_path_buf),
-        path_prefixes.to_vec(),
-    );
+    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
+        .map_err(|error| {
+            format!(
+                "managed mpv launched but GUI JSON IPC attach failed (mpv_bin={}, ipc={}): {error}",
+                config.program.display(),
+                ipc_path
+            )
+        })?;
     Ok((adapter, guard))
 }
 
@@ -576,11 +578,29 @@ fn connect_mpv_adapter_with_retry(
     timeout: Duration,
     poll_interval: Duration,
 ) -> Result<MpvAdapter, String> {
+    connect_mpv_adapter_with_retry_using(ipc_path, timeout, poll_interval, |path| {
+        MpvAdapter::with_json_ipc(path)
+    })
+}
+
+fn connect_mpv_adapter_with_retry_using<F>(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut connect: F,
+) -> Result<MpvAdapter, String>
+where
+    F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+{
     let started = std::time::Instant::now();
     let mut last_error = None;
     while started.elapsed() < timeout {
-        match MpvAdapter::with_json_ipc(ipc_path) {
+        match connect(ipc_path) {
             Ok(adapter) => return Ok(adapter),
+            Err(error) if is_unsupported_mpv_version_error(&error) => {
+                return Err(mpv_upgrade_required_diagnostic(&error)
+                    .expect("unsupported mpv versions must produce upgrade guidance"));
+            }
             Err(error) => {
                 last_error = Some(error.to_string());
                 std::thread::sleep(poll_interval);
@@ -627,11 +647,69 @@ mod tests {
 
     use super::{
         ManagedMpvLaunchConfig, ManagedMpvSettingsDecision,
-        autodetect_mpv_player_path_legacy_compatible_from_lookup, managed_mpv_launch_args,
+        autodetect_mpv_player_path_legacy_compatible_from_lookup,
+        connect_mpv_adapter_with_retry_using, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
     use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-    use sorotte_player_mpv::LegacySyncplayUiSettings;
+    use sorotte_player_api::PlayerError;
+    use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+
+    #[test]
+    fn managed_attach_fails_fast_with_clear_mpv_upgrade_guidance() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            |_| {
+                attempts += 1;
+                Err(PlayerError::OperationFailed(format!(
+                    "Sorotte requires mpv {} or newer; upgrade mpv and try again",
+                    sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+                )))
+            },
+        );
+
+        let error = match result {
+            Ok(_) => panic!("an unsupported mpv version must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            attempts, 1,
+            "a permanent version failure must not be retried"
+        );
+        assert!(error.starts_with("mpv upgrade required:"));
+        assert!(error.contains(&format!(
+            "requires mpv {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(error.contains("upgrade mpv"));
+        assert!(!error.contains("timed out"));
+    }
+
+    #[test]
+    fn managed_attach_still_retries_transient_connection_failures() {
+        let mut attempts = 0;
+        let result = connect_mpv_adapter_with_retry_using(
+            "test-mpv-ipc",
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            |_| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(PlayerError::OperationFailed(
+                        "mpv endpoint is still starting".to_owned(),
+                    ))
+                } else {
+                    Ok(MpvAdapter::default())
+                }
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
 
     #[test]
     fn managed_mpv_launch_config_debug_redacts_free_form_arguments() {

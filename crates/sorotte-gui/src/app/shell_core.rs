@@ -199,6 +199,16 @@ impl SorotteGuiShellAppState {
         if !self.connect_blocked_by_player_setup_issue() {
             return None;
         }
+        if self
+            .player_setup_issue
+            .as_ref()
+            .is_some_and(|issue| super::mpv_launch::message_requires_mpv_upgrade(&issue.message))
+        {
+            return Some(format!(
+                "Upgrade mpv to {} or newer, then retry mpv before connecting.",
+                sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+            ));
+        }
         Some(
             "Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path."
                 .to_owned(),
@@ -206,9 +216,11 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn player_setup_issue_title(&self) -> Option<&'static str> {
-        self.player_setup_issue
-            .as_ref()
-            .map(|issue| match issue.kind {
+        self.player_setup_issue.as_ref().map(|issue| {
+            if super::mpv_launch::message_requires_mpv_upgrade(&issue.message) {
+                return "mpv upgrade required";
+            }
+            match issue.kind {
                 GuiPlayerSetupIssueKind::NotConfigured => "mpv setup required",
                 GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer => "Unsupported player",
                 GuiPlayerSetupIssueKind::MissingBinary => "Configured mpv not found",
@@ -219,13 +231,16 @@ impl SorotteGuiShellAppState {
                     "mpv streaming settings incomplete"
                 }
                 GuiPlayerSetupIssueKind::BridgeDegraded => "mpv Chat/OSD integration unavailable",
-            })
+            }
+        })
     }
 
     pub(super) fn player_setup_issue_summary(&self) -> Option<&'static str> {
-        self.player_setup_issue
-            .as_ref()
-            .map(|issue| match issue.kind {
+        self.player_setup_issue.as_ref().map(|issue| {
+            if super::mpv_launch::message_requires_mpv_upgrade(&issue.message) {
+                return "The configured mpv does not meet Sorotte's supported-version requirement and must be upgraded.";
+            }
+            match issue.kind {
                 GuiPlayerSetupIssueKind::NotConfigured => {
                     "Sorotte needs mpv before it can play media."
                 }
@@ -250,7 +265,8 @@ impl SorotteGuiShellAppState {
                 GuiPlayerSetupIssueKind::BridgeDegraded => {
                     "mpv is ready, but Chat/OSD integration could not be configured."
                 }
-            })
+            }
+        })
     }
 
     pub(super) fn player_setup_retry_label(&self) -> &'static str {
@@ -853,5 +869,48 @@ impl SorotteGuiShellAppState {
         for (index, directory) in self.media_search.directories.iter_mut().enumerate() {
             directory.is_selected = self.selection.selected_media_search_directory == Some(index);
         }
+    }
+}
+
+#[cfg(test)]
+mod mpv_version_presentation_tests {
+    use super::*;
+    use crate::app::shell_state::GuiPlayerSetupIssue;
+    use sorotte_player_api::PlayerError;
+
+    #[test]
+    fn unsupported_mpv_version_has_upgrade_specific_setup_guidance() {
+        let version_error = PlayerError::OperationFailed(format!(
+            "Sorotte requires mpv {} or newer, but the connected mpv reports mpv 0.40.0; upgrade mpv and try again",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        ));
+        let detail = crate::app::mpv_launch::mpv_upgrade_required_diagnostic(&version_error)
+            .expect("unsupported version errors should produce upgrade guidance");
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        state.player_setup_issue = Some(GuiPlayerSetupIssue {
+            kind: GuiPlayerSetupIssueKind::IpcAttachFailed,
+            message: format!("mpv JSON IPC attach failed: {detail}"),
+            retry_available: true,
+        });
+
+        assert_eq!(
+            state.player_setup_issue_title(),
+            Some("mpv upgrade required")
+        );
+        assert_eq!(
+            state.player_setup_issue_summary(),
+            Some(
+                "The configured mpv does not meet Sorotte's supported-version requirement and must be upgraded."
+            )
+        );
+        let block_message = state
+            .player_setup_connect_block_message()
+            .expect("an unsupported player should block connection");
+        assert!(block_message.contains(&format!(
+            "Upgrade mpv to {} or newer",
+            sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION
+        )));
+        assert!(block_message.contains("retry mpv"));
     }
 }
