@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sorotte-gui-release-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && 'dev' || github.run_id }}
+  cancel-in-progress: false
+
 env:
   SOROTTE_GUI_DEV_RELEASE_TAG: sorotte-gui-dev
 
@@ -92,32 +96,35 @@ jobs:
               throw "git push dev release tag failed with exit code $LASTEXITCODE"
           }
 
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) {
-              gh release create $tag --title $title --notes $notes --prerelease
-              if ($LASTEXITCODE -ne 0) {
-                  throw "gh release create failed with exit code $LASTEXITCODE"
-              }
-          } else {
-              gh release edit $tag --title $title --notes $notes --prerelease
-              if ($LASTEXITCODE -ne 0) {
-                  throw "gh release edit failed with exit code $LASTEXITCODE"
-              }
-          }
-
-          $uploaded = $false
+          # This is a rolling prerelease. Recreate it instead of using
+          # `upload --clobber`, which replaces assets one at a time and can
+          # leave a mixed release if GitHub's asset-deletion API is unavailable.
+          $published = $false
           for ($attempt = 1; $attempt -le 5; $attempt++) {
-              gh release upload $tag target/gui-release/artifacts/* --clobber
+              $deleteOutput = gh release delete $tag --yes 2>&1
+              $deleteExitCode = $LASTEXITCODE
+              $deleteText = ($deleteOutput | Out-String).Trim()
+              if ($deleteExitCode -ne 0 -and $deleteText -notmatch '(?i)release not found') {
+                  Write-Warning "Could not delete the previous dev release on attempt ${attempt}: $deleteText"
+                  if ($attempt -lt 5) {
+                      $delaySeconds = 2 * $attempt
+                      Start-Sleep -Seconds $delaySeconds
+                  }
+                  continue
+              }
+
+              gh release create $tag target/gui-release/artifacts/* --title $title --notes $notes --prerelease --verify-tag
               if ($LASTEXITCODE -eq 0) {
-                  $uploaded = $true
+                  $published = $true
                   break
               }
+
               if ($attempt -lt 5) {
                   $delaySeconds = 2 * $attempt
-                  Write-Warning "GitHub has not exposed the updated dev release yet; retrying asset upload in $delaySeconds seconds (attempt $attempt of 5)."
+                  Write-Warning "Dev release publication failed; recreating it in $delaySeconds seconds (attempt $attempt of 5)."
                   Start-Sleep -Seconds $delaySeconds
               }
           }
-          if (-not $uploaded) {
-              throw "gh release upload failed after 5 attempts"
+          if (-not $published) {
+              throw "dev release publication failed after 5 attempts"
           }
