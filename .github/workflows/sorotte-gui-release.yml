@@ -105,7 +105,19 @@ jobs:
               }
           }
 
-          gh release upload $tag target/gui-release/artifacts/* --clobber
-          if ($LASTEXITCODE -ne 0) {
-              throw "gh release upload failed with exit code $LASTEXITCODE"
+          $uploaded = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+              gh release upload $tag target/gui-release/artifacts/* --clobber
+              if ($LASTEXITCODE -eq 0) {
+                  $uploaded = $true
+                  break
+              }
+              if ($attempt -lt 5) {
+                  $delaySeconds = 2 * $attempt
+                  Write-Warning "GitHub has not exposed the updated dev release yet; retrying asset upload in $delaySeconds seconds (attempt $attempt of 5)."
+                  Start-Sleep -Seconds $delaySeconds
+              }
+          }
+          if (-not $uploaded) {
+              throw "gh release upload failed after 5 attempts"
           }
