@@ -1075,12 +1075,28 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<String> {
+        match self.media_match_cached_exact_inventory_resolution_for_target(
+            projected_state,
+            target,
+            search_roots,
+        )? {
+            MediaMatchInventoryExactResolution::Resolved(path) => Some(path),
+            MediaMatchInventoryExactResolution::Ambiguous { .. } => None,
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn media_match_cached_exact_inventory_resolution_for_target(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+        target: &str,
+        search_roots: &[PathBuf],
+    ) -> Option<MediaMatchInventoryExactResolution> {
         if !Self::media_match_resolution_enabled(projected_state) {
             return None;
         }
         let root = self.media_match_root_for_request(projected_state)?;
         let targets = Self::local_media_search_candidates_for_target(target);
-        media_match_inventory_exact_candidate_for_targets(&root, search_roots, &targets)
+        media_match_inventory_exact_resolution_for_targets(&root, search_roots, &targets)
     }
 
     fn current_player_path_if_cached_media_match_candidate_for_target(

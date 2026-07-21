@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::media_match_support::MediaMatchInventoryExactResolution;
 use crate::app::runtime_owner::GuiPendingPlaylistSourceResolution;
 use std::time::SystemTime;
 
@@ -211,6 +212,10 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn remote_media_alias_name_matches(left: &str, right: &str) -> bool {
+        left.eq_ignore_ascii_case(right)
+    }
+
     fn uncorroborated_current_player_title_collision_path(&self, target: &str) -> Option<String> {
         if !is_plex_playlist_uri(target) || self.current_player_matches_media_target(target) {
             return None;
@@ -227,7 +232,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let exact_file_name_matches = aliases
             .exact_file_name
             .as_deref()
-            .is_some_and(|file_name| Self::media_alias_name_matches(local_name, file_name));
+            .is_some_and(|file_name| Self::remote_media_alias_name_matches(local_name, file_name));
         if exact_file_name_matches {
             // Preserve the established filename + size/identity requirement in
             // `current_player_matches_media_target` for an already-open file.
@@ -236,7 +241,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let fallback_title_matches = aliases
             .fallback_title
             .as_deref()
-            .is_some_and(|title| Self::media_alias_name_matches(local_name, title));
+            .is_some_and(|title| Self::remote_media_alias_name_matches(local_name, title));
         if !fallback_title_matches {
             return None;
         }
@@ -316,7 +321,7 @@ impl GuiPersistedConfigRuntimeOwner {
             && local_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case(target_candidate))
+                .is_some_and(|name| Self::media_alias_name_matches(name, target_candidate))
             && local_path.is_file()
         {
             return Some(Self::quick_local_media_resolution(
@@ -382,6 +387,27 @@ impl GuiPersistedConfigRuntimeOwner {
         None
     }
 
+    fn case_folded_current_player_path_for_media_alias(
+        &self,
+        target: &str,
+        target_candidate: &str,
+    ) -> Option<String> {
+        if cfg!(windows) || is_plex_playlist_uri(target) {
+            return None;
+        }
+        let local_path = self
+            .player_local_file
+            .as_ref()?
+            .path
+            .as_deref()
+            .map(Path::new)?;
+        let local_name = local_path.file_name()?.to_str()?;
+        (local_name != target_candidate
+            && local_name.eq_ignore_ascii_case(target_candidate)
+            && local_path.is_file())
+        .then(|| local_path.to_string_lossy().into_owned())
+    }
+
     fn quick_resolve_main_window_user_media_alias(
         &self,
         state: &SorotteGuiShellAppState,
@@ -444,6 +470,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.uncorroborated_current_player_title_collision_path(&target);
         let mut index_prepared = false;
         let mut build_pending = false;
+        let mut deferred_case_folded_current_path = None;
 
         // Alias order is an evidence order, not a per-layer convenience. Exhaust
         // quick, indexed, and exact-inventory evidence for the Plex filename before
@@ -451,6 +478,10 @@ impl GuiPersistedConfigRuntimeOwner {
         for target_candidate in target_candidates {
             let is_exact_file_name =
                 target_aliases.exact_file_name.as_deref() == Some(target_candidate);
+            if deferred_case_folded_current_path.is_none() {
+                deferred_case_folded_current_path =
+                    self.case_folded_current_player_path_for_media_alias(&target, target_candidate);
+            }
             if let Some(resolution) = self.quick_resolve_main_window_user_media_alias(
                 state,
                 &target,
@@ -523,23 +554,44 @@ impl GuiPersistedConfigRuntimeOwner {
             }
 
             if include_exact_inventory
-                && let Some(path) = self.media_match_cached_exact_inventory_candidate_for_target(
-                    state,
-                    target_candidate,
-                    &search_roots,
-                )
-                && !excluded_current_path.as_deref().is_some_and(|excluded| {
-                    Self::media_paths_refer_to_same_file(Path::new(&path), Path::new(excluded))
-                })
+                && let Some(inventory_resolution) = self
+                    .media_match_cached_exact_inventory_resolution_for_target(
+                        state,
+                        target_candidate,
+                        &search_roots,
+                    )
             {
-                self.unresolved_attached_media_target = None;
-                if !self.attached_media_search_refresh_pending() {
-                    self.attached_media_search_next_retry_at = None;
+                match inventory_resolution {
+                    MediaMatchInventoryExactResolution::Resolved(path)
+                        if !excluded_current_path.as_deref().is_some_and(|excluded| {
+                            Self::media_paths_refer_to_same_file(
+                                Path::new(&path),
+                                Path::new(excluded),
+                            )
+                        }) && !deferred_case_folded_current_path.as_deref().is_some_and(
+                            |deferred| {
+                                Self::media_paths_refer_to_same_file(
+                                    Path::new(&path),
+                                    Path::new(deferred),
+                                )
+                            },
+                        ) =>
+                    {
+                        self.unresolved_attached_media_target = None;
+                        if !self.attached_media_search_refresh_pending() {
+                            self.attached_media_search_next_retry_at = None;
+                        }
+                        return Ok(GuiUserMediaTargetResolution::Resolved {
+                            path,
+                            source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
+                        });
+                    }
+                    MediaMatchInventoryExactResolution::Resolved(_) => {}
+                    MediaMatchInventoryExactResolution::Ambiguous { candidate_count } => {
+                        self.unresolved_attached_media_target = Some(target);
+                        return Ok(GuiUserMediaTargetResolution::Ambiguous { candidate_count });
+                    }
                 }
-                return Ok(GuiUserMediaTargetResolution::Resolved {
-                    path,
-                    source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
-                });
             }
 
             if is_exact_file_name && (build_pending || self.attached_media_search_in_flight()) {
@@ -555,6 +607,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 &roots,
                 GuiAttachedMediaSearchBuildState::Idle,
             );
+            if let Some(path) = deferred_case_folded_current_path {
+                self.unresolved_attached_media_target = None;
+                self.attached_media_search_next_retry_at = None;
+                return Ok(Self::quick_local_media_resolution(path));
+            }
             return Ok(GuiUserMediaTargetResolution::Missing);
         }
         if !index_prepared {
@@ -570,8 +627,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.automatic_media_search_timeout(state),
             );
         }
-        if self.attached_media_search_in_flight() {
+        if self.attached_media_search_in_flight()
+            || (deferred_case_folded_current_path.is_some()
+                && self.attached_media_search_refresh_required())
+        {
             Ok(GuiUserMediaTargetResolution::Pending)
+        } else if let Some(path) = deferred_case_folded_current_path {
+            self.unresolved_attached_media_target = None;
+            // Preserve the scheduled double-check so a later exact-case file can replace this
+            // compatibility fallback without repeated resolutions postponing the refresh.
+            Ok(Self::quick_local_media_resolution(path))
         } else {
             Ok(GuiUserMediaTargetResolution::Missing)
         }
@@ -1585,8 +1650,14 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let search_roots = self.automatic_media_search_roots(state);
+        let excluded_current_path = self.uncorroborated_current_player_title_collision_path(target);
         let Some(path) = self
             .media_match_cached_exact_inventory_candidate_for_target(state, target, &search_roots)
+            .filter(|path| {
+                !excluded_current_path.as_deref().is_some_and(|excluded| {
+                    Self::media_paths_refer_to_same_file(Path::new(path), Path::new(excluded))
+                })
+            })
             .or_else(|| self.media_match_cached_room_candidate_for_target(state, target))
         else {
             let _ = self.media_match_remote_lookup_pending_for_target(state, target);

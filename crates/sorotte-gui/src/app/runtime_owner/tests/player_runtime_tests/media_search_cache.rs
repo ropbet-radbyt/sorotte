@@ -1313,6 +1313,169 @@ fn gui_persisted_config_runtime_owner_keeps_plex_filename_ambiguity_authoritativ
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_exact_case_search_root_file_over_folded_current_file()
+{
+    let root = test_temp_root("exact-case-search-root-before-folded-current");
+    let current_directory = root.join("current");
+    std::fs::create_dir_all(&current_directory)
+        .expect("current-player fixture directory should be created");
+    let current_path = current_directory.join("Pilot.mkv");
+    let expected_path = root.join("pilot.mkv");
+    std::fs::write(&current_path, b"current").expect("folded current fixture should be written");
+    std::fs::write(&expected_path, b"exact").expect("exact-case fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .expect("case-sensitive quick resolution should complete"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        },
+        "the exact-case search-root file must outrank a case-folded current-player match"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_exact_case_indexed_file_over_folded_current_file() {
+    let root = test_temp_root("exact-case-index-before-folded-current");
+    let current_directory = root.join("current");
+    let nested_directory = root.join("nested");
+    std::fs::create_dir_all(&current_directory)
+        .expect("current-player fixture directory should be created");
+    std::fs::create_dir_all(&nested_directory)
+        .expect("nested exact-case fixture directory should be created");
+    let current_path = current_directory.join("Pilot.mkv");
+    let expected_path = nested_directory.join("pilot.mkv");
+    std::fs::write(&current_path, b"current").expect("folded current fixture should be written");
+    std::fs::write(&expected_path, b"exact").expect("indexed exact-case fixture should be written");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: root.clone(),
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                candidates_by_name: std::collections::HashMap::from([(
+                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                        "pilot.mkv",
+                    )
+                    .expect("exact-case lookup key should be available"),
+                    vec!["nested/pilot.mkv".to_owned()],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .expect("case-sensitive indexed resolution should complete"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+        },
+        "the exact-case indexed file must outrank a case-folded current-player match"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_search_is_exhausted() {
+    let root = test_temp_root("folded-current-after-exact-search");
+    let media_root = root.join("library");
+    std::fs::create_dir_all(&media_root).expect("folded-current media root should be created");
+    let current_path = media_root.join("Pilot.mkv");
+    std::fs::write(&current_path, b"current").expect("folded current fixture should be written");
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("folded current path should be present in exact inventory");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: media_root,
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                candidates_by_name: std::collections::HashMap::new(),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .expect("folded current fallback resolution should complete"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: current_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        },
+        "a folded current-player inventory hit must remain deferred until exact evidence is exhausted"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn gui_persisted_config_runtime_owner_rejects_uncorroborated_current_player_plex_title_collision() {
     let root = test_temp_root("plex-current-player-title-collision");
@@ -1491,7 +1654,8 @@ fn gui_persisted_config_runtime_owner_preserves_plex_alias_priority_in_exact_inv
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_excludes_title_only_current_path_from_exact_inventory() {
+fn gui_persisted_config_runtime_owner_excludes_case_folded_title_only_current_path_from_exact_inventory()
+ {
     let root = test_temp_root("plex-title-collision-exact-inventory");
     let media_root = root.join("library");
     std::fs::create_dir_all(&media_root).expect("collision inventory root should be created");
@@ -1499,7 +1663,8 @@ fn gui_persisted_config_runtime_owner_excludes_title_only_current_path_from_exac
     std::fs::write(&current_path, b"unrelated")
         .expect("collision inventory candidate should be written");
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
@@ -1539,7 +1704,7 @@ fn gui_persisted_config_runtime_owner_excludes_title_only_current_path_from_exac
         )]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
-    let plex_uri = "plex://machine-1/metadata/123?title=Pilot.mkv&file=Missing.S01E01.mkv";
+    let plex_uri = "plex://machine-1/metadata/123?title=pilot.mkv&file=Missing.S01E01.mkv";
     assert_eq!(
         owner.media_match_cached_exact_inventory_candidate_for_target(
             &state,
@@ -1556,6 +1721,27 @@ fn gui_persisted_config_runtime_owner_excludes_title_only_current_path_from_exac
     assert!(
         !matches!(resolution, GuiUserMediaTargetResolution::Resolved { .. }),
         "an uncorroborated title-only current path must remain ineligible even when exact inventory sees it"
+    );
+
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
+    let source_state = &mut state.main_window.playlist[0].source_state;
+    source_state.policy = GuiPlaylistSourcePolicy::ForceMediaMatching;
+    source_state.selection_origin = GuiPlaylistSourceSelectionOrigin::UserOverride;
+    source_state.current_provider_id = GuiMediaSourceProviderId::media_matching();
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange,
+        "Force Media Matching must not reopen the excluded current path through folded inventory"
+    );
+    assert!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .is_none_or(|attempt| { attempt.state != PlaylistResolutionAttemptState::Loading }),
+        "the excluded current path must not start a media-load attempt"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -1577,6 +1763,16 @@ fn gui_persisted_config_runtime_owner_keeps_matching_local_file_for_plex_uri_wit
         size_bytes: Some(4),
         media_type: Some(sorotte_plex::PlexMediaType::Episode),
     });
+    let case_variant_file_name_uri =
+        sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine-1".to_owned(),
+            rating_key: "case-variant".to_owned(),
+            title: Some("Episode 1".to_owned()),
+            file_name: Some("episode 1.MKV".to_owned()),
+            duration_millis: Some(90_000),
+            size_bytes: Some(4),
+            media_type: Some(sorotte_plex::PlexMediaType::Episode),
+        });
     let mismatched_size_uri =
         sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
             machine_identifier: "machine-1".to_owned(),
@@ -1608,6 +1804,10 @@ fn gui_persisted_config_runtime_owner_keeps_matching_local_file_for_plex_uri_wit
     assert!(
         owner.current_player_matches_media_target(&plex_uri),
         "a Plex URI published for a local file should match the already-open local path by filename and size"
+    );
+    assert!(
+        owner.current_player_matches_media_target(&case_variant_file_name_uri),
+        "remote Plex filename aliases should remain case-insensitive when size corroborates the local file"
     );
     assert!(
         !owner.current_player_matches_media_target(&mismatched_size_uri),

@@ -1481,8 +1481,23 @@ fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MediaMatchInventoryExactTarget {
     key: String,
+    folded_key: String,
     file_name: String,
+    folded_file_name: String,
     has_path_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum MediaMatchInventoryExactResolution {
+    Resolved(String),
+    Ambiguous { candidate_count: usize },
+}
+
+type MediaMatchInventoryCredibilityRank = (usize, usize, usize, usize, usize);
+
+struct MediaMatchInventoryRankedCandidate {
+    credibility_rank: MediaMatchInventoryCredibilityRank,
+    path: String,
 }
 
 fn media_match_inventory_exact_target(target: &str) -> Option<MediaMatchInventoryExactTarget> {
@@ -1495,43 +1510,62 @@ fn media_match_inventory_exact_target(target: &str) -> Option<MediaMatchInventor
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::trim)
-        .filter(|name| !name.is_empty())?
-        .to_ascii_lowercase();
+        .filter(|name| !name.is_empty())?;
+    let file_name = if cfg!(windows) {
+        file_name.to_ascii_lowercase()
+    } else {
+        file_name.to_owned()
+    };
+    let key = normalize_media_path(target_path);
     let has_path_context = target.contains('/')
         || target.contains('\\')
         || target_path.is_absolute()
         || target_path.components().count() > 1;
     Some(MediaMatchInventoryExactTarget {
-        // Remote aliases remain ASCII-case-insensitive even though filesystem identities retain
-        // case on platforms where it is significant.
-        key: normalize_media_path(target_path).to_ascii_lowercase(),
+        folded_key: key.to_ascii_lowercase(),
+        folded_file_name: file_name.to_ascii_lowercase(),
+        key,
         file_name,
         has_path_context,
     })
 }
 
-fn media_match_inventory_exact_target_rank(
-    comparison_path: &str,
-    file_name: &str,
-    target: &MediaMatchInventoryExactTarget,
-) -> Option<usize> {
-    if target.has_path_context {
-        if comparison_path == target.key {
-            return Some(0);
-        }
-        return comparison_path
-            .strip_suffix(&target.key)
-            .filter(|prefix| prefix.ends_with('/'))
-            .map(|_| 1);
+fn media_match_inventory_path_target_rank(path: &str, target: &str) -> Option<usize> {
+    if path == target {
+        return Some(0);
     }
-    (file_name == target.file_name).then_some(2)
+    path.strip_suffix(target)
+        .filter(|prefix| prefix.ends_with('/'))
+        .map(|_| 1)
 }
 
-pub(super) fn media_match_inventory_exact_candidate_for_targets(
+fn media_match_inventory_exact_target_rank(
+    normalized_path: &str,
+    folded_path: &str,
+    file_name: &str,
+    folded_file_name: &str,
+    target: &MediaMatchInventoryExactTarget,
+) -> Option<(usize, usize)> {
+    if target.has_path_context {
+        if let Some(target_rank) =
+            media_match_inventory_path_target_rank(normalized_path, &target.key)
+        {
+            return Some((0, target_rank));
+        }
+        return media_match_inventory_path_target_rank(folded_path, &target.folded_key)
+            .map(|target_rank| (1, target_rank));
+    }
+    if file_name == target.file_name {
+        return Some((0, 2));
+    }
+    (folded_file_name == target.folded_file_name).then_some((1, 2))
+}
+
+pub(super) fn media_match_inventory_exact_resolution_for_targets(
     root: &Path,
     search_roots: &[PathBuf],
     targets: &[String],
-) -> Option<String> {
+) -> Option<MediaMatchInventoryExactResolution> {
     let targets = targets
         .iter()
         .filter_map(|target| media_match_inventory_exact_target(target))
@@ -1548,7 +1582,8 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         .ok()?
         .inventory_paths()
         .ok()?;
-    let mut best_match: Option<(usize, usize, usize, usize, String, String)> = None;
+    let mut best_match: Option<MediaMatchInventoryRankedCandidate> = None;
+    let mut best_credibility_match_count = 0_usize;
 
     for row in rows {
         if !normalized_roots
@@ -1558,20 +1593,29 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
             continue;
         }
         let path = Path::new(&row);
-        let Some(file_name) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.to_ascii_lowercase())
-        else {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()).map(|name| {
+            if cfg!(windows) {
+                name.to_ascii_lowercase()
+            } else {
+                name.to_owned()
+            }
+        }) else {
             continue;
         };
-        let comparison_path = row.to_ascii_lowercase();
-        let Some((alias_rank, target_rank)) = targets
+        let folded_path = row.to_ascii_lowercase();
+        let folded_file_name = file_name.to_ascii_lowercase();
+        let Some((alias_rank, case_rank, target_rank)) = targets
             .iter()
             .enumerate()
             .filter_map(|(alias_rank, target)| {
-                media_match_inventory_exact_target_rank(&comparison_path, &file_name, target)
-                    .map(|target_rank| (alias_rank, target_rank))
+                media_match_inventory_exact_target_rank(
+                    &row,
+                    &folded_path,
+                    &file_name,
+                    &folded_file_name,
+                    target,
+                )
+                .map(|(case_rank, target_rank)| (alias_rank, case_rank, target_rank))
             })
             .min()
         else {
@@ -1585,16 +1629,50 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
             .position(|root| media_match_path_is_under_root(&row, root))
             .unwrap_or(usize::MAX);
         let depth = path.components().count();
-        let rank = (alias_rank, target_rank, root_order, depth, row.clone(), row);
-        if best_match
-            .as_ref()
-            .is_none_or(|best_rank| rank < *best_rank)
-        {
-            best_match = Some(rank);
+        let credibility_rank = (alias_rank, case_rank, target_rank, root_order, depth);
+        match best_match.as_ref() {
+            None => {
+                best_credibility_match_count = 1;
+                best_match = Some(MediaMatchInventoryRankedCandidate {
+                    credibility_rank,
+                    path: row,
+                });
+            }
+            Some(best) if credibility_rank < best.credibility_rank => {
+                best_credibility_match_count = 1;
+                best_match = Some(MediaMatchInventoryRankedCandidate {
+                    credibility_rank,
+                    path: row,
+                });
+            }
+            Some(best) if credibility_rank == best.credibility_rank => {
+                best_credibility_match_count += 1;
+                if row < best.path {
+                    best_match = Some(MediaMatchInventoryRankedCandidate {
+                        credibility_rank,
+                        path: row,
+                    });
+                }
+            }
+            Some(_) => {}
         }
     }
 
-    best_match.map(|(_, _, _, _, _, path)| path)
+    match (best_match, best_credibility_match_count) {
+        (
+            Some(MediaMatchInventoryRankedCandidate {
+                credibility_rank: (_, case_rank, _, _, _),
+                ..
+            }),
+            candidate_count,
+        ) if case_rank == 1 && candidate_count > 1 => {
+            Some(MediaMatchInventoryExactResolution::Ambiguous { candidate_count })
+        }
+        (Some(MediaMatchInventoryRankedCandidate { path, .. }), _) => {
+            Some(MediaMatchInventoryExactResolution::Resolved(path))
+        }
+        (None, _) => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2981,15 +3059,65 @@ mod tests {
         )
         .expect("mixed-case media path should be inventoried");
 
-        let resolved = media_match_inventory_exact_candidate_for_targets(
+        let resolution = media_match_inventory_exact_resolution_for_targets(
             &root,
             std::slice::from_ref(&media_root),
             &["mixedcaselibrary/SHOW.S01E01.MKV".to_owned()],
-        )
-        .expect("differently cased path alias should resolve");
+        );
+        let expected = normalize_media_path(&media_path);
 
-        assert_eq!(resolved, normalize_media_path(&media_path));
+        assert_eq!(
+            resolution,
+            Some(MediaMatchInventoryExactResolution::Resolved(
+                expected.clone()
+            ))
+        );
+        let Some(MediaMatchInventoryExactResolution::Resolved(resolved)) = resolution else {
+            panic!("differently cased path alias should resolve");
+        };
         assert!(Path::new(&resolved).is_file());
+        std::fs::remove_dir_all(root).expect("temporary media root should be removable");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exact_inventory_prefers_exact_case_and_reports_folded_case_collisions() {
+        let root = unique_media_match_test_root("exact-inventory-case-collision");
+        let media_root = root.join("library");
+        let upper_path = media_root.join("Pilot.mkv");
+        let lower_path = media_root.join("pilot.mkv");
+        std::fs::create_dir_all(&media_root).expect("case-collision media root should be created");
+        std::fs::write(&upper_path, b"upper").expect("uppercase media fixture should be written");
+        std::fs::write(&lower_path, b"lower").expect("lowercase media fixture should be written");
+        inventory_media_match_candidates(
+            &root,
+            std::slice::from_ref(&media_root),
+            &[upper_path, lower_path.clone()],
+            None,
+        )
+        .expect("case-distinct paths should be inventoried");
+
+        assert_eq!(
+            media_match_inventory_exact_resolution_for_targets(
+                &root,
+                std::slice::from_ref(&media_root),
+                &["pilot.mkv".to_owned()],
+            ),
+            Some(MediaMatchInventoryExactResolution::Resolved(
+                normalize_media_path(&lower_path)
+            )),
+            "an exact-case alias must outrank a case-folded alias"
+        );
+        assert_eq!(
+            media_match_inventory_exact_resolution_for_targets(
+                &root,
+                std::slice::from_ref(&media_root),
+                &["PILOT.MKV".to_owned()],
+            ),
+            Some(MediaMatchInventoryExactResolution::Ambiguous { candidate_count: 2 }),
+            "equally ranked case-folded aliases must not resolve lexically"
+        );
+
         std::fs::remove_dir_all(root).expect("temporary media root should be removable");
     }
 

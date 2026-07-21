@@ -206,11 +206,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if local_file_name.is_empty() {
             return false;
         }
-        let name_matches = if cfg!(windows) {
-            local_file_name.eq_ignore_ascii_case(target_file_name)
-        } else {
-            local_file_name == target_file_name
-        };
+        // The Plex filename is a remote alias rather than a local filesystem identity.
+        let name_matches = local_file_name.eq_ignore_ascii_case(target_file_name);
         if !name_matches {
             return false;
         }
