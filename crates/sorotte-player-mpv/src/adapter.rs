@@ -3944,7 +3944,9 @@ impl MpvAdapter {
                     TrackedCommandKind::Load { ready, .. },
                     TrackedCommandObservation::Phase(phase),
                 ) => {
-                    *ready = phase == PlayerTransportPhase::Playing
+                    // Readiness is generation-scoped evidence; a later internal seek must not
+                    // erase it while the loadfile acknowledgement is still buffered.
+                    *ready |= phase == PlayerTransportPhase::Playing
                         || (phase == PlayerTransportPhase::ReadyPaused && ready_paused_observed);
                 }
                 (

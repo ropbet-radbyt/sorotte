@@ -1,7 +1,8 @@
 use super::*;
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandProgress, PlayerCommandProgressState,
-    PlayerCommandResult, PlayerPlayIntent, PlayerTransportTelemetryUpdate,
+    PlayerCommandResult, PlayerMediaLoadOutcome, PlayerPlayIntent, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
 };
 
 fn adapter_with_registered_observers(lines: &[&str]) -> MpvAdapter {
@@ -421,6 +422,44 @@ fn tracked_load_waits_for_file_loaded_and_ready_phase() {
     assert_completed(
         adapter.take_command_progress().expect("completed progress"),
         command_id,
+    );
+}
+
+#[test]
+fn tracked_load_retains_buffered_ready_evidence_until_command_acceptance() {
+    let target = "https://media.invalid/video";
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"event":"start-file","playlist_entry_id":5}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"event":"property-change","name":"seeking","data":true}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.invalid/video"}"#,
+        r#"{"request_id":3,"error":"success","data":null}"#,
+        r#"{"request_id":4,"error":"success","data":null}"#,
+    ]);
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::OpenFile(target.to_owned()))
+        .expect("load should be accepted after buffered events are reduced");
+
+    assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Seeking);
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
+        command_id,
+    );
+    assert_completed(
+        adapter.take_command_progress().expect("completed progress"),
+        command_id,
+    );
+    assert_eq!(adapter.take_command_progress(), None);
+    assert_eq!(
+        adapter
+            .take_media_load_outcome()
+            .expect("file-loaded should retain its successful load outcome"),
+        PlayerMediaLoadOutcome::success(target, Some(target.to_owned()))
     );
 }
 
