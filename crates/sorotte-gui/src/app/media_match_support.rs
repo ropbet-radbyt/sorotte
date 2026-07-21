@@ -1502,22 +1502,24 @@ fn media_match_inventory_exact_target(target: &str) -> Option<MediaMatchInventor
         || target_path.is_absolute()
         || target_path.components().count() > 1;
     Some(MediaMatchInventoryExactTarget {
-        key: normalize_media_path(target_path),
+        // Remote aliases remain ASCII-case-insensitive even though filesystem identities retain
+        // case on platforms where it is significant.
+        key: normalize_media_path(target_path).to_ascii_lowercase(),
         file_name,
         has_path_context,
     })
 }
 
 fn media_match_inventory_exact_target_rank(
-    normalized_path: &str,
+    comparison_path: &str,
     file_name: &str,
     target: &MediaMatchInventoryExactTarget,
 ) -> Option<usize> {
     if target.has_path_context {
-        if normalized_path == target.key {
+        if comparison_path == target.key {
             return Some(0);
         }
-        return normalized_path
+        return comparison_path
             .strip_suffix(&target.key)
             .filter(|prefix| prefix.ends_with('/'))
             .map(|_| 1);
@@ -1563,11 +1565,12 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         else {
             continue;
         };
+        let comparison_path = row.to_ascii_lowercase();
         let Some((alias_rank, target_rank)) = targets
             .iter()
             .enumerate()
             .filter_map(|(alias_rank, target)| {
-                media_match_inventory_exact_target_rank(&row, &file_name, target)
+                media_match_inventory_exact_target_rank(&comparison_path, &file_name, target)
                     .map(|target_rank| (alias_rank, target_rank))
             })
             .min()
@@ -2961,6 +2964,33 @@ mod tests {
             ),
             GuiMediaMatchToolHealth::Healthy
         );
+    }
+
+    #[test]
+    fn exact_inventory_path_aliases_remain_ascii_case_insensitive() {
+        let root = unique_media_match_test_root("exact-inventory-case-insensitive-alias");
+        let media_root = root.join("MixedCaseLibrary");
+        let media_path = media_root.join("Show.S01E01.mkv");
+        std::fs::create_dir_all(&media_root).expect("mixed-case media root should be created");
+        std::fs::write(&media_path, b"fixture").expect("mixed-case media file should be written");
+        inventory_media_match_candidates(
+            &root,
+            std::slice::from_ref(&media_root),
+            std::slice::from_ref(&media_path),
+            None,
+        )
+        .expect("mixed-case media path should be inventoried");
+
+        let resolved = media_match_inventory_exact_candidate_for_targets(
+            &root,
+            std::slice::from_ref(&media_root),
+            &["mixedcaselibrary/SHOW.S01E01.MKV".to_owned()],
+        )
+        .expect("differently cased path alias should resolve");
+
+        assert_eq!(resolved, normalize_media_path(&media_path));
+        assert!(Path::new(&resolved).is_file());
+        std::fs::remove_dir_all(root).expect("temporary media root should be removable");
     }
 
     #[test]
