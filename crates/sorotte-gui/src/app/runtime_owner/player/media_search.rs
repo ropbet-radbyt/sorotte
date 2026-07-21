@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::media_match_support::MediaMatchInventoryExactResolution;
+use crate::app::media_match_support::{MediaAliasMatchKind, MediaMatchInventoryExactResolution};
 use crate::app::runtime_owner::GuiPendingPlaylistSourceResolution;
 use std::time::SystemTime;
 
@@ -471,6 +471,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut index_prepared = false;
         let mut build_pending = false;
         let mut deferred_case_folded_current_path = None;
+        let mut deferred_case_folded_inventory_resolution = None;
 
         // Alias order is an evidence order, not a per-layer convenience. Exhaust
         // quick, indexed, and exact-inventory evidence for the Plex filename before
@@ -561,8 +562,15 @@ impl GuiPersistedConfigRuntimeOwner {
                         &search_roots,
                     )
             {
+                let match_kind = match &inventory_resolution {
+                    MediaMatchInventoryExactResolution::Resolved { match_kind, .. }
+                    | MediaMatchInventoryExactResolution::Ambiguous { match_kind, .. } => {
+                        *match_kind
+                    }
+                };
+                let is_folded_match = match_kind == MediaAliasMatchKind::FoldedCase;
                 match inventory_resolution {
-                    MediaMatchInventoryExactResolution::Resolved(path)
+                    MediaMatchInventoryExactResolution::Resolved { path, .. }
                         if !excluded_current_path.as_deref().is_some_and(|excluded| {
                             Self::media_paths_refer_to_same_file(
                                 Path::new(&path),
@@ -577,6 +585,14 @@ impl GuiPersistedConfigRuntimeOwner {
                             },
                         ) =>
                     {
+                        if is_folded_match {
+                            deferred_case_folded_inventory_resolution =
+                                Some(MediaMatchInventoryExactResolution::Resolved {
+                                    path,
+                                    match_kind,
+                                });
+                            break;
+                        }
                         self.unresolved_attached_media_target = None;
                         if !self.attached_media_search_refresh_pending() {
                             self.attached_media_search_next_retry_at = None;
@@ -586,8 +602,18 @@ impl GuiPersistedConfigRuntimeOwner {
                             source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
                         });
                     }
-                    MediaMatchInventoryExactResolution::Resolved(_) => {}
-                    MediaMatchInventoryExactResolution::Ambiguous { candidate_count } => {
+                    MediaMatchInventoryExactResolution::Resolved { .. } => {}
+                    MediaMatchInventoryExactResolution::Ambiguous {
+                        candidate_count, ..
+                    } => {
+                        if is_folded_match {
+                            deferred_case_folded_inventory_resolution =
+                                Some(MediaMatchInventoryExactResolution::Ambiguous {
+                                    candidate_count,
+                                    match_kind,
+                                });
+                            break;
+                        }
                         self.unresolved_attached_media_target = Some(target);
                         return Ok(GuiUserMediaTargetResolution::Ambiguous { candidate_count });
                     }
@@ -627,11 +653,23 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.automatic_media_search_timeout(state),
             );
         }
-        if self.attached_media_search_in_flight()
-            || (deferred_case_folded_current_path.is_some()
-                && self.attached_media_search_refresh_required())
-        {
+        if self.attached_media_search_in_flight() {
             Ok(GuiUserMediaTargetResolution::Pending)
+        } else if let Some(resolution) = deferred_case_folded_inventory_resolution {
+            match resolution {
+                MediaMatchInventoryExactResolution::Resolved { path, .. } => {
+                    self.unresolved_attached_media_target = None;
+                    // Preserve any scheduled double-check so a later exact-case file can
+                    // replace this compatibility fallback.
+                    Ok(GuiUserMediaTargetResolution::Resolved {
+                        path,
+                        source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
+                    })
+                }
+                MediaMatchInventoryExactResolution::Ambiguous {
+                    candidate_count, ..
+                } => Ok(GuiUserMediaTargetResolution::Ambiguous { candidate_count }),
+            }
         } else if let Some(path) = deferred_case_folded_current_path {
             self.unresolved_attached_media_target = None;
             // Preserve the scheduled double-check so a later exact-case file can replace this

@@ -1427,14 +1427,9 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
         media_match_fingerprinting_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
-    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+    crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
         std::slice::from_ref(&media_root),
-        None,
-        &state.media_match.settings,
-        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
-        None,
-        |_| {},
     )
     .expect("folded current path should be present in exact inventory");
 
@@ -1450,7 +1445,7 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
         root_indexes_by_key: std::collections::HashMap::from([(
             root_key.clone(),
             GuiAttachedMediaSearchRootIndex {
-                root_key,
+                root_key: root_key.clone(),
                 root_path: media_root,
                 built_at_unix_ms: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1459,8 +1454,15 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
                 candidates_by_name: std::collections::HashMap::new(),
             },
         )]),
-        roots_requiring_refresh: std::collections::BTreeSet::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key]),
     });
+    owner.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Failed;
+    owner.attached_media_search_next_retry_at =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    assert!(!owner.attached_media_search_in_flight());
+    assert!(owner.attached_media_search_refresh_required());
+    assert!(owner.attached_media_search_retry_scheduled());
 
     assert_eq!(
         owner
@@ -1470,8 +1472,154 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
             path: current_path.to_string_lossy().into_owned(),
             source: GuiUserMediaTargetResolutionSource::QuickLocal,
         },
-        "a folded current-player inventory hit must remain deferred until exact evidence is exhausted"
+        "a failed exact search with a future retry must not starve the folded current-player fallback"
     );
+    assert!(!owner.attached_media_search_in_flight());
+    assert!(owner.attached_media_search_refresh_required());
+    assert!(owner.attached_media_search_retry_scheduled());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded_inventory() {
+    let root = test_temp_root("active-exact-index-before-folded-inventory");
+    let media_root = root.join("library");
+    std::fs::create_dir_all(&media_root).expect("folded-inventory media root should be created");
+    let folded_path = media_root.join("Pilot.mkv");
+    std::fs::write(&folded_path, b"folded").expect("folded inventory fixture should be written");
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
+        &root,
+        std::slice::from_ref(&media_root),
+    )
+    .expect("folded inventory fixture should be indexed");
+
+    let exact_directory = media_root.join("season");
+    std::fs::create_dir_all(&exact_directory)
+        .expect("nested exact-case fixture directory should be created");
+    let exact_path = exact_directory.join("pilot.mkv");
+    std::fs::write(&exact_path, b"exact").expect("exact-case fixture should be written");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key.clone()]),
+    });
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .expect("folded inventory lookup should wait for the active exact index"),
+        GuiUserMediaTargetResolution::Pending
+    );
+    assert!(owner.attached_media_search_in_flight());
+    let queued_search = owner
+        .pending_attached_media_resolution
+        .take()
+        .expect("the folded inventory hit should start the due exact search");
+    queued_search
+        .cancel_flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(queued_search.roots, vec![root_key.clone()]);
+
+    let (search_tx, search_rx) = std::sync::mpsc::channel();
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        roots: vec![root_key.clone()],
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        result_rx: search_rx,
+    });
+
+    search_tx
+        .send(GuiAttachedMediaSearchBuildStatus::Completed(vec![
+            GuiAttachedMediaSearchRootRefreshResult {
+                root_key: root_key.clone(),
+                index: Some(GuiAttachedMediaSearchRootIndex {
+                    root_key,
+                    root_path: media_root,
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                            "pilot.mkv",
+                        )
+                        .expect("exact-case lookup key should be available"),
+                        vec!["season/pilot.mkv".to_owned()],
+                    )]),
+                }),
+                error: None,
+            },
+        ]))
+        .expect("exact index completion should be queued");
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .expect("completed exact index lookup should resolve"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: exact_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+        },
+        "the newly indexed exact-case path must replace the folded inventory fallback"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reports_equal_exact_inventory_paths_as_ambiguous() {
+    let root = test_temp_root("equal-exact-inventory-ambiguity");
+    let media_root = root.join("library");
+    for show in ["Show A", "Show B"] {
+        let show_directory = media_root.join(show);
+        std::fs::create_dir_all(&show_directory)
+            .expect("exact-inventory fixture directory should be created");
+        std::fs::write(show_directory.join("episode.mkv"), show.as_bytes())
+            .expect("exact-inventory fixture should be written");
+    }
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
+        &root,
+        std::slice::from_ref(&media_root),
+    )
+    .expect("equal exact-case paths should be indexed");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key]),
+    });
+    owner.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Failed;
+    owner.attached_media_search_next_retry_at =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, "episode.mkv")
+            .expect("equal exact inventory lookup should complete"),
+        GuiUserMediaTargetResolution::Ambiguous { candidate_count: 2 },
+        "equally credible exact-case inventory paths must not resolve by lexical order"
+    );
+    assert!(!owner.attached_media_search_in_flight());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1670,14 +1818,9 @@ fn gui_persisted_config_runtime_owner_excludes_case_folded_title_only_current_pa
         media_match_fingerprinting_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
-    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+    crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
         std::slice::from_ref(&media_root),
-        None,
-        &state.media_match.settings,
-        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
-        None,
-        |_| {},
     )
     .expect("collision inventory should be persisted");
 
@@ -2608,6 +2751,97 @@ fn gui_persisted_config_runtime_owner_does_not_block_ready_plex_for_scheduled_lo
         "opening Plex must preserve the scheduled background local refresh"
     );
     assert!(owner.attached_media_search_refresh_required());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_plex() {
+    let root = test_temp_root("folded-current-with-ready-plex-and-failed-index");
+    let current_directory = root.join("current");
+    std::fs::create_dir_all(&current_directory)
+        .expect("folded-current fixture directory should be created");
+    let current_path = current_directory.join("Pilot.mkv");
+    std::fs::write(&current_path, b"current").expect("folded current fixture should be written");
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let target = "pilot.mkv";
+    let (stream_target, _) = test_plex_stream_target(target, "folded-current-fallback");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key]),
+    });
+    owner.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Failed;
+    owner.attached_media_search_next_retry_at =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("machine-1".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let trigger_key = owner
+        .plex_stream_resolve_trigger_key
+        .clone()
+        .expect("automatic resolution should queue Plex while the local retry is scheduled");
+    let operation_context = owner
+        .plex_stream_resolve_context
+        .clone()
+        .expect("queued Plex resolution should retain its operation context");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    result_tx
+        .send(GuiPlexStreamResolveWorkerResult {
+            operation_context,
+            trigger_key,
+            result: Ok(GuiPlexStreamResolveOutcome {
+                stream_target: Ok(Some(stream_target)),
+                cache: sorotte_plex::PlexMatchCache::default(),
+            }),
+            staged_cache_write: None,
+        })
+        .expect("ready Plex fallback should be queued");
+    owner.plex_stream_resolve_rx = Some(result_rx);
+    owner.plex_stream_resolve_result = None;
+    assert!(owner.pump_plex_stream_resolution_worker(&state));
+
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    owner.last_attached_media_resolution_trigger = None;
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
+        "a failed exact search must not turn a scheduled retry into a pending blocker"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(current_path.to_string_lossy().as_ref())
+    );
+    assert!(!owner.attached_media_search_in_flight());
+    assert!(owner.attached_media_search_refresh_required());
+    assert!(owner.attached_media_search_retry_scheduled());
 
     let _ = std::fs::remove_dir_all(&root);
 }

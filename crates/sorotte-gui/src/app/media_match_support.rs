@@ -1471,6 +1471,15 @@ fn inventory_media_match_candidates(
     result.map(|_| ())
 }
 
+#[cfg(test)]
+pub(super) fn rebuild_persisted_media_match_inventory_for_tests(
+    root: &Path,
+    search_roots: &[PathBuf],
+) -> Result<(), String> {
+    let candidates = collect_media_match_candidates(search_roots);
+    inventory_media_match_candidates(root, search_roots, &candidates, None)
+}
+
 fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
     normalized_path == normalized_root
         || normalized_path
@@ -1487,10 +1496,22 @@ struct MediaMatchInventoryExactTarget {
     has_path_context: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MediaAliasMatchKind {
+    ExactCase,
+    FoldedCase,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MediaMatchInventoryExactResolution {
-    Resolved(String),
-    Ambiguous { candidate_count: usize },
+    Resolved {
+        path: String,
+        match_kind: MediaAliasMatchKind,
+    },
+    Ambiguous {
+        candidate_count: usize,
+        match_kind: MediaAliasMatchKind,
+    },
 }
 
 type MediaMatchInventoryCredibilityRank = (usize, usize, usize, usize, usize);
@@ -1658,20 +1679,22 @@ pub(super) fn media_match_inventory_exact_resolution_for_targets(
         }
     }
 
-    match (best_match, best_credibility_match_count) {
-        (
-            Some(MediaMatchInventoryRankedCandidate {
-                credibility_rank: (_, case_rank, _, _, _),
-                ..
-            }),
-            candidate_count,
-        ) if case_rank == 1 && candidate_count > 1 => {
-            Some(MediaMatchInventoryExactResolution::Ambiguous { candidate_count })
-        }
-        (Some(MediaMatchInventoryRankedCandidate { path, .. }), _) => {
-            Some(MediaMatchInventoryExactResolution::Resolved(path))
-        }
-        (None, _) => None,
+    let candidate = best_match?;
+    let match_kind = if candidate.credibility_rank.1 == 0 {
+        MediaAliasMatchKind::ExactCase
+    } else {
+        MediaAliasMatchKind::FoldedCase
+    };
+    if best_credibility_match_count > 1 {
+        Some(MediaMatchInventoryExactResolution::Ambiguous {
+            candidate_count: best_credibility_match_count,
+            match_kind,
+        })
+    } else {
+        Some(MediaMatchInventoryExactResolution::Resolved {
+            path: candidate.path,
+            match_kind,
+        })
     }
 }
 
@@ -3065,14 +3088,21 @@ mod tests {
             &["mixedcaselibrary/SHOW.S01E01.MKV".to_owned()],
         );
         let expected = normalize_media_path(&media_path);
+        let expected_match_kind = if cfg!(windows) {
+            MediaAliasMatchKind::ExactCase
+        } else {
+            MediaAliasMatchKind::FoldedCase
+        };
 
         assert_eq!(
             resolution,
-            Some(MediaMatchInventoryExactResolution::Resolved(
-                expected.clone()
-            ))
+            Some(MediaMatchInventoryExactResolution::Resolved {
+                path: expected.clone(),
+                match_kind: expected_match_kind,
+            })
         );
-        let Some(MediaMatchInventoryExactResolution::Resolved(resolved)) = resolution else {
+        let Some(MediaMatchInventoryExactResolution::Resolved { path: resolved, .. }) = resolution
+        else {
             panic!("differently cased path alias should resolve");
         };
         assert!(Path::new(&resolved).is_file());
@@ -3103,9 +3133,10 @@ mod tests {
                 std::slice::from_ref(&media_root),
                 &["pilot.mkv".to_owned()],
             ),
-            Some(MediaMatchInventoryExactResolution::Resolved(
-                normalize_media_path(&lower_path)
-            )),
+            Some(MediaMatchInventoryExactResolution::Resolved {
+                path: normalize_media_path(&lower_path),
+                match_kind: MediaAliasMatchKind::ExactCase,
+            }),
             "an exact-case alias must outrank a case-folded alias"
         );
         assert_eq!(
@@ -3114,7 +3145,10 @@ mod tests {
                 std::slice::from_ref(&media_root),
                 &["PILOT.MKV".to_owned()],
             ),
-            Some(MediaMatchInventoryExactResolution::Ambiguous { candidate_count: 2 }),
+            Some(MediaMatchInventoryExactResolution::Ambiguous {
+                candidate_count: 2,
+                match_kind: MediaAliasMatchKind::FoldedCase,
+            }),
             "equally ranked case-folded aliases must not resolve lexically"
         );
 

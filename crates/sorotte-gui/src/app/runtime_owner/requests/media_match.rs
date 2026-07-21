@@ -1080,7 +1080,7 @@ impl GuiPersistedConfigRuntimeOwner {
             target,
             search_roots,
         )? {
-            MediaMatchInventoryExactResolution::Resolved(path) => Some(path),
+            MediaMatchInventoryExactResolution::Resolved { path, .. } => Some(path),
             MediaMatchInventoryExactResolution::Ambiguous { .. } => None,
         }
     }
