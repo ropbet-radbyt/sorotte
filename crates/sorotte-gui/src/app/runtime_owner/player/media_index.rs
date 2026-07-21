@@ -110,18 +110,31 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn automatic_media_resolution_trigger(
         &self,
+        state: &SorotteGuiShellAppState,
         target: &str,
         playlist_entry_id: Option<GuiPlaylistEntryId>,
-        playlist_generation: u64,
-        source_provider: &str,
+        source_policy: GuiPlaylistSourcePolicy,
         roots: &[String],
         media_match_remote_targets: String,
     ) -> GuiAutomaticMediaResolutionTrigger {
+        let source_provider = match source_policy {
+            GuiPlaylistSourcePolicy::Automatic => "automatic",
+            GuiPlaylistSourcePolicy::ForceLocal => "local",
+            GuiPlaylistSourcePolicy::PreferMediaMatching => "media-matching-preferred",
+            GuiPlaylistSourcePolicy::ForceMediaMatching => "media-matching",
+            GuiPlaylistSourcePolicy::ForcePlex => "plex-stream",
+        };
+        let plex_operation_context = matches!(
+            source_policy,
+            GuiPlaylistSourcePolicy::Automatic | GuiPlaylistSourcePolicy::ForcePlex
+        )
+        .then(|| self.plex_operation_context(&self.runtime_operation_settings(state)));
         GuiAutomaticMediaResolutionTrigger {
             target: target.to_owned(),
             playlist_entry_id,
-            playlist_generation,
+            playlist_generation: self.playlist_resolution.generation,
             source_provider: source_provider.to_owned(),
+            plex_operation_context,
             roots: roots.to_vec(),
             media_match_remote_targets,
             current_player_path: self.current_player_media_path(),

@@ -590,7 +590,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
         attempt.state,
         crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Failed
     );
-    assert_eq!(attempt.failed_candidates.len(), 1);
+    assert_eq!(attempt.candidate_failures.len(), 1);
 
     let _ = std::fs::remove_dir_all(media_root);
 }

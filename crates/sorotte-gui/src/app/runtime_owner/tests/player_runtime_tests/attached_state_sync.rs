@@ -139,6 +139,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         player: Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
             state: player_state.clone(),
         }))),
+        player_attachment_epoch: 0,
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
         player_apply_state: Default::default(),
         managed_mpv_process: None,
@@ -157,6 +158,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
         playlist_resolution_attempt: None,
         plex_miss_state: None,
+        plex_context_media_resolution_pending: false,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,

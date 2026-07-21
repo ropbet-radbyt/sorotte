@@ -29,6 +29,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_stream_helper_probe_completed: false,
             startup_stream_helper_probe_rx: None,
             player: None,
+            player_attachment_epoch: 0,
             player_launch_state: GuiPlayerLaunchRuntimeState::None,
             player_apply_state: GuiPlayerApplyState::default(),
             managed_mpv_process: None,
@@ -48,6 +49,7 @@ impl GuiPersistedConfigRuntimeOwner {
             playlist_resolution: GuiPlaylistResolutionCoordinator::default(),
             playlist_resolution_attempt: None,
             plex_miss_state: None,
+            plex_context_media_resolution_pending: false,
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
@@ -279,9 +281,13 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app::runtime_owner) fn detach_player(&mut self) {
+        let attachment_ended = self.player.is_some() || self.managed_mpv_process.is_some();
         self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
+        if attachment_ended {
+            self.player_attachment_epoch = self.player_attachment_epoch.wrapping_add(1);
+        }
         self.network_options_hook_failure_reason = None;
         self.network_options_runtime_health_revision = None;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;

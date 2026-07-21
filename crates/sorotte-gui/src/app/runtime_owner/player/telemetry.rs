@@ -265,7 +265,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         for outcome in media_load_outcomes {
-            self.handle_untracked_playlist_media_load_outcome(&outcome);
+            self.handle_playlist_media_load_outcome(&outcome);
             self.handle_player_media_load_outcome(outcome);
         }
         for mut update in local_file_updates {

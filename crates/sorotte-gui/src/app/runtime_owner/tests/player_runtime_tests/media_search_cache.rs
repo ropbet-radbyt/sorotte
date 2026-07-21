@@ -1,8 +1,11 @@
 use super::*;
 
+use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
+
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
 use crate::app::runtime_owner::{
     GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
+    GuiUserMediaTargetResolutionSource,
 };
 use crate::app::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
@@ -285,7 +288,7 @@ fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) 
         "the exact failed local path must be excluded instead of retried"
     );
     let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
-    assert_eq!(attempt.failed_candidates.len(), 1);
+    assert_eq!(attempt.candidate_failures.len(), 1);
     assert_eq!(
         attempt.candidate_provider,
         Some(GuiMediaSourceProviderId::plex_stream())
@@ -310,11 +313,10 @@ fn gui_persisted_config_runtime_owner_falls_back_after_tracked_local_open_failur
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_failure_backoff() {
+fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_file_evidence_changes() {
     let root = test_temp_root("repaired-local-candidate-retry");
     let local_path = root.join("episode.mkv");
-    std::fs::write(&local_path, b"repaired after first open")
-        .expect("retry fixture should be written");
+    std::fs::write(&local_path, b"broken").expect("initial failure fixture should be written");
     let local_path = local_path.to_string_lossy().into_owned();
 
     let (adapter, opened_paths) =
@@ -345,17 +347,15 @@ fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_failure_b
         std::slice::from_ref(&local_path)
     );
 
-    owner
-        .playlist_resolution_attempt
-        .as_mut()
-        .expect("failed attempt should remain retryable")
-        .failed_candidate_retry_at =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
-    assert!(owner.active_playlist_candidate_retry_due());
+    std::fs::write(
+        &local_path,
+        b"repaired after first open with changed file evidence",
+    )
+    .expect("candidate repair should update file evidence");
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
         SelectedPlaylistMediaSyncOutcome::StartedLoading,
-        "the same repaired path must become eligible after the bounded failure backoff"
+        "the same path must become eligible after its file evidence changes"
     );
     assert_eq!(
         opened_paths
@@ -368,6 +368,61 @@ fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_failure_b
     assert_eq!(
         owner.playlist_resolution_attempt.as_ref().unwrap().state,
         PlaylistResolutionAttemptState::Active
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_explicit_same_provider_request_retries_failed_candidate() {
+    let root = test_temp_root("explicit-local-candidate-retry");
+    let local_path = root.join("episode.mkv");
+    std::fs::write(&local_path, b"candidate remains unchanged")
+        .expect("explicit retry fixture should be written");
+    let local_path = local_path.to_string_lossy().into_owned();
+
+    let (adapter, opened_paths) =
+        FailFirstOpenPlayerAdapter::new(FirstOpenFailureMode::Synchronous);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .unwrap()
+            .candidate_failures
+            .len(),
+        1
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    assert!(owner.handle_resolve_playlist_source_request(
+        &handle,
+        &mut state,
+        0,
+        GuiMediaSourceProviderId::local(),
+    ));
+    assert_eq!(
+        opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[local_path.clone(), local_path]
+    );
+    assert_eq!(
+        owner.playlist_resolution_attempt.as_ref().unwrap().state,
+        PlaylistResolutionAttemptState::Loading
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -897,6 +952,616 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri(
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_prefers_unique_plex_filename_over_ambiguous_title_in_quick_search()
+ {
+    let root = test_temp_root("plex-alias-priority-quick");
+    let first_root = root.join("library-a");
+    let second_root = root.join("library-b");
+    std::fs::create_dir_all(&first_root).expect("first Plex alias root should be created");
+    std::fs::create_dir_all(&second_root).expect("second Plex alias root should be created");
+    let expected_path = first_root.join("Show.S01E01.mkv");
+    std::fs::write(&expected_path, b"episode").expect("exact Plex filename should be written");
+    std::fs::write(first_root.join("Pilot"), b"first")
+        .expect("first ambiguous Plex title should be written");
+    std::fs::write(second_root.join("Pilot"), b"second")
+        .expect("second ambiguous Plex title should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![
+            first_root.to_string_lossy().into_owned(),
+            second_root.to_string_lossy().into_owned(),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+
+    let resolution = owner
+        .resolve_main_window_user_media_target(&state, plex_uri)
+        .expect("quick Plex alias resolution should succeed");
+
+    assert_eq!(
+        resolution,
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        },
+        "the exact Plex filename must be evaluated before an ambiguous human-readable title"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_unique_plex_filename_over_ambiguous_title_in_index() {
+    let root = test_temp_root("plex-alias-priority-index");
+    let first_directory = root.join("show-a");
+    let second_directory = root.join("show-b");
+    std::fs::create_dir_all(&first_directory)
+        .expect("first indexed Plex alias directory should be created");
+    std::fs::create_dir_all(&second_directory)
+        .expect("second indexed Plex alias directory should be created");
+    let expected_path = first_directory.join("Show.S01E01.mkv");
+    std::fs::write(&expected_path, b"episode")
+        .expect("indexed exact Plex filename should be written");
+    std::fs::write(first_directory.join("Pilot"), b"first")
+        .expect("first indexed ambiguous title should be written");
+    std::fs::write(second_directory.join("Pilot"), b"second")
+        .expect("second indexed ambiguous title should be written");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let candidates_by_name = std::collections::HashMap::from([
+        (
+            GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                "Show.S01E01.mkv",
+            )
+            .expect("exact Plex filename key should be available"),
+            vec!["show-a/Show.S01E01.mkv".to_owned()],
+        ),
+        (
+            GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key("Pilot")
+                .expect("Plex title key should be available"),
+            vec!["show-a/Pilot".to_owned(), "show-b/Pilot".to_owned()],
+        ),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: root.clone(),
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                candidates_by_name,
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+
+    let resolution = owner
+        .resolve_main_window_user_media_target(&state, plex_uri)
+        .expect("indexed Plex alias resolution should succeed");
+
+    assert_eq!(
+        resolution,
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+        },
+        "an ambiguous title must not terminate indexed lookup before the stronger filename"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_exhausts_indexed_filename_before_quick_title_ambiguity() {
+    let root = test_temp_root("plex-alias-priority-cross-layer-index");
+    let first_root = root.join("library-a");
+    let second_root = root.join("library-b");
+    let indexed_directory = first_root.join("nested-show");
+    std::fs::create_dir_all(&indexed_directory)
+        .expect("nested exact-filename directory should be created");
+    std::fs::create_dir_all(&second_root).expect("second quick-title root should be created");
+    let expected_path = indexed_directory.join("Show.S01E01.mkv");
+    std::fs::write(&expected_path, b"episode")
+        .expect("nested exact Plex filename should be written");
+    std::fs::write(first_root.join("Pilot"), b"first")
+        .expect("first quick ambiguous title should be written");
+    std::fs::write(second_root.join("Pilot"), b"second")
+        .expect("second quick ambiguous title should be written");
+
+    let first_root_key =
+        crate::app::media_search_cache::normalized_media_search_root_key(&first_root);
+    let second_root_key =
+        crate::app::media_search_cache::normalized_media_search_root_key(&second_root);
+    let built_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_millis() as u64;
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![first_root_key.clone(), second_root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([
+            (
+                first_root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: first_root_key,
+                    root_path: first_root.clone(),
+                    built_at_unix_ms,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                            "Show.S01E01.mkv",
+                        )
+                        .expect("exact Plex filename key should be available"),
+                        vec!["nested-show/Show.S01E01.mkv".to_owned()],
+                    )]),
+                },
+            ),
+            (
+                second_root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: second_root_key,
+                    root_path: second_root.clone(),
+                    built_at_unix_ms,
+                    candidates_by_name: std::collections::HashMap::new(),
+                },
+            ),
+        ]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![
+            first_root.to_string_lossy().into_owned(),
+            second_root.to_string_lossy().into_owned(),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+    let expected = GuiUserMediaTargetResolution::Resolved {
+        path: expected_path.to_string_lossy().into_owned(),
+        source: GuiUserMediaTargetResolutionSource::MediaSearchIndex,
+    };
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("cross-layer main-window Plex resolution should succeed"),
+        expected,
+        "quick title ambiguity must not mask a unique indexed filename"
+    );
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target_for_automatic_sync(&state, plex_uri)
+            .expect("cross-layer Automatic Plex resolution should succeed"),
+        expected,
+        "Automatic resolution must preserve the same cross-layer evidence priority"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_waits_for_in_flight_filename_index_before_quick_title() {
+    let root = test_temp_root("plex-alias-priority-pending-filename-index");
+    let quick_title_path = root.join("Pilot");
+    std::fs::write(&quick_title_path, b"title")
+        .expect("quick Plex title fixture should be written");
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let (pending_tx, pending_rx) = std::sync::mpsc::channel();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::new(),
+        roots_requiring_refresh: std::collections::BTreeSet::from([root_key.clone()]),
+    });
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        roots: vec![root_key],
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        result_rx: pending_rx,
+    });
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("pending filename evidence should be reported"),
+        GuiUserMediaTargetResolution::Pending,
+        "a quick title must wait while the index can still establish stronger filename evidence"
+    );
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target_for_automatic_sync(&state, plex_uri)
+            .expect("Automatic pending filename evidence should be reported"),
+        GuiUserMediaTargetResolution::Pending,
+        "Automatic resolution must also wait at the filename-class boundary"
+    );
+
+    drop(pending_tx);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_exhausts_inventory_filename_before_indexed_title() {
+    let root = test_temp_root("plex-alias-priority-cross-layer-inventory");
+    let media_root = root.join("library");
+    let title_directory = media_root.join("indexed-title");
+    let filename_directory = media_root.join("inventory-filename");
+    std::fs::create_dir_all(&title_directory).expect("indexed title directory should be created");
+    std::fs::create_dir_all(&filename_directory)
+        .expect("exact-inventory filename directory should be created");
+    let title_path = title_directory.join("Pilot.mkv");
+    std::fs::write(&title_path, b"title").expect("indexed Plex title should be written");
+    let expected_path = filename_directory.join("Show.S01E01.mkv");
+    std::fs::write(&expected_path, b"filename")
+        .expect("exact-inventory Plex filename should be written");
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("cross-layer Plex inventory should be persisted");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: media_root.clone(),
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                // Deliberately model a stale attached index that knows the title but
+                // not the stronger filename already present in exact inventory.
+                candidates_by_name: std::collections::HashMap::from([(
+                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                        "Pilot.mkv",
+                    )
+                    .expect("Plex title key should be available"),
+                    vec!["indexed-title/Pilot.mkv".to_owned()],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot.mkv&file=Show.S01E01.mkv";
+    let expected = GuiUserMediaTargetResolution::Resolved {
+        path: sorotte_media_match::normalize_media_path(&expected_path),
+        source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
+    };
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("inventory-priority main-window Plex resolution should succeed"),
+        expected,
+        "an indexed title must not mask stronger exact-inventory filename evidence"
+    );
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target_for_automatic_sync(&state, plex_uri)
+            .expect("inventory-priority Automatic Plex resolution should succeed"),
+        expected,
+        "Automatic resolution must exhaust exact-inventory filename evidence before title"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_keeps_plex_filename_ambiguity_authoritative() {
+    let root = test_temp_root("plex-filename-ambiguity-authoritative");
+    let first_root = root.join("library-a");
+    let second_root = root.join("library-b");
+    std::fs::create_dir_all(&first_root).expect("first Plex ambiguity root should be created");
+    std::fs::create_dir_all(&second_root).expect("second Plex ambiguity root should be created");
+    std::fs::write(first_root.join("Show.S01E01.mkv"), b"first")
+        .expect("first ambiguous exact filename should be written");
+    std::fs::write(second_root.join("Show.S01E01.mkv"), b"second")
+        .expect("second ambiguous exact filename should be written");
+    std::fs::write(first_root.join("Pilot"), b"unique title")
+        .expect("unique fallback title should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![
+            first_root.to_string_lossy().into_owned(),
+            second_root.to_string_lossy().into_owned(),
+        ]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("ambiguous Plex filename resolution should complete"),
+        GuiUserMediaTargetResolution::Ambiguous { candidate_count: 2 },
+        "a unique title must not override ambiguity in the stronger exact-filename class"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_rejects_uncorroborated_current_player_plex_title_collision() {
+    let root = test_temp_root("plex-current-player-title-collision");
+    let current_path = root.join("Pilot");
+    std::fs::write(&current_path, b"unrelated")
+        .expect("unrelated current-player title fixture should be written");
+    let current_path = current_path.to_string_lossy().into_owned();
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file =
+        Some(sorotte_player_api::LocalFileUpdate::new("Pilot").with_path(current_path.clone()));
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: root.clone(),
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                candidates_by_name: std::collections::HashMap::from([(
+                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
+                        "Pilot",
+                    )
+                    .expect("current-player title key should be available"),
+                    vec!["Pilot".to_owned()],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
+
+    assert!(
+        !owner.current_player_matches_media_target(plex_uri),
+        "a title-only basename collision is not corroborated Plex identity"
+    );
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("Plex current-player collision check should complete"),
+        GuiUserMediaTargetResolution::Missing,
+        "neither quick nor indexed resolution may reclassify the unrelated current file through the title alias"
+    );
+
+    let corroborated_uri = sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "124".to_owned(),
+        title: Some("Pilot".to_owned()),
+        file_name: Some("Show.S01E01.mkv".to_owned()),
+        duration_millis: None,
+        size_bytes: Some(9),
+        media_type: Some(sorotte_plex::PlexMediaType::Episode),
+    });
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, &corroborated_uri)
+            .expect("size-corroborated Plex title resolution should complete"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: current_path,
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        },
+        "matching size metadata may corroborate a title-only current-player alias"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_uses_plex_title_when_uri_has_no_filename() {
+    let root = test_temp_root("plex-title-only-fallback");
+    let expected_path = root.join("Pilot");
+    std::fs::write(&expected_path, b"episode")
+        .expect("title-only Plex fallback fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot";
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("title-only Plex fallback should resolve"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        }
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_uses_plex_title_after_filename_class_no_match() {
+    let root = test_temp_root("plex-title-after-filename-no-match");
+    let expected_path = root.join("Pilot");
+    std::fs::write(&expected_path, b"episode")
+        .expect("Plex title fallback fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Missing.S01E01.mkv";
+
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&state, plex_uri)
+            .expect("Plex title fallback after filename no-match should resolve"),
+        GuiUserMediaTargetResolution::Resolved {
+            path: expected_path.to_string_lossy().into_owned(),
+            source: GuiUserMediaTargetResolutionSource::QuickLocal,
+        }
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_plex_alias_priority_in_exact_inventory() {
+    let root = test_temp_root("plex-alias-priority-exact-inventory");
+    let media_root = root.join("library");
+    let title_directory = media_root.join("a-title");
+    let filename_directory = media_root.join("z-filename");
+    std::fs::create_dir_all(&title_directory).expect("title inventory directory should be created");
+    std::fs::create_dir_all(&filename_directory)
+        .expect("filename inventory directory should be created");
+    std::fs::write(title_directory.join("Pilot.mkv"), b"title")
+        .expect("title inventory candidate should be written");
+    let expected_path = filename_directory.join("Show.S01E01.mkv");
+    std::fs::write(&expected_path, b"filename")
+        .expect("filename inventory candidate should be written");
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("Plex alias inventory should be persisted");
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot.mkv&file=Show.S01E01.mkv";
+
+    assert_eq!(
+        owner.media_match_cached_exact_inventory_candidate_for_target(
+            &state,
+            plex_uri,
+            std::slice::from_ref(&media_root),
+        ),
+        Some(sorotte_media_match::normalize_media_path(&expected_path)),
+        "exact inventory must rank the filename alias ahead of a lexically earlier title alias"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_excludes_title_only_current_path_from_exact_inventory() {
+    let root = test_temp_root("plex-title-collision-exact-inventory");
+    let media_root = root.join("library");
+    std::fs::create_dir_all(&media_root).expect("collision inventory root should be created");
+    let current_path = media_root.join("Pilot.mkv");
+    std::fs::write(&current_path, b"unrelated")
+        .expect("collision inventory candidate should be written");
+
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        media_matching_plugin_enabled: Some(true),
+        media_match_fingerprinting_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+        &root,
+        std::slice::from_ref(&media_root),
+        None,
+        &state.media_match.settings,
+        &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        None,
+        |_| {},
+    )
+    .expect("collision inventory should be persisted");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: media_root.clone(),
+                built_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be after unix epoch")
+                    .as_millis() as u64,
+                candidates_by_name: std::collections::HashMap::new(),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    });
+    let plex_uri = "plex://machine-1/metadata/123?title=Pilot.mkv&file=Missing.S01E01.mkv";
+    assert_eq!(
+        owner.media_match_cached_exact_inventory_candidate_for_target(
+            &state,
+            plex_uri,
+            std::slice::from_ref(&media_root),
+        ),
+        Some(sorotte_media_match::normalize_media_path(&current_path)),
+        "fixture must expose the title-only current path through exact inventory"
+    );
+
+    let resolution = owner
+        .resolve_main_window_user_media_target(&state, plex_uri)
+        .expect("exact-inventory collision resolution should complete");
+    assert!(
+        !matches!(resolution, GuiUserMediaTargetResolution::Resolved { .. }),
+        "an uncorroborated title-only current path must remain ineligible even when exact inventory sees it"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_keeps_matching_local_file_for_plex_uri_without_streaming() {
     let root = test_temp_root("plex-playlist-uri-current-local");
     let selected_media_path = root.join("Episode 1.mkv");
@@ -1381,7 +2046,7 @@ fn gui_persisted_config_runtime_owner_preferred_media_match_recovers_from_local_
         ]
     );
     let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
-    assert_eq!(attempt.failed_candidates.len(), 1);
+    assert_eq!(attempt.candidate_failures.len(), 1);
     assert_eq!(
         attempt.candidate_provider,
         Some(GuiMediaSourceProviderId::media_matching())
@@ -2266,6 +2931,194 @@ fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_matc
         .playlist_resolution_source_state_for_projection(&state)
         .expect("the confirmed Plex candidate should project as active");
     assert_eq!(active_source.status, GuiPlaylistSourceStatus::Active);
+}
+
+#[test]
+fn gui_runtime_owner_reruns_active_automatic_miss_when_plex_server_context_changes() {
+    let root = test_temp_root("automatic-plex-context-reresolution");
+    let config_path = root.join("sorotte.ini");
+    let old_settings = StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        plex_plugin_enabled: Some(true),
+        plex_streaming_enabled: Some(true),
+        plex_user_token: Some("user-token".into()),
+        plex_selected_server_id: Some("old-machine".to_owned()),
+        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+        plex_selected_server_token: Some("old-server-token".into()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &old_settings)
+        .expect("the initial Plex settings should persist for the integration fixture");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.active_shared_playlist_index = Some(0);
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&old_settings);
+    state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
+    let active_entry_id = state.main_window.playlist[0].entry_id;
+
+    let (_first_sync_tx, first_sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(first_sync_rx);
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let old_stream_trigger = owner
+        .plex_stream_resolve_trigger_key
+        .take()
+        .expect("the active Automatic row should queue its initial Plex resolution");
+    let old_stream_context = owner
+        .plex_stream_resolve_context
+        .take()
+        .expect("the initial Plex resolution should retain its operation context");
+    owner.plex_sync_rx = None;
+    owner.plex_stream_resolve_result = Some(GuiPlexStreamResolveWorkerResult {
+        operation_context: old_stream_context,
+        trigger_key: old_stream_trigger.clone(),
+        result: Ok(GuiPlexStreamResolveOutcome {
+            stream_target: Ok(None),
+            cache: sorotte_plex::PlexMatchCache::default(),
+        }),
+        staged_cache_write: None,
+    });
+    owner.last_attached_media_resolution_trigger = None;
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    let old_automatic_trigger = owner
+        .last_attached_media_resolution_trigger
+        .clone()
+        .expect("the active Automatic miss should retain its outer trigger");
+    let old_index_revision = owner.attached_media_search_index_revision;
+    let old_player_path = owner
+        .player_local_file
+        .as_ref()
+        .and_then(|file| file.path.clone());
+    let miss = owner
+        .plex_miss_state
+        .as_ref()
+        .expect("the initial Plex miss should enter independent backoff");
+    assert_eq!(miss.attempt_count, 1);
+    assert!(miss.next_retry_at > std::time::Instant::now());
+    assert!(
+        !owner.active_plex_miss_retry_due(&state),
+        "the ordinary miss deadline must still be in the future"
+    );
+
+    owner.plex_servers.push(PlexServerConnection {
+        name: "New server".to_owned(),
+        machine_identifier: "new-machine".to_owned(),
+        uri: "http://127.0.0.1:32401".to_owned(),
+        access_token: "new-server-token".into(),
+        owned: true,
+        has_local_connection: true,
+        connection_kind: PlexServerConnectionKind::Local,
+    });
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    assert!(owner.handle_select_plex_server_request(
+        &handle,
+        &mut state,
+        "new-machine".to_owned(),
+        "http://127.0.0.1:32401".to_owned(),
+    ));
+    assert_eq!(
+        state.saved_configuration.plex_selected_server_id.as_deref(),
+        Some("new-machine")
+    );
+    assert_eq!(
+        state
+            .saved_configuration
+            .plex_selected_server_url
+            .as_deref(),
+        Some("http://127.0.0.1:32401")
+    );
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_eq!(owner.active_shared_playlist_index, Some(0));
+    assert_eq!(state.main_window.playlist[0].entry_id, active_entry_id);
+    assert_eq!(
+        state.main_window.playlist[0].source_state.policy,
+        GuiPlaylistSourcePolicy::Automatic
+    );
+    assert_eq!(
+        owner.last_attached_media_resolution_trigger.as_ref(),
+        Some(&old_automatic_trigger),
+        "the test must not manually reactivate the row or clear its cached trigger"
+    );
+    assert!(owner.plex_context_media_resolution_pending);
+
+    let (_new_sync_tx, new_sync_rx) = std::sync::mpsc::channel();
+    owner.plex_sync_rx = Some(new_sync_rx);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let new_stream_trigger = owner
+        .plex_stream_resolve_trigger_key
+        .as_ref()
+        .expect("the runtime pump should immediately queue Plex against the new server context");
+    assert_ne!(
+        new_stream_trigger, &old_stream_trigger,
+        "the queued Plex trigger must change with the selected server and token"
+    );
+    let new_stream_context = owner
+        .plex_stream_resolve_context
+        .as_ref()
+        .expect("the new-context Plex resolution should remain pending");
+    assert_ne!(
+        Some(new_stream_context),
+        old_automatic_trigger.plex_operation_context.as_ref(),
+        "server selection must change the privacy-safe operation context"
+    );
+    assert_eq!(
+        owner
+            .last_attached_media_resolution_trigger
+            .as_ref()
+            .and_then(|trigger| trigger.plex_operation_context.as_ref()),
+        Some(new_stream_context),
+        "the outer Automatic trigger must track the context used by the queued Plex worker"
+    );
+    assert!(
+        owner.plex_miss_state.is_none(),
+        "the old server's miss backoff must not suppress the new-context resolution"
+    );
+    assert!(!owner.plex_context_media_resolution_pending);
+    assert_eq!(state.main_window.active_playlist_index, Some(0));
+    assert_eq!(state.main_window.playlist[0].entry_id, active_entry_id);
+    assert_eq!(
+        owner.attached_media_search_index_revision, old_index_revision,
+        "the retry must not depend on a local-index change"
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone()),
+        old_player_path,
+        "the retry must not depend on a player-path observation"
+    );
+    let new_automatic_trigger = owner
+        .last_attached_media_resolution_trigger
+        .as_ref()
+        .expect("the immediate retry should retain its new outer trigger");
+    assert_eq!(new_automatic_trigger.target, old_automatic_trigger.target);
+    assert_eq!(
+        new_automatic_trigger.playlist_entry_id,
+        old_automatic_trigger.playlist_entry_id
+    );
+    assert_eq!(
+        new_automatic_trigger.playlist_generation,
+        old_automatic_trigger.playlist_generation
+    );
+    assert_eq!(new_automatic_trigger.roots, old_automatic_trigger.roots);
+    assert_eq!(
+        new_automatic_trigger.current_player_path,
+        old_automatic_trigger.current_player_path
+    );
+    assert_eq!(
+        new_automatic_trigger.index_revision,
+        old_automatic_trigger.index_revision
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

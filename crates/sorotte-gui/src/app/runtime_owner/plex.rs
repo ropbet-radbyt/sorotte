@@ -159,6 +159,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_sync_rx = None;
         self.plex_sync_next_tick_due_at = None;
         self.clear_plex_stream_resolution_state();
+        self.plex_context_media_resolution_pending = true;
     }
 
     pub(super) fn invalidate_plex_operation_context_if_settings_changed(

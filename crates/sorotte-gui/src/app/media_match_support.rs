@@ -1546,7 +1546,7 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         .ok()?
         .inventory_paths()
         .ok()?;
-    let mut best_match: Option<(usize, usize, usize, String, String)> = None;
+    let mut best_match: Option<(usize, usize, usize, usize, String, String)> = None;
 
     for row in rows {
         if !normalized_roots
@@ -1563,9 +1563,13 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         else {
             continue;
         };
-        let Some(target_rank) = targets
+        let Some((alias_rank, target_rank)) = targets
             .iter()
-            .filter_map(|target| media_match_inventory_exact_target_rank(&row, &file_name, target))
+            .enumerate()
+            .filter_map(|(alias_rank, target)| {
+                media_match_inventory_exact_target_rank(&row, &file_name, target)
+                    .map(|target_rank| (alias_rank, target_rank))
+            })
             .min()
         else {
             continue;
@@ -1578,7 +1582,7 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
             .position(|root| media_match_path_is_under_root(&row, root))
             .unwrap_or(usize::MAX);
         let depth = path.components().count();
-        let rank = (target_rank, root_order, depth, row.clone(), row);
+        let rank = (alias_rank, target_rank, root_order, depth, row.clone(), row);
         if best_match
             .as_ref()
             .is_none_or(|best_rank| rank < *best_rank)
@@ -1587,7 +1591,7 @@ pub(super) fn media_match_inventory_exact_candidate_for_targets(
         }
     }
 
-    best_match.map(|(_, _, _, _, path)| path)
+    best_match.map(|(_, _, _, _, _, path)| path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

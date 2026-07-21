@@ -11,10 +11,10 @@ use super::super::runtime_stack::GuiPlayerLaunchRuntimeState;
 use super::super::shell_state::{
     GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
     GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
-    GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
-    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, GuiShellAction,
-    MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SorotteGuiShellAppState,
+    GuiPlayerSetupRuntimeSnapshot, GuiPlaylistSourcePolicy, GuiSeekPreparationDegradedReason,
+    GuiSeekPreparationPhase, GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState,
+    GuiShellAction, MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
@@ -314,8 +314,26 @@ impl GuiPersistedConfigRuntimeOwner {
             let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
         }
-        if self.active_plex_miss_retry_due(state) || self.active_playlist_candidate_retry_due() {
+        let plex_context_media_resolution_pending =
+            std::mem::take(&mut self.plex_context_media_resolution_pending)
+                && self
+                    .current_shared_playlist_index_and_target(state)
+                    .and_then(|(index, _)| state.main_window.playlist.get(index))
+                    .is_some_and(|row| {
+                        matches!(
+                            row.source_state.policy,
+                            GuiPlaylistSourcePolicy::Automatic | GuiPlaylistSourcePolicy::ForcePlex
+                        )
+                    });
+        if plex_context_media_resolution_pending {
+            self.plex_miss_state = None;
+        }
+        let active_resolution_retry_due =
+            self.active_plex_miss_retry_due(state) || self.active_playlist_candidate_retry_due();
+        if active_resolution_retry_due {
             self.last_attached_media_resolution_trigger = None;
+        }
+        if plex_context_media_resolution_pending || active_resolution_retry_due {
             let projected_state = state.clone();
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
         }

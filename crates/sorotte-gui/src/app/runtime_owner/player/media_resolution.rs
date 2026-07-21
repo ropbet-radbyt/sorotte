@@ -282,6 +282,10 @@ impl GuiMediaResolutionCandidate {
         &self.target
     }
 
+    pub(super) fn provider_kind(&self) -> GuiMediaResolutionProviderKind {
+        self.provider
+    }
+
     pub(super) fn provider_id(&self) -> GuiMediaSourceProviderId {
         match self.provider {
             GuiMediaResolutionProviderKind::Core | GuiMediaResolutionProviderKind::MediaSearch => {

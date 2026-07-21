@@ -346,6 +346,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) startup_stream_helper_probe_rx:
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
+    pub(super) player_attachment_epoch: u64,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
@@ -367,6 +368,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) playlist_resolution: GuiPlaylistResolutionCoordinator,
     playlist_resolution_attempt: Option<player::PlaylistResolutionAttempt>,
     plex_miss_state: Option<player::PlexMissState>,
+    plex_context_media_resolution_pending: bool,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
@@ -1085,6 +1087,7 @@ pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) playlist_entry_id: Option<GuiPlaylistEntryId>,
     pub(super) playlist_generation: u64,
     pub(super) source_provider: String,
+    pub(super) plex_operation_context: Option<GuiPlexOperationContext>,
     pub(super) roots: Vec<String>,
     pub(super) media_match_remote_targets: String,
     pub(super) current_player_path: Option<String>,
@@ -1100,6 +1103,7 @@ impl std::fmt::Debug for GuiAutomaticMediaResolutionTrigger {
             .field("playlist_entry_id", &self.playlist_entry_id)
             .field("playlist_generation", &self.playlist_generation)
             .field("source_provider", &self.source_provider)
+            .field("plex_operation_context", &self.plex_operation_context)
             .field("root_count", &self.roots.len())
             .field(
                 "media_match_remote_targets",
@@ -1200,6 +1204,16 @@ mod media_target_debug_tests {
             playlist_entry_id: Some(GuiPlaylistEntryId::next()),
             playlist_generation: 11,
             source_provider: "plex".to_owned(),
+            plex_operation_context: Some(GuiPlexOperationContext {
+                identity_generation: 13,
+                user_token_fingerprint: Some(17),
+                selected_server_token_fingerprint: Some(19),
+                selected_server_id: Some("server-id".to_owned()),
+                selected_server_url: Some(secret.to_owned()),
+                plugin_enabled: true,
+                sync_enabled: true,
+                streaming_enabled: true,
+            }),
             roots: vec![secret.to_owned()],
             media_match_remote_targets: secret.to_owned(),
             current_player_path: Some(secret.to_owned()),
