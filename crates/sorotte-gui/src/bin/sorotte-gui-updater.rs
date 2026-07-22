@@ -36,6 +36,7 @@ struct UpdaterArgs {
     target_exe: String,
     log_path: PathBuf,
     restart: bool,
+    detached_helper_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +47,14 @@ enum UpdateInput {
     },
     LegacySource {
         source_dir: PathBuf,
+        backup_dir: PathBuf,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterExecutionLocation {
+    InstalledBootstrap,
+    DetachedHelper,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,7 +157,7 @@ fn run_update_with_checks<F, G>(
 ) -> Result<(), String>
 where
     F: FnOnce() -> Result<bool, String>,
-    G: FnOnce(&Path) -> Result<(), String>,
+    G: FnOnce(&UpdaterArgs) -> Result<UpdaterExecutionLocation, String>,
 {
     if args.target_exe != GUI_EXE {
         return Err(format!("target executable must be {GUI_EXE}"));
@@ -159,8 +167,11 @@ where
         let _ = append_log(&args.log_path, &error);
         return Err(error);
     }
-    if args.input.is_none() || matches!(args.input.as_ref(), Some(UpdateInput::Package { .. })) {
-        updater_location_check(&args.target_dir)?;
+    if matches!(
+        updater_location_check(&args)?,
+        UpdaterExecutionLocation::InstalledBootstrap
+    ) {
+        return launch_detached_update_helper(&args);
     }
     append_log(&args.log_path, "waiting for Sorotte GUI to exit")?;
     wait_for_process_exit(args.pid)?;
@@ -202,7 +213,10 @@ where
                 (Err(error), Err(cleanup)) => Err(format!("{error}; additionally {cleanup}")),
             }
         }
-        UpdateInput::LegacySource { source_dir } => {
+        UpdateInput::LegacySource {
+            source_dir,
+            backup_dir: _,
+        } => {
             validate_legacy_source_root(&source_dir)?;
             apply_validated_source_update(&args, &source_dir)
         }
@@ -240,6 +254,7 @@ where
     let mut log_path = None;
     let mut restart = false;
     let mut recover = false;
+    let mut detached_helper_sha256 = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -271,6 +286,10 @@ where
             "--log" => log_path = Some(PathBuf::from(required_value(&mut args, "--log")?)),
             "--restart" => restart = true,
             "--recover" => recover = true,
+            "--detached-helper-sha256" => {
+                detached_helper_sha256 =
+                    Some(required_value(&mut args, "--detached-helper-sha256")?)
+            }
             other => return Err(format!("unknown updater argument {other:?}")),
         }
     }
@@ -284,8 +303,11 @@ where
                 package_sha256,
             })
         }
-        (false, None, None, Some(source_dir), Some(_legacy_backup_dir)) => {
-            Some(UpdateInput::LegacySource { source_dir })
+        (false, None, None, Some(source_dir), Some(backup_dir)) => {
+            Some(UpdateInput::LegacySource {
+                source_dir,
+                backup_dir,
+            })
         }
         (false, None, None, None, None) => {
             return Err("--package and --package-sha256 are required".to_owned());
@@ -297,6 +319,9 @@ where
             );
         }
     };
+    if let Some(expected_sha256) = detached_helper_sha256.as_deref() {
+        validate_sha256_hex(expected_sha256)?;
+    }
     Ok(UpdaterArgs {
         pid: pid.ok_or_else(|| "--pid is required".to_owned())?,
         input,
@@ -304,6 +329,7 @@ where
         target_exe: target_exe.ok_or_else(|| "--target-exe is required".to_owned())?,
         log_path: log_path.ok_or_else(|| "--log is required".to_owned())?,
         restart,
+        detached_helper_sha256,
     })
 }
 
@@ -379,26 +405,178 @@ fn validate_legacy_source_root(source_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_updater_location(target_dir: &Path) -> Result<(), String> {
-    ensure_directory_is_not_reparse_point(target_dir)?;
+fn validate_updater_location(args: &UpdaterArgs) -> Result<UpdaterExecutionLocation, String> {
+    ensure_directory_is_not_reparse_point(&args.target_dir)?;
     let running = fs::canonicalize(
         env::current_exe().map_err(|error| format!("failed resolving updater path: {error}"))?,
     )
     .map_err(|error| format!("failed canonicalizing updater path: {error}"))?;
-    let installed = fs::canonicalize(target_dir.join(UPDATER_EXE)).map_err(|error| {
+    reject_reparse_path(&running)?;
+    let installed = fs::canonicalize(args.target_dir.join(UPDATER_EXE)).map_err(|error| {
         format!(
             "failed resolving installed update helper {}: {error}",
-            target_dir.join(UPDATER_EXE).display()
+            args.target_dir.join(UPDATER_EXE).display()
         )
     })?;
-    if !paths_are_equal(&running, &installed) {
+    reject_reparse_path(&installed)?;
+    let Some(expected_detached_sha256) = args.detached_helper_sha256.as_deref() else {
+        if paths_are_equal(&running, &installed) {
+            return Ok(UpdaterExecutionLocation::InstalledBootstrap);
+        }
+        if let Some(UpdateInput::LegacySource { source_dir, .. }) = args.input.as_ref() {
+            validate_legacy_source_root(source_dir)?;
+            let staged_legacy_helper =
+                fs::canonicalize(source_dir.join(UPDATER_EXE)).map_err(|error| {
+                    format!(
+                        "failed resolving staged legacy update helper {}: {error}",
+                        source_dir.join(UPDATER_EXE).display()
+                    )
+                })?;
+            if paths_are_equal(&running, &staged_legacy_helper) {
+                return Ok(UpdaterExecutionLocation::DetachedHelper);
+            }
+        }
         return Err(format!(
             "refusing to update from an unprotected helper location {}; expected {}",
             running.display(),
             installed.display()
         ));
+    };
+    validate_sha256_hex(expected_detached_sha256)?;
+    if paths_are_equal(&running, &installed) {
+        return Err("detached updater mode cannot run from the installed helper path".to_owned());
     }
+    let running_parent = running
+        .parent()
+        .ok_or_else(|| "detached updater path has no parent directory".to_owned())?;
+    let bootstrap_root = running_parent
+        .parent()
+        .ok_or_else(|| "detached updater directory has no protected parent".to_owned())?;
+    let canonical_target = fs::canonicalize(&args.target_dir).map_err(|error| {
+        format!(
+            "failed canonicalizing updater target directory {}: {error}",
+            args.target_dir.display()
+        )
+    })?;
+    if !paths_are_equal(bootstrap_root, &canonical_target)
+        || !running_parent.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .starts_with(".sorotte-update-bootstrap-")
+        })
+    {
+        return Err(format!(
+            "detached updater helper {} is outside Sorotte's protected bootstrap directory",
+            running.display()
+        ));
+    }
+    require_file_digest(&running, expected_detached_sha256, "detached update helper")?;
+    require_file_digest(
+        &installed,
+        expected_detached_sha256,
+        "installed update helper",
+    )?;
+    Ok(UpdaterExecutionLocation::DetachedHelper)
+}
+
+fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
+    let running = env::current_exe()
+        .map_err(|error| format!("failed resolving installed updater path: {error}"))?;
+    reject_reparse_path(&running)?;
+    let bytes = fs::read(&running).map_err(|error| {
+        format!(
+            "failed reading installed updater {} for detached execution: {error}",
+            running.display()
+        )
+    })?;
+    let expected_sha256 = sha256_bytes(&bytes);
+    let bootstrap_dir = create_protected_bootstrap_dir(&args.target_dir)?;
+    let detached_path = bootstrap_dir.join("sorotte-gui-updater-bootstrap.exe");
+    let write_result = (|| {
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&detached_path)
+            .map_err(|error| {
+                format!(
+                    "failed creating detached update helper {}: {error}",
+                    detached_path.display()
+                )
+            })?;
+        output
+            .write_all(&bytes)
+            .and_then(|()| output.flush())
+            .and_then(|()| output.sync_all())
+            .map_err(|error| {
+                format!(
+                    "failed flushing detached update helper {}: {error}",
+                    detached_path.display()
+                )
+            })
+    })();
+    if let Err(error) = write_result {
+        let _ = remove_directory_if_exists(&bootstrap_dir);
+        return Err(error);
+    }
+    if let Err(error) =
+        require_file_digest(&detached_path, &expected_sha256, "detached update helper")
+    {
+        let _ = remove_directory_if_exists(&bootstrap_dir);
+        return Err(error);
+    }
+    append_log(
+        &args.log_path,
+        "delegating replacement to a detached authenticated updater copy",
+    )?;
+    let mut command = Command::new(&detached_path);
+    command.args(detached_update_helper_args(args, &expected_sha256));
+    command.spawn().map_err(|error| {
+        let _ = remove_directory_if_exists(&bootstrap_dir);
+        format!(
+            "failed launching detached update helper {}: {error}",
+            detached_path.display()
+        )
+    })?;
     Ok(())
+}
+
+fn detached_update_helper_args(args: &UpdaterArgs, expected_sha256: &str) -> Vec<String> {
+    let mut result = vec![
+        "--pid".to_owned(),
+        args.pid.to_string(),
+        "--target-dir".to_owned(),
+        args.target_dir.display().to_string(),
+        "--target-exe".to_owned(),
+        args.target_exe.clone(),
+        "--log".to_owned(),
+        args.log_path.display().to_string(),
+        "--detached-helper-sha256".to_owned(),
+        expected_sha256.to_owned(),
+    ];
+    match args.input.as_ref() {
+        Some(UpdateInput::Package {
+            package,
+            package_sha256,
+        }) => {
+            result.push("--package".to_owned());
+            result.push(package.display().to_string());
+            result.push("--package-sha256".to_owned());
+            result.push(package_sha256.clone());
+        }
+        Some(UpdateInput::LegacySource {
+            source_dir,
+            backup_dir,
+        }) => {
+            result.push("--source-dir".to_owned());
+            result.push(source_dir.display().to_string());
+            result.push("--backup-dir".to_owned());
+            result.push(backup_dir.display().to_string());
+        }
+        None => result.push("--recover".to_owned()),
+    }
+    if args.restart {
+        result.push("--restart".to_owned());
+    }
+    result
 }
 
 fn paths_are_equal(left: &Path, right: &Path) -> bool {
@@ -470,6 +648,26 @@ fn create_protected_staging_dir(target_dir: &Path) -> Result<PathBuf, String> {
     fs::create_dir(&path).map_err(|error| {
         format!(
             "failed creating protected update staging directory {}: {error}",
+            path.display()
+        )
+    })?;
+    ensure_directory_is_not_reparse_point(&path)?;
+    Ok(path)
+}
+
+fn create_protected_bootstrap_dir(target_dir: &Path) -> Result<PathBuf, String> {
+    ensure_directory_is_not_reparse_point(target_dir)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let path = target_dir.join(format!(
+        ".sorotte-update-bootstrap-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&path).map_err(|error| {
+        format!(
+            "failed creating protected updater bootstrap directory {}: {error}",
             path.display()
         )
     })?;
@@ -1767,7 +1965,7 @@ mod tests {
 
         assert!(matches!(
             args.input,
-            Some(UpdateInput::LegacySource { ref source_dir })
+            Some(UpdateInput::LegacySource { ref source_dir, .. })
                 if source_dir == Path::new("stage/extracted")
         ));
     }
@@ -1889,8 +2087,12 @@ mod tests {
         ])
         .unwrap();
 
-        run_update_with_elevation_check(args, || Ok(false))
-            .expect("the exact old-GUI invocation should bootstrap the v2 update");
+        run_update_with_checks(
+            args,
+            || Ok(false),
+            |_| Ok(UpdaterExecutionLocation::DetachedHelper),
+        )
+        .expect("the exact old-GUI invocation should bootstrap the v2 update");
 
         assert_eq!(fs::read(target.join(GUI_EXE)).unwrap(), b"new-gui");
         assert_eq!(fs::read(target.join(UPDATER_EXE)).unwrap(), b"new-updater");
@@ -2048,8 +2250,12 @@ mod tests {
             root.join("recovery.log").display().to_string(),
         ])
         .unwrap();
-        run_update_with_checks(recovery_args, || Ok(false), |_| Ok(()))
-            .expect("the recovery-only updater re-entry path should roll back the interruption");
+        run_update_with_checks(
+            recovery_args,
+            || Ok(false),
+            |_| Ok(UpdaterExecutionLocation::DetachedHelper),
+        )
+        .expect("the recovery-only updater re-entry path should roll back the interruption");
 
         assert_eq!(fs::read(target.join(GUI_EXE)).unwrap(), old_executable);
         assert_eq!(fs::read(target.join(UPDATER_EXE)).unwrap(), old_executable);

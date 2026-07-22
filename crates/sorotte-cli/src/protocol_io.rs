@@ -42,7 +42,13 @@ where
             break;
         }
 
-        if line.len() + available.len() > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+        let buffered_len = line.len() + available.len();
+        let ends_with_framing_cr = available
+            .last()
+            .or_else(|| line.last())
+            .is_some_and(|byte| *byte == b'\r');
+        let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
+        if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
             return Err(anyhow::anyhow!(
                 "Inbound protocol line too long: exceeded {} bytes",
                 MAX_INBOUND_PROTOCOL_LINE_BYTES
@@ -217,6 +223,21 @@ mod tests {
         assert_eq!(line.as_bytes(), input);
         let items = decode_message_line_items(&line).expect("batched line should decode");
         assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cli_accepts_exact_limit_payload_when_crlf_is_split_between_reads() {
+        let payload = vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES];
+        let mut framed = payload.clone();
+        framed.extend_from_slice(b"\r\n");
+        let mut reader = BufReader::with_capacity(MAX_INBOUND_PROTOCOL_LINE_BYTES + 1, &framed[..]);
+
+        let line = read_inbound_protocol_line(&mut reader)
+            .await
+            .expect("exact-limit split CRLF line should be accepted")
+            .expect("exact-limit line should be present");
+
+        assert_eq!(line.as_bytes(), payload);
     }
 
     #[tokio::test]

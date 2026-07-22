@@ -482,25 +482,11 @@ fn check_for_github_update(
     _user_initiated: bool,
     update_channel: Option<&str>,
 ) -> Result<LegacyUpdateCheckResult, String> {
-    if !update_supported_platform() {
+    let capability = self_update_capability_current_install();
+    if !capability.supported() {
         return Ok(LegacyUpdateCheckResult {
             status: LegacyUpdateCheckStatus::UpToDate,
-            message: "GitHub self-update is currently supported for Windows x64 GUI packages only."
-                .to_owned(),
-            url: None,
-            candidate: None,
-            self_update_supported: false,
-            public_servers: None,
-            checked_at_utc: String::new(),
-            user_initiated: false,
-        });
-    }
-
-    if !self_update_supported_current_install() {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
-            message: "GitHub self-update is only available for packaged Sorotte GUI installs."
-                .to_owned(),
+            message: capability.unavailable_message().to_owned(),
             url: None,
             candidate: None,
             self_update_supported: false,
@@ -986,6 +972,39 @@ fn update_supported_platform() -> bool {
     cfg!(all(windows, target_arch = "x86_64"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfUpdateCapability {
+    SupportedWritable,
+    RequiresElevation,
+    TargetDirectoryNotWritable,
+    UnsupportedPlatform,
+    UnpackagedInstall,
+}
+
+impl SelfUpdateCapability {
+    fn supported(self) -> bool {
+        self == Self::SupportedWritable
+    }
+
+    fn unavailable_message(self) -> &'static str {
+        match self {
+            Self::SupportedWritable => "Automatic self-update is available.",
+            Self::RequiresElevation => {
+                "This Sorotte GUI install requires elevation to update. Automatic elevation is disabled until releases have a pinned signing trust anchor; install the release manually."
+            }
+            Self::TargetDirectoryNotWritable => {
+                "This Sorotte GUI install directory is not writable, so automatic self-update is unavailable. Install the release manually."
+            }
+            Self::UnsupportedPlatform => {
+                "GitHub self-update is currently supported for Windows x64 GUI packages only."
+            }
+            Self::UnpackagedInstall => {
+                "GitHub self-update is only available for packaged Sorotte GUI installs."
+            }
+        }
+    }
+}
+
 fn current_install_marker_path() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|path| {
         path.parent()
@@ -1000,12 +1019,86 @@ fn current_install_marker() -> Option<GuiInstallMarker> {
 }
 
 fn self_update_supported_current_install() -> bool {
-    if !update_supported_platform() {
-        return false;
+    self_update_capability_current_install().supported()
+}
+
+fn self_update_capability_current_install() -> SelfUpdateCapability {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return SelfUpdateCapability::UnpackagedInstall;
+    };
+    #[cfg(windows)]
+    let requires_elevation = current_exe
+        .parent()
+        .is_some_and(path_requires_update_elevation);
+    #[cfg(not(windows))]
+    let requires_elevation = false;
+    self_update_capability_for_install(
+        &current_exe,
+        update_supported_platform(),
+        requires_elevation,
+    )
+}
+
+fn self_update_capability_for_install(
+    current_exe: &Path,
+    platform_supported: bool,
+    requires_elevation: bool,
+) -> SelfUpdateCapability {
+    self_update_capability_for_install_with_probe(
+        current_exe,
+        platform_supported,
+        requires_elevation,
+        update_target_directory_is_writable,
+    )
+}
+
+fn self_update_capability_for_install_with_probe<F>(
+    current_exe: &Path,
+    platform_supported: bool,
+    requires_elevation: bool,
+    writable_probe: F,
+) -> SelfUpdateCapability
+where
+    F: FnOnce(&Path) -> bool,
+{
+    if !platform_supported {
+        return SelfUpdateCapability::UnsupportedPlatform;
     }
-    current_install_marker_path()
-        .map(|path| path.is_file())
-        .unwrap_or(false)
+    let Some(target_dir) = current_exe.parent() else {
+        return SelfUpdateCapability::UnpackagedInstall;
+    };
+    if !target_dir.join(SOROTTE_GUI_INSTALL_MARKER).is_file() {
+        return SelfUpdateCapability::UnpackagedInstall;
+    }
+    if requires_elevation {
+        return SelfUpdateCapability::RequiresElevation;
+    }
+    if !writable_probe(target_dir) {
+        return SelfUpdateCapability::TargetDirectoryNotWritable;
+    }
+    SelfUpdateCapability::SupportedWritable
+}
+
+fn update_target_directory_is_writable(target_dir: &Path) -> bool {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let probe = target_dir.join(format!(
+        ".sorotte-update-write-probe-{}-{nonce}",
+        std::process::id(),
+    ));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(probe).is_ok()
+        }
+        Err(_) => false,
+    }
 }
 
 fn github_update_response_override_result(
@@ -1099,14 +1192,9 @@ fn download_and_stage_update_inner(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,
 ) -> Result<StagedUpdate, String> {
-    if !update_supported_platform() {
-        return Err("Self-update is only supported for Windows x64 GUI packages.".to_owned());
-    }
-    if !self_update_supported_current_install() {
-        return Err(
-            "This Sorotte GUI build is not a packaged install; update checks are allowed, but self-replacement is disabled."
-                .to_owned(),
-        );
+    let capability = self_update_capability_current_install();
+    if !capability.supported() {
+        return Err(capability.unavailable_message().to_owned());
     }
     let Some(gui_config_root) = gui_config_root else {
         return Err(
@@ -1431,14 +1519,9 @@ fn validate_extracted_update_payload(source_dir: &Path) -> Result<(), String> {
 }
 
 fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String> {
-    if !update_supported_platform() {
-        return Err("Self-update is only supported for Windows x64 GUI packages.".to_owned());
-    }
-    if !self_update_supported_current_install() {
-        return Err(
-            "This Sorotte GUI build is not a packaged install; self-replacement is disabled."
-                .to_owned(),
-        );
+    let capability = self_update_capability_current_install();
+    if !capability.supported() {
+        return Err(capability.unavailable_message().to_owned());
     }
     let current_pid = std::process::id().to_string();
     let target_exe = PathBuf::from(&staged_update.target_exe_path);
@@ -1446,13 +1529,6 @@ fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String
         .parent()
         .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?;
     let helper_args = staged_update_helper_args(staged_update, target_dir, &current_pid);
-    #[cfg(windows)]
-    if path_requires_update_elevation(target_dir) {
-        return Err(
-            "Automatic updates that require elevation are disabled until Sorotte releases have a pinned signing trust anchor. Download and install the release manually; the updater will not elevate a user-supplied package."
-                .to_owned(),
-        );
-    }
     let mut command = Command::new(&staged_update.updater_path);
     command.args(&helper_args);
     configure_gui_child_process(&mut command);
@@ -1944,7 +2020,8 @@ mod tests {
 
     use super::{
         GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckStatus,
-        SOROTTE_GUI_TARGET, StagedUpdate, StoredClientSettingsMvp, UpdateCandidate,
+        SOROTTE_GUI_EXECUTABLE, SOROTTE_GUI_INSTALL_MARKER, SOROTTE_GUI_TARGET,
+        SelfUpdateCapability, StagedUpdate, StoredClientSettingsMvp, UpdateCandidate,
         UpdateCandidateSource, UpdateChannel, UpdateManifest, check_for_github_update,
         cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
         default_update_check_message, fetch_public_servers_from_url,
@@ -1952,9 +2029,9 @@ mod tests {
         parse_update_check_response, parse_version, safe_zip_relative_path,
         sanitize_wordpress_public_server_response, sanitize_wordpress_update_check_response,
         select_newest_dev_artifact, select_stable_gui_release_asset,
-        self_update_supported_current_install, should_run_automatic_update_check,
-        staged_update_helper_args, update_supported_platform, validate_manifest,
-        validate_sha256_bytes,
+        self_update_capability_for_install_with_probe, self_update_supported_current_install,
+        should_run_automatic_update_check, staged_update_helper_args, update_supported_platform,
+        validate_manifest, validate_sha256_bytes,
     };
     #[cfg(windows)]
     use super::{path_is_equal_or_child_case_insensitive, pending_update_recovery_args};
@@ -2094,6 +2171,38 @@ mod tests {
             assert_eq!(result.candidate, None);
             assert!(!result.self_update_supported);
         }
+    }
+
+    #[test]
+    fn update_capability_rejects_protected_and_unwritable_installs_before_download() {
+        let root = temp_update_root("capability");
+        let current_exe = root.join(SOROTTE_GUI_EXECUTABLE);
+
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, false, false, |_| true,),
+            SelfUpdateCapability::UnsupportedPlatform
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| true,),
+            SelfUpdateCapability::UnpackagedInstall
+        );
+
+        fs::write(root.join(SOROTTE_GUI_INSTALL_MARKER), b"{}")
+            .expect("packaged-install marker should be written");
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, true, |_| true,),
+            SelfUpdateCapability::RequiresElevation
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| false,),
+            SelfUpdateCapability::TargetDirectoryNotWritable
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| true,),
+            SelfUpdateCapability::SupportedWritable
+        );
+
+        fs::remove_dir_all(root).expect("capability test root should be removed");
     }
 
     #[test]

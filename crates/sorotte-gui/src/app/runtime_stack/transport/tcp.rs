@@ -161,20 +161,58 @@ impl GuiTcpSessionTransportDriver {
             .clone()
     }
 
-    fn ordered_connect_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    fn ordered_connect_addresses_with_deadline<R>(
+        host: &str,
+        port: u16,
+        deadline: Instant,
+        resolver: R,
+    ) -> Result<Vec<SocketAddr>, String>
+    where
+        R: FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static,
+    {
         let normalized_host = Self::normalized_connect_host(host).trim();
         if normalized_host.is_empty() {
             return Err("Session transport TCP host resolution failed: host was empty.".to_owned());
         }
-
-        let mut addresses = (normalized_host, port)
-            .to_socket_addrs()
+        let normalized_host = normalized_host.to_owned();
+        let resolver_host = normalized_host.clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("sorotte-gui-dns-resolver".to_owned())
+            .spawn(move || {
+                let _ = result_tx.send(resolver(resolver_host, port));
+            })
             .map_err(|error| {
                 format!(
-                    "Session transport TCP address resolution for {normalized_host}:{port} failed: {error}"
+                    "Session transport TCP address resolution worker for {normalized_host}:{port} failed to start: {error}"
                 )
-            })?
-            .collect::<Vec<_>>();
+            })?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "Session transport TCP address resolution for {normalized_host}:{port} timed out within {:?}.",
+                Self::CONNECT_TIMEOUT,
+            ));
+        }
+        let mut addresses = match result_rx.recv_timeout(remaining) {
+            Ok(Ok(addresses)) => addresses,
+            Ok(Err(error)) => {
+                return Err(format!(
+                    "Session transport TCP address resolution for {normalized_host}:{port} failed: {error}"
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(format!(
+                    "Session transport TCP address resolution for {normalized_host}:{port} timed out within {:?}.",
+                    Self::CONNECT_TIMEOUT,
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "Session transport TCP address resolution worker for {normalized_host}:{port} exited unexpectedly."
+                ));
+            }
+        };
         if addresses.is_empty() {
             return Err(format!(
                 "Session transport TCP address resolution for {normalized_host}:{port} returned no addresses."
@@ -190,8 +228,13 @@ impl GuiTcpSessionTransportDriver {
     }
 
     fn connect_stream(host: &str, port: u16) -> Result<TcpStream, String> {
-        let addresses = Self::ordered_connect_addresses(host, port)?;
         let deadline = Instant::now() + Self::CONNECT_TIMEOUT;
+        let addresses =
+            Self::ordered_connect_addresses_with_deadline(host, port, deadline, |host, port| {
+                (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|addresses| addresses.collect())
+            })?;
         let mut failures = Vec::new();
 
         for address in &addresses {
@@ -203,7 +246,16 @@ impl GuiTcpSessionTransportDriver {
             let remaining = deadline.saturating_duration_since(now);
             let timeout = remaining.min(Self::CONNECT_ATTEMPT_TIMEOUT);
             match TcpStream::connect_timeout(address, timeout) {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    Self::configure_connected_stream(&stream)?;
+                    if Instant::now() > deadline {
+                        return Err(format!(
+                            "Session transport TCP connect to {host}:{port} exceeded the total {:?} deadline during socket configuration.",
+                            Self::CONNECT_TIMEOUT,
+                        ));
+                    }
+                    return Ok(stream);
+                }
                 Err(error) => failures.push(format!("{address}: {error}")),
             }
         }
@@ -228,7 +280,6 @@ impl GuiTcpSessionTransportDriver {
 
     fn connect(host: &str, port: u16, tls_policy: TlsPolicy) -> Result<Self, String> {
         let stream = Self::connect_stream(host, port)?;
-        Self::configure_connected_stream(&stream)?;
         let now = Instant::now();
         Ok(Self {
             host: host.to_owned(),
@@ -373,7 +424,6 @@ impl GuiTcpSessionTransportDriver {
         self.inbound_buffer.clear();
 
         let stream = Self::connect_stream(&self.host, self.port)?;
-        Self::configure_connected_stream(&stream)?;
         self.transport = Some(GuiTcpSessionNetworkTransport::Plain(stream));
         let now = Instant::now();
         self.last_inbound_activity_at = now;
@@ -917,7 +967,6 @@ impl Drop for GuiTcpSessionTransportDriver {
 pub(in crate::app) struct GuiThreadedTcpSessionTransportDriver {
     host_arg: String,
     tls_policy: TlsPolicy,
-    pending_driver: Option<GuiTcpSessionTransportDriver>,
     transport_handle: Option<GuiQueuedSessionTransportHandle>,
     worker: Option<GuiThreadedTcpSessionTransportWorker>,
     liveness_enabled: Arc<AtomicBool>,
@@ -930,6 +979,7 @@ struct GuiThreadedTcpSessionTransportWorker {
     pump_result_rx: mpsc::Receiver<Result<(), String>>,
     error_rx: mpsc::Receiver<String>,
     join_handle: Option<thread::JoinHandle<()>>,
+    pump_request_in_flight: bool,
 }
 
 impl GuiThreadedTcpSessionTransportDriver {
@@ -941,14 +991,13 @@ impl GuiThreadedTcpSessionTransportDriver {
         host_arg: &str,
         tls_policy: TlsPolicy,
     ) -> Result<Self, String> {
+        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
+        if host.trim().is_empty() {
+            return Err("Session transport TCP host resolution failed: host was empty.".to_owned());
+        }
         Ok(Self {
             host_arg: host_arg.to_owned(),
             tls_policy,
-            pending_driver: Some(
-                GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
-                    host_arg, tls_policy,
-                )?,
-            ),
             transport_handle: None,
             worker: None,
             liveness_enabled: Arc::new(AtomicBool::new(false)),
@@ -963,11 +1012,9 @@ impl GuiThreadedTcpSessionTransportDriver {
         .map_err(|error| format!("Session transport TCP liveness encode failed: {error}"))
     }
 
-    fn start_worker(
-        &mut self,
-        mut driver: GuiTcpSessionTransportDriver,
-        transport: GuiQueuedSessionTransportHandle,
-    ) -> Result<(), String> {
+    fn start_worker(&mut self, transport: GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        let host_arg = self.host_arg.clone();
+        let tls_policy = self.tls_policy;
         let liveness_line = Self::liveness_protocol_line()?;
         let liveness_enabled = self.liveness_enabled.clone();
         let (stop_tx, stop_rx) = mpsc::channel();
@@ -977,6 +1024,17 @@ impl GuiThreadedTcpSessionTransportDriver {
         let join_handle = thread::Builder::new()
             .name("sorotte-gui-tcp-transport".to_owned())
             .spawn(move || {
+                let mut driver =
+                    match GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                        &host_arg,
+                        tls_policy,
+                    ) {
+                        Ok(driver) => driver,
+                        Err(error) => {
+                            let _ = error_tx.send(error);
+                            return;
+                        }
+                    };
                 let mut liveness_was_enabled = false;
                 let mut observed_outbound_activity =
                     transport.outbound_protocol_activity_revision();
@@ -1044,6 +1102,7 @@ impl GuiThreadedTcpSessionTransportDriver {
             pump_result_rx,
             error_rx,
             join_handle: Some(join_handle),
+            pump_request_in_flight: false,
         });
         Ok(())
     }
@@ -1055,10 +1114,7 @@ impl GuiThreadedTcpSessionTransportDriver {
         if self.worker.is_some() || self.worker_failed {
             return Ok(());
         }
-        let Some(driver) = self.pending_driver.take() else {
-            return Ok(());
-        };
-        self.start_worker(driver, transport.clone())
+        self.start_worker(transport.clone())
     }
 
     fn stop_worker(&mut self) {
@@ -1114,7 +1170,7 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
         }
         let pump_result = self
             .worker
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| "Session transport TCP worker is unavailable.".to_owned())?
             .pump();
         if let Err(error) = pump_result {
@@ -1144,32 +1200,42 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
             transport_handle.clear_outbound_liveness_protocol_line();
         }
         self.worker_failed = false;
-        let driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
-            &self.host_arg,
-            self.tls_policy,
-        )?;
         if let Some(transport) = self.transport_handle.clone() {
-            self.start_worker(driver, transport)
+            self.start_worker(transport)
         } else {
-            self.pending_driver = Some(driver);
             Ok(())
         }
     }
 }
 
 impl GuiThreadedTcpSessionTransportWorker {
-    fn pump(&self) -> Result<(), String> {
+    fn pump(&mut self) -> Result<(), String> {
+        if self.pump_request_in_flight {
+            match self.pump_result_rx.try_recv() {
+                Ok(result) => {
+                    self.pump_request_in_flight = false;
+                    result?;
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("Session transport TCP worker exited unexpectedly.".to_owned());
+                }
+            }
+        }
         self.pump_tx
             .send(())
             .map_err(|_| "Session transport TCP worker exited unexpectedly.".to_owned())?;
-        self.pump_result_rx
-            .recv()
-            .map_err(|_| "Session transport TCP worker exited unexpectedly.".to_owned())?
+        self.pump_request_in_flight = true;
+        Ok(())
     }
 
     fn stop(mut self) {
         let _ = self.stop_tx.send(());
-        if let Some(join_handle) = self.join_handle.take() {
+        if let Some(join_handle) = self
+            .join_handle
+            .take()
+            .filter(|handle| handle.is_finished())
+        {
             let _ = join_handle.join();
         }
     }
@@ -1185,6 +1251,41 @@ impl Drop for GuiThreadedTcpSessionTransportDriver {
 mod tests {
     use super::super::handle::GuiOutboundProtocolDelivery;
     use super::*;
+
+    #[test]
+    fn address_resolution_is_bounded_by_the_total_connect_deadline() {
+        let timeout = Duration::from_millis(25);
+        let started_at = Instant::now();
+
+        let error = GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline(
+            "resolver.example",
+            8999,
+            started_at + timeout,
+            |_host, _port| {
+                thread::sleep(Duration::from_millis(200));
+                Ok(Vec::new())
+            },
+        )
+        .expect_err("a stalled resolver must time out");
+
+        assert!(error.contains("address resolution"));
+        assert!(error.contains("timed out"));
+        assert!(started_at.elapsed() < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn threaded_transport_construction_does_not_resolve_or_connect_on_the_owner_thread() {
+        let started_at = Instant::now();
+
+        let driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+            "resolver-will-run-in-worker.invalid:8999",
+            TlsPolicy::PreferTls,
+        )
+        .expect("threaded transport construction should only validate the host argument");
+
+        assert!(started_at.elapsed() < Duration::from_millis(50));
+        drop(driver);
+    }
 
     struct PartialThenErrorWriter {
         prefix_bytes: usize,

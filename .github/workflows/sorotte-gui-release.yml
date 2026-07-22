@@ -41,6 +41,7 @@ jobs:
         run: |
           cargo test -p sorotte-gui --lib update_
           cargo test -p sorotte-gui --bin sorotte-gui-updater
+          cargo test -p sorotte-gui --test updater_self_replacement_windows
 
       - name: Build GUI release binaries
         shell: pwsh
@@ -80,7 +81,7 @@ jobs:
           }
 
       - name: Publish dev package to GitHub Release
-        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
