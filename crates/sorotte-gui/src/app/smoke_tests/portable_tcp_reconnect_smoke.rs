@@ -9,6 +9,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         time::Duration,
     };
 
+    // The workspace suite runs this end-to-end loopback smoke alongside hundreds of tests.
+    // Keep scheduling delays from masquerading as transport failures while preserving a
+    // finite deadline for every cross-thread and runtime-pump synchronization point.
+    const SMOKE_DEADLINE: Duration = Duration::from_secs(10);
+
     let first_listener = TcpListener::bind("127.0.0.1:0")
         .expect("portable tcp churn smoke first listener should bind");
     let first_address = first_listener
@@ -115,7 +120,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             // The release is intentionally sent only after the complete replacement-session
             // churn has been asserted. Parallel CI can legitimately take longer than one second
             // to exercise that second connection even though transport switching is healthy.
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(SMOKE_DEADLINE)
             .expect("portable tcp churn smoke first server should be releasable");
     });
 
@@ -233,14 +238,14 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &handle,
         &mut state,
         &first_hello_rx,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         "portable tcp churn smoke first startup hello",
     );
     assert!(first_hello.contains("\"Hello\""));
     assert!(first_hello.contains("\"portable-user\""));
     assert_eq!(
         first_state_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(SMOKE_DEADLINE)
             .expect("portable tcp churn smoke first server should publish initial state"),
         "initial"
     );
@@ -248,7 +253,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
@@ -298,13 +303,13 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
     assert!(state.pending_operation.is_none());
     assert!(state.outgoing_chat_message.is_none());
     let first_chat = first_chat_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(SMOKE_DEADLINE)
         .expect("portable tcp churn smoke first server should receive first chat");
     assert!(first_chat.contains("\"Chat\""));
     assert!(first_chat.contains("hellotcp"));
     assert_eq!(
         first_state_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(SMOKE_DEADLINE)
             .expect("portable tcp churn smoke first server should publish post-chat state"),
         "postchat"
     );
@@ -312,7 +317,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
@@ -361,13 +366,13 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
     );
     let second_primary_chat = first_chat_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(SMOKE_DEADLINE)
         .expect("portable tcp churn smoke first server should receive second chat");
     assert!(second_primary_chat.contains("\"Chat\""));
     assert!(second_primary_chat.contains("goodbyeprimary"));
     assert_eq!(
         first_state_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(SMOKE_DEADLINE)
             .expect("portable tcp churn smoke first server should publish user-left state"),
         "user-left"
     );
@@ -375,7 +380,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
@@ -410,14 +415,14 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &handle,
         &mut state,
         &second_hello_rx,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         "portable tcp churn smoke second reconnect hello",
     );
     assert!(second_hello.contains("\"Hello\""));
     assert!(second_hello.contains("\"portable-user\""));
     assert!(second_hello.contains("\"portable-room\""));
     assert_eq!(
-        second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+        second_state_rx.recv_timeout(SMOKE_DEADLINE).expect(
             "portable tcp churn smoke second server should publish initial reconnect state"
         ),
         "initial"
@@ -426,7 +431,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
@@ -475,12 +480,12 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
     );
     let first_reconnect_chat = second_chat_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(SMOKE_DEADLINE)
         .expect("portable tcp churn smoke second server should receive first reconnect chat");
     assert!(first_reconnect_chat.contains("\"Chat\""));
     assert!(first_reconnect_chat.contains("helloreconnect"));
     assert_eq!(
-        second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+        second_state_rx.recv_timeout(SMOKE_DEADLINE).expect(
             "portable tcp churn smoke second server should publish reconnect post-chat state"
         ),
         "postchat"
@@ -489,7 +494,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
@@ -538,12 +543,12 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
     );
     let second_reconnect_chat = second_chat_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(SMOKE_DEADLINE)
         .expect("portable tcp churn smoke second server should receive second reconnect chat");
     assert!(second_reconnect_chat.contains("\"Chat\""));
     assert!(second_reconnect_chat.contains("goodbyereconnect"));
     assert_eq!(
-        second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+        second_state_rx.recv_timeout(SMOKE_DEADLINE).expect(
             "portable tcp churn smoke second server should publish reconnect user-left state"
         ),
         "user-left"
@@ -552,7 +557,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        SMOKE_DEADLINE,
         |state| {
             state
                 .main_window
