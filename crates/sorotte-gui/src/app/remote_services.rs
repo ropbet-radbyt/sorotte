@@ -54,6 +54,7 @@ const SOROTTE_GUI_DEV_ARTIFACT_NAME: &str = "sorotte-gui-windows-x86_64";
 const SOROTTE_GUI_INSTALL_MARKER: &str = "sorotte-install.json";
 const SOROTTE_GUI_EXECUTABLE: &str = "sorotte-gui.exe";
 const SOROTTE_GUI_UPDATER_EXECUTABLE: &str = "sorotte-gui-updater.exe";
+#[cfg(windows)]
 const SOROTTE_GUI_UPDATE_JOURNAL: &str = ".sorotte-update-journal-v1.jsonl";
 const SOROTTE_PUBLIC_SERVER_LIST_URL_ENV: &str = "SOROTTE_GUI_PUBLIC_SERVER_LIST_URL";
 const SOROTTE_PUBLIC_SERVER_LIST_RESPONSE_ENV: &str = "SOROTTE_GUI_PUBLIC_SERVER_LIST_RESPONSE";
