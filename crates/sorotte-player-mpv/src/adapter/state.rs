@@ -92,6 +92,7 @@ impl fmt::Debug for MpvAdapter {
                     .as_ref()
                     .map(|_| sorotte_secret::REDACTED_SECRET),
             )
+            .field("premature_eof_recovery", &self.premature_eof_recovery)
             .field(
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
@@ -250,6 +251,7 @@ impl Default for MpvAdapter {
             pending_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
+            premature_eof_recovery: None,
             last_polled_local_file_update: None,
             last_paused_position_poll_at: None,
             observed_state: MpvObservedState::default(),

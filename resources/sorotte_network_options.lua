@@ -34,6 +34,10 @@ local EFFECTIVE_READBACK_ORDER = {
     "demuxer-max-back-bytes",
     "cache-on-disk",
 }
+local CURL_HTTP_VERSION_OPTION = "options/curl-http-version"
+local CURL_HTTP_VERSION_FILE_OPTION = "file-local-options/curl-http-version"
+local CURL_HTTP_VERSION_AUTOMATIC = "auto"
+local CURL_HTTP_VERSION_HTTP2_TLS = "2tls"
 
 -- `load-script` gives duplicate clients a suffixed name. Only the stable canonical client owns
 -- core policy so reconnecting Sorotte processes cannot install duplicate on-load hooks.
@@ -145,10 +149,22 @@ local function ordered_option_names()
     return names
 end
 
+-- Newer mpv builds can route HTTP through libcurl. Its automatic protocol selection may choose
+-- HTTP/3 for YouTube range requests, but a draining QUIC connection can be surfaced as a clean
+-- EOF after curl's bounded retries. Prefer negotiated HTTP/2 for network media when that option
+-- exists and the user has not selected a protocol explicitly. Stable mpv builds without the
+-- curl backend expose no such option, so this remains a no-op there.
+local function apply_curl_transport_safety()
+    local current = mp.get_property(CURL_HTTP_VERSION_OPTION, nil)
+    if current ~= CURL_HTTP_VERSION_AUTOMATIC then return end
+    mp.set_property(CURL_HTTP_VERSION_FILE_OPTION, CURL_HTTP_VERSION_HTTP2_TLS)
+end
+
 local function apply_options(path)
     if path == nil or path == "" then return "no-active", {} end
     if not network_path(path) then return "local", {} end
 
+    apply_curl_transport_safety()
     local results = {}
     local applied = 0
     local rejected = 0

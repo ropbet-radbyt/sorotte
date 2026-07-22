@@ -169,6 +169,8 @@ Sorotte prevents cache-release seek loops with a generation-aware coordinator th
 
 Configured recovery uses bounded gentle catch-up, hard-seek and retry budgets, and explicit degradation. Sorotte clients also drive the feature-negotiated `sorottePlaybackBarrierV1` start barrier and authenticated controlled-room buffering policies. Quality downgrade remains advisory; Sorotte never changes it automatically. The transport contract for a future user-confirmed YouTube quality retry reloads only the local transport while preserving the logical room identity and frozen target; Plex can offer the equivalent only when backed by an actual transcoder-quality API. Mid-play room-wide seek barriers are future protocol work; current seek preparation is client-only.
 
+For finite network media, an mpv `end-file` event well before the known duration is treated as a transport EOF rather than successful completion. Sorotte retries the same local transport at the last observed position with a bounded immediate-attempt budget while preserving the media generation; observed forward progress rearms that budget. On mpv builds with the curl backend, Sorotte also prefers negotiated HTTP/2 for network files when curl protocol selection is still `auto`, avoiding false EOFs caused by exhausted HTTP/3 connection-drain retries. An explicit user `curl-http-version` choice remains authoritative.
+
 See the [Stream Synchronization Guide](STREAM_SYNCHRONIZATION.md) for every setting, exact `mpv` mapping, source-specific guidance, wire lifecycle, diagnostics, tests, and the implemented-versus-planned boundary.
 
 ## Rooms, Playlists, And Controlled Rooms

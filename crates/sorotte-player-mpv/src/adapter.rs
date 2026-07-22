@@ -45,6 +45,9 @@ const MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES: usize = 16;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
+const PREMATURE_EOF_MINIMUM_REMAINING_SECONDS: f64 = 15.0;
+const PREMATURE_EOF_RECOVERY_PROGRESS_SECONDS: f64 = 2.0;
+const MAX_PREMATURE_EOF_RECOVERY_ATTEMPTS: usize = 2;
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
@@ -250,6 +253,13 @@ struct ExpectedNetworkOptionsTransition {
 struct EmbeddedNetworkMediaOptions {
     media_generation: PlayerMediaGeneration,
     requested_target: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PrematureEofRecovery {
+    media_generation: PlayerMediaGeneration,
+    resume_position_seconds: f64,
+    attempts: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -596,6 +606,7 @@ pub struct MpvAdapter {
     pending_media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
+    premature_eof_recovery: Option<PrematureEofRecovery>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     last_paused_position_poll_at: Option<Instant>,
     observed_state: MpvObservedState,
@@ -2484,6 +2495,124 @@ impl MpvAdapter {
         ]))
     }
 
+    fn premature_eof_recovery_load_command(
+        &self,
+        path: &str,
+        resume_position_seconds: f64,
+    ) -> Value {
+        let mut options = self.network_media_options_map();
+        options.insert(
+            "start".to_owned(),
+            Value::String(resume_position_seconds.to_string()),
+        );
+        json!([
+            MPV_COMMAND_LOADFILE,
+            path,
+            MPV_LOADFILE_REPLACE,
+            -1,
+            Value::Object(options)
+        ])
+    }
+
+    fn observe_premature_eof_recovery_progress(&mut self, position_seconds: f64) {
+        let generation = self.observation_media_generation();
+        if self.premature_eof_recovery.is_some_and(|recovery| {
+            Some(recovery.media_generation) == generation
+                && position_seconds
+                    >= recovery.resume_position_seconds + PREMATURE_EOF_RECOVERY_PROGRESS_SECONDS
+        }) {
+            self.premature_eof_recovery = None;
+        }
+    }
+
+    fn try_recover_premature_network_eof(&mut self, generation: PlayerMediaGeneration) -> bool {
+        if self.timeline_kind != PlayerTimelineKind::Vod {
+            return false;
+        }
+        let Some(path) = self
+            .current_path
+            .clone()
+            .filter(|path| uses_network_media_options(path))
+        else {
+            return false;
+        };
+        let Some(duration_seconds) = self
+            .observed_state
+            .duration_seconds
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+        else {
+            return false;
+        };
+        let Some(position_seconds) = self
+            .observed_state
+            .position_seconds
+            .filter(|position| position.is_finite() && *position >= 0.0)
+        else {
+            return false;
+        };
+        if duration_seconds - position_seconds <= PREMATURE_EOF_MINIMUM_REMAINING_SECONDS {
+            return false;
+        }
+
+        let attempts = self
+            .premature_eof_recovery
+            .filter(|recovery| recovery.media_generation == generation)
+            .map_or(1, |recovery| recovery.attempts.saturating_add(1));
+        if attempts > MAX_PREMATURE_EOF_RECOVERY_ATTEMPTS {
+            return false;
+        }
+
+        self.premature_eof_recovery = Some(PrematureEofRecovery {
+            media_generation: generation,
+            resume_position_seconds: position_seconds,
+            attempts,
+        });
+        self.pending_load_request = Some(path.clone());
+        self.pending_load_generation = Some(generation);
+        self.network_media_options_embedded_load =
+            (!self.network_media_options.is_empty()).then(|| EmbeddedNetworkMediaOptions {
+                media_generation: generation,
+                requested_target: path.clone(),
+            });
+        self.pending_transport_telemetry_updates.retain(|update| {
+            update.media_generation != Some(generation)
+                || (update.phase != Some(PlayerTransportPhase::Ended)
+                    && update.eof_reached != Some(true))
+        });
+        self.pending_cache_telemetry_updates
+            .retain(|update| update.media_generation != Some(generation));
+        self.transport_phase = PlayerTransportPhase::Loading;
+        self.active_file_loaded = false;
+        self.observed_state.eof_reached = Some(false);
+        self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(Some(generation)));
+        let mut update = self
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Loading)
+            .with_position_seconds(position_seconds);
+        update.eof_reached = Some(false);
+        self.queue_transport_telemetry_update(update);
+
+        let command = self.premature_eof_recovery_load_command(&path, position_seconds);
+        if self.send_ipc_command_if_attached(command).is_ok() {
+            return true;
+        }
+
+        if self.pending_load_generation == Some(generation) {
+            self.pending_load_request = None;
+            self.pending_load_generation = None;
+        }
+        if self
+            .network_media_options_embedded_load
+            .as_ref()
+            .is_some_and(|embedded| embedded.media_generation == generation)
+        {
+            self.network_media_options_embedded_load = None;
+        }
+        self.premature_eof_recovery = None;
+        self.active_file_loaded = true;
+        false
+    }
+
     pub fn paused(&self) -> bool {
         self.paused
     }
@@ -3723,6 +3852,7 @@ impl MpvAdapter {
 
         self.position_seconds = position_seconds;
         self.observed_state.position_seconds = Some(position_seconds);
+        self.observe_premature_eof_recovery_progress(position_seconds);
         self.queue_playback_telemetry_update(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
         );
@@ -4723,6 +4853,7 @@ impl MpvAdapter {
                 if let Some(position_seconds) = data.and_then(Value::as_f64) {
                     self.position_seconds = position_seconds;
                     self.observed_state.position_seconds = Some(position_seconds);
+                    self.observe_premature_eof_recovery_progress(position_seconds);
                     self.queue_playback_telemetry_update(
                         PlayerPlaybackTelemetryUpdate::default()
                             .with_position_seconds(position_seconds),
@@ -4936,6 +5067,12 @@ impl MpvAdapter {
             .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
             .or(self.pending_load_generation)
             .unwrap_or_else(|| self.allocate_media_generation());
+        if self
+            .premature_eof_recovery
+            .is_some_and(|recovery| recovery.media_generation != generation)
+        {
+            self.premature_eof_recovery = None;
+        }
 
         if self.network_media_options_hook_instance_id.is_some()
             && self.network_media_options_hook_configured_generation
@@ -5149,6 +5286,17 @@ impl MpvAdapter {
         let error_kind = message
             .as_deref()
             .map(Self::media_load_failure_kind_from_message);
+        let affects_current_generation = generation.is_some()
+            && (generation == self.pending_load_generation
+                || (self.pending_load_generation.is_none()
+                    && generation == self.active_media_generation));
+        if reason == "eof"
+            && affects_current_generation
+            && generation
+                .is_some_and(|generation| self.try_recover_premature_network_eof(generation))
+        {
+            return;
+        }
         let phase = if error_kind.is_some() {
             PlayerTransportPhase::Failed
         } else {
@@ -5169,11 +5317,8 @@ impl MpvAdapter {
             );
         }
 
-        let affects_current_generation = generation.is_some()
-            && (generation == self.pending_load_generation
-                || (self.pending_load_generation.is_none()
-                    && generation == self.active_media_generation));
         if affects_current_generation {
+            self.premature_eof_recovery = None;
             if self
                 .network_media_options_expected_transition
                 .is_some_and(|expected| Some(expected.media_generation) == generation)
@@ -6495,6 +6640,170 @@ impl MpvAdapter {
     #[cfg(test)]
     pub(crate) fn queue_test_pending_chat_request(&mut self, message: impl Into<String>) {
         self.pending_chat_requests.push_back(message.into());
+    }
+}
+
+#[cfg(test)]
+mod premature_eof_recovery_tests {
+    use super::*;
+
+    const NETWORK_PATH: &str = "https://www.youtube.com/watch?v=premature-eof";
+
+    fn loaded_network_vod(position_seconds: f64, duration_seconds: f64) -> MpvAdapter {
+        let generation = PlayerMediaGeneration::new(7);
+        MpvAdapter {
+            simulation_mode: true,
+            current_path: Some(NETWORK_PATH.to_owned()),
+            active_media_generation: Some(generation),
+            next_media_generation: 8,
+            transport_phase: PlayerTransportPhase::Playing,
+            active_file_loaded: true,
+            active_generation_has_restarted: true,
+            timeline_kind: PlayerTimelineKind::Vod,
+            path_metadata_generation: Some(generation),
+            duration_metadata_generation: Some(generation),
+            observed_state: MpvObservedState {
+                path: Some(NETWORK_PATH.to_owned()),
+                duration_seconds: Some(duration_seconds),
+                position_seconds: Some(position_seconds),
+                seekable: Some(true),
+                eof_reached: Some(false),
+                ..MpvObservedState::default()
+            },
+            ..MpvAdapter::default()
+        }
+    }
+
+    fn restore_false_eof_fixture(adapter: &mut MpvAdapter, position_seconds: f64) {
+        adapter.pending_load_request = None;
+        adapter.pending_load_generation = None;
+        adapter.current_path = Some(NETWORK_PATH.to_owned());
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter.timeline_kind = PlayerTimelineKind::Vod;
+        adapter.observed_state.path = Some(NETWORK_PATH.to_owned());
+        adapter.observed_state.duration_seconds = Some(1_919.0);
+        adapter.observed_state.position_seconds = Some(position_seconds);
+        adapter.observed_state.eof_reached = Some(false);
+    }
+
+    #[test]
+    fn clean_network_eof_far_from_duration_reloads_same_generation_at_position() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter
+            .network_media_options
+            .insert("cache-secs".to_owned(), "30".to_owned());
+        let generation = adapter.active_media_generation;
+        let command = adapter.premature_eof_recovery_load_command(NETWORK_PATH, 257.25);
+        assert_eq!(command[0], MPV_COMMAND_LOADFILE);
+        assert_eq!(command[1], NETWORK_PATH);
+        assert_eq!(command[4]["start"], "257.25");
+        assert_eq!(command[4]["cache-secs"], "30");
+        let mut early_eof = adapter
+            .transport_update_for(generation.expect("fixture should have a generation"))
+            .with_phase(PlayerTransportPhase::Ended);
+        early_eof.eof_reached = Some(true);
+        adapter.queue_transport_telemetry_update(early_eof);
+        adapter.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
+            media_generation: generation,
+            eof: Some(true),
+            ..PlayerCacheTelemetryUpdate::default()
+        });
+
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+        assert_eq!(adapter.pending_load_generation, generation);
+        assert_eq!(adapter.active_media_generation, generation);
+        assert_eq!(
+            adapter.premature_eof_recovery,
+            generation.map(|media_generation| PrematureEofRecovery {
+                media_generation,
+                resume_position_seconds: 257.25,
+                attempts: 1,
+            })
+        );
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .any(|update| {
+                    update.media_generation == generation
+                        && update.phase == Some(PlayerTransportPhase::Loading)
+                        && update.position_seconds == Some(257.25)
+                        && update.eof_reached == Some(false)
+                })
+        );
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .all(|update| { update.phase != Some(PlayerTransportPhase::Ended) })
+        );
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .all(|update| update.eof_reached != Some(true))
+        );
+        assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
+        assert_eq!(adapter.pending_cache_telemetry_updates[0].eof, None);
+    }
+
+    #[test]
+    fn premature_eof_replay_is_bounded_until_forward_progress() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+        restore_false_eof_fixture(&mut adapter, 257.25);
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+        assert_eq!(
+            adapter
+                .premature_eof_recovery
+                .map(|recovery| recovery.attempts),
+            Some(2)
+        );
+
+        restore_false_eof_fixture(&mut adapter, 257.25);
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Ended);
+        assert!(adapter.premature_eof_recovery.is_none());
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .any(|update| {
+                    update.phase == Some(PlayerTransportPhase::Ended)
+                        && update.eof_reached == Some(true)
+                })
+        );
+    }
+
+    #[test]
+    fn real_end_and_non_network_eof_are_not_replayed() {
+        let mut near_end = loaded_network_vod(1_910.0, 1_919.0);
+        near_end.handle_end_file_event(&json!({ "reason": "eof" }));
+        assert_eq!(near_end.transport_phase, PlayerTransportPhase::Ended);
+        assert!(near_end.premature_eof_recovery.is_none());
+
+        let mut local = loaded_network_vod(257.25, 1_919.0);
+        local.current_path = Some("C:/media/movie.mkv".to_owned());
+        local.observed_state.path = local.current_path.clone();
+        local.timeline_kind = PlayerTimelineKind::Vod;
+        local.handle_end_file_event(&json!({ "reason": "eof" }));
+        assert_eq!(local.transport_phase, PlayerTransportPhase::Ended);
+        assert!(local.premature_eof_recovery.is_none());
+    }
+
+    #[test]
+    fn forward_progress_rearms_future_premature_eof_recovery() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+        assert!(adapter.premature_eof_recovery.is_some());
+
+        adapter.observe_premature_eof_recovery_progress(259.25);
+
+        assert!(adapter.premature_eof_recovery.is_none());
     }
 }
 
