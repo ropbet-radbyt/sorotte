@@ -1705,6 +1705,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     fn prepare_test_plan(plan: &ReplacementPlan) {
         for file in &plan.files {
             if let Some(source) = file.source.as_ref() {
