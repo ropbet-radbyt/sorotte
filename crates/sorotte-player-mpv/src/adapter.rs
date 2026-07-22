@@ -50,6 +50,7 @@ const INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS: f64 = 2.0;
 const MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
 const MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 5;
 const NETWORK_CACHE_STALL_RECOVERY_DELAY: Duration = Duration::from_secs(20);
+const NETWORK_CACHE_STALL_RECOVERY_MARGIN: Duration = Duration::from_secs(5);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
@@ -271,7 +272,49 @@ struct InterruptedNetworkStreamRecovery {
 #[derive(Clone, Copy, Debug)]
 struct NetworkCacheStall {
     media_generation: PlayerMediaGeneration,
-    started_at: Instant,
+    last_progress_at: Instant,
+    last_sample: NetworkCacheProgressSample,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct NetworkCacheProgressSample {
+    position_seconds: Option<f64>,
+    buffered_ahead_seconds: Option<f64>,
+    buffered_ahead_bytes: Option<u64>,
+    cache_reader_position_seconds: Option<f64>,
+    cache_end_seconds: Option<f64>,
+}
+
+impl NetworkCacheProgressSample {
+    fn from_observed_state(state: &MpvObservedState) -> Self {
+        Self {
+            position_seconds: state.position_seconds,
+            buffered_ahead_seconds: state.buffered_ahead_seconds,
+            buffered_ahead_bytes: state.buffered_ahead_bytes,
+            cache_reader_position_seconds: state.cache_reader_position_seconds,
+            cache_end_seconds: state.cache_end_seconds,
+        }
+    }
+
+    fn made_progress_since(self, previous: Self) -> bool {
+        fn f64_increased(current: Option<f64>, previous: Option<f64>) -> bool {
+            current.zip(previous).is_some_and(|(current, previous)| {
+                current > previous + PLAYBACK_ADVANCEMENT_EPSILON_SECONDS
+            })
+        }
+
+        f64_increased(self.position_seconds, previous.position_seconds)
+            || f64_increased(self.buffered_ahead_seconds, previous.buffered_ahead_seconds)
+            || self
+                .buffered_ahead_bytes
+                .zip(previous.buffered_ahead_bytes)
+                .is_some_and(|(current, previous)| current > previous)
+            || f64_increased(
+                self.cache_reader_position_seconds,
+                previous.cache_reader_position_seconds,
+            )
+            || f64_increased(self.cache_end_seconds, previous.cache_end_seconds)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2577,6 +2620,26 @@ impl MpvAdapter {
         &mut self,
         generation: PlayerMediaGeneration,
     ) -> bool {
+        self.try_recover_network_stream_with_minimum_remaining(
+            generation,
+            INTERRUPTED_NETWORK_STREAM_MINIMUM_REMAINING_SECONDS,
+        )
+    }
+
+    fn try_recover_stalled_network_stream(&mut self, generation: PlayerMediaGeneration) -> bool {
+        // A sustained, progress-free cache pause is independent evidence that the request is
+        // dead. Unlike an ambiguous EOF event, it remains actionable near the media tail.
+        self.try_recover_network_stream_with_minimum_remaining(
+            generation,
+            PLAYBACK_ADVANCEMENT_EPSILON_SECONDS,
+        )
+    }
+
+    fn try_recover_network_stream_with_minimum_remaining(
+        &mut self,
+        generation: PlayerMediaGeneration,
+        minimum_remaining_seconds: f64,
+    ) -> bool {
         if self.timeline_kind != PlayerTimelineKind::Vod {
             return false;
         }
@@ -2601,9 +2664,7 @@ impl MpvAdapter {
         else {
             return false;
         };
-        if duration_seconds - position_seconds
-            <= INTERRUPTED_NETWORK_STREAM_MINIMUM_REMAINING_SECONDS
-        {
+        if duration_seconds - position_seconds <= minimum_remaining_seconds {
             return false;
         }
 
@@ -2698,11 +2759,28 @@ impl MpvAdapter {
             .network_cache_stall
             .is_none_or(|stall| stall.media_generation != media_generation)
         {
+            let now = Instant::now();
             self.network_cache_stall = Some(NetworkCacheStall {
                 media_generation,
-                started_at: Instant::now(),
+                last_progress_at: now,
+                last_sample: NetworkCacheProgressSample::from_observed_state(&self.observed_state),
             });
         }
+    }
+
+    fn network_cache_stall_recovery_delay(&self) -> Duration {
+        let configured_wait = self
+            .network_media_options
+            .get("cache-pause-wait")
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .and_then(|value| Duration::try_from_secs_f64(value).ok())
+            .unwrap_or_default();
+        NETWORK_CACHE_STALL_RECOVERY_DELAY.max(
+            configured_wait
+                .checked_add(NETWORK_CACHE_STALL_RECOVERY_MARGIN)
+                .unwrap_or(Duration::MAX),
+        )
     }
 
     fn maintain_network_cache_stall_recovery(&mut self) {
@@ -2725,14 +2803,36 @@ impl MpvAdapter {
             self.network_cache_stall = None;
             return;
         }
-        if stall.started_at.elapsed() < NETWORK_CACHE_STALL_RECOVERY_DELAY {
+
+        let sample = NetworkCacheProgressSample::from_observed_state(&self.observed_state);
+        if let Some(active_stall) = self
+            .network_cache_stall
+            .as_mut()
+            .filter(|active| active.media_generation == stall.media_generation)
+        {
+            if sample.made_progress_since(active_stall.last_sample) {
+                active_stall.last_progress_at = Instant::now();
+                active_stall.last_sample = sample;
+                return;
+            }
+            active_stall.last_sample = sample;
+        }
+        if stall.last_progress_at.elapsed() < self.network_cache_stall_recovery_delay() {
             return;
         }
 
         // A dead HTTP request can leave mpv permanently paused for cache without producing
         // end-file. Reuse the bounded reload-and-resume path used for premature network EOF.
-        self.network_cache_stall = None;
-        self.try_recover_interrupted_network_stream(stall.media_generation);
+        if self.try_recover_stalled_network_stream(stall.media_generation) {
+            self.network_cache_stall = None;
+        } else if let Some(active_stall) = self
+            .network_cache_stall
+            .as_mut()
+            .filter(|active| active.media_generation == stall.media_generation)
+        {
+            // Keep the watchdog armed, but do not spin on a rejected recovery every pump.
+            active_stall.last_progress_at = Instant::now();
+        }
     }
 
     pub fn paused(&self) -> bool {
@@ -2757,6 +2857,13 @@ impl MpvAdapter {
 
     pub fn cache_buffering_percent(&self) -> Option<f64> {
         self.cache_buffering_percent
+    }
+
+    /// Number of bounded same-generation network reload attempts recorded for active media.
+    /// This is exposed for runtime diagnostics and required real-player recovery validation.
+    pub fn network_stream_recovery_attempt_count(&self) -> usize {
+        self.interrupted_network_stream_recovery
+            .map_or(0, |recovery| recovery.total_attempts)
     }
 
     pub fn media_generation(&self) -> Option<PlayerMediaGeneration> {
@@ -6974,7 +7081,7 @@ mod interrupted_network_stream_recovery_tests {
             .network_cache_stall
             .as_mut()
             .expect("rebuffering network VOD should arm recovery")
-            .started_at = Instant::now() - NETWORK_CACHE_STALL_RECOVERY_DELAY;
+            .last_progress_at = Instant::now() - NETWORK_CACHE_STALL_RECOVERY_DELAY;
 
         adapter.maintain_runtime_integrations();
 
@@ -7008,6 +7115,83 @@ mod interrupted_network_stream_recovery_tests {
         adapter.observed_state.paused_for_cache = Some(false);
         adapter.observe_network_cache_pause_for_recovery(false);
         assert!(adapter.network_cache_stall.is_none());
+    }
+
+    #[test]
+    fn cache_progress_restarts_watchdog_and_configured_wait_extends_deadline() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter
+            .network_media_options
+            .insert("cache-pause-wait".to_owned(), "45".to_owned());
+        assert_eq!(
+            adapter.network_cache_stall_recovery_delay(),
+            Duration::from_secs(50)
+        );
+        adapter.observed_state.paused_for_cache = Some(true);
+        adapter.observed_state.buffered_ahead_bytes = Some(1_000);
+        adapter.observed_state.cache_end_seconds = Some(258.0);
+        adapter.observe_network_cache_pause_for_recovery(true);
+        let old_progress = Instant::now() - Duration::from_secs(60);
+        adapter
+            .network_cache_stall
+            .as_mut()
+            .expect("rebuffering network VOD should arm recovery")
+            .last_progress_at = old_progress;
+
+        adapter.observed_state.buffered_ahead_bytes = Some(2_000);
+        adapter.observed_state.cache_end_seconds = Some(259.0);
+        adapter.maintain_network_cache_stall_recovery();
+
+        let stall = adapter
+            .network_cache_stall
+            .expect("forward cache growth should keep the watchdog armed");
+        assert!(stall.last_progress_at > old_progress);
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.network_stream_recovery_attempt_count(), 0);
+    }
+
+    #[test]
+    fn progress_free_cache_stall_can_recover_near_tail_and_only_disarms_on_acceptance() {
+        let mut near_tail = loaded_network_vod(1_918.0, 1_919.0);
+        near_tail.observed_state.paused_for_cache = Some(true);
+        near_tail.observe_network_cache_pause_for_recovery(true);
+        near_tail
+            .network_cache_stall
+            .as_mut()
+            .expect("near-tail cache stall should arm recovery")
+            .last_progress_at = Instant::now() - NETWORK_CACHE_STALL_RECOVERY_DELAY;
+
+        near_tail.maintain_network_cache_stall_recovery();
+
+        assert_eq!(near_tail.transport_phase, PlayerTransportPhase::Loading);
+        assert_eq!(near_tail.network_stream_recovery_attempt_count(), 1);
+        assert!(near_tail.network_cache_stall.is_none());
+
+        let mut exhausted = loaded_network_vod(257.25, 1_919.0);
+        let generation = exhausted
+            .active_media_generation
+            .expect("fixture generation");
+        exhausted.observed_state.paused_for_cache = Some(true);
+        exhausted.interrupted_network_stream_recovery = Some(InterruptedNetworkStreamRecovery {
+            media_generation: generation,
+            resume_position_seconds: 257.25,
+            consecutive_attempts: MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS,
+            total_attempts: MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS,
+        });
+        exhausted.observe_network_cache_pause_for_recovery(true);
+        exhausted
+            .network_cache_stall
+            .as_mut()
+            .expect("exhausted cache stall should arm recovery")
+            .last_progress_at = Instant::now() - NETWORK_CACHE_STALL_RECOVERY_DELAY;
+
+        exhausted.maintain_network_cache_stall_recovery();
+
+        assert!(
+            exhausted.network_cache_stall.is_some(),
+            "a rejected recovery must not silently disarm the stalled generation"
+        );
+        assert_eq!(exhausted.transport_phase, PlayerTransportPhase::Playing);
     }
 
     #[test]

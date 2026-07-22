@@ -100,6 +100,79 @@ struct GuiTcpPendingOutboundFrame {
     offset: usize,
 }
 
+type GuiDnsResolver = Box<dyn FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static>;
+
+struct GuiDnsResolutionRequest {
+    host: String,
+    port: u16,
+    resolver: GuiDnsResolver,
+    result_tx: mpsc::SyncSender<io::Result<Vec<SocketAddr>>>,
+}
+
+struct GuiDnsResolverService {
+    request_tx: mpsc::SyncSender<GuiDnsResolutionRequest>,
+    request_in_flight: Arc<AtomicBool>,
+}
+
+impl GuiDnsResolverService {
+    fn start() -> Result<Self, String> {
+        let (request_tx, request_rx) = mpsc::sync_channel::<GuiDnsResolutionRequest>(1);
+        let request_in_flight = Arc::new(AtomicBool::new(false));
+        let worker_request_in_flight = request_in_flight.clone();
+        thread::Builder::new()
+            .name("sorotte-gui-dns-resolver".to_owned())
+            .spawn(move || {
+                while let Ok(request) = request_rx.recv() {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        (request.resolver)(request.host, request.port)
+                    }))
+                    .unwrap_or_else(|_| Err(io::Error::other("DNS resolver worker panicked")));
+                    worker_request_in_flight.store(false, Ordering::Release);
+                    let _ = request.result_tx.send(result);
+                }
+            })
+            .map_err(|error| {
+                format!("Session transport DNS resolver worker spawn failed: {error}")
+            })?;
+        Ok(Self {
+            request_tx,
+            request_in_flight,
+        })
+    }
+
+    fn begin_resolution<R>(
+        &self,
+        host: String,
+        port: u16,
+        resolver: R,
+    ) -> Result<mpsc::Receiver<io::Result<Vec<SocketAddr>>>, String>
+    where
+        R: FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static,
+    {
+        self.request_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                format!(
+                    "Session transport TCP address resolution for {host}:{port} cannot start because a previous resolution is still in flight."
+                )
+            })?;
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let request = GuiDnsResolutionRequest {
+            host,
+            port,
+            resolver: Box::new(resolver),
+            result_tx,
+        };
+        if let Err(error) = self.request_tx.try_send(request) {
+            self.request_in_flight.store(false, Ordering::Release);
+            return Err(format!(
+                "Session transport TCP address resolution worker is unavailable: {error}"
+            ));
+        }
+        Ok(result_rx)
+    }
+}
+
 pub(in crate::app) struct GuiTcpSessionTransportDriver {
     host: String,
     port: u16,
@@ -122,6 +195,7 @@ pub(in crate::app) struct GuiTcpSessionTransportDriver {
     tls_handshake_timeout: Duration,
     initial_hello_timeout: Duration,
     tls_client_config: Arc<ClientConfig>,
+    resolver_service: Arc<GuiDnsResolverService>,
 }
 
 impl GuiTcpSessionTransportDriver {
@@ -161,10 +235,11 @@ impl GuiTcpSessionTransportDriver {
             .clone()
     }
 
-    fn ordered_connect_addresses_with_deadline<R>(
+    fn ordered_connect_addresses_with_deadline_using<R>(
         host: &str,
         port: u16,
         deadline: Instant,
+        resolver_service: &GuiDnsResolverService,
         resolver: R,
     ) -> Result<Vec<SocketAddr>, String>
     where
@@ -175,18 +250,6 @@ impl GuiTcpSessionTransportDriver {
             return Err("Session transport TCP host resolution failed: host was empty.".to_owned());
         }
         let normalized_host = normalized_host.to_owned();
-        let resolver_host = normalized_host.clone();
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
-        thread::Builder::new()
-            .name("sorotte-gui-dns-resolver".to_owned())
-            .spawn(move || {
-                let _ = result_tx.send(resolver(resolver_host, port));
-            })
-            .map_err(|error| {
-                format!(
-                    "Session transport TCP address resolution worker for {normalized_host}:{port} failed to start: {error}"
-                )
-            })?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(format!(
@@ -194,6 +257,8 @@ impl GuiTcpSessionTransportDriver {
                 Self::CONNECT_TIMEOUT,
             ));
         }
+        let result_rx =
+            resolver_service.begin_resolution(normalized_host.clone(), port, resolver)?;
         let mut addresses = match result_rx.recv_timeout(remaining) {
             Ok(Ok(addresses)) => addresses,
             Ok(Err(error)) => {
@@ -227,14 +292,23 @@ impl GuiTcpSessionTransportDriver {
         Ok(addresses)
     }
 
-    fn connect_stream(host: &str, port: u16) -> Result<TcpStream, String> {
+    fn connect_stream(
+        host: &str,
+        port: u16,
+        resolver_service: &GuiDnsResolverService,
+    ) -> Result<TcpStream, String> {
         let deadline = Instant::now() + Self::CONNECT_TIMEOUT;
-        let addresses =
-            Self::ordered_connect_addresses_with_deadline(host, port, deadline, |host, port| {
+        let addresses = Self::ordered_connect_addresses_with_deadline_using(
+            host,
+            port,
+            deadline,
+            resolver_service,
+            |host, port| {
                 (host.as_str(), port)
                     .to_socket_addrs()
                     .map(|addresses| addresses.collect())
-            })?;
+            },
+        )?;
         let mut failures = Vec::new();
 
         for address in &addresses {
@@ -278,8 +352,13 @@ impl GuiTcpSessionTransportDriver {
         Ok(())
     }
 
-    fn connect(host: &str, port: u16, tls_policy: TlsPolicy) -> Result<Self, String> {
-        let stream = Self::connect_stream(host, port)?;
+    fn connect(
+        host: &str,
+        port: u16,
+        tls_policy: TlsPolicy,
+        resolver_service: Arc<GuiDnsResolverService>,
+    ) -> Result<Self, String> {
+        let stream = Self::connect_stream(host, port, &resolver_service)?;
         let now = Instant::now();
         Ok(Self {
             host: host.to_owned(),
@@ -307,18 +386,32 @@ impl GuiTcpSessionTransportDriver {
             tls_handshake_timeout: Self::TLS_HANDSHAKE_TIMEOUT,
             initial_hello_timeout: Self::INITIAL_HELLO_TIMEOUT,
             tls_client_config: Self::default_tls_client_config(),
+            resolver_service,
         })
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn connect_from_host_arg_with_tls_policy(
         host_arg: &str,
         tls_policy: TlsPolicy,
+    ) -> Result<Self, String> {
+        Self::connect_from_host_arg_with_tls_policy_and_resolver(
+            host_arg,
+            tls_policy,
+            Arc::new(GuiDnsResolverService::start()?),
+        )
+    }
+
+    fn connect_from_host_arg_with_tls_policy_and_resolver(
+        host_arg: &str,
+        tls_policy: TlsPolicy,
+        resolver_service: Arc<GuiDnsResolverService>,
     ) -> Result<Self, String> {
         let (host, port) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
         let Some(port) = port.or(Some(8999)) else {
             return Err("Session transport TCP port resolution failed.".to_owned());
         };
-        Self::connect(&host, port, tls_policy)
+        Self::connect(&host, port, tls_policy, resolver_service)
     }
 
     #[cfg(test)]
@@ -423,7 +516,7 @@ impl GuiTcpSessionTransportDriver {
         self.pending_outbound_liveness_lines.clear();
         self.inbound_buffer.clear();
 
-        let stream = Self::connect_stream(&self.host, self.port)?;
+        let stream = Self::connect_stream(&self.host, self.port, &self.resolver_service)?;
         self.transport = Some(GuiTcpSessionNetworkTransport::Plain(stream));
         let now = Instant::now();
         self.last_inbound_activity_at = now;
@@ -970,6 +1063,7 @@ pub(in crate::app) struct GuiThreadedTcpSessionTransportDriver {
     transport_handle: Option<GuiQueuedSessionTransportHandle>,
     worker: Option<GuiThreadedTcpSessionTransportWorker>,
     liveness_enabled: Arc<AtomicBool>,
+    resolver_service: Arc<GuiDnsResolverService>,
     worker_failed: bool,
 }
 
@@ -1001,6 +1095,7 @@ impl GuiThreadedTcpSessionTransportDriver {
             transport_handle: None,
             worker: None,
             liveness_enabled: Arc::new(AtomicBool::new(false)),
+            resolver_service: Arc::new(GuiDnsResolverService::start()?),
             worker_failed: false,
         })
     }
@@ -1017,6 +1112,7 @@ impl GuiThreadedTcpSessionTransportDriver {
         let tls_policy = self.tls_policy;
         let liveness_line = Self::liveness_protocol_line()?;
         let liveness_enabled = self.liveness_enabled.clone();
+        let resolver_service = self.resolver_service.clone();
         let (stop_tx, stop_rx) = mpsc::channel();
         let (pump_tx, pump_rx) = mpsc::channel();
         let (pump_result_tx, pump_result_rx) = mpsc::channel();
@@ -1025,9 +1121,10 @@ impl GuiThreadedTcpSessionTransportDriver {
             .name("sorotte-gui-tcp-transport".to_owned())
             .spawn(move || {
                 let mut driver =
-                    match GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                    match GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy_and_resolver(
                         &host_arg,
                         tls_policy,
+                        resolver_service,
                     ) {
                         Ok(driver) => driver,
                         Err(error) => {
@@ -1254,13 +1351,16 @@ mod tests {
 
     #[test]
     fn address_resolution_is_bounded_by_the_total_connect_deadline() {
+        let resolver_service =
+            GuiDnsResolverService::start().expect("test resolver service should start");
         let timeout = Duration::from_millis(25);
         let started_at = Instant::now();
 
-        let error = GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline(
+        let error = GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline_using(
             "resolver.example",
             8999,
             started_at + timeout,
+            &resolver_service,
             |_host, _port| {
                 thread::sleep(Duration::from_millis(200));
                 Ok(Vec::new())
@@ -1271,6 +1371,43 @@ mod tests {
         assert!(error.contains("address resolution"));
         assert!(error.contains("timed out"));
         assert!(started_at.elapsed() < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn timed_out_resolution_blocks_duplicate_workers_until_it_finishes() {
+        let resolver_service =
+            GuiDnsResolverService::start().expect("test resolver service should start");
+        let first_deadline = Instant::now() + Duration::from_millis(25);
+
+        GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline_using(
+            "resolver.example",
+            8999,
+            first_deadline,
+            &resolver_service,
+            move |_host, _port| {
+                thread::sleep(Duration::from_millis(150));
+                Ok(vec!["127.0.0.1:8999".parse().expect("test address")])
+            },
+        )
+        .expect_err("the first stalled resolution should time out");
+
+        let duplicate_ran = Arc::new(AtomicBool::new(false));
+        let worker_duplicate_ran = duplicate_ran.clone();
+        let duplicate_error =
+            GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline_using(
+                "resolver.example",
+                8999,
+                Instant::now() + Duration::from_millis(25),
+                &resolver_service,
+                move |_host, _port| {
+                    worker_duplicate_ran.store(true, Ordering::Release);
+                    Ok(Vec::new())
+                },
+            )
+            .expect_err("a second resolver must not be spawned while the first is blocked");
+
+        assert!(duplicate_error.contains("previous resolution is still in flight"));
+        assert!(!duplicate_ran.load(Ordering::Acquire));
     }
 
     #[test]

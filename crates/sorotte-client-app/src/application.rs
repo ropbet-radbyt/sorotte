@@ -1071,9 +1071,10 @@ where
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
                         .runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
                             state.state,
                             dont_slow_down_with_me,
+                            received_at_seconds,
                         );
                 }
                 other => self
@@ -1773,6 +1774,20 @@ where
             .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
                 state,
                 dont_slow_down_with_me,
+            )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        &mut self,
+        state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+    ) -> bool {
+        self.runtime
+            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                state,
+                dont_slow_down_with_me,
+                received_at_seconds,
             )
     }
 

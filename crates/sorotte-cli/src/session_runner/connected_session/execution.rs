@@ -288,10 +288,12 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 runtime.run_reconnect_state_restore_validation_if_needed()?;
             }
             ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
-                let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
-                    StatePayload::new(),
-                    dont_slow_down_with_me,
-                );
+                let _ = runtime
+                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                        StatePayload::new(),
+                        dont_slow_down_with_me,
+                        now_seconds,
+                    );
             }
             ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => {
                 publish_pending_local_file_updates(

@@ -444,26 +444,61 @@ fn cache_cap_resume_evidence_requires_fresh_input_after_drain() {
 fn real_mpv_premature_http_disconnect_recovers_same_media_generation() {
     let server = FaultInjectingHttpServer::start(BTreeMap::from([(
         "/temporary-disconnect.wav".to_owned(),
-        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(12)).with_faults(NetworkFaultProfile {
-            bytes_per_second: Some(350_000),
-            disconnect_after_body_bytes: Some(500_000),
-            temporary_disconnect_requests: 1,
-            ..NetworkFaultProfile::default()
-        }),
+        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(45))
+            // Prevent libavformat's own range retry from satisfying the test before Sorotte sees
+            // the terminal EOF. The second full response is consumed by Sorotte's reload.
+            .non_seekable()
+            .with_faults(NetworkFaultProfile {
+                bytes_per_second: Some(350_000),
+                disconnect_after_body_bytes: Some(1_200_000),
+                temporary_disconnect_requests: 1,
+                ..NetworkFaultProfile::default()
+            }),
     )]))
     .expect("temporary-disconnect HTTP server should start");
     let mut client = RealMpvClient::start(10_004, &server.url("/temporary-disconnect.wav"));
-    let started_at = Instant::now();
-    while started_at.elapsed() < Duration::from_secs(16) {
+    let pre_fault_started_at = Instant::now();
+    let generation_before_recovery = loop {
         client.poll();
-        let requests = server.requests();
-        if requests.iter().any(|request| request.disconnected_early)
-            && requests.len() >= 2
+        if let Some(generation) = client.adapter_generation
             && client.latest_transport.phase == Some(PlayerTransportPhase::Playing)
             && client
                 .latest_transport
                 .position_seconds
-                .is_some_and(|position| position >= 4.0)
+                .is_some_and(|position| position >= 0.2)
+        {
+            assert_eq!(
+                client.player.network_stream_recovery_attempt_count(),
+                0,
+                "the adapter generation baseline must be captured before recovery"
+            );
+            break generation;
+        }
+        assert!(
+            pre_fault_started_at.elapsed() < SEMANTICS_TIMEOUT,
+            "real mpv did not establish a pre-fault generation baseline: transport={:?}, requests={:?}",
+            client.latest_transport,
+            server.requests()
+        );
+        sleep(POLL_INTERVAL);
+    };
+    let history_before_recovery = client.transport_history.len();
+
+    let started_at = Instant::now();
+    while started_at.elapsed() < Duration::from_secs(30) {
+        client.poll();
+        let requests = server.requests();
+        if client.player.network_stream_recovery_attempt_count() >= 1
+            && requests.iter().any(|request| request.disconnected_early)
+            && requests
+                .iter()
+                .skip(1)
+                .any(|request| !request.disconnected_early)
+            && client.latest_transport.phase == Some(PlayerTransportPhase::Playing)
+            && client
+                .latest_transport
+                .position_seconds
+                .is_some_and(|position| position >= 8.0)
         {
             break;
         }
@@ -478,8 +513,9 @@ fn real_mpv_premature_http_disconnect_recovers_same_media_generation() {
         "the first HTTP response should terminate prematurely: {requests:?}"
     );
     assert!(
-        requests.len() >= 2,
-        "mpv/Sorotte should issue a later request after premature EOF: {requests:?}"
+        client.player.network_stream_recovery_attempt_count() >= 1,
+        "the required gate must observe Sorotte's bounded recovery counter, not mpv's own retry: transport={:?}, requests={requests:?}",
+        client.latest_transport
     );
     assert!(
         requests
@@ -498,13 +534,27 @@ fn real_mpv_premature_http_disconnect_recovers_same_media_generation() {
         client
             .latest_transport
             .position_seconds
-            .is_some_and(|position| position >= 4.0),
+            .is_some_and(|position| position >= 8.0),
         "recovered playback should advance beyond the disconnect point: {:?}",
         client.latest_transport
     );
+    assert_eq!(
+        client.adapter_generation,
+        Some(generation_before_recovery),
+        "Sorotte's reload must remain on the adapter generation captured before the fault"
+    );
     assert!(
-        client.adapter_generation.is_some(),
-        "recovery should retain an observed adapter media generation"
+        client.transport_history[history_before_recovery..]
+            .iter()
+            .any(|update| {
+                update
+                    .media_generation
+                    .is_some_and(|generation| generation.get() == generation_before_recovery)
+                    && update.phase == Some(PlayerTransportPhase::Loading)
+                    && update.eof_reached == Some(false)
+            }),
+        "recovery must emit Sorotte's same-generation Loading update with terminal EOF cleared: history={:?}",
+        &client.transport_history[history_before_recovery..]
     );
 }
 

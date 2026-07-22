@@ -483,30 +483,36 @@ fn check_for_github_update(
     update_channel: Option<&str>,
 ) -> Result<LegacyUpdateCheckResult, String> {
     let capability = self_update_capability_current_install();
-    if !capability.supported() {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
-            message: capability.unavailable_message().to_owned(),
-            url: None,
-            candidate: None,
-            self_update_supported: false,
-            public_servers: None,
-            checked_at_utc: String::new(),
-            user_initiated: false,
-        });
-    }
-
     if let Some(body) = env_response_override(SOROTTE_UPDATE_CHECK_RESPONSE_ENV)
         && let Some(result) = github_update_response_override_result(&body, language)?
     {
-        return Ok(result);
+        return Ok(apply_self_update_capability(result, capability));
     }
 
     let channel = UpdateChannel::selected(update_channel)?;
-    match channel {
+    let result = match channel {
         UpdateChannel::Stable => check_stable_release_update(language),
         UpdateChannel::Dev => check_dev_update(language),
+    }?;
+    Ok(apply_self_update_capability(result, capability))
+}
+
+fn apply_self_update_capability(
+    mut result: LegacyUpdateCheckResult,
+    capability: SelfUpdateCapability,
+) -> LegacyUpdateCheckResult {
+    result.self_update_supported = capability.supported();
+    if !capability.supported()
+        && result.status == LegacyUpdateCheckStatus::UpdateAvailable
+        && !result.message.contains(capability.unavailable_message())
+    {
+        result.message = format!(
+            "{} {}",
+            result.message.trim(),
+            capability.unavailable_message()
+        );
     }
+    result
 }
 
 fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
@@ -1088,7 +1094,7 @@ fn update_target_directory_is_writable(target_dir: &Path) -> bool {
         ".sorotte-update-write-probe-{}-{nonce}",
         std::process::id(),
     ));
-    match fs::OpenOptions::new()
+    let directory_probe_succeeded = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&probe)
@@ -1098,7 +1104,36 @@ fn update_target_directory_is_writable(target_dir: &Path) -> bool {
             fs::remove_file(probe).is_ok()
         }
         Err(_) => false,
-    }
+    };
+    directory_probe_succeeded
+        && [
+            SOROTTE_GUI_EXECUTABLE,
+            SOROTTE_GUI_UPDATER_EXECUTABLE,
+            SOROTTE_GUI_INSTALL_MARKER,
+        ]
+        .iter()
+        .all(|name| update_target_file_is_replaceable(&target_dir.join(name)))
+}
+
+#[cfg(windows)]
+fn update_target_file_is_replaceable(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    const DELETE_ACCESS: u32 = 0x0001_0000;
+
+    fs::OpenOptions::new()
+        .access_mode(DELETE_ACCESS)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+fn update_target_file_is_replaceable(path: &Path) -> bool {
+    fs::OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn github_update_response_override_result(
@@ -2019,19 +2054,18 @@ mod tests {
     };
 
     use super::{
-        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckStatus,
-        SOROTTE_GUI_EXECUTABLE, SOROTTE_GUI_INSTALL_MARKER, SOROTTE_GUI_TARGET,
-        SelfUpdateCapability, StagedUpdate, StoredClientSettingsMvp, UpdateCandidate,
-        UpdateCandidateSource, UpdateChannel, UpdateManifest, check_for_github_update,
-        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
-        default_update_check_message, fetch_public_servers_from_url,
+        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckResult,
+        LegacyUpdateCheckStatus, SOROTTE_GUI_EXECUTABLE, SOROTTE_GUI_INSTALL_MARKER,
+        SOROTTE_GUI_TARGET, SelfUpdateCapability, StagedUpdate, StoredClientSettingsMvp,
+        UpdateCandidate, UpdateCandidateSource, UpdateChannel, UpdateManifest,
+        apply_self_update_capability, cleanup_failed_stage_dir, cleanup_update_staging_root,
+        cleanup_updates_root, default_update_check_message, fetch_public_servers_from_url,
         fetch_update_check_result_from_url, normal_package_basename, parse_public_server_response,
         parse_update_check_response, parse_version, safe_zip_relative_path,
         sanitize_wordpress_public_server_response, sanitize_wordpress_update_check_response,
         select_newest_dev_artifact, select_stable_gui_release_asset,
-        self_update_capability_for_install_with_probe, self_update_supported_current_install,
-        should_run_automatic_update_check, staged_update_helper_args, update_supported_platform,
-        validate_manifest, validate_sha256_bytes,
+        self_update_capability_for_install_with_probe, should_run_automatic_update_check,
+        staged_update_helper_args, validate_manifest, validate_sha256_bytes,
     };
     #[cfg(windows)]
     use super::{path_is_equal_or_child_case_insensitive, pending_update_recovery_args};
@@ -2157,20 +2191,38 @@ mod tests {
     }
 
     #[test]
-    fn update_check_skips_github_for_unpackaged_local_builds() {
-        let result = check_for_github_update(Some("en"), true, Some("dev"))
-            .expect("local update check should return an immediate result");
+    fn protected_install_preserves_discovered_update_and_release_url() {
+        let candidate = UpdateCandidate {
+            channel: UpdateChannel::Stable,
+            version: "9.9.9".to_owned(),
+            git_sha: Some("abcdef123456".to_owned()),
+            created_at_utc: "2026-07-23T00:00:00Z".to_owned(),
+            target: SOROTTE_GUI_TARGET.to_owned(),
+            package: "sorotte-gui-9.9.9-windows-x86_64.zip".to_owned(),
+            sha256: "a".repeat(64),
+            download_url: "https://example.invalid/sorotte.zip".to_owned(),
+            details_url: Some("https://example.invalid/releases/9.9.9".to_owned()),
+            source: UpdateCandidateSource::ReleaseAsset,
+        };
+        let result = LegacyUpdateCheckResult {
+            status: LegacyUpdateCheckStatus::UpdateAvailable,
+            message: candidate.summary(),
+            url: candidate.details_url.clone(),
+            candidate: Some(candidate.clone()),
+            self_update_supported: true,
+            public_servers: None,
+            checked_at_utc: String::new(),
+            user_initiated: true,
+        };
 
-        if update_supported_platform() && !self_update_supported_current_install() {
-            assert_eq!(result.status, LegacyUpdateCheckStatus::UpToDate);
-            assert_eq!(
-                result.message,
-                "GitHub self-update is only available for packaged Sorotte GUI installs."
-            );
-            assert_eq!(result.url, None);
-            assert_eq!(result.candidate, None);
-            assert!(!result.self_update_supported);
-        }
+        let protected =
+            apply_self_update_capability(result, SelfUpdateCapability::RequiresElevation);
+
+        assert_eq!(protected.status, LegacyUpdateCheckStatus::UpdateAvailable);
+        assert_eq!(protected.url, candidate.details_url);
+        assert_eq!(protected.candidate, Some(candidate));
+        assert!(!protected.self_update_supported);
+        assert!(protected.message.contains("requires elevation"));
     }
 
     #[test]

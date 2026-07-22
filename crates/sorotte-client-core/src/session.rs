@@ -32,6 +32,11 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     autoplay_time_left_seconds: f64,
 }
 
+pub(crate) struct StateReconcileContext {
+    pub(crate) local_state_change_global_playstate: Option<RoomPlaystateView>,
+    pub(crate) received_at_seconds: f64,
+}
+
 mod apply;
 mod file_metadata;
 mod helpers;

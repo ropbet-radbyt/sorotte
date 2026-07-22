@@ -95,7 +95,7 @@ fn reset_sync_state_for_reconnect_clears_fastforward_cooldown_after_self_attribu
     );
 
     let pre_reconnect_self_attribution_grace_expired =
-        session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
+        session.runtime_actions_for_desync_correction(6.0, 0.0, false, false, true);
     assert_eq!(
         pre_reconnect_self_attribution_grace_expired,
         vec![ClientRuntimeAction::SetPosition(10.25)],
@@ -106,7 +106,7 @@ fn reset_sync_state_for_reconnect_clears_fastforward_cooldown_after_self_attribu
             .model
             .playback
             .behind_first_detected_at_seconds
-            .is_some_and(|t| t > 4.0),
+            .is_some_and(|t| t > 6.0),
         "fastforward should leave a future cooldown timer"
     );
 

@@ -23,6 +23,8 @@ const INSTALL_MANIFEST_SCHEMA: &str = "sorotte-gui-install-manifest-v2";
 const INSTALL_TARGET: &str = "windows-x86_64";
 const JOURNAL_FILE: &str = ".sorotte-update-journal-v1.jsonl";
 const JOURNAL_SCHEMA: &str = "sorotte-update-replacement-journal-v1";
+const BOOTSTRAP_DIR_PREFIX: &str = ".sorotte-update-bootstrap-";
+const BOOTSTRAP_EXE: &str = "sorotte-gui-updater-bootstrap.exe";
 const LEGACY_MANAGED_FILES: &[&str] = &[
     GUI_EXE,
     UPDATER_EXE,
@@ -193,6 +195,23 @@ where
         updater_location_check(&args)?,
         UpdaterExecutionLocation::InstalledBootstrap
     ) {
+        let running = env::current_exe()
+            .map_err(|error| format!("failed resolving updater path for cleanup: {error}"))?;
+        match cleanup_stale_bootstrap_dirs(&args.target_dir, &running) {
+            Ok(removed) if removed > 0 => {
+                let _ = append_log(
+                    &args.log_path,
+                    &format!("removed {removed} stale updater bootstrap directory/directories"),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = append_log(
+                    &args.log_path,
+                    &format!("stale updater bootstrap cleanup was incomplete: {error}"),
+                );
+            }
+        }
         return launch_detached_update_helper(&args);
     }
     append_log(&args.log_path, "waiting for Sorotte GUI to exit")?;
@@ -481,10 +500,9 @@ fn validate_updater_location(args: &UpdaterArgs) -> Result<UpdaterExecutionLocat
         )
     })?;
     if !paths_are_equal(bootstrap_root, &canonical_target)
-        || !running_parent.file_name().is_some_and(|name| {
-            name.to_string_lossy()
-                .starts_with(".sorotte-update-bootstrap-")
-        })
+        || !running_parent
+            .file_name()
+            .is_some_and(|name| bootstrap_dir_name_is_managed(&name.to_string_lossy()))
     {
         return Err(format!(
             "detached updater helper {} is outside Sorotte's protected bootstrap directory",
@@ -512,7 +530,7 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
     })?;
     let expected_sha256 = sha256_bytes(&bytes);
     let bootstrap_dir = create_protected_bootstrap_dir(&args.target_dir)?;
-    let detached_path = bootstrap_dir.join("sorotte-gui-updater-bootstrap.exe");
+    let detached_path = bootstrap_dir.join(BOOTSTRAP_EXE);
     let write_result = (|| {
         let mut output = fs::OpenOptions::new()
             .write(true)
@@ -684,7 +702,7 @@ fn create_protected_bootstrap_dir(target_dir: &Path) -> Result<PathBuf, String> 
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     let path = target_dir.join(format!(
-        ".sorotte-update-bootstrap-{}-{nonce}",
+        "{BOOTSTRAP_DIR_PREFIX}{}-{nonce}",
         std::process::id()
     ));
     fs::create_dir(&path).map_err(|error| {
@@ -695,6 +713,99 @@ fn create_protected_bootstrap_dir(target_dir: &Path) -> Result<PathBuf, String> 
     })?;
     ensure_directory_is_not_reparse_point(&path)?;
     Ok(path)
+}
+
+fn cleanup_stale_bootstrap_dirs(target_dir: &Path, running_exe: &Path) -> Result<usize, String> {
+    ensure_directory_is_not_reparse_point(target_dir)?;
+    let running_parent = running_exe
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok());
+    let entries = fs::read_dir(target_dir).map_err(|error| {
+        format!(
+            "failed listing updater target directory {}: {error}",
+            target_dir.display()
+        )
+    })?;
+    let mut removed = 0;
+    let mut failures = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push(format!(
+                    "failed reading updater target directory entry: {error}"
+                ));
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !bootstrap_dir_name_is_managed(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if running_parent.as_ref().is_some_and(|running_parent| {
+            fs::canonicalize(&path)
+                .ok()
+                .is_some_and(|candidate| paths_are_equal(&candidate, running_parent))
+        }) {
+            continue;
+        }
+        match bootstrap_dir_contents_are_managed(&path) {
+            Ok(true) => match remove_directory_if_exists(&path) {
+                Ok(()) => removed += 1,
+                Err(error) => failures.push(error),
+            },
+            Ok(false) => {}
+            Err(error) => failures.push(error),
+        }
+    }
+    if failures.is_empty() {
+        Ok(removed)
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn bootstrap_dir_name_is_managed(name: &str) -> bool {
+    let Some(identity) = name.strip_prefix(BOOTSTRAP_DIR_PREFIX) else {
+        return false;
+    };
+    let Some((pid, nonce)) = identity.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && !nonce.is_empty()
+        && nonce.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn bootstrap_dir_contents_are_managed(path: &Path) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed inspecting {}: {error}", path.display()))?;
+    if !metadata.is_dir() || metadata_is_reparse_or_symlink(&metadata) {
+        return Ok(false);
+    }
+    let entries = fs::read_dir(path)
+        .map_err(|error| format!("failed listing {}: {error}", path.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("failed reading updater bootstrap directory entry: {error}")
+        })?;
+        if entry.file_name() != std::ffi::OsStr::new(BOOTSTRAP_EXE) {
+            return Ok(false);
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+            format!(
+                "failed inspecting bootstrap helper {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !metadata.is_file() || metadata_is_reparse_or_symlink(&metadata) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String> {
@@ -1965,6 +2076,37 @@ mod tests {
             Some(UpdateInput::Package { ref package, .. }) if package == Path::new("update.zip")
         ));
         assert!(args.restart);
+    }
+
+    #[test]
+    fn stale_bootstrap_cleanup_removes_only_owned_inactive_directories() {
+        let root = test_root("bootstrap-cleanup");
+        let stale = root.join(format!("{BOOTSTRAP_DIR_PREFIX}123-456"));
+        let active = root.join(format!("{BOOTSTRAP_DIR_PREFIX}789-101112"));
+        let suspicious = root.join(format!("{BOOTSTRAP_DIR_PREFIX}321-654"));
+        fs::create_dir_all(&stale).unwrap();
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&suspicious).unwrap();
+        fs::write(stale.join(BOOTSTRAP_EXE), b"stale updater").unwrap();
+        let active_exe = active.join(BOOTSTRAP_EXE);
+        fs::write(&active_exe, b"active updater").unwrap();
+        fs::write(suspicious.join(BOOTSTRAP_EXE), b"untrusted updater").unwrap();
+        fs::write(suspicious.join("keep.txt"), b"not updater-owned").unwrap();
+
+        let removed = cleanup_stale_bootstrap_dirs(&root, &active_exe)
+            .expect("stale bootstrap cleanup should succeed");
+
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(
+            active.exists(),
+            "the running helper directory must be preserved"
+        );
+        assert!(
+            suspicious.exists(),
+            "directories containing non-updater files must not be removed"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
