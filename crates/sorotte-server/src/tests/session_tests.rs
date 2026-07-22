@@ -863,7 +863,7 @@ fn first_hello_receives_unknown_readiness_without_join_time_state() {
 }
 
 #[test]
-fn hello_username_conflict_is_resolved_with_underscored_variant() {
+fn hello_username_conflict_is_resolved_with_numbered_variant() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
@@ -881,7 +881,7 @@ fn hello_username_conflict_is_resolved_with_underscored_variant() {
     let directed_messages = decode_directed_lines(&directed_lines);
 
     assert!(
-        has_user_event(&directed_messages, "client-1", "alice_", "joined"),
+        has_user_event(&directed_messages, "client-1", "alice_2", "joined"),
         "existing user should observe conflict-resolved username"
     );
     let response_message = directed_messages
@@ -894,18 +894,18 @@ fn hello_username_conflict_is_resolved_with_underscored_variant() {
         .clone();
     let response_hello =
         extract_hello_from_message(response_message).expect("hello response should decode");
-    assert_eq!(response_hello.username, "alice_");
+    assert_eq!(response_hello.username, "alice_2");
     assert_eq!(
         runtime
             .session("client-2")
             .expect("session should be registered")
             .username,
-        "alice_"
+        "alice_2"
     );
 }
 
 #[test]
-fn hello_username_conflict_applies_legacy_trailing_underscore_rules() {
+fn hello_username_conflict_numbers_names_that_already_end_in_underscore() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
@@ -924,8 +924,8 @@ fn hello_username_conflict_applies_legacy_trailing_underscore_rules() {
             .session("client-2")
             .expect("second session should exist")
             .username,
-        "alice",
-        "collision on name ending with underscore should first strip underscores"
+        "alice__2",
+        "collision suffixing should preserve the requested base"
     );
 
     runtime
@@ -933,15 +933,67 @@ fn hello_username_conflict_applies_legacy_trailing_underscore_rules() {
             "client-3",
             r#"{"Hello":{"username":"alice_","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
-        .expect("third hello should append underscores until free");
+        .expect("third hello should allocate the next numbered suffix");
     assert_eq!(
         runtime
             .session("client-3")
             .expect("third session should exist")
             .username,
-        "alice__",
-        "after stripping to a conflicting base username, underscores should be appended"
+        "alice__3",
+        "numeric collision allocation should remain deterministic"
     );
+}
+
+#[test]
+fn username_collision_suffixes_reserve_space_within_the_unicode_scalar_limit() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_max_username_length(4);
+    for (client_id, requested) in [
+        ("client-1", "éééé"),
+        ("client-2", "éééé"),
+        ("client-3", "éé_2"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{requested}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
+                ),
+            )
+            .expect("hello should allocate a bounded username");
+    }
+
+    assert_eq!(runtime.session("client-1").unwrap().username, "éééé");
+    assert_eq!(runtime.session("client-2").unwrap().username, "éé_2");
+    assert_eq!(runtime.session("client-3").unwrap().username, "éé_3");
+    assert!(
+        runtime
+            .sessions
+            .values()
+            .all(|session| session.username.chars().count() <= 4)
+    );
+}
+
+#[test]
+fn exhausted_tiny_username_namespace_fails_without_an_unbounded_collision_loop() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_max_username_length(1);
+    for index in 0..11 {
+        runtime
+            .handle_line(
+                &format!("client-{index}"),
+                r#"{"Hello":{"username":"x","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("the one-scalar namespace should allocate x and ten digits");
+    }
+
+    assert!(matches!(
+        runtime.handle_line(
+            "client-overflow",
+            r#"{"Hello":{"username":"x","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        ),
+        Err(ServerRuntimeError::InvalidHello)
+    ));
 }
 
 #[test]

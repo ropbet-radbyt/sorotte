@@ -121,6 +121,22 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
         app.runtime_mut()
             .set_max_username_length(max_username_length);
     }
+    if let Some(max_persistent_rooms) = config.max_persistent_rooms {
+        app.runtime_mut()
+            .set_max_persistent_rooms(max_persistent_rooms);
+    }
+    if let Some(max_persistent_rooms_per_identity) = config.max_persistent_rooms_per_identity {
+        app.runtime_mut()
+            .set_max_persistent_rooms_per_identity(max_persistent_rooms_per_identity);
+    }
+    if let Some(cooldown_seconds) = config.persistent_room_creation_cooldown_seconds {
+        app.runtime_mut()
+            .set_persistent_room_creation_cooldown_seconds(cooldown_seconds as f64);
+    }
+    if let Some(expiry_seconds) = config.persistent_room_inactivity_expiry_seconds {
+        app.runtime_mut()
+            .set_persistent_room_inactivity_expiry_seconds(expiry_seconds as f64);
+    }
     app.runtime_mut()
         .set_stats_snapshot_start_delay_for_port(config.port);
     app.runtime_mut().set_tls_cert_path(config.tls_cert_path);

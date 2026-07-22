@@ -289,6 +289,7 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
         username: Some("saved-alice".to_owned()),
         room: Some("saved-room".to_owned()),
         server_password: Some("saved-secret".into()),
+        tls_policy: Some("Plaintext".to_owned()),
         language: Some("en".to_owned()),
         shared_playlist_enabled: Some(false),
         chat_input_enabled: Some(false),

@@ -508,7 +508,7 @@ fn new_readiness_operation_id(request_nonce: u64) -> String {
     use std::fmt::Write as _;
 
     let mut random = [0_u8; 16];
-    if getrandom::getrandom(&mut random).is_err() {
+    if getrandom::fill(&mut random).is_err() {
         random[..8].copy_from_slice(&request_nonce.to_le_bytes());
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

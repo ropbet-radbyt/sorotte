@@ -275,7 +275,16 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::invoke_named_control_internal(window, name, control_kind, false)
+        Self::invoke_named_control_internal(window, name, control_kind, false, false)
+    }
+
+    fn click_named_control(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Self::invoke_named_control_internal(window, name, control_kind, false, true)
     }
 
     fn capture_window_png(

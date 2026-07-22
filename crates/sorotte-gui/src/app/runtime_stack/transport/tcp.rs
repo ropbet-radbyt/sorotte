@@ -12,7 +12,9 @@ use std::{
 };
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
-use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+use sorotte_client_app::app_boundary::state::{
+    TlsPolicy, parse_host_and_optional_port_from_host_arg_legacy_compatible,
+};
 use sorotte_protocol::{
     DEFAULT_MAX_PROTOCOL_LINE_BYTES, PingPayload, ProtocolMessage, StatePayload,
     decode_message_line, decode_message_line_items, encode_message_line,
@@ -45,6 +47,10 @@ impl GuiTcpSessionNetworkTransport {
             Self::Plain(stream) => stream.read(buf),
             Self::Tls(stream) => stream.read(buf),
         }
+    }
+
+    fn tls_handshake_in_progress(&self) -> bool {
+        matches!(self, Self::Tls(stream) if stream.conn.is_handshaking())
     }
 
     fn upgrade_to_tls(
@@ -107,6 +113,14 @@ pub(in crate::app) struct GuiTcpSessionTransportDriver {
     inbound_idle_timeout: Duration,
     last_inbound_activity_at: Instant,
     tls_negotiation_state: GuiTcpSessionTlsNegotiationState,
+    tls_policy: TlsPolicy,
+    tls_response_started_at: Option<Instant>,
+    tls_handshake_started_at: Option<Instant>,
+    initial_hello_started_at: Option<Instant>,
+    server_handshake_completed: bool,
+    starttls_response_timeout: Duration,
+    tls_handshake_timeout: Duration,
+    initial_hello_timeout: Duration,
     tls_client_config: Arc<ClientConfig>,
 }
 
@@ -114,6 +128,9 @@ impl GuiTcpSessionTransportDriver {
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
     const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1500);
     const INBOUND_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+    const STARTTLS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8);
+    const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
+    const INITIAL_HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
     fn normalized_connect_host(host: &str) -> &str {
         host.strip_prefix('[')
@@ -209,9 +226,10 @@ impl GuiTcpSessionTransportDriver {
         Ok(())
     }
 
-    fn connect(host: &str, port: u16) -> Result<Self, String> {
+    fn connect(host: &str, port: u16, tls_policy: TlsPolicy) -> Result<Self, String> {
         let stream = Self::connect_stream(host, port)?;
         Self::configure_connected_stream(&stream)?;
+        let now = Instant::now();
         Ok(Self {
             host: host.to_owned(),
             port,
@@ -223,18 +241,33 @@ impl GuiTcpSessionTransportDriver {
             transport_handle: None,
             inbound_buffer: Vec::new(),
             inbound_idle_timeout: Self::INBOUND_IDLE_TIMEOUT,
-            last_inbound_activity_at: Instant::now(),
-            tls_negotiation_state: GuiTcpSessionTlsNegotiationState::PendingRequest,
+            last_inbound_activity_at: now,
+            tls_negotiation_state: if tls_policy == TlsPolicy::Plaintext {
+                GuiTcpSessionTlsNegotiationState::Disabled
+            } else {
+                GuiTcpSessionTlsNegotiationState::PendingRequest
+            },
+            tls_policy,
+            tls_response_started_at: (tls_policy != TlsPolicy::Plaintext).then_some(now),
+            tls_handshake_started_at: None,
+            initial_hello_started_at: (tls_policy == TlsPolicy::Plaintext).then_some(now),
+            server_handshake_completed: false,
+            starttls_response_timeout: Self::STARTTLS_RESPONSE_TIMEOUT,
+            tls_handshake_timeout: Self::TLS_HANDSHAKE_TIMEOUT,
+            initial_hello_timeout: Self::INITIAL_HELLO_TIMEOUT,
             tls_client_config: Self::default_tls_client_config(),
         })
     }
 
-    pub(in crate::app) fn connect_from_host_arg(host_arg: &str) -> Result<Self, String> {
+    pub(in crate::app) fn connect_from_host_arg_with_tls_policy(
+        host_arg: &str,
+        tls_policy: TlsPolicy,
+    ) -> Result<Self, String> {
         let (host, port) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
         let Some(port) = port.or(Some(8999)) else {
             return Err("Session transport TCP port resolution failed.".to_owned());
         };
-        Self::connect(&host, port)
+        Self::connect(&host, port, tls_policy)
     }
 
     #[cfg(test)]
@@ -250,6 +283,37 @@ impl GuiTcpSessionTransportDriver {
     pub(in crate::app) fn with_inbound_idle_timeout(mut self, timeout: Duration) -> Self {
         self.inbound_idle_timeout = timeout;
         self
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_stack::transport) fn with_connection_phase_timeouts(
+        mut self,
+        starttls_response_timeout: Duration,
+        tls_handshake_timeout: Duration,
+        initial_hello_timeout: Duration,
+    ) -> Self {
+        self.starttls_response_timeout = starttls_response_timeout;
+        self.tls_handshake_timeout = tls_handshake_timeout;
+        self.initial_hello_timeout = initial_hello_timeout;
+        self
+    }
+
+    fn set_server_handshake_completed(&mut self, completed: bool) {
+        self.server_handshake_completed = completed;
+        if completed {
+            self.initial_hello_started_at = None;
+        }
+    }
+
+    fn warn_prefer_tls_plaintext_fallback(
+        transport_handle: &GuiQueuedSessionTransportHandle,
+        reason: &str,
+    ) {
+        let warning = format!(
+            "Security warning: {reason} The connection is continuing without encryption because TLS policy is PreferTls; credentials and session data may be exposed. Set tlsPolicy = RequireTls to refuse this connection."
+        );
+        eprintln!("warning: {warning}");
+        transport_handle.push_transport_warning(warning);
     }
 
     fn fail_pending_outbound_deliveries(&mut self, message: &str) {
@@ -311,8 +375,63 @@ impl GuiTcpSessionTransportDriver {
         let stream = Self::connect_stream(&self.host, self.port)?;
         Self::configure_connected_stream(&stream)?;
         self.transport = Some(GuiTcpSessionNetworkTransport::Plain(stream));
-        self.last_inbound_activity_at = Instant::now();
-        self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::PendingRequest;
+        let now = Instant::now();
+        self.last_inbound_activity_at = now;
+        self.tls_negotiation_state = if self.tls_policy == TlsPolicy::Plaintext {
+            GuiTcpSessionTlsNegotiationState::Disabled
+        } else {
+            GuiTcpSessionTlsNegotiationState::PendingRequest
+        };
+        self.tls_response_started_at = (self.tls_policy != TlsPolicy::Plaintext).then_some(now);
+        self.tls_handshake_started_at = None;
+        self.initial_hello_started_at = (self.tls_policy == TlsPolicy::Plaintext).then_some(now);
+        self.server_handshake_completed = false;
+        Ok(())
+    }
+
+    fn enforce_connection_phase_deadlines(&mut self) -> Result<(), String> {
+        if self.tls_negotiation_state == GuiTcpSessionTlsNegotiationState::AwaitingResponse
+            && self
+                .tls_response_started_at
+                .is_some_and(|started| started.elapsed() >= self.starttls_response_timeout)
+        {
+            return Err(format!(
+                "Session transport TCP STARTTLS response timed out after {:.1} seconds.",
+                self.starttls_response_timeout.as_secs_f64()
+            ));
+        }
+
+        if self.tls_negotiation_state == GuiTcpSessionTlsNegotiationState::Active {
+            let handshaking = self
+                .transport
+                .as_ref()
+                .is_some_and(GuiTcpSessionNetworkTransport::tls_handshake_in_progress);
+            if handshaking
+                && self
+                    .tls_handshake_started_at
+                    .is_some_and(|started| started.elapsed() >= self.tls_handshake_timeout)
+            {
+                return Err(format!(
+                    "Session transport TCP TLS handshake timed out after {:.1} seconds.",
+                    self.tls_handshake_timeout.as_secs_f64()
+                ));
+            }
+            if !handshaking && self.initial_hello_started_at.is_none() {
+                self.tls_handshake_started_at = None;
+                self.initial_hello_started_at = Some(Instant::now());
+            }
+        }
+
+        if !self.server_handshake_completed
+            && self
+                .initial_hello_started_at
+                .is_some_and(|started| started.elapsed() >= self.initial_hello_timeout)
+        {
+            return Err(format!(
+                "Session transport TCP initial Hello timed out after {:.1} seconds.",
+                self.initial_hello_timeout.as_secs_f64()
+            ));
+        }
         Ok(())
     }
 
@@ -627,10 +746,21 @@ impl GuiTcpSessionTransportDriver {
         line: String,
     ) -> Result<(), String> {
         let Ok(message) = decode_message_line(&line) else {
-            return Ok(());
+            return if self.tls_policy == TlsPolicy::RequireTls {
+                Err("Session transport TCP received a malformed response instead of accepting required TLS.".to_owned())
+            } else {
+                Self::warn_prefer_tls_plaintext_fallback(
+                    transport_handle,
+                    "The server returned a malformed STARTTLS response.",
+                );
+                self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
+                self.tls_response_started_at = None;
+                self.initial_hello_started_at = Some(Instant::now());
+                Ok(())
+            };
         };
         match message {
-            ProtocolMessage::Tls(tls_message) if tls_message.tls.start_tls.contains("true") => {
+            ProtocolMessage::Tls(tls_message) if tls_message.tls.start_tls == "true" => {
                 let server_name = self.server_name()?;
                 let transport = self.transport.take().ok_or_else(|| {
                     "Session transport TCP TLS upgrade failed because the socket was unavailable."
@@ -639,12 +769,37 @@ impl GuiTcpSessionTransportDriver {
                 self.transport =
                     Some(transport.upgrade_to_tls(self.tls_client_config.clone(), server_name)?);
                 self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Active;
+                self.tls_response_started_at = None;
+                self.tls_handshake_started_at = Some(Instant::now());
             }
             ProtocolMessage::Tls(_) => {
+                if self.tls_policy == TlsPolicy::RequireTls {
+                    return Err(
+                        "Session transport TCP server refused required TLS negotiation.".to_owned(),
+                    );
+                }
+                Self::warn_prefer_tls_plaintext_fallback(
+                    transport_handle,
+                    "The server declined STARTTLS.",
+                );
                 self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
+                self.tls_response_started_at = None;
+                self.initial_hello_started_at = Some(Instant::now());
             }
             _ => {
+                if self.tls_policy == TlsPolicy::RequireTls {
+                    return Err(format!(
+                        "Session transport TCP server returned unexpected {} message instead of accepting required TLS.",
+                        message.kind()
+                    ));
+                }
+                Self::warn_prefer_tls_plaintext_fallback(
+                    transport_handle,
+                    "The server returned an unexpected message instead of a STARTTLS response.",
+                );
                 self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
+                self.tls_response_started_at = None;
+                self.initial_hello_started_at = Some(Instant::now());
                 transport_handle.push_inbound_protocol_line(line);
             }
         }
@@ -726,12 +881,14 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
         }
         let result = (|| {
             self.queue_tls_negotiation_request_if_needed()?;
+            self.enforce_connection_phase_deadlines()?;
             self.queue_outbound_lines(transport);
             self.flush_outbound_lines()?;
             self.drain_inbound_lines(transport)?;
             if self.tls_negotiation_state != GuiTcpSessionTlsNegotiationState::AwaitingResponse {
                 self.flush_outbound_lines()?;
             }
+            self.enforce_connection_phase_deadlines()?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -742,6 +899,10 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
 
     fn reconnect(&mut self) -> Result<(), String> {
         self.reconnect_stream()
+    }
+
+    fn set_protocol_liveness_enabled(&mut self, enabled: bool) {
+        self.set_server_handshake_completed(enabled);
     }
 }
 
@@ -755,6 +916,7 @@ impl Drop for GuiTcpSessionTransportDriver {
 
 pub(in crate::app) struct GuiThreadedTcpSessionTransportDriver {
     host_arg: String,
+    tls_policy: TlsPolicy,
     pending_driver: Option<GuiTcpSessionTransportDriver>,
     transport_handle: Option<GuiQueuedSessionTransportHandle>,
     worker: Option<GuiThreadedTcpSessionTransportWorker>,
@@ -775,12 +937,18 @@ impl GuiThreadedTcpSessionTransportDriver {
     const LIVENESS_INTERVAL: Duration = Duration::from_secs(1);
     const LIVENESS_INITIAL_DELAY: Duration = Duration::from_secs(2);
 
-    pub(in crate::app) fn connect_from_host_arg(host_arg: &str) -> Result<Self, String> {
+    pub(in crate::app) fn connect_from_host_arg_with_tls_policy(
+        host_arg: &str,
+        tls_policy: TlsPolicy,
+    ) -> Result<Self, String> {
         Ok(Self {
             host_arg: host_arg.to_owned(),
-            pending_driver: Some(GuiTcpSessionTransportDriver::connect_from_host_arg(
-                host_arg,
-            )?),
+            tls_policy,
+            pending_driver: Some(
+                GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                    host_arg, tls_policy,
+                )?,
+            ),
             transport_handle: None,
             worker: None,
             liveness_enabled: Arc::new(AtomicBool::new(false)),
@@ -839,6 +1007,7 @@ impl GuiThreadedTcpSessionTransportDriver {
                     }
 
                     let liveness_is_enabled = liveness_enabled.load(Ordering::Relaxed);
+                    driver.set_server_handshake_completed(liveness_is_enabled);
                     if liveness_is_enabled {
                         if !liveness_was_enabled {
                             next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
@@ -975,7 +1144,10 @@ impl GuiSessionTransportDriver for GuiThreadedTcpSessionTransportDriver {
             transport_handle.clear_outbound_liveness_protocol_line();
         }
         self.worker_failed = false;
-        let driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&self.host_arg)?;
+        let driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+            &self.host_arg,
+            self.tls_policy,
+        )?;
         if let Some(transport) = self.transport_handle.clone() {
             self.start_worker(driver, transport)
         } else {

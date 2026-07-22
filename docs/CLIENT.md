@@ -54,6 +54,26 @@ In the GUI, open `Interface & System` -> `Storage Location`. `Browse` selects a 
 
 When the selected storage root is the install folder itself, install-folder `sorotte.ini` is both the locator and the normal settings file. Sorotte writes `configRoot = .` into its `[settings]` section instead of an absolute path, so the install folder can be moved as a portable bundle while preserving the rest of the settings. If the selected root is inside the install folder, Sorotte writes a relative path such as `configRoot = data` or `configRoot = config\settings`, keeping files like `MainWindow.ini` out of the install root while preserving portability.
 
+## Client TLS Policy And Deadlines
+
+Set the connection policy in `sorotte.ini`:
+
+```ini
+[server_data]
+tlsPolicy = RequireTls
+```
+
+Accepted values are `RequireTls`, `PreferTls`, and `Plaintext`. `RequireTls` rejects a declined, malformed, interrupted, or certificate-invalid STARTTLS upgrade before sending the client Hello or credentials. `PreferTls` allows an explicit plaintext fallback and displays a security warning. `Plaintext` skips STARTTLS. When `tlsPolicy` is absent, saved server or controlled-room credentials default to `RequireTls`; connections without credentials default to `PreferTls`. The CLI environment override is `SOROTTE_CLIENT_TLS_POLICY` with the same values.
+
+The CLI accepts these positive, seconds-based deadline overrides (decimal values are allowed):
+
+- `SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS` (default `8`): TCP connect
+- `SOROTTE_CLIENT_STARTTLS_TIMEOUT_SECONDS` (default `8`): STARTTLS response
+- `SOROTTE_CLIENT_TLS_HANDSHAKE_TIMEOUT_SECONDS` (default `8`): TLS handshake
+- `SOROTTE_CLIENT_INITIAL_HELLO_TIMEOUT_SECONDS` (default `10`): client Hello/startup writes and the server's initial Hello response
+
+Each deadline failure enters the normal reconnect policy; after retries are exhausted, the final phase error is returned.
+
 ## mpv Setup
 
 The GUI and CLI can use a discovered `mpv` binary at version 0.41.0 or newer, a configured player path, or an explicit path supplied by environment/config.

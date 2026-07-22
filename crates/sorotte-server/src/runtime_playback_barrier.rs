@@ -1253,8 +1253,20 @@ impl ServerRuntime {
         now_seconds: f64,
         always_publish_status: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let before_status = self.room_buffering_status(room_name);
-        let Some((condition_active, policy)) = self.room_buffering_condition(room_name) else {
+        let before_status = self.room_buffering_status_at(room_name, now_seconds);
+        let reports_expired =
+            self.room_buffering_controls
+                .get_mut(room_name)
+                .is_some_and(|control| {
+                    let before = control.reports.len();
+                    control
+                        .reports
+                        .retain(|_, report| room_buffering_report_is_fresh(report, now_seconds));
+                    control.reports.len() != before
+                });
+        let Some((condition_active, policy)) =
+            self.room_buffering_condition_at(room_name, now_seconds)
+        else {
             return Ok(Vec::new());
         };
         let mut transition = None;
@@ -1354,8 +1366,11 @@ impl ServerRuntime {
             }
         }
 
-        let after_status = self.room_buffering_status(room_name);
-        if (always_publish_status || before_status != after_status || !outbound.is_empty())
+        let after_status = self.room_buffering_status_at(room_name, now_seconds);
+        if (always_publish_status
+            || reports_expired
+            || before_status != after_status
+            || !outbound.is_empty())
             && let Some(status) = after_status
         {
             outbound.extend(self.room_buffering_fanout(
@@ -1366,7 +1381,11 @@ impl ServerRuntime {
         Ok(outbound)
     }
 
-    fn room_buffering_condition(&self, room_name: &str) -> Option<(bool, RoomBufferingPolicy)> {
+    fn room_buffering_condition_at(
+        &self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Option<(bool, RoomBufferingPolicy)> {
         let control = self.room_buffering_controls.get(room_name)?;
         let eligible: BTreeSet<&str> = self
             .sessions
@@ -1381,7 +1400,11 @@ impl ServerRuntime {
         let buffering_count = control
             .reports
             .iter()
-            .filter(|(client_id, report)| eligible.contains(client_id.as_str()) && report.buffering)
+            .filter(|(client_id, report)| {
+                eligible.contains(client_id.as_str())
+                    && report.buffering
+                    && room_buffering_report_is_fresh(report, now_seconds)
+            })
             .count() as u32;
         let condition_active = match control.config.policy {
             RoomBufferingPolicy::Independent => false,
@@ -1389,7 +1412,9 @@ impl ServerRuntime {
                 .reports
                 .get(&control.configured_by_client_id)
                 .is_some_and(|report| {
-                    eligible.contains(control.configured_by_client_id.as_str()) && report.buffering
+                    eligible.contains(control.configured_by_client_id.as_str())
+                        && report.buffering
+                        && room_buffering_report_is_fresh(report, now_seconds)
                 }),
             RoomBufferingPolicy::PauseAnyEligible => buffering_count > 0,
             RoomBufferingPolicy::Quorum => {
@@ -1475,6 +1500,14 @@ impl ServerRuntime {
     }
 
     fn room_buffering_status(&self, room_name: &str) -> Option<RoomBufferingStatusPayload> {
+        self.room_buffering_status_at(room_name, self.current_time_seconds())
+    }
+
+    fn room_buffering_status_at(
+        &self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Option<RoomBufferingStatusPayload> {
         let control = self.room_buffering_controls.get(room_name)?;
         let eligible: BTreeMap<&str, &str> = self
             .sessions
@@ -1490,7 +1523,9 @@ impl ServerRuntime {
             .reports
             .iter()
             .filter(|(client_id, report)| {
-                report.buffering && eligible.contains_key(client_id.as_str())
+                report.buffering
+                    && eligible.contains_key(client_id.as_str())
+                    && room_buffering_report_is_fresh(report, now_seconds)
             })
             .map(|(_, report)| report.username.clone())
             .collect();
@@ -2545,6 +2580,14 @@ fn playback_barrier_logical_media_id_digest(logical_media_id: &str) -> [u8; 32] 
 
 fn room_buffering_config_seconds(value_ms: Option<u64>) -> f64 {
     value_ms.unwrap_or_default() as f64 / 1_000.0
+}
+
+fn room_buffering_report_is_fresh(
+    report: &RoomBufferingParticipantReport,
+    now_seconds: f64,
+) -> bool {
+    now_seconds <= report.reported_at_seconds
+        || now_seconds - report.reported_at_seconds <= ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS
 }
 
 fn room_buffering_quorum_required(eligible_clients: u32, quorum_percent: u32) -> u32 {

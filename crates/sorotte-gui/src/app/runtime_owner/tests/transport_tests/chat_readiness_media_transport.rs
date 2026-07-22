@@ -238,7 +238,12 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -321,7 +326,12 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
             .map(|entry| (entry.sender.clone(), entry.message.clone())),
         Some(("alice".to_owned(), "hello room".to_owned()))
     );
-    assert_eq!(state.main_window.chat.len(), 2);
+    assert_eq!(state.main_window.chat.len(), 3);
+    assert!(state.main_window.chat.iter().any(|entry| {
+        entry
+            .message
+            .contains("connection is continuing without encryption")
+    }));
 
     release_server_tx
         .send(())
@@ -399,7 +409,12 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -557,7 +572,12 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();

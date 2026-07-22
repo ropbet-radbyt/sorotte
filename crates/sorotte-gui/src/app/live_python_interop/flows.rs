@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sorotte_client_app::app_boundary::state::TlsPolicy;
 use sorotte_compat::{LegacyPythonPeerChatMessage, LegacyServerPythonPeerHarness};
 
 #[cfg(test)]
@@ -117,6 +118,7 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_ROOM,
             harness.address(),
+            TlsPolicy::PreferTls,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -382,6 +384,9 @@ pub(super) fn run_live_python_peer_controlled_room_flow_with_harness(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
             harness.address(),
+            // This legacy-Python loopback fixture intentionally exercises a
+            // credential-bearing plaintext protocol peer.
+            TlsPolicy::Plaintext,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -560,6 +565,7 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_ROOM,
             harness.address(),
+            TlsPolicy::PreferTls,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));

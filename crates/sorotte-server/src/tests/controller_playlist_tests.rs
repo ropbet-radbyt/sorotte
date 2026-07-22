@@ -570,3 +570,105 @@ fn non_controller_playlist_index_update_receives_current_index_correction() {
         "non-controller should receive current playlistIndex correction"
     );
 }
+
+#[test]
+fn playlist_index_rejects_negative_and_out_of_range_values() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    assert_eq!(
+        runtime.room_playlist_state("room1").index,
+        Some(0),
+        "a nonempty playlist must receive a deterministic valid index immediately"
+    );
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("valid index should be accepted");
+
+    for invalid_index in [-1_i64, 2, i64::MAX] {
+        let correction = runtime
+            .handle_line_fanout(
+                "client-1",
+                &format!(r#"{{"Set":{{"playlistIndex":{{"index":{invalid_index}}}}}}}"#),
+            )
+            .expect("invalid index should receive a correction");
+        assert_eq!(runtime.room_playlist_state("room1").index, Some(1));
+        assert!(has_playlist_index_snapshot(
+            &decode_directed_lines(&correction),
+            "client-1",
+            1
+        ));
+    }
+
+    let null_correction = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":null}}}"#)
+        .expect("a null index for a nonempty playlist should receive a correction");
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(1));
+    assert!(has_playlist_index_snapshot(
+        &decode_directed_lines(&null_correction),
+        "client-1",
+        1
+    ));
+}
+
+#[test]
+fn playlist_replacement_atomically_normalizes_index_and_empty_playlist_clears_it() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv","c.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":2}}}"#)
+        .expect("valid index should be accepted");
+
+    let shortened = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["replacement.mkv"]}}}"#,
+        )
+        .expect("shorter replacement should be accepted");
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+    assert!(has_playlist_index_snapshot(
+        &decode_directed_lines(&shortened),
+        "client-1",
+        0
+    ));
+
+    let cleared = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+        .expect("playlist clear should be accepted");
+    assert_eq!(runtime.room_playlist_state("room1").index, None);
+    assert!(
+        decode_directed_lines(&cleared)
+            .iter()
+            .any(|(client_id, message)| {
+                client_id == "client-1"
+                    && matches!(
+                        message,
+                        ProtocolMessage::Set(payload)
+                            if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                                index.index_value().is_none()
+                            })
+                    )
+            })
+    );
+}

@@ -69,6 +69,16 @@ inputs: the GUI currently follows the Windows theme, DPI scale, and egui system 
 there are no application test overrides for those values. Use `-Scenario <id>` for a focused
 capture and `-NoBuild` only when `target/debug/sorotte-gui.exe` is already current.
 
+For agent-driven UI inspection through the egui MCP server, opt in when launching the app:
+
+```powershell
+$env:EGUI_INSPECTION = "1"
+cargo run -p sorotte-gui --bin sorotte-gui
+```
+
+The inspection endpoint is disabled unless `EGUI_INSPECTION` is set and listens on egui's
+loopback default (`127.0.0.1:5719`).
+
 ## GUI Release Publishing
 
 GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged locally by:
@@ -130,7 +140,7 @@ Useful Python reference files:
 
 ## Coding Rules
 
-- Use Rust `1.96.0` and edition `2024`.
+- Use Rust `1.97.1` and edition `2024`.
 - Keep public API surfaces narrow. Add shared CLI/GUI behavior to `sorotte-client-app::app_boundary` where a cross-crate API is needed.
 - Prefer small, test-backed vertical slices over broad refactors.
 - Do not add non-`mpv` player backend work unless product scope is explicitly changed.

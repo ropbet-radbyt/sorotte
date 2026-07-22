@@ -22,27 +22,6 @@ fn is_stale_captured_join_idle_state(output: &Value) -> bool {
         && playstate.get("doSeek") == Some(&Value::Bool(false))
 }
 
-fn is_null_playlist_index_snapshot_message(message: &Value) -> bool {
-    message
-        .get("Set")
-        .and_then(|set| set.get("playlistIndex"))
-        .and_then(Value::as_object)
-        .and_then(|playlist_index| playlist_index.get("index"))
-        .is_some_and(Value::is_null)
-}
-
-fn is_null_playlist_index_snapshot_output(output: &Value) -> bool {
-    output
-        .get("message")
-        .is_some_and(is_null_playlist_index_snapshot_message)
-}
-
-fn is_null_playlist_index_snapshot_line(line: &str) -> bool {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .is_some_and(|message| is_null_playlist_index_snapshot_message(&message))
-}
-
 fn is_state_message(message: &Value) -> bool {
     message.get("State").is_some()
 }
@@ -80,8 +59,7 @@ fn filtered_expected_trace_outputs<'a>(
     expected_outputs
         .iter()
         .filter(|output| {
-            !(is_null_playlist_index_snapshot_output(output)
-                || step_has_hello && is_stale_captured_join_idle_state(output)
+            !(step_has_hello && is_stale_captured_join_idle_state(output)
                 || filter_state_outputs && is_state_output(output))
         })
         .collect()
@@ -170,16 +148,102 @@ pub(in crate::tests) fn assert_runtime_matches_captured_trace_with_full_override
         let actual_outputs: Vec<_> = actual_event
             .outbound_lines
             .iter()
-            .filter(|line| {
-                !(is_null_playlist_index_snapshot_line(&line.line)
-                    || filter_state_outputs && is_state_line(&line.line))
+            .filter(|line| !(filter_state_outputs && is_state_line(&line.line)))
+            .collect();
+
+        let expected_outputs: Vec<_> = expected_outputs
+            .iter()
+            .map(|output| {
+                let client_id = output
+                    .get("client")
+                    .and_then(Value::as_str)
+                    .expect("expected output should contain client")
+                    .to_owned();
+                let mut message = normalize_cross_impl_message_with_options(
+                    output
+                        .get("message")
+                        .expect("expected output should contain message")
+                        .clone(),
+                    normalization_options,
+                );
+                canonicalize_legacy_hello_fields(&mut message);
+                canonicalize_intentional_username_collision_divergence(
+                    scenario_name,
+                    true,
+                    &mut message,
+                );
+                canonicalize_intentional_current_index_divergence(
+                    scenario_name,
+                    step_number - 1,
+                    true,
+                    &mut message,
+                );
+                ComparableOutbound { client_id, message }
             })
             .collect();
+        let actual_outputs: Vec<_> = actual_outputs
+            .iter()
+            .map(|output| {
+                let mut message: Value = normalize_cross_impl_message_with_options(
+                    serde_json::from_str(&output.line)
+                        .expect("actual outbound line should decode to JSON value"),
+                    normalization_options,
+                );
+                canonicalize_legacy_hello_fields(&mut message);
+                canonicalize_intentional_username_collision_divergence(
+                    scenario_name,
+                    false,
+                    &mut message,
+                );
+                canonicalize_intentional_current_index_divergence(
+                    scenario_name,
+                    step_number - 1,
+                    false,
+                    &mut message,
+                );
+                ComparableOutbound {
+                    client_id: output.client_id.clone(),
+                    message,
+                }
+            })
+            .collect();
+
+        if scenario_name == "server_runtime_controlled_room_permissions.jsonl"
+            && step_number == 9
+            && expected_outputs.is_empty()
+        {
+            // The old capture silently ignored this unauthorized index mutation.
+            // Current Python emits a null correction (covered by the live parity
+            // test), while Sorotte returns the atomically normalized current index.
+            // Keep the captured-trace exception exact down to recipient, user, and
+            // value instead of broadly ignoring playlistIndex messages.
+            assert_eq!(
+                actual_outputs,
+                vec![ComparableOutbound {
+                    client_id: "client-2".to_owned(),
+                    message: json!({
+                        "Set": {
+                            "playlistIndex": {
+                                "index": 0,
+                                "user": "+room1:CB39A19549E8"
+                            }
+                        }
+                    }),
+                }],
+                "controlled-room trace divergence must remain the exact normalized correction"
+            );
+            continue;
+        }
+
+        let actual_outputs = without_unshared_runtime_playlist_index_normalizations(
+            &expected_outputs,
+            &actual_outputs,
+        );
 
         assert_eq!(
             actual_outputs.len(),
             expected_outputs.len(),
-            "mismatch in outbound count at scenario step {step_number}"
+            "mismatch in outbound count at scenario step {step_number}\nexpected: {expected_outputs:#?}\nactual: {actual_outputs:#?}"
         );
 
         for (index, (expected_output, actual_output)) in expected_outputs
@@ -187,33 +251,15 @@ pub(in crate::tests) fn assert_runtime_matches_captured_trace_with_full_override
             .zip(actual_outputs.iter())
             .enumerate()
         {
-            let expected_client = expected_output
-                .get("client")
-                .and_then(Value::as_str)
-                .expect("expected output should contain client");
-            let expected_message = expected_output
-                .get("message")
-                .expect("expected output should contain message");
-
-            let mut actual_message: Value = normalize_cross_impl_message_with_options(
-                serde_json::from_str(&actual_output.line)
-                    .expect("actual outbound line should decode to JSON value"),
-                normalization_options,
-            );
-            let mut expected_message = normalize_cross_impl_message_with_options(
-                expected_message.clone(),
-                normalization_options,
-            );
-            canonicalize_legacy_hello_fields(&mut actual_message);
-            canonicalize_legacy_hello_fields(&mut expected_message);
-
             assert_eq!(
-                actual_output.client_id, expected_client,
+                actual_output.client_id, expected_output.client_id,
                 "mismatch in routed client at step {step_number} output {index}"
             );
-            assert_eq!(
-                actual_message, expected_message,
-                "mismatch in message shape/order at step {step_number} output {index}"
+            assert!(
+                comparable_outbounds_match(&expected_outputs, index, &actual_outputs, index,),
+                "mismatch in message shape/order at step {step_number} output {index}\nexpected: {:#?}\nactual: {:#?}",
+                expected_output.message,
+                actual_output.message,
             );
         }
     }

@@ -21,7 +21,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cargo fmt
@@ -48,7 +48,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
 
       # This is intentionally a compilation-only gate. Packaging, artifact
       # upload, tag mutation, and GitHub Release writes remain owned by the
@@ -73,7 +73,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -106,7 +106,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
 
       - name: Install supported mpv build dependencies
         run: |
@@ -207,7 +207,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cargo clippy
@@ -249,7 +249,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python

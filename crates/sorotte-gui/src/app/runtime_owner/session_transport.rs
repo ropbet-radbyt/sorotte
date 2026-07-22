@@ -425,11 +425,15 @@ impl GuiPersistedConfigRuntimeOwner {
         username: impl Into<String>,
         room: impl Into<String>,
         host_arg: impl AsRef<str>,
+        tls_policy: TlsPolicy,
     ) -> Result<Self, String> {
         let (owner, _session_transport) =
             self.with_client_core_chat_session_runtime(username, room)?;
         Ok(owner.with_session_transport_driver(Box::new(
-            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                host_arg.as_ref(),
+                tls_policy,
+            )?,
         )))
     }
 
@@ -458,6 +462,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
                 session_transport_driver.pump(&session_transport)
             };
+            self.drain_session_transport_warnings(handle, projected_state, &session_transport);
             let frame_written =
                 self.apply_session_transport_outbound_delivery_results(handle, projected_state);
             if let Err(error) = pump_result {
@@ -477,6 +482,30 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
             self.flush_session_transport_outbound(handle, projected_state);
+        }
+    }
+
+    fn drain_session_transport_warnings(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        session_transport: &GuiQueuedSessionTransportHandle,
+    ) {
+        let actions = session_transport
+            .drain_transport_warnings()
+            .into_iter()
+            .flat_map(|message| {
+                [
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if !actions.is_empty() {
+            Self::push_actions_and_project(handle, projected_state, actions);
         }
     }
 

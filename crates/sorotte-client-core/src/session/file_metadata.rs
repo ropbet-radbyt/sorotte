@@ -166,11 +166,11 @@ impl ClientSession {
     }
 
     pub(super) fn hash_filename_for_compare(filename: &str) -> String {
-        format!("{:x}", Sha256::digest(filename.as_bytes()))[..12].to_owned()
+        lowercase_hex(Sha256::digest(filename.as_bytes()))[..12].to_owned()
     }
 
     pub(super) fn hash_filesize_for_compare(filesize_raw: &str) -> String {
-        format!("{:x}", Sha256::digest(filesize_raw.as_bytes()))[..12].to_owned()
+        lowercase_hex(Sha256::digest(filesize_raw.as_bytes()))[..12].to_owned()
     }
 
     pub(super) fn filename_with_privacy_mode_legacy_like(

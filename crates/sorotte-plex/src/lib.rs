@@ -2473,8 +2473,15 @@ fn parse_metadata_response(
                 .as_deref()
                 .is_some_and(|value| value == requested_rating_key)
         })
-        .or_else(|| metadata_items.first().copied())
-        .ok_or_else(metadata_not_found_error)?;
+        .ok_or_else(|| {
+            if metadata_items.is_empty() {
+                metadata_not_found_error()
+            } else {
+                PlexError::InvalidResponse(format!(
+                    "metadata response did not include requested ratingKey {requested_rating_key}"
+                ))
+            }
+        })?;
     parse_metadata_item(selected)
 }
 
@@ -4216,6 +4223,25 @@ mod tests {
         .expect_err("empty metadata response should be a missing identity");
 
         assert!(is_metadata_not_found_error(&error));
+    }
+
+    #[test]
+    fn nonempty_mismatched_metadata_response_is_rejected() {
+        let json = serde_json::json!({
+            "MediaContainer": {
+                "Metadata": [{
+                    "ratingKey": "wrong-item",
+                    "type": "movie",
+                    "title": "Wrong Movie",
+                    "Media": [{ "Part": [{ "key": "/library/parts/wrong/file.mkv" }] }]
+                }]
+            }
+        });
+
+        let error = parse_metadata_response(&json, "requested-item")
+            .expect_err("mismatched metadata identity must fail closed");
+        assert!(matches!(error, PlexError::InvalidResponse(_)));
+        assert!(error.to_string().contains("requested-item"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
     sync::{
@@ -59,6 +60,15 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
+
+fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
 const SERVER_REAL_VERSION: &str = LEGACY_COMPAT_SERVER_VERSION;
 const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
@@ -81,6 +91,10 @@ const DEFAULT_CONTROLLED_ROOM_HASH_SALT: &str = "syncplay-rs-controlled-room-v1"
 const DEFAULT_MAX_CHAT_MESSAGE_LENGTH: usize = 150;
 const DEFAULT_MAX_USERNAME_LENGTH: usize = 16;
 const DEFAULT_MAX_ROOM_NAME_LENGTH: usize = 35;
+const DEFAULT_MAX_PERSISTENT_ROOMS: usize = 1_024;
+const DEFAULT_MAX_PERSISTENT_ROOMS_PER_IDENTITY: usize = 64;
+const DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS: f64 = 1.0;
+const DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 const DEFAULT_MAX_FILENAME_LENGTH: usize = 250;
 const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
@@ -129,6 +143,7 @@ const ROOM_BUFFERING_MAX_RESUME_HYSTERESIS_SECONDS: f64 = 15.0;
 const ROOM_BUFFERING_DEFAULT_MAX_PAUSE_SECONDS: f64 = 30.0;
 const ROOM_BUFFERING_MIN_MAX_PAUSE_SECONDS: f64 = 1.0;
 const ROOM_BUFFERING_MAX_MAX_PAUSE_SECONDS: f64 = 60.0;
+const ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS: f64 = SERVER_STATE_INTERVAL_SECONDS * 3.0;
 // Media-match signatures can push otherwise valid Set/List lines above the
 // base Syncplay line size, especially when multiple users publish signatures.
 const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
@@ -138,6 +153,8 @@ const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 // capacity does not recover, the client is explicitly closed and cleaned up.
 const CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS: u64 = 100;
 const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
+const ACCEPT_RETRY_INITIAL_BACKOFF_MILLIS: u64 = 10;
+const ACCEPT_RETRY_MAX_BACKOFF_MILLIS: u64 = 1_000;
 const SERVER_NETWORK_SHUTDOWN_GRACE_SECONDS: f64 = 5.0;
 const SERVER_PERSISTENCE_EVENT_CAPACITY: usize = 256;
 const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
@@ -385,6 +402,7 @@ pub struct ServerRuntime {
     client_state_counters: BTreeMap<String, ClientStateCounters>,
     client_last_state_update_at: BTreeMap<String, f64>,
     client_next_periodic_state_at: BTreeMap<String, f64>,
+    client_peer_ips: BTreeMap<String, String>,
     time_now_override_seconds: Option<f64>,
     room_password_provider: RoomPasswordProvider,
     server_password_token: Option<SecretValue>,
@@ -401,6 +419,13 @@ pub struct ServerRuntime {
     tls_rotation_attempts: u32,
     pending_transport_actions: Vec<DirectedTransportAction>,
     persistent_rooms_enabled: bool,
+    max_persistent_rooms: usize,
+    max_persistent_rooms_per_identity: usize,
+    persistent_room_creation_cooldown_seconds: f64,
+    persistent_room_inactivity_expiry_seconds: f64,
+    persistent_room_owner_by_room: BTreeMap<String, String>,
+    persistent_room_last_creation_by_identity: BTreeMap<String, f64>,
+    persistent_room_last_activity_at: BTreeMap<String, f64>,
     isolate_rooms: bool,
     chat_enabled: bool,
     readiness_enabled: bool,
@@ -418,6 +443,32 @@ pub struct ServerRuntime {
 struct RoomPlaylistState {
     files: Vec<String>,
     index: Option<i64>,
+}
+
+impl RoomPlaylistState {
+    fn normalize_index(&mut self) -> bool {
+        let normalized = if self.files.is_empty() {
+            None
+        } else {
+            Some(self.index.unwrap_or(0).clamp(
+                0,
+                i64::try_from(self.files.len() - 1).expect("playlist item limit must fit in i64"),
+            ))
+        };
+        let changed = self.index != normalized;
+        self.index = normalized;
+        changed
+    }
+
+    fn accepts_index(&self, index: Option<i64>) -> bool {
+        match index {
+            None => self.files.is_empty(),
+            Some(_) if self.files.is_empty() => false,
+            Some(index) => {
+                index >= 0 && usize::try_from(index).is_ok_and(|index| index < self.files.len())
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for RoomPlaylistState {

@@ -37,7 +37,7 @@ use sorotte_client_app::app_boundary::{
         connected_session_local_input_event_execution_plan_legacy_compatible,
         connected_session_runtime_step_actions_legacy_compatible,
     },
-    state::{ClientConfig, StoredClientSettingsMvp},
+    state::{ClientConfig, StoredClientSettingsMvp, TlsPolicy},
 };
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION_LEGACY,
@@ -60,7 +60,7 @@ use crate::client_config::{
     shared_playlists_enabled_cli_legacy_compatible,
 };
 use crate::diagnostics_config::{ClientLoopDiagnosticsConfig, client_loop_diagnostics_config};
-use crate::env_support::{env_flag_enabled, env_flag_override, env_trimmed};
+use crate::env_support::{env_flag_enabled, env_flag_override, env_non_negative_f64, env_trimmed};
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
 use crate::local_runtime_actions::{
     CliNetworkOptionsHealthReporter, PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
@@ -85,7 +85,8 @@ use crate::notifications::{
     flush_user_change_notifications_legacy_compatible,
 };
 use crate::protocol_io::{
-    flush_runtime_protocol_lines, read_inbound_protocol_line, write_protocol_line,
+    flush_runtime_protocol_lines, flush_runtime_protocol_lines_until, read_inbound_protocol_line,
+    write_protocol_line,
 };
 use crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible;
 use crate::stdin_input::{recv_local_input_line, spawn_local_input_receiver_legacy_compatible};
@@ -94,7 +95,7 @@ mod connected_session;
 mod network_loop;
 
 use self::connected_session::{
-    ConnectedSessionLaunchContext,
+    ConnectedSessionLaunchContext, emit_application_service_events,
     run_connected_client_session_with_legacy_startup_overrides_and_diagnostics,
 };
 

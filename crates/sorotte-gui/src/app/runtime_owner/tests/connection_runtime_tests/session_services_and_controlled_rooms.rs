@@ -485,6 +485,7 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         port: Some(connect_port),
         username: Some("alice".to_owned()),
         room: Some(room_input.to_owned()),
+        tls_policy: Some("Plaintext".to_owned()),
         ..StoredClientSettingsMvp::default()
     });
 

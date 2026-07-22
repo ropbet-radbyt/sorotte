@@ -848,6 +848,36 @@ async fn server_network_direct_response_write_timeout_does_not_block_loop() {
 }
 
 #[tokio::test]
+async fn committed_peer_fanout_is_queued_before_a_stalled_source_write() {
+    let (source_result, peer_line, committed_files) =
+        crate::network::stalled_source_write_still_queues_peer_fanout_for_test(
+            Duration::from_millis(20),
+        )
+        .await;
+
+    assert_eq!(
+        source_result
+            .expect_err("source write should still report its timeout")
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(committed_files, vec!["committed.mkv".to_owned()]);
+    let peer_message = decode_message_line(
+        peer_line
+            .as_deref()
+            .expect("peer mutation should be queued before the source timeout"),
+    )
+    .expect("queued peer mutation should decode");
+    assert!(matches!(
+        peer_message,
+        ProtocolMessage::Set(payload)
+            if payload.set.playlist_change.as_ref().is_some_and(|playlist| {
+                playlist.files == ["committed.mkv"]
+            })
+    ));
+}
+
+#[tokio::test]
 async fn server_network_loop_routes_hello_response_to_connected_client() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

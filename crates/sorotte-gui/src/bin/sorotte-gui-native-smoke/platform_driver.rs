@@ -92,6 +92,12 @@ pub(super) trait NativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String>;
+    fn click_named_control(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String>;
     fn capture_window_png(
         &self,
         window: Self::WindowHandle,

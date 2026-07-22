@@ -191,7 +191,7 @@ pub(crate) fn motd_for_client_context(
         } else {
             custom_motd
         };
-        if motd.chars().count() < LEGACY_SERVER_MAX_TEMPLATE_LENGTH {
+        if motd.chars().count() <= LEGACY_SERVER_MAX_TEMPLATE_LENGTH {
             return motd;
         }
         return motd_too_long_message(motd.chars().count());
@@ -211,7 +211,7 @@ pub(crate) fn playlist_is_valid(files: &[String]) -> bool {
 }
 
 pub(crate) fn legacy_server_password_token_md5_hex(token: &str) -> String {
-    format!("{:x}", Md5::digest(token.as_bytes()))
+    lowercase_hex(Md5::digest(token.as_bytes()))
 }
 
 pub(crate) fn server_password_token_matches_legacy_compatible(

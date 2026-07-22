@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command},
@@ -1824,10 +1825,15 @@ fn artifact_file_manifest(
 ) -> Result<ArtifactFileManifest, String> {
     let bytes = fs::read(path)
         .map_err(|error| format!("failed to inspect artifact {}: {error}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    let mut sha256 = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(sha256, "{byte:02x}").expect("writing to a String cannot fail");
+    }
     Ok(ArtifactFileManifest {
         path: relative_path,
         bytes: bytes.len() as u64,
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        sha256,
     })
 }
 

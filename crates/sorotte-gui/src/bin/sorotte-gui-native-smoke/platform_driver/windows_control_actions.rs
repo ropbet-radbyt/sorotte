@@ -13,6 +13,7 @@ impl PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
         prefer_last: bool,
+        physical_click_only: bool,
     ) -> Result<(), String> {
         Self::with_ui_automation(window, "UI Automation interaction", |automation, root| {
             let elements = Self::collect_subtree_elements(automation, root)?;
@@ -142,6 +143,16 @@ impl PlatformNativeGuiDriver {
             let mut invoke_errors = Vec::new();
             for candidate in candidates {
                 let mut candidate_errors = Vec::new();
+
+                if physical_click_only {
+                    let click_result = Self::click_element_center(window, &candidate, name);
+                    if click_result.is_ok() {
+                        return Ok(());
+                    }
+                    candidate_errors.push(click_result.err().unwrap_or_default());
+                    invoke_errors.push(candidate_errors.join("; "));
+                    continue;
+                }
 
                 if control_kind == NativeControlKind::Any && name == MAIN_WINDOW_ROOM_BROWSER_NAME {
                     let focus_result = (|| -> Result<(), String> {

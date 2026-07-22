@@ -47,6 +47,10 @@ pub(crate) struct ServerCliOverrides {
     disable_chat: bool,
     max_chat_message_length: OptionalCliValue<usize>,
     max_username_length: OptionalCliValue<usize>,
+    max_persistent_rooms: OptionalCliValue<usize>,
+    max_persistent_rooms_per_identity: OptionalCliValue<usize>,
+    persistent_room_creation_cooldown_seconds: OptionalCliValue<u64>,
+    persistent_room_inactivity_expiry_seconds: OptionalCliValue<u64>,
     isolate_rooms: bool,
     ipv4_only: bool,
     ipv6_only: bool,
@@ -113,6 +117,10 @@ pub(crate) struct ServerRunConfig {
     pub(crate) readiness_enabled: bool,
     pub(crate) max_chat_message_length: Option<usize>,
     pub(crate) max_username_length: Option<usize>,
+    pub(crate) max_persistent_rooms: Option<usize>,
+    pub(crate) max_persistent_rooms_per_identity: Option<usize>,
+    pub(crate) persistent_room_creation_cooldown_seconds: Option<u64>,
+    pub(crate) persistent_room_inactivity_expiry_seconds: Option<u64>,
     pub(crate) isolate_rooms: bool,
 }
 
@@ -207,6 +215,13 @@ fn help_text() -> &'static str {
         "  --permanent-rooms-file [file]    Load permanent room names (one per line)\n",
         "  --max-chat-message-length [n]    Advertised/applied chat message length cap\n",
         "  --max-username-length [n]        Advertised/applied username length cap\n",
+        "  --max-persistent-rooms [n]       Maximum client-created durable rooms (default: 1024)\n",
+        "  --max-persistent-rooms-per-identity [n]\n",
+        "                                    Durable-room quota per peer IP (default: 64)\n",
+        "  --persistent-room-creation-cooldown-seconds [n]\n",
+        "                                    Minimum per-IP creation interval (default: 1)\n",
+        "  --persistent-room-inactivity-expiry-seconds [n]\n",
+        "                                    Expire empty inactive durable rooms (default: 2592000; 0 disables)\n",
         "  --stats-db-file [file]           Enable stats snapshots using SQLite file\n",
         "  --tls [dir]                      TLS certificate directory (cert.pem/chain.pem/privkey.pem)\n",
         "  --ipv4-only                      Bind only IPv4 listen socket\n",
@@ -385,6 +400,62 @@ where
                         value.parse::<usize>().map_err(|_| {
                             CliParseError::new(format!(
                                 "--max-username-length expects a non-negative integer, got '{value}'"
+                            ))
+                        })
+                    },
+                )?;
+            }
+            "--max-persistent-rooms" => {
+                overrides.max_persistent_rooms = parse_optional_option_value(
+                    inline_value,
+                    &args,
+                    &mut index,
+                    |value| {
+                        value.parse::<usize>().map_err(|_| {
+                            CliParseError::new(format!(
+                                "--max-persistent-rooms expects a non-negative integer, got '{value}'"
+                            ))
+                        })
+                    },
+                )?;
+            }
+            "--max-persistent-rooms-per-identity" => {
+                overrides.max_persistent_rooms_per_identity = parse_optional_option_value(
+                    inline_value,
+                    &args,
+                    &mut index,
+                    |value| {
+                        value.parse::<usize>().map_err(|_| {
+                            CliParseError::new(format!(
+                                "--max-persistent-rooms-per-identity expects a non-negative integer, got '{value}'"
+                            ))
+                        })
+                    },
+                )?;
+            }
+            "--persistent-room-creation-cooldown-seconds" => {
+                overrides.persistent_room_creation_cooldown_seconds = parse_optional_option_value(
+                    inline_value,
+                    &args,
+                    &mut index,
+                    |value| {
+                        value.parse::<u64>().map_err(|_| {
+                            CliParseError::new(format!(
+                                "--persistent-room-creation-cooldown-seconds expects a non-negative integer, got '{value}'"
+                            ))
+                        })
+                    },
+                )?;
+            }
+            "--persistent-room-inactivity-expiry-seconds" => {
+                overrides.persistent_room_inactivity_expiry_seconds = parse_optional_option_value(
+                    inline_value,
+                    &args,
+                    &mut index,
+                    |value| {
+                        value.parse::<u64>().map_err(|_| {
+                            CliParseError::new(format!(
+                                "--persistent-room-inactivity-expiry-seconds expects a non-negative integer, got '{value}'"
                             ))
                         })
                     },
@@ -575,6 +646,16 @@ pub(crate) fn resolve_run_config(
         readiness_enabled: !overrides.disable_ready,
         max_chat_message_length: overrides.max_chat_message_length.into_option(),
         max_username_length: overrides.max_username_length.into_option(),
+        max_persistent_rooms: overrides.max_persistent_rooms.into_option(),
+        max_persistent_rooms_per_identity: overrides
+            .max_persistent_rooms_per_identity
+            .into_option(),
+        persistent_room_creation_cooldown_seconds: overrides
+            .persistent_room_creation_cooldown_seconds
+            .into_option(),
+        persistent_room_inactivity_expiry_seconds: overrides
+            .persistent_room_inactivity_expiry_seconds
+            .into_option(),
         isolate_rooms: overrides.isolate_rooms,
     })
 }
@@ -665,6 +746,10 @@ mod tests {
             "--max-chat-message-length",
             "42",
             "--max-username-length=12",
+            "--max-persistent-rooms=64",
+            "--max-persistent-rooms-per-identity=8",
+            "--persistent-room-creation-cooldown-seconds=3",
+            "--persistent-room-inactivity-expiry-seconds=600",
             "--stats-db-file",
             "stats.sqlite3",
             "--tls",
@@ -696,6 +781,19 @@ mod tests {
             OptionalCliValue::Value(42)
         );
         assert_eq!(overrides.max_username_length, OptionalCliValue::Value(12));
+        assert_eq!(overrides.max_persistent_rooms, OptionalCliValue::Value(64));
+        assert_eq!(
+            overrides.max_persistent_rooms_per_identity,
+            OptionalCliValue::Value(8)
+        );
+        assert_eq!(
+            overrides.persistent_room_creation_cooldown_seconds,
+            OptionalCliValue::Value(3)
+        );
+        assert_eq!(
+            overrides.persistent_room_inactivity_expiry_seconds,
+            OptionalCliValue::Value(600)
+        );
         assert_eq!(
             overrides.rooms_db_file,
             OptionalCliValue::Value(PathBuf::from("rooms.sqlite3"))
@@ -792,6 +890,10 @@ mod tests {
             "--permanent-rooms-file",
             "--max-chat-message-length",
             "--max-username-length",
+            "--max-persistent-rooms",
+            "--max-persistent-rooms-per-identity",
+            "--persistent-room-creation-cooldown-seconds",
+            "--persistent-room-inactivity-expiry-seconds",
             "--stats-db-file",
             "--tls",
             "--interface-ipv4",
@@ -821,6 +923,22 @@ mod tests {
         );
         assert_eq!(
             overrides.max_username_length,
+            OptionalCliValue::PresentWithoutValue
+        );
+        assert_eq!(
+            overrides.max_persistent_rooms,
+            OptionalCliValue::PresentWithoutValue
+        );
+        assert_eq!(
+            overrides.max_persistent_rooms_per_identity,
+            OptionalCliValue::PresentWithoutValue
+        );
+        assert_eq!(
+            overrides.persistent_room_creation_cooldown_seconds,
+            OptionalCliValue::PresentWithoutValue
+        );
+        assert_eq!(
+            overrides.persistent_room_inactivity_expiry_seconds,
             OptionalCliValue::PresentWithoutValue
         );
         assert_eq!(

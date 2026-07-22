@@ -197,3 +197,44 @@ fn gui_startup_settings_from_lookup_overlays_bootstrap_on_loaded_config() {
     assert_eq!(settings.player_path.as_deref(), Some("C:/Players/mpv.exe"));
     assert_eq!(settings.ready_at_start, Some(true));
 }
+
+#[test]
+fn gui_tcp_bootstrap_tls_policy_uses_merged_credentials_and_explicit_override() {
+    let settings = super::super::gui_startup_settings_from_lookup_with(
+        |name| match name {
+            "SOROTTE_CLIENT_CONFIG_PATH" => Some("stored-sorotte.ini".to_owned()),
+            "SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+            "SOROTTE_CLIENT_HOST" => Some("runtime.example".to_owned()),
+            "SOROTTE_CLIENT_USERNAME" => Some("runtime-user".to_owned()),
+            "SOROTTE_CLIENT_ROOM" => Some("runtime-room".to_owned()),
+            _ => None,
+        },
+        |_path| Err("unexpected file read".to_owned()),
+        || None,
+        |_path| false,
+        |_path| {
+            Ok(Some(StoredClientSettingsMvp {
+                server_password: Some("persisted-secret".into()),
+                ..StoredClientSettingsMvp::default()
+            }))
+        },
+    )
+    .expect("credential-bearing startup settings should resolve");
+
+    assert_eq!(
+        super::super::gui_startup_tcp_tls_policy(&settings),
+        sorotte_client_app::app_boundary::state::TlsPolicy::RequireTls,
+        "an environment TCP bootstrap must not downgrade persisted credentials"
+    );
+
+    let explicitly_plaintext = StoredClientSettingsMvp {
+        server_password: Some("persisted-secret".into()),
+        tls_policy: Some("Plaintext".to_owned()),
+        ..settings
+    };
+    assert_eq!(
+        super::super::gui_startup_tcp_tls_policy(&explicitly_plaintext),
+        sorotte_client_app::app_boundary::state::TlsPolicy::Plaintext,
+        "an explicit configured TLS policy must remain authoritative"
+    );
+}

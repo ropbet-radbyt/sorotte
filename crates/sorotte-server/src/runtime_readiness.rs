@@ -1918,7 +1918,7 @@ fn trim_readiness_operations(
 
 fn generate_readiness_reconnect_token() -> SecretValue {
     let mut bytes = [0_u8; 32];
-    getrandom::getrandom(&mut bytes)
+    getrandom::fill(&mut bytes)
         .expect("operating system random source should issue reconnect identities");
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);

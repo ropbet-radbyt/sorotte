@@ -45,7 +45,7 @@ windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graph
 windows.workspace = true
 
 [build-dependencies]
-embed-resource = "3.0.9"
+embed-resource = "3.0.11"
 
 [dev-dependencies]
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }

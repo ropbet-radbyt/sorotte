@@ -91,6 +91,52 @@ struct QueueInboundThenFailTransportDriver {
     failed: bool,
 }
 
+#[derive(Default)]
+struct QueueSecurityWarningTransportDriver {
+    warned: bool,
+}
+
+impl GuiSessionTransportDriver for QueueSecurityWarningTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if !self.warned {
+            self.warned = true;
+            transport.push_transport_warning(
+                "Security warning: the connection is continuing without encryption.",
+            );
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn gui_runtime_owner_surfaces_transport_security_warnings_visibly() {
+    let (owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let mut owner = owner
+        .with_session_transport_driver(Box::new(QueueSecurityWarningTransportDriver::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Warning,
+            message,
+        } if message.contains("continuing without encryption")
+    )));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::AnnounceSystemChatEvent(message)
+            if message.contains("continuing without encryption")
+    )));
+}
+
 impl GuiSessionTransportDriver for QueueInboundThenFailTransportDriver {
     fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
         if self.failed {
@@ -407,7 +453,12 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.player_paused = Some(false);
@@ -576,7 +627,12 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -772,9 +828,12 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
     let (owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
-    let driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&address.to_string())
-        .expect("idle-timeout test transport driver should connect")
-        .with_inbound_idle_timeout(Duration::from_millis(100));
+    let driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &address.to_string(),
+        TlsPolicy::PreferTls,
+    )
+    .expect("idle-timeout test transport driver should connect")
+    .with_inbound_idle_timeout(Duration::from_millis(100));
     let mut owner = owner.with_session_transport_driver(Box::new(driver));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();

@@ -2721,8 +2721,8 @@ mod tests {
         for debug in commands.iter().map(|command| format!("{command:?}")) {
             assert!(!debug.contains(secret));
         }
-        assert!(format!("{:?}", &commands[0]).contains("<redacted>"));
-        assert!(format!("{:?}", &commands[2]).contains("<redacted>"));
+        assert!(format!("{:?}", commands[0]).contains("<redacted>"));
+        assert!(format!("{:?}", commands[2]).contains("<redacted>"));
     }
 
     #[test]

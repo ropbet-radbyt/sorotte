@@ -1,9 +1,17 @@
+use super::remote_services::launch_pending_update_recovery;
 use super::startup::{
     gui_startup_actions_from_env, gui_startup_host_and_settings, load_gui_ui_state_from_env,
     run_gui_host_with_startup_actions_and_gui_state,
 };
 
 pub(super) fn run_sorotte_gui() {
+    match launch_pending_update_recovery() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => exit_after_startup_error(format!(
+            "sorotte-gui failed to launch interrupted-update recovery: {error}"
+        )),
+    }
     let (mut host, settings) = match gui_startup_host_and_settings() {
         Ok(startup) => startup,
         Err(error) => {

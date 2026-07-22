@@ -65,18 +65,18 @@ impl RoomPasswordProvider {
     }
 
     pub(crate) fn compute_room_hash(&self, room_name: &str, password: &str) -> String {
-        let salt_hash = format!("{:x}", Sha256::digest(self.salt.expose_secret().as_bytes()));
+        let salt_hash = lowercase_hex(Sha256::digest(self.salt.expose_secret().as_bytes()));
         let provisional_input = format!("{room_name}{salt_hash}");
-        let provisional_hash = format!("{:x}", Sha256::digest(provisional_input.as_bytes()));
+        let provisional_hash = lowercase_hex(Sha256::digest(provisional_input.as_bytes()));
         let room_hash_input = format!("{provisional_hash}{salt_hash}{password}");
-        let room_hash = format!("{:x}", Sha1::digest(room_hash_input.as_bytes()));
+        let room_hash = lowercase_hex(Sha1::digest(room_hash_input.as_bytes()));
         room_hash[..12].to_ascii_uppercase()
     }
 }
 
 pub(crate) fn generate_server_salt_legacy_compatible() -> String {
     let mut bytes = [0_u8; GENERATED_SERVER_SALT_LENGTH];
-    getrandom::getrandom(&mut bytes).expect("operating system random source should be available");
+    getrandom::fill(&mut bytes).expect("operating system random source should be available");
     bytes
         .iter()
         .map(|byte| char::from(b'A' + (byte % 26)))

@@ -17,9 +17,14 @@ impl GuiPersistedConfigRuntimeOwner {
         active_settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
         let replace_owned_transport = self.session.is_none() || self.session_transport.is_some();
+        let runtime_settings =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
         let replacement_transport_driver = if replace_owned_transport {
-            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&selected_server.1)
-                .map(|driver| Some(Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>))
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                &selected_server.1,
+                runtime_settings.config.connection.tls_policy,
+            )
+            .map(|driver| Some(Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>))
         } else {
             Ok(None)
         };
@@ -36,8 +41,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 return false;
             }
         };
-        let runtime_settings =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
         let default_room = runtime_settings
             .config
             .connection

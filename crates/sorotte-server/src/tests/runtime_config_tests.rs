@@ -124,11 +124,20 @@ fn motd_for_client_context_reports_python_template_errors() {
 }
 
 #[test]
-fn motd_for_client_context_reports_overlong_rendered_template() {
-    let template = "x".repeat(10_000);
+fn motd_for_client_context_accepts_the_exact_limit_and_rejects_only_overlong_values() {
+    for length in [9_999, 10_000] {
+        let template = "x".repeat(length);
+        assert_eq!(
+            super::motd_for_client_context("1.7.5", Some(&template), "", "alice", "room1"),
+            template,
+            "a MOTD of {length} characters should be accepted"
+        );
+    }
+
+    let template = "x".repeat(10_001);
     assert_eq!(
         super::motd_for_client_context("1.7.5", Some(&template), "", "alice", "room1"),
-        "Message of the Day is too long - maximum of 10000 chars, 10000 given."
+        "Message of the Day is too long - maximum of 10000 chars, 10001 given."
     );
 }
 

@@ -4,7 +4,7 @@ This project is intended to be built from source. The server also has packaging 
 
 ## Prerequisites
 
-- Rust `1.96.0` with `rustfmt` and `clippy`
+- Rust `1.97.1` with `rustfmt` and `clippy`
 - PowerShell for the provided scripts
 - `mpv` 0.41.0 or newer for client playback
 - Python with `twisted`, `pyopenssl`, and `service_identity` for compatibility and server release verification
@@ -42,6 +42,13 @@ cargo run --release -p sorotte-gui --bin sorotte-gui
 
 The GUI supports saved server/user/room settings and GUI-owned `mpv` startup. Configure the `mpv` path in the GUI if automatic discovery does not find it.
 Packaged Windows GUI builds check <https://github.com/ropbet-radbyt/sorotte/releases> for self-updates. Stable builds read the latest non-prerelease release; dev-channel builds read the moving `sorotte-gui-dev` prerelease.
+The installed updater revalidates the original package and its per-file manifest, installs through
+same-directory atomic replacements, and rolls back from a durable journal after a failed or
+interrupted update. Automatic replacement is currently limited to installs writable by the current
+user. Sorotte fails closed instead of requesting elevation until releases have a pinned signing
+trust anchor; update protected locations such as `Program Files` with the release installer.
+The first hardened updater release also accepts the previous GUI's extracted-source handoff so a
+writable installation can bootstrap forward, but that compatibility path refuses to run elevated.
 
 ## Run The CLI Client
 

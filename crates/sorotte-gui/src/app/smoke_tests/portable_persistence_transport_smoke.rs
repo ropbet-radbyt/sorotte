@@ -182,6 +182,7 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
             "portable-user",
             "portable-room",
             first_address.to_string(),
+            TlsPolicy::PreferTls,
         )
         .expect("portable smoke tcp runtime owner should bootstrap");
     let tcp_handle = GuiQueuedRuntimeBridgeHandle::default();

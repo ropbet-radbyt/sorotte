@@ -1192,7 +1192,12 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

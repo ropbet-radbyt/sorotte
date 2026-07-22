@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -45,6 +45,8 @@ const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+const MEDIA_MATCH_DISCOVERY_MAX_DEPTH: usize = 64;
+const MEDIA_MATCH_DISCOVERY_MAX_NODES: usize = 250_000;
 const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
@@ -699,7 +701,7 @@ where
         Some(format!("{} roots", search_roots.len())),
         0.05,
     ));
-    let candidates = collect_media_match_candidates(search_roots);
+    let candidates = collect_media_match_candidates(search_roots, cancel_flag)?;
     if current_player_path.is_none() {
         inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
         match media_match_tool_paths_for_settings(root, extraction_settings) {
@@ -1026,9 +1028,10 @@ where
         0.05,
     ));
     let explicit_candidates = request.candidates.as_ref();
-    let candidates = explicit_candidates
-        .cloned()
-        .unwrap_or_else(|| collect_media_match_candidates(request.search_roots));
+    let candidates = match explicit_candidates {
+        Some(candidates) => candidates.clone(),
+        None => collect_media_match_candidates(request.search_roots, request.cancel_flag)?,
+    };
     if explicit_candidates.is_none() {
         inventory_media_match_candidates(
             request.root,
@@ -1395,22 +1398,93 @@ pub(super) fn media_match_tool_paths_for_settings(
     })
 }
 
-fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
+#[derive(Debug, Clone, Copy)]
+struct MediaMatchDiscoveryLimits {
+    max_depth: usize,
+    max_nodes: usize,
+}
+
+fn collect_media_match_candidates(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<Vec<PathBuf>, String> {
+    collect_media_match_candidates_with_limits(
+        search_roots,
+        cancel_flag,
+        MediaMatchDiscoveryLimits {
+            max_depth: MEDIA_MATCH_DISCOVERY_MAX_DEPTH,
+            max_nodes: MEDIA_MATCH_DISCOVERY_MAX_NODES,
+        },
+    )
+}
+
+fn collect_media_match_candidates_with_limits(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+    limits: MediaMatchDiscoveryLimits,
+) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut stack = search_roots
         .iter()
-        .filter(|root| root.is_dir())
         .cloned()
+        .map(|root| (root, 0usize))
         .collect::<Vec<_>>();
-    while let Some(path) = stack.pop() {
+    let mut visited_directories = HashSet::new();
+    // Root work items are nodes too. Count them up front so an attacker cannot bypass the global
+    // bound with a huge list of empty, duplicate, or nonexistent roots.
+    let mut visited_nodes = search_roots.len();
+    if visited_nodes > limits.max_nodes {
+        return Err(format!(
+            "Media Matching discovery exceeded its {}-node safety limit.",
+            limits.max_nodes
+        ));
+    }
+    while let Some((path, depth)) = stack.pop() {
+        check_media_match_discovery_canceled(cancel_flag)?;
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata_is_directory_link(&metadata) || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !visited_directories.insert(media_match_directory_visit_key(&canonical_path)) {
+            continue;
+        }
         let Ok(entries) = fs::read_dir(&path) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            check_media_match_discovery_canceled(cancel_flag)?;
+            visited_nodes = visited_nodes.saturating_add(1);
+            if visited_nodes > limits.max_nodes {
+                return Err(format!(
+                    "Media Matching discovery exceeded its {}-node safety limit.",
+                    limits.max_nodes
+                ));
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() && media_match_candidate_extension(&path) {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata_is_directory_link(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
+                if depth >= limits.max_depth {
+                    return Err(format!(
+                        "Media Matching discovery exceeded its {}-level depth safety limit at {}.",
+                        limits.max_depth,
+                        path.display()
+                    ));
+                }
+                stack.push((path, depth + 1));
+            } else if metadata.is_file() && media_match_candidate_extension(&path) {
                 files.push(path);
             }
         }
@@ -1420,7 +1494,40 @@ fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
             .cmp(&normalize_media_path(right))
             .then_with(|| left.cmp(right))
     });
-    files
+    Ok(files)
+}
+
+fn check_media_match_discovery_canceled(cancel_flag: Option<&AtomicBool>) -> Result<(), String> {
+    if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        Err("Media Matching discovery was canceled.".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn metadata_is_directory_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn media_match_directory_visit_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        key.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    key
 }
 
 fn inventory_media_match_candidates(
@@ -1476,7 +1583,7 @@ pub(super) fn rebuild_persisted_media_match_inventory_for_tests(
     root: &Path,
     search_roots: &[PathBuf],
 ) -> Result<(), String> {
-    let candidates = collect_media_match_candidates(search_roots);
+    let candidates = collect_media_match_candidates(search_roots, None)?;
     inventory_media_match_candidates(root, search_roots, &candidates, None)
 }
 
@@ -2310,9 +2417,10 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchRemoteCandidateMatch> {
-    let candidates = candidates
-        .map(<[PathBuf]>::to_vec)
-        .unwrap_or_else(|| collect_media_match_candidates(search_roots));
+    let candidates = match candidates {
+        Some(candidates) => candidates.to_vec(),
+        None => collect_media_match_candidates(search_roots, None).ok()?,
+    };
     let selected = select_remote_media_match_candidates(&candidates, target_file_name);
     let cache = load_media_match_cache_for_settings(root, extraction_settings)?;
     best_remote_candidate_match(
@@ -2983,6 +3091,97 @@ mod tests {
             fingerprinting_enabled: true,
             ..MediaMatchSettings::default()
         }
+    }
+
+    #[test]
+    fn media_match_discovery_honors_cancellation_before_traversal() {
+        let root = unique_media_match_test_root("discovery-cancel");
+        std::fs::write(root.join("episode.mkv"), b"media").unwrap();
+        let canceled = AtomicBool::new(true);
+
+        let error = collect_media_match_candidates(&[root], Some(&canceled))
+            .expect_err("a canceled discovery must stop before scanning");
+
+        assert!(error.contains("discovery was canceled"));
+    }
+
+    #[test]
+    fn media_match_discovery_deduplicates_canonical_directories_and_bounds_nodes() {
+        let root = unique_media_match_test_root("discovery-visited");
+        std::fs::write(root.join("episode.mkv"), b"media").unwrap();
+        let duplicate_root = root.join(".");
+
+        let candidates = collect_media_match_candidates(&[root.clone(), duplicate_root], None)
+            .expect("duplicate roots should remain bounded");
+        assert_eq!(candidates, vec![root.join("episode.mkv")]);
+
+        let error = collect_media_match_candidates_with_limits(
+            &[root],
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 64,
+                max_nodes: 1,
+            },
+        )
+        .expect_err("directory entries after the root must count toward the node bound");
+        assert!(error.contains("node safety limit"));
+
+        let duplicate_roots = [
+            unique_media_match_test_root("discovery-root-bound-a"),
+            unique_media_match_test_root("discovery-root-bound-b"),
+        ];
+        let error = collect_media_match_candidates_with_limits(
+            &duplicate_roots,
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 64,
+                max_nodes: 1,
+            },
+        )
+        .expect_err("root work items themselves must count toward the node bound");
+        assert!(error.contains("node safety limit"));
+    }
+
+    #[test]
+    fn media_match_discovery_enforces_depth_bound() {
+        let root = unique_media_match_test_root("discovery-depth");
+        let nested = root.join("one").join("two");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("episode.mkv"), b"media").unwrap();
+
+        let error = collect_media_match_candidates_with_limits(
+            &[root],
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 1,
+                max_nodes: 100,
+            },
+        )
+        .expect_err("the configured depth bound must stop traversal");
+        assert!(error.contains("depth safety limit"));
+    }
+
+    #[test]
+    fn media_match_discovery_skips_directory_links_and_cycles() {
+        let root = unique_media_match_test_root("discovery-link-cycle");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("episode.mkv"), b"media").unwrap();
+        let link = nested.join("back-to-root");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&root, &link).is_err() {
+            // Windows CI hosts can disable unprivileged symlink creation. The reparse-point
+            // branch is still exercised when Developer Mode or the test privilege is present.
+            return;
+        }
+
+        let candidates = collect_media_match_candidates(&[root], None)
+            .expect("a directory-link cycle must be skipped");
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].ends_with(Path::new("nested").join("episode.mkv")));
     }
 
     fn healthy_tool_probe(name: &str) -> MediaMatchToolProbe {
