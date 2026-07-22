@@ -41,9 +41,8 @@ use super::super::media_match_support::{
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState,
-    GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter, GuiSessionTransportDriver,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver, GuiThreadedTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiMediaMatchToolHealth, GuiMediaSourceProviderId,

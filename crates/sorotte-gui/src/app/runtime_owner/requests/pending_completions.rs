@@ -112,13 +112,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.last_published_local_file = None;
                 self.last_published_media_match_signature = None;
                 if let Some(driver) = replacement_transport_driver {
-                    if self.session_transport.is_none() {
-                        self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
-                    }
-                    if let Some(session_transport) = self.session_transport.as_ref() {
-                        session_transport.clear_protocol_lines();
-                    }
-                    self.session_transport_driver = Some(driver);
+                    self.replace_owned_session_transport_driver(driver);
                 }
                 let pending_requirements = self.pending_apply_requirements_action(
                     projected_state,

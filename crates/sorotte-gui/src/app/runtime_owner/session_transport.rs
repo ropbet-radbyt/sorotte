@@ -60,6 +60,20 @@ impl GuiPersistedConfigRuntimeOwner {
         self
     }
 
+    pub(in crate::app) fn replace_owned_session_transport_driver(
+        &mut self,
+        session_transport_driver: Box<dyn GuiSessionTransportDriver + Send>,
+    ) {
+        if let Some(session_transport) = self.session_transport.as_ref() {
+            session_transport.clear_protocol_lines();
+        }
+        // A threaded driver owns a clone of its transport handle. Its stop request is
+        // asynchronous so reusing that handle would let the retiring worker consume a frame
+        // intended for the replacement connection before it observes the stop signal.
+        self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
+        self.session_transport_driver = Some(session_transport_driver);
+    }
+
     pub(in crate::app) fn reset_session_transport_reconnect_state(&mut self) {
         self.session_transport_reconnect_due_at = None;
         self.session_transport_reconnect_failures = 0;

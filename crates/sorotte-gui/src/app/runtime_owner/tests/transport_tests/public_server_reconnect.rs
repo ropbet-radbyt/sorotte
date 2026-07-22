@@ -89,6 +89,11 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     );
     assert!(first_hello_line.contains("\"Hello\""));
     assert!(first_hello_line.contains("\"alice\""));
+    let first_transport_generation = owner
+        .session_transport
+        .as_ref()
+        .expect("first server should own a transport queue")
+        .clone();
 
     let mut stale_main_window = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_main_window.shared_playlist_enabled = true;
@@ -141,6 +146,14 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
             .iter()
             .any(|action| matches!(action, GuiShellAction::CompleteSelectedPublicServerConnect)),
         "public-server connect should complete through the client-core session runtime"
+    );
+    assert!(
+        !owner
+            .session_transport
+            .as_ref()
+            .expect("replacement server should own a transport queue")
+            .shares_protocol_queues_with(&first_transport_generation),
+        "replacement TCP drivers must not share queues with a retiring worker"
     );
     assert!(
         reconnect_actions.iter().any(|action| matches!(

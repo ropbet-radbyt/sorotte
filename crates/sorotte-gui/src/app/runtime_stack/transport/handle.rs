@@ -107,6 +107,14 @@ pub(in crate::app) struct GuiQueuedSessionTransportHandle {
 }
 
 impl GuiQueuedSessionTransportHandle {
+    #[cfg(test)]
+    pub(in crate::app) fn shares_protocol_queues_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            &self.queued_outbound_protocol_activity_revision,
+            &other.queued_outbound_protocol_activity_revision,
+        )
+    }
+
     pub(in crate::app) fn push_inbound_protocol_line(&self, line: impl Into<String>) {
         self.push_inbound_protocol_lines([line.into()]);
     }
