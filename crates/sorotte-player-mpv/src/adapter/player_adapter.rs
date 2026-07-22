@@ -419,7 +419,8 @@ impl PlayerAdapter for MpvAdapter {
         let result = match command {
             PlayerCommand::OpenFile(path) => self.open_file(&path),
             PlayerCommand::SetPosition(position_seconds) => {
-                self.premature_eof_recovery = None;
+                self.interrupted_network_stream_recovery = None;
+                self.network_cache_stall = None;
                 self.begin_seek_cache_evidence_epoch();
                 let result = self.send_ipc_command_if_attached(json!([
                     MPV_COMMAND_SET_PROPERTY,
@@ -570,7 +571,8 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        self.premature_eof_recovery = None;
+        self.interrupted_network_stream_recovery = None;
+        self.network_cache_stall = None;
         let generation = self.allocate_media_generation();
         let previous_phase = self.transport_phase;
         self.pending_load_request = Some(path.to_owned());
@@ -686,7 +688,8 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
-        self.premature_eof_recovery = None;
+        self.interrupted_network_stream_recovery = None;
+        self.network_cache_stall = None;
         self.begin_seek_cache_evidence_epoch();
         self.send_ipc_command_if_attached(json!([
             MPV_COMMAND_SET_PROPERTY,
