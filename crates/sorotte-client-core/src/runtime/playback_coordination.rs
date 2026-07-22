@@ -446,6 +446,16 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn reset_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
         self.adapter_epoch = self.adapter_epoch.saturating_add(1);
+        // A new adapter cannot complete commands, recovery decisions, or a
+        // degraded seek hold that belonged to the player it replaced. Treat
+        // the boundary as a lifecycle supersession and make the next
+        // canonical room state establish a fresh, still-bounded alignment
+        // attempt against the replacement transport.
+        let _ = self.coordinator.interrupt_recovery();
+        self.coordinator.clear_seek_preparation_terminal();
+        self.desired_generation = None;
+        self.desired_fingerprint = None;
+        self.pending_forced_seek_revision = None;
         self.adapter_generation_bindings.clear();
         self.highest_bound_adapter_generation = None;
         self.pending_media_identity = self
@@ -6458,6 +6468,68 @@ mod tests {
                 .map(|observation| observation.observed_at_seconds),
             Some(102.0)
         );
+    }
+
+    #[test]
+    fn adapter_epoch_reset_rearms_degraded_seek_for_same_room_state() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":40.0,"paused":true,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("remote seek should apply");
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("episode-1").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.update_desired_from_session(&session, 0.0);
+
+        let initial = runtime.observe_transport_at_epoch(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0),
+            0.1,
+            0,
+        );
+        assert!(initial.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
+
+        runtime.coordinator.tick(1_000.0);
+        assert!(matches!(
+            runtime.coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Degraded(_))
+        ));
+
+        let next_epoch = runtime.reset_adapter_epoch(1_001.0);
+        assert_eq!(next_epoch, 1);
+        assert_eq!(
+            runtime.coordinator.last_seek_preparation_terminal_outcome(),
+            None,
+            "a replacement player must not inherit the old degraded seek hold"
+        );
+        assert!(
+            runtime.coordinator.recovery_episode().is_none(),
+            "a replacement player must receive a fresh recovery budget"
+        );
+
+        runtime.update_desired_from_session(&session, 1_001.1);
+        let replacement = runtime.observe_transport_at_epoch(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0),
+            1_001.2,
+            next_epoch,
+        );
+        assert!(replacement.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
     }
 
     #[test]
