@@ -312,9 +312,68 @@ fn client_runtime_trusted_url_matching_supports_wildcard_and_path_prefix() {
     session.behavior_config_mut().trusted_domains = vec!["*.example.com/videos".to_owned()];
 
     assert!(session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos/a.mp4"));
+    assert!(session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos"));
     assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com/clips/a.mp4"));
+    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos-evil/a.mp4"));
+    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com//videos/a.mp4"));
+    assert!(
+        !session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos/../clips/a.mp4")
+    );
+    assert!(
+        !session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos%2Fevil/a.mp4")
+    );
     assert!(!session.uri_is_trusted_legacy_compatible("ftp://cdn.example.com/videos/a.mp4"));
     assert!(!session.uri_is_trusted_legacy_compatible("https://a.b.example.com/videos/a.mp4"));
+}
+
+#[test]
+fn client_runtime_trusted_url_matching_canonicalizes_host_port_and_ipv6() {
+    let mut session = ClientSession::default();
+    session.behavior_config_mut().trusted_domains = vec![
+        "BÜCHER.example/safe".to_owned(),
+        "example.test:8443/media".to_owned(),
+        "[2001:db8::1]/video".to_owned(),
+    ];
+
+    assert!(session.uri_is_trusted_legacy_compatible("https://xn--bcher-kva.example/safe/item"));
+    assert!(session.uri_is_trusted_legacy_compatible("https://example.test:8443/media/item"));
+    assert!(!session.uri_is_trusted_legacy_compatible("https://example.test:9443/media/item"));
+    assert!(!session.uri_is_trusted_legacy_compatible("https://example.test/media/item"));
+    assert!(session.uri_is_trusted_legacy_compatible("https://[2001:db8::1]/video/item"));
+    assert!(!session.uri_is_trusted_legacy_compatible("https://[2001:db8::2]/video/item"));
+}
+
+#[test]
+fn client_runtime_trusted_url_matching_preserves_scheme_less_default_ports() {
+    let mut session = ClientSession::default();
+    session.behavior_config_mut().trusted_domains = vec!["example.com:443".to_owned()];
+
+    assert!(session.uri_is_trusted_legacy_compatible("https://example.com/video"));
+    assert!(session.uri_is_trusted_legacy_compatible("https://example.com:443/video"));
+    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com/video"));
+    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com:80/video"));
+    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com:443/video"));
+}
+
+#[test]
+fn client_runtime_trusted_url_matching_preserves_literal_placeholder_labels() {
+    let mut session = ClientSession::default();
+    session.behavior_config_mut().trusted_domains = vec![
+        "sorotte-wildcard-placeholder.example".to_owned(),
+        "*.sorotte-wildcard-placeholder.test".to_owned(),
+    ];
+
+    assert!(
+        session
+            .uri_is_trusted_legacy_compatible("https://sorotte-wildcard-placeholder.example/video")
+    );
+    assert!(!session.uri_is_trusted_legacy_compatible("https://attacker.example/video"));
+    assert!(
+        session.uri_is_trusted_legacy_compatible(
+            "https://cdn.sorotte-wildcard-placeholder.test/video"
+        )
+    );
+    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.attacker.test/video"));
 }
 
 #[test]

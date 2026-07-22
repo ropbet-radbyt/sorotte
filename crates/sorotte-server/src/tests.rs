@@ -77,6 +77,7 @@ fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
                 files: vec![target.clone()],
                 playlist_index: Some(0),
                 position: 0.0,
+                last_activity_at_seconds: 1.0,
                 version: 1,
             }
         ),
@@ -86,6 +87,7 @@ fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
                 files: vec![target],
                 index: Some(0),
                 position: 0.0,
+                last_activity_at_seconds: 1.0,
             }
         ),
     ];

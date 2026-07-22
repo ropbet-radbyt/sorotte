@@ -33,7 +33,7 @@ use sorotte_client_app::app_boundary::{
     },
     state::{
         ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
-        StoredClientSettingsRuntimeSnapshot,
+        StoredClientSettingsRuntimeSnapshot, TlsPolicy,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };

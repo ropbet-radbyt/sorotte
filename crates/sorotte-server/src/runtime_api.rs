@@ -47,6 +47,7 @@ impl ServerRuntime {
             client_state_counters: BTreeMap::new(),
             client_last_state_update_at: BTreeMap::new(),
             client_next_periodic_state_at: BTreeMap::new(),
+            client_peer_ips: BTreeMap::new(),
             time_now_override_seconds: None,
             room_password_provider: RoomPasswordProvider::new(salt.into()),
             server_password_token: None,
@@ -65,6 +66,15 @@ impl ServerRuntime {
             tls_rotation_attempts: 0,
             pending_transport_actions: Vec::new(),
             persistent_rooms_enabled: false,
+            max_persistent_rooms: DEFAULT_MAX_PERSISTENT_ROOMS,
+            max_persistent_rooms_per_identity: DEFAULT_MAX_PERSISTENT_ROOMS_PER_IDENTITY,
+            persistent_room_creation_cooldown_seconds:
+                DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS,
+            persistent_room_inactivity_expiry_seconds:
+                DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS,
+            persistent_room_owner_by_room: BTreeMap::new(),
+            persistent_room_last_creation_by_identity: BTreeMap::new(),
+            persistent_room_last_activity_at: BTreeMap::new(),
             isolate_rooms: false,
             chat_enabled: true,
             readiness_enabled: true,
@@ -175,6 +185,32 @@ impl ServerRuntime {
 
     pub fn set_persistent_rooms_enabled(&mut self, enabled: bool) {
         self.persistent_rooms_enabled = enabled;
+    }
+
+    pub fn set_max_persistent_rooms(&mut self, max_rooms: usize) {
+        self.max_persistent_rooms = max_rooms;
+    }
+
+    pub fn set_max_persistent_rooms_per_identity(&mut self, max_rooms: usize) {
+        self.max_persistent_rooms_per_identity = max_rooms;
+    }
+
+    pub fn set_persistent_room_creation_cooldown_seconds(&mut self, cooldown_seconds: f64) {
+        self.persistent_room_creation_cooldown_seconds =
+            if cooldown_seconds.is_finite() && cooldown_seconds >= 0.0 {
+                cooldown_seconds
+            } else {
+                DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS
+            };
+    }
+
+    pub fn set_persistent_room_inactivity_expiry_seconds(&mut self, expiry_seconds: f64) {
+        self.persistent_room_inactivity_expiry_seconds =
+            if expiry_seconds.is_finite() && expiry_seconds >= 0.0 {
+                expiry_seconds
+            } else {
+                DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS
+            };
     }
 
     pub fn set_isolate_rooms(&mut self, enabled: bool) {
@@ -427,7 +463,14 @@ impl ServerRuntime {
             self.current_time_seconds()
         };
         self.prune_playback_barrier_request_tombstones();
-        let outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
+        let expired_persistent_rooms = self.expire_inactive_persistent_rooms_at(now_seconds)?;
+        let mut outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
+        if expired_persistent_rooms && self.persistent_rooms_enabled {
+            self.enqueue_list_snapshots_for_clients(
+                &mut outbound_messages,
+                self.clients_receiving_to_gui_only_list_updates(None),
+            );
+        }
         self.collect_due_stats_snapshots_at(now_seconds)?;
         let outbound_lines = outbound_messages
             .into_iter()

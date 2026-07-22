@@ -30,6 +30,7 @@ pub enum ServerPersistenceEffect {
         files: Vec<String>,
         playlist_index: Option<i64>,
         position: f64,
+        last_activity_at_seconds: f64,
         version: u64,
     },
     DeleteRoom {
@@ -541,8 +542,16 @@ fn apply_room_effect(
             files,
             playlist_index,
             position,
+            last_activity_at_seconds,
             ..
-        } => store.save_room(connection, room_name, files, *playlist_index, *position),
+        } => store.save_room(
+            connection,
+            room_name,
+            files,
+            *playlist_index,
+            *position,
+            *last_activity_at_seconds,
+        ),
         ServerPersistenceEffect::DeleteRoom { room_name, .. } => {
             store.delete_room(connection, room_name)
         }
@@ -713,6 +722,7 @@ mod tests {
             files: vec!["new.mkv".to_owned()],
             playlist_index: Some(0),
             position: 20.0,
+            last_activity_at_seconds: 20.0,
             version: 2,
         });
         service.enqueue(ServerPersistenceEffect::SaveRoom {
@@ -720,6 +730,7 @@ mod tests {
             files: vec!["stale.mkv".to_owned()],
             playlist_index: Some(0),
             position: 10.0,
+            last_activity_at_seconds: 10.0,
             version: 1,
         });
         assert!(service.flush(), "room effects should be acknowledged");
@@ -765,6 +776,7 @@ mod tests {
             files: vec!["new.mkv".to_owned()],
             playlist_index: Some(0),
             position: 20.0,
+            last_activity_at_seconds: 20.0,
             version: 2,
         });
         assert!(
@@ -788,6 +800,7 @@ mod tests {
             files: vec!["blocked.mkv".to_owned()],
             playlist_index: Some(0),
             position: 30.0,
+            last_activity_at_seconds: 30.0,
             version: 1,
         });
         assert!(service.flush(), "failed room write should be acknowledged");
@@ -811,6 +824,7 @@ mod tests {
             files: vec!["stale.mkv".to_owned()],
             playlist_index: Some(0),
             position: 10.0,
+            last_activity_at_seconds: 10.0,
             version: 1,
         });
         assert!(service.flush(), "stale room effect should be acknowledged");
@@ -842,6 +856,7 @@ mod tests {
             files: vec!["recovered.mkv".to_owned()],
             playlist_index: Some(0),
             position: 40.0,
+            last_activity_at_seconds: 40.0,
             version: 2,
         });
         assert!(
@@ -892,6 +907,7 @@ mod tests {
             files: vec!["first.mkv".to_owned()],
             playlist_index: Some(0),
             position: 10.0,
+            last_activity_at_seconds: 10.0,
             version: 1,
         });
         service.enqueue(ServerPersistenceEffect::SaveRoom {
@@ -899,6 +915,7 @@ mod tests {
             files: vec!["second.mkv".to_owned()],
             playlist_index: Some(0),
             position: 20.0,
+            last_activity_at_seconds: 20.0,
             version: 2,
         });
         service.enqueue(ServerPersistenceEffect::DeleteRoom {

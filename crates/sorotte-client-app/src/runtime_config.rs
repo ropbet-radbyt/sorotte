@@ -692,6 +692,33 @@ pub struct PublicServerConfig {
     pub address: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TlsPolicy {
+    RequireTls,
+    #[default]
+    PreferTls,
+    Plaintext,
+}
+
+impl TlsPolicy {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "requiretls" | "require_tls" | "require-tls" | "require" => Some(Self::RequireTls),
+            "prefertls" | "prefer_tls" | "prefer-tls" | "prefer" | "auto" => Some(Self::PreferTls),
+            "plaintext" | "plain" | "disabled" | "off" => Some(Self::Plaintext),
+            _ => None,
+        }
+    }
+
+    pub const fn default_for_credentials(has_credentials: bool) -> Self {
+        if has_credentials {
+            Self::RequireTls
+        } else {
+            Self::PreferTls
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClientConfig {
     pub connection: ConnectionConfig,
@@ -722,6 +749,7 @@ pub struct ConnectionConfig {
     pub username: Option<Username>,
     pub room: Option<RoomName>,
     pub controlled_room_password: Option<SecretValue>,
+    pub tls_policy: TlsPolicy,
     pub room_history: Vec<RoomName>,
     pub public_servers: Vec<PublicServerConfig>,
 }
@@ -735,6 +763,7 @@ impl Default for ConnectionConfig {
             username: None,
             room: None,
             controlled_room_password: None,
+            tls_policy: TlsPolicy::PreferTls,
             room_history: Vec::new(),
             public_servers: Vec::new(),
         }
@@ -1091,6 +1120,19 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
             Err(message) => issues.push(ClientConfigIssue::new("room", message)),
         }
         config.connection.controlled_room_password = password.map(Into::into);
+    }
+    config.connection.tls_policy = TlsPolicy::default_for_credentials(
+        config.connection.server_password.is_some()
+            || config.connection.controlled_room_password.is_some(),
+    );
+    if let Some(raw_tls_policy) = settings.tls_policy.as_deref() {
+        match TlsPolicy::parse(raw_tls_policy) {
+            Some(policy) => config.connection.tls_policy = policy,
+            None => issues.push(ClientConfigIssue::new(
+                "tls_policy",
+                "must be RequireTls, PreferTls, or Plaintext",
+            )),
+        }
     }
 
     config.synchronization.rewind_on_desync = settings
@@ -1901,6 +1943,36 @@ fn non_empty_trimmed(value: String, label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_policy_defaults_to_required_for_remote_saved_credentials() {
+        let remote = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+            host: Some("sync.example".to_owned()),
+            server_password: Some("saved-secret".into()),
+            ..StoredClientSettingsV1::default()
+        })
+        .expect("remote credential settings should resolve");
+        assert_eq!(remote.connection.tls_policy, TlsPolicy::RequireTls);
+
+        let loopback = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+            host: Some("127.0.0.1".to_owned()),
+            server_password: Some("local-secret".into()),
+            ..StoredClientSettingsV1::default()
+        })
+        .expect("loopback credential settings should resolve");
+        assert_eq!(loopback.connection.tls_policy, TlsPolicy::RequireTls);
+        assert_eq!(TlsPolicy::parse("plaintext"), Some(TlsPolicy::Plaintext));
+        assert_eq!(TlsPolicy::parse("require-tls"), Some(TlsPolicy::RequireTls));
+
+        let explicit = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+            host: Some("sync.example".to_owned()),
+            server_password: Some("saved-secret".into()),
+            tls_policy: Some("Plaintext".to_owned()),
+            ..StoredClientSettingsV1::default()
+        })
+        .expect("explicit TLS policy should resolve");
+        assert_eq!(explicit.connection.tls_policy, TlsPolicy::Plaintext);
+    }
 
     #[test]
     fn absent_streaming_start_policy_keeps_immediate_legacy_behavior() {

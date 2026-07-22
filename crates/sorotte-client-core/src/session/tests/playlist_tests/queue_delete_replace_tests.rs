@@ -165,6 +165,13 @@ fn client_runtime_queue_playlist_item_preserves_existing_selection_without_selec
         Some(0),
         "plain queue should preserve the existing room playlist selection"
     );
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "plain queue must not reload an unchanged selected row"
+    );
 
     let (_, _, control) = runtime.into_parts();
     assert_eq!(control.outbound_messages().len(), 2);
@@ -270,6 +277,127 @@ fn client_runtime_replace_playlist_preserves_existing_selection_without_redundan
         playlist_change_message.set.playlist_index.is_none(),
         "playlist replace should not send playlistIndex when the selected row is already current"
     );
+}
+
+#[test]
+fn client_runtime_replace_playlist_reorder_preserves_active_target_without_reset() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+    assert!(
+        runtime
+            .run_replace_playlist(
+                vec![
+                    "episode3.mkv".to_owned(),
+                    "episode1.mkv".to_owned(),
+                    "episode2.mkv".to_owned(),
+                ],
+                None,
+            )
+            .expect("playlist reorder should not fail")
+    );
+
+    let playlist = runtime
+        .session()
+        .current_room_playlist()
+        .expect("playlist reorder should project immediately");
+    assert_eq!(playlist.index, Some(2));
+    assert_eq!(playlist.files[2], "episode2.mkv");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "moving the active target to another row must not reopen or rewind the same media"
+    );
+    assert_eq!(runtime.control().outbound_messages().len(), 2);
+    assert!(
+        runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .all(|message| !matches!(message, ProtocolMessage::State(_))),
+        "a pure reorder must not emit a reset playstate"
+    );
+}
+
+#[test]
+fn client_runtime_replace_playlist_finalizes_changed_target_at_same_index_before_and_after_echo() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    assert!(
+        runtime
+            .run_replace_playlist(
+                vec!["replacement.mkv".to_owned(), "episode2.mkv".to_owned()],
+                Some(0),
+            )
+            .expect("replace playlist should not fail")
+    );
+    let projected = runtime
+        .session()
+        .current_room_playlist()
+        .expect("replacement should project immediately");
+    assert_eq!(projected.index, Some(0));
+    assert_eq!(projected.files[0], "replacement.mkv");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        Some(true),
+        "changing the selected target at the same numeric index must still finalize media"
+    );
+
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["replacement.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("replacement echo should apply");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "the matching replacement echo must not create a second reset"
+    );
+    assert_eq!(runtime.control().outbound_messages().len(), 2);
+    assert!(matches!(
+        runtime.control().outbound_messages()[1],
+        ProtocolMessage::State(_)
+    ));
 }
 
 #[test]
@@ -1094,9 +1222,40 @@ fn client_runtime_queue_and_select_playlist_item_sets_new_item_index() {
             .expect("queue-and-select command should not fail"),
         "queue-and-select command should emit playlist change/index updates"
     );
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        Some(true),
+        "queue-and-select must finalize the selected media before its echo arrives"
+    );
+    let projected_playlist = runtime
+        .session()
+        .current_room_playlist()
+        .expect("queue-and-select should project the playlist");
+    assert_eq!(projected_playlist.index, Some(2));
+    assert_eq!(projected_playlist.files[2], "episode3.mkv");
+
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("queue playlist echo should apply");
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"alice"}}}"#)
+        .expect("queue index echo should apply");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "the matching echo must not create a second media reset"
+    );
 
     let (_, _, control) = runtime.into_parts();
-    assert_eq!(control.outbound_messages().len(), 2);
+    assert_eq!(control.outbound_messages().len(), 3);
     let ProtocolMessage::Set(index_message) = &control.outbound_messages()[1] else {
         panic!("second outbound queue-and-select message should be Set.playlistIndex");
     };
@@ -1181,13 +1340,37 @@ fn client_runtime_delete_playlist_index_dispatches_playlist_change_and_index() {
     let mut runtime = ClientRuntime::new(session, player, control);
     assert!(
         runtime
-            .run_delete_playlist_index(1)
+            .run_delete_playlist_index(2)
             .expect("delete command should not fail"),
-        "delete command should emit playlist change/index updates"
+        "deleting the current item should emit playlist change/index updates"
+    );
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        Some(true),
+        "deleting the current item must finalize its replacement media immediately"
+    );
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("delete playlist echo should apply");
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("delete index echo should apply");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "the matching delete echo must not create a second media reset"
     );
 
     let (_, _, control) = runtime.into_parts();
-    assert_eq!(control.outbound_messages().len(), 2);
+    assert_eq!(control.outbound_messages().len(), 3);
     let ProtocolMessage::Set(change_message) = &control.outbound_messages()[0] else {
         panic!("first outbound delete message should be Set.playlistChange");
     };
@@ -1196,7 +1379,7 @@ fn client_runtime_delete_playlist_index_dispatches_playlist_change_and_index() {
         .playlist_change
         .as_ref()
         .expect("first outbound message should include playlistChange");
-    assert_eq!(playlist_change.files, vec!["episode1.mkv", "episode3.mkv"]);
+    assert_eq!(playlist_change.files, vec!["episode1.mkv", "episode2.mkv"]);
     assert!(playlist_change.user.is_none());
 
     let ProtocolMessage::Set(index_message) = &control.outbound_messages()[1] else {

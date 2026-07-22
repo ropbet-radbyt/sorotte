@@ -29,7 +29,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Check formatting
@@ -38,7 +38,9 @@ jobs:
 
       - name: Run GUI updater tests
         shell: pwsh
-        run: cargo test -p sorotte-gui update_
+        run: |
+          cargo test -p sorotte-gui --lib update_
+          cargo test -p sorotte-gui --bin sorotte-gui-updater
 
       - name: Build GUI release binaries
         shell: pwsh

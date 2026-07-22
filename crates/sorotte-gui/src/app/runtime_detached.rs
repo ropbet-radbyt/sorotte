@@ -807,26 +807,28 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         };
-        let transport_driver = match GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(
-            &target.address,
-        ) {
-            Ok(driver) => driver,
-            Err(error) => {
-                let message = format!(
-                    "Configured server connect through the detached session runtime failed: {error}"
-                );
-                if clear_pending {
-                    self.clear_pending_operation_with_runtime_error(
-                        handle,
-                        projected_state,
-                        message,
+        let transport_driver =
+            match GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                &target.address,
+                runtime_settings.config.connection.tls_policy,
+            ) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    let message = format!(
+                        "Configured server connect through the detached session runtime failed: {error}"
                     );
-                } else {
-                    Self::push_runtime_error_notification(handle, projected_state, message);
+                    if clear_pending {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            projected_state,
+                            message,
+                        );
+                    } else {
+                        Self::push_runtime_error_notification(handle, projected_state, message);
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         let default_room = target.room.clone();
         let mut session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,

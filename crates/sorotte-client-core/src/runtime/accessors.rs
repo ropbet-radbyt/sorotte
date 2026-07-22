@@ -504,14 +504,11 @@ where
         }
     }
 
-    pub(crate) fn finalize_local_playlist_index_switch_if_needed(
+    pub(crate) fn finalize_local_playlist_selection_switch_if_needed(
         &mut self,
-        actions: &[ClientRuntimeAction],
+        selection_changed: bool,
     ) -> Result<(), PlayerError> {
-        if !actions
-            .iter()
-            .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
-        {
+        if !selection_changed {
             return Ok(());
         }
 

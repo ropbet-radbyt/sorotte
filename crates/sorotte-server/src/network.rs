@@ -11,6 +11,16 @@ use tokio::sync::mpsc::error::TrySendError;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
 
+trait ServerNetworkAcceptor: Send + Sync {
+    fn accept(&self) -> std::pin::Pin<Box<dyn Future<Output = AcceptedClient> + Send + '_>>;
+}
+
+impl ServerNetworkAcceptor for TcpListener {
+    fn accept(&self) -> std::pin::Pin<Box<dyn Future<Output = AcceptedClient> + Send + '_>> {
+        Box::pin(TcpListener::accept(self))
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum ClientOutboundEvent {
     ReliableLine(String),
@@ -701,17 +711,26 @@ async fn route_outbound_lines_for_client_session(
     outbound_lines: Vec<DirectedOutboundLine>,
     write_timeout: std::time::Duration,
 ) -> io::Result<()> {
+    let mut local_outbound_lines = Vec::new();
     let mut peer_outbound_lines = Vec::new();
     for line in outbound_lines {
         if line.client_id == client_id {
-            transport
-                .write_line_with_timeout(&line.line, write_timeout)
-                .await?;
+            local_outbound_lines.push(line);
         } else {
             peer_outbound_lines.push(line);
         }
     }
+
+    // Runtime handlers mutate authoritative room state before returning this
+    // dispatch. Queue reliable peer fanout first so a stalled or disconnected
+    // source cannot prevent surviving participants from observing an already
+    // accepted mutation.
     dispatch_outbound_lines_to_clients(client_event_senders, peer_outbound_lines).await;
+    for line in local_outbound_lines {
+        transport
+            .write_line_with_timeout(&line.line, write_timeout)
+            .await?;
+    }
     Ok(())
 }
 
@@ -1118,6 +1137,50 @@ pub(crate) async fn stalled_transport_direct_response_write_for_test(
     .await
 }
 
+#[cfg(test)]
+pub(crate) async fn stalled_source_write_still_queues_peer_fanout_for_test(
+    write_timeout: std::time::Duration,
+) -> (io::Result<()>, Option<String>, Vec<String>) {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "source-client",
+            r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5"}}"#,
+        )
+        .expect("source test session should initialize");
+    runtime
+        .handle_line(
+            "peer-client",
+            r#"{"Hello":{"username":"bob","room":{"name":"room"},"version":"1.7.5"}}"#,
+        )
+        .expect("peer test session should initialize");
+    let outbound_lines = runtime
+        .handle_line_fanout(
+            "source-client",
+            r#"{"Set":{"playlistChange":{"files":["committed.mkv"]}}}"#,
+        )
+        .expect("playlist mutation should commit before network routing");
+    let committed_files = runtime.room_playlist_state("room").files;
+
+    let mut transport = ServerNetworkTransport::StalledWrite;
+    let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let (peer_tx, mut peer_rx) = client_event_queue(ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("peer-client".to_owned(), peer_tx);
+    let route_result = route_outbound_lines_for_client_session(
+        &mut transport,
+        "source-client",
+        &client_event_senders,
+        outbound_lines,
+        write_timeout,
+    )
+    .await;
+    let peer_line = peer_rx.receive_reliable_line_for_test().await;
+    (route_result, peer_line, committed_files)
+}
+
 async fn run_server_network_client_session(
     stream: TcpStream,
     peer_ip: Option<String>,
@@ -1141,16 +1204,54 @@ async fn run_server_network_client_session(
     .await
 }
 
-async fn accept_server_network_clients_until_shutdown(
-    listener: TcpListener,
+fn accept_error_is_transient(source: &io::Error) -> bool {
+    // Invalid/closed listener handles are permanent. Other accept failures,
+    // including descriptor/resource pressure, are retried because they do not
+    // invalidate the bound socket and commonly recover once load subsides.
+    if matches!(source.raw_os_error(), Some(9 | 995 | 10022 | 10038)) {
+        return false;
+    }
+    !matches!(
+        source.kind(),
+        io::ErrorKind::PermissionDenied
+            | io::ErrorKind::InvalidInput
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::AddrNotAvailable
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::Unsupported
+    )
+}
+
+async fn accept_server_network_clients_with_until_shutdown<A>(
+    acceptor: A,
     accepted_clients: Sender<AcceptedClient>,
     mut shutdown_rx: watch::Receiver<bool>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    A: ServerNetworkAcceptor,
+{
+    let initial_backoff = std::time::Duration::from_millis(ACCEPT_RETRY_INITIAL_BACKOFF_MILLIS);
+    let max_backoff = std::time::Duration::from_millis(ACCEPT_RETRY_MAX_BACKOFF_MILLIS);
+    let mut retry_backoff = initial_backoff;
     loop {
         tokio::select! {
             _ = wait_for_shutdown(&mut shutdown_rx) => break,
-            accepted = listener.accept() => {
-                let accepted_client = accepted;
+            accepted = acceptor.accept() => {
+                let accepted_client = match accepted {
+                    Ok(accepted_client) => {
+                        retry_backoff = initial_backoff;
+                        Ok(accepted_client)
+                    }
+                    Err(source) if accept_error_is_transient(&source) => {
+                        tokio::select! {
+                            _ = time::sleep(retry_backoff) => {}
+                            _ = wait_for_shutdown(&mut shutdown_rx) => break,
+                        }
+                        retry_backoff = retry_backoff.saturating_mul(2).min(max_backoff);
+                        continue;
+                    }
+                    Err(source) => Err(source),
+                };
                 let accepted_error = accepted_client.is_err();
                 tokio::select! {
                     sent = accepted_clients.send(accepted_client) => {
@@ -1167,6 +1268,14 @@ async fn accept_server_network_clients_until_shutdown(
         }
     }
     Ok(())
+}
+
+async fn accept_server_network_clients_until_shutdown(
+    listener: TcpListener,
+    accepted_clients: Sender<AcceptedClient>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> io::Result<()> {
+    accept_server_network_clients_with_until_shutdown(listener, accepted_clients, shutdown_rx).await
 }
 
 async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
@@ -1429,6 +1538,26 @@ pub async fn run_server_network_loop_until_shutdown(
 mod credential_debug_tests {
     use super::*;
 
+    struct ScriptedAcceptor {
+        outcomes: StdMutex<std::collections::VecDeque<AcceptedClient>>,
+    }
+
+    impl ServerNetworkAcceptor for ScriptedAcceptor {
+        fn accept(&self) -> std::pin::Pin<Box<dyn Future<Output = AcceptedClient> + Send + '_>> {
+            let outcome = self
+                .outcomes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front();
+            Box::pin(async move {
+                match outcome {
+                    Some(outcome) => outcome,
+                    None => std::future::pending::<AcceptedClient>().await,
+                }
+            })
+        }
+    }
+
     #[test]
     fn outbound_network_event_debug_never_prints_protocol_lines() {
         let secret = "network-line-password-canary";
@@ -1460,5 +1589,52 @@ mod credential_debug_tests {
         time::timeout(std::time::Duration::from_secs(1), tasks.shutdown())
             .await
             .expect("aborted task should be joinable after the bounded deadline");
+    }
+
+    #[tokio::test]
+    async fn transient_accept_error_retries_and_delivers_the_next_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let client = TcpStream::connect(address);
+        let accepted = listener.accept();
+        let (client_result, accepted_result) = tokio::join!(client, accepted);
+        let client_stream = client_result.expect("test client should connect");
+        let (server_stream, peer_address) = accepted_result.expect("test server should accept");
+
+        let acceptor = ScriptedAcceptor {
+            outcomes: StdMutex::new(std::collections::VecDeque::from([
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "injected transient accept failure",
+                )),
+                Ok((server_stream, peer_address)),
+            ])),
+        };
+        let (accepted_tx, mut accepted_rx) = channel(1);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let accept_task = tokio::spawn(accept_server_network_clients_with_until_shutdown(
+            acceptor,
+            accepted_tx,
+            shutdown_rx,
+        ));
+
+        let (_, delivered_address) =
+            time::timeout(std::time::Duration::from_secs(1), accepted_rx.recv())
+                .await
+                .expect("accept retry should complete before timeout")
+                .expect("accept channel should remain open")
+                .expect("the second accept result should be delivered");
+        assert_eq!(delivered_address, peer_address);
+
+        let _ = shutdown_tx.send(true);
+        accept_task
+            .await
+            .expect("accept retry task should join")
+            .expect("shutdown after recovery should succeed");
+        drop(client_stream);
     }
 }

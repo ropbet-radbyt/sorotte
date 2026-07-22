@@ -1,4 +1,5 @@
 use super::*;
+use crate::ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS;
 use crate::ServerCompatibilityFallback;
 use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_client_core::{
@@ -941,7 +942,7 @@ fn recovery_rebinds_and_fences_old_connection_that_is_still_present() {
     runtime
         .handle_line("alice-new", &hello("alice", "room", true))
         .expect("replacement should join before the old transport disappears");
-    assert_eq!(runtime.sessions["alice-new"].username, "alice_");
+    assert_eq!(runtime.sessions["alice-new"].username, "alice_2");
     let recovered = runtime
         .handle_line_fanout(
             "alice-new",
@@ -956,7 +957,7 @@ fn recovery_rebinds_and_fences_old_connection_that_is_still_present() {
     );
     let barrier = &runtime.room_playback_barriers["room"];
     assert_eq!(barrier.initiator_client_id, "alice-new");
-    assert_eq!(barrier.initiator_username, "alice_");
+    assert_eq!(barrier.initiator_username, "alice_2");
     assert_eq!(barrier.participants.len(), 1);
     assert!(barrier.participants.contains_key("alice-new"));
     assert!(!barrier.participants.contains_key("alice-old"));
@@ -1325,7 +1326,7 @@ fn fenced_transport_cached_sample_is_excluded_from_periodic_room_derivation() {
     let (set_by, position) = runtime
         .slowest_room_playback_client_at("room", false, 50.0)
         .expect("replacement sample should remain eligible");
-    assert_eq!(set_by, "alice_");
+    assert_eq!(set_by, "alice_2");
     assert_eq!(position, 10.0);
     assert_eq!(
         runtime.client_playback_states["alice-old"].position,
@@ -2703,19 +2704,12 @@ fn maximum_pause_fails_open_and_requires_a_recovered_interval_before_rearming() 
     );
     runtime
         .collect_dispatch_at(55.0)
-        .expect("stalled report should remain fail-open");
+        .expect("stale report expiry should begin the fail-open recovery interval");
     assert!(!runtime.room_playback_state(&room).paused);
 
-    runtime.set_time_now_override_seconds(Some(55.0));
-    runtime
-        .handle_line_fanout(
-            "bob-client",
-            r#"{"State":{"sorottePlaybackBarrierV1":{"transport":{"mediaGeneration":3,"buffering":false}}}}"#,
-        )
-        .expect("clear report should begin fail-open rearm");
     runtime
         .collect_dispatch_at(55.5)
-        .expect("recovered interval should rearm policy");
+        .expect("a stale report should no longer prevent fail-open rearming");
     assert!(!runtime.room_playback_state(&room).paused);
     runtime.set_time_now_override_seconds(Some(55.6));
     runtime
@@ -2725,6 +2719,48 @@ fn maximum_pause_fails_open_and_requires_a_recovered_interval_before_rearming() 
         )
         .expect("new buffering episode should be eligible after rearm");
     assert!(runtime.room_playback_state(&room).paused);
+}
+
+#[test]
+fn stale_buffering_report_expires_and_releases_policy_pause() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        runtime
+            .handle_line(client_id, &hello(username, &room, true))
+            .expect("hello should succeed");
+    }
+    authenticate_policy_controller(&mut runtime, "alice-client");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"playstate":{"position":1.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("room should start playing");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":8,"policy":"pauseAnyEligible","debounceMs":0,"resumeHysteresisMs":0,"maxPauseMs":5000}}}}"#,
+        )
+        .expect("policy should configure");
+    runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"transport":{"mediaGeneration":8,"buffering":true}}}}"#,
+        )
+        .expect("buffering report should pause");
+    assert!(runtime.room_playback_state(&room).paused);
+
+    let expired = runtime
+        .collect_dispatch_at(100.0 + ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS + 0.01)
+        .expect("maintenance should expire stale reports");
+    assert!(!runtime.room_playback_state(&room).paused);
+    assert!(runtime.room_buffering_controls[&room].reports.is_empty());
+    let status = buffering_status(&expired.outbound_lines)
+        .expect("report expiry should publish a fresh buffering status");
+    assert!(status.buffering_clients.is_empty());
+    assert_eq!(status.phase, RoomBufferingPhase::Monitoring);
 }
 
 #[test]

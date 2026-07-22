@@ -31,7 +31,63 @@ pub(super) fn parse_ini_non_negative_f64_legacy_compatible(value: &str) -> Optio
 }
 
 pub(super) fn escape_sorotte_ini_value_legacy_compatible(value: &str) -> String {
-    value.replace('%', "%%")
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '%' => escaped.push_str("%%"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("%{{{:X}}}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+pub(super) fn unescape_sorotte_ini_value_legacy_compatible(value: &str) -> String {
+    let mut unescaped = String::with_capacity(value.len());
+    let mut characters = value.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        if character != '%' {
+            unescaped.push(character);
+            continue;
+        }
+
+        if characters.peek().is_some_and(|(_, next)| *next == '%') {
+            characters.next();
+            unescaped.push('%');
+            continue;
+        }
+
+        let encoded = &value[index..];
+        let Some(encoded_body) = encoded.strip_prefix("%{") else {
+            unescaped.push('%');
+            continue;
+        };
+        let Some(encoded_end) = encoded_body.find('}') else {
+            unescaped.push('%');
+            continue;
+        };
+        let hex = &encoded_body[..encoded_end];
+        let decoded = u32::from_str_radix(hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .filter(|character| character.is_control());
+        let Some(decoded) = decoded else {
+            unescaped.push('%');
+            continue;
+        };
+        unescaped.push(decoded);
+
+        let consumed_end = index + 2 + encoded_end + 1;
+        while characters
+            .peek()
+            .is_some_and(|(next_index, _)| *next_index < consumed_end)
+        {
+            characters.next();
+        }
+    }
+    unescaped
 }
 
 pub(super) fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {

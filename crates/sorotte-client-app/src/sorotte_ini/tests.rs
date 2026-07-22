@@ -373,6 +373,99 @@ fn stored_settings_debug_redacts_plex_tokens() {
 }
 
 #[test]
+fn scalar_control_characters_roundtrip_without_injecting_ini_lines() {
+    let malicious = "safe\n[general]\ncheckForUpdatesAutomatically = False\r\n\0tail";
+    let settings = StoredClientSettingsMvp {
+        host: Some(malicious.to_owned()),
+        server_password: Some(malicious.into()),
+        username: Some(malicious.to_owned()),
+        room: Some(malicious.to_owned()),
+        plex_user_token: Some(malicious.into()),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
+    assert!(
+        rendered.lines().all(|line| line.trim() != "[general]"),
+        "untrusted scalar text must not create a physical INI section header"
+    );
+    assert!(!rendered.contains("\ncheckForUpdatesAutomatically = False\n"));
+    assert!(rendered.contains("%{A}"));
+    assert!(rendered.contains("%{D}"));
+    assert!(rendered.contains("%{0}"));
+
+    let reparsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
+    assert_eq!(reparsed.host.as_deref(), Some(malicious));
+    assert_eq!(
+        reparsed
+            .server_password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some(malicious)
+    );
+    assert_eq!(reparsed.username.as_deref(), Some(malicious));
+    assert_eq!(reparsed.room.as_deref(), Some(malicious));
+    assert_eq!(
+        reparsed
+            .plex_user_token
+            .as_ref()
+            .map(|token| token.expose_secret()),
+        Some(malicious)
+    );
+}
+
+#[test]
+fn explicit_tls_policy_roundtrips_through_server_data() {
+    let settings = StoredClientSettingsMvp {
+        tls_policy: Some("RequireTls".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
+    assert!(rendered.contains("[server_data]\n"));
+    assert!(rendered.contains("tlsPolicy = RequireTls\n"));
+    assert_eq!(
+        parse_sorotte_ini_stored_client_settings_mvp(&rendered)
+            .tls_policy
+            .as_deref(),
+        Some("RequireTls")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_settings_writes_enforce_owner_only_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = unique_temp_sorotte_ini_path("owner-only-mode");
+    let parent = path.parent().expect("sorotte.ini path should have parent");
+    std::fs::create_dir_all(parent).expect("temp test directory should be created");
+    std::fs::write(&path, "old").expect("initial settings should write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("fixture permissions should be configurable");
+
+    write_sorotte_ini_contents_atomically_with_injected_pre_commit(&path, b"secret", |temp| {
+        assert_eq!(
+            std::fs::metadata(temp)?.permissions().mode() & 0o777,
+            0o600,
+            "secret-bearing temporary file must never be group/world readable"
+        );
+        Ok(())
+    })
+    .expect("atomic settings write should succeed");
+
+    assert_eq!(
+        std::fs::metadata(&path)
+            .expect("destination metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    std::fs::remove_dir_all(parent).expect("temp test directory should be removable");
+}
+
+#[test]
 fn path_helpers_roundtrip_settings_file_contents() {
     let path = unique_temp_sorotte_ini_path("roundtrip");
     let settings = StoredClientSettingsMvp {

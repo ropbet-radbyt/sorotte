@@ -14,6 +14,7 @@ use crate::legacy_settings::{
 use super::helpers::{
     parse_ini_bool_legacy_compatible, parse_ini_i64_legacy_compatible,
     parse_ini_non_negative_f64_legacy_compatible, parse_ini_port_legacy_compatible,
+    unescape_sorotte_ini_value_legacy_compatible,
 };
 
 pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredClientSettingsMvp {
@@ -33,7 +34,7 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
             continue;
         };
         let key = raw_key.trim().to_ascii_lowercase();
-        let value = raw_value.trim().replace("%%", "%");
+        let value = unescape_sorotte_ini_value_legacy_compatible(raw_value.trim());
         match current_section.as_deref() {
             Some("general") => match key.as_str() {
                 "language" if !value.is_empty() => {
@@ -62,6 +63,7 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                     }
                 }
                 "password" if !value.is_empty() => settings.server_password = Some(value.into()),
+                "tlspolicy" if !value.is_empty() => settings.tls_policy = Some(value),
                 _ => {}
             },
             Some("client_settings") => match key.as_str() {

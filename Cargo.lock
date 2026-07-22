@@ -3589,6 +3589,7 @@ dependencies = [
  "sorotte-secret",
  "thiserror 2.0.19",
  "tokio",
+ "url",
 ]
 
 [[package]]

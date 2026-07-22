@@ -61,6 +61,9 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
     {
         upsert_ini_value_legacy_compatible(&mut lines, "server_data", "password", server_password);
     }
+    if let Some(tls_policy) = settings.tls_policy.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "tlsPolicy", tls_policy);
+    }
     if let Some(username) = settings.username.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "name", username);
     }

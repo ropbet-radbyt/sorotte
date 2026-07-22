@@ -212,6 +212,7 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             "portable-user",
             "portable-room",
             first_address.to_string(),
+            TlsPolicy::PreferTls,
         )
         .expect("portable tcp churn smoke owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();

@@ -7,6 +7,7 @@ use eframe::egui;
 use sorotte_client_app::app_boundary::commands::{
     LocalInputCommand, LocalOffsetCommand, parse_local_input_command,
 };
+use sorotte_client_app::app_boundary::state::TlsPolicy;
 
 use super::GuiAppHost;
 use super::local_command_dispatch::GuiShellDispatchPlan;

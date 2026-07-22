@@ -125,7 +125,8 @@ where
             "failed replacing stored settings {} atomically: {error}",
             path.display()
         )
-    })
+    })?;
+    enforce_owner_only_permissions(path)
 }
 
 fn create_unique_temporary_file(
@@ -148,11 +149,15 @@ fn create_unique_temporary_file(
         ));
         let temporary_path = parent.join(temporary_file_name);
 
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        match options.open(&temporary_path) {
             Ok(file) => return Ok((temporary_path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => {
@@ -196,6 +201,7 @@ fn write_and_sync_temporary_file(
     })?;
     drop(file);
 
+    #[cfg(windows)]
     if let Some(permissions) = preserved_permissions {
         std::fs::set_permissions(path, permissions).map_err(|error| {
             anyhow!(
@@ -204,6 +210,26 @@ fn write_and_sync_temporary_file(
             )
         })?;
     }
+    #[cfg(not(windows))]
+    let _ = preserved_permissions;
+    enforce_owner_only_permissions(path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn enforce_owner_only_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, Permissions::from_mode(0o600)).map_err(|error| {
+        anyhow!(
+            "failed securing stored settings permissions on {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn enforce_owner_only_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 

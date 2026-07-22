@@ -130,13 +130,27 @@ foreach ($pdbName in @("sorotte_gui.pdb", "sorotte-gui.pdb", "sorotte_gui_update
     }
 }
 
+$installFiles = @(
+    Get-ChildItem -LiteralPath $packageRoot -Recurse -File | Sort-Object FullName | ForEach-Object {
+        $relativePath = $_.FullName.Substring($packageRoot.Length) -replace '^[\\/]+', ''
+        $relativePath = $relativePath.Replace('\\', '/')
+        $fileHash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+        [ordered]@{
+            path = $relativePath
+            sha256 = $fileHash.Hash.ToLowerInvariant()
+        }
+    }
+)
+
 $installMarker = [ordered]@{
+    schema = "sorotte-gui-install-manifest-v2"
     app = "sorotte-gui"
     channel = $Channel
     version = $version
     git_sha = $gitSha
     created_at_utc = $createdAtUtc
     target = $target
+    files = $installFiles
 }
 $installMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot "sorotte-install.json") -Encoding UTF8
 

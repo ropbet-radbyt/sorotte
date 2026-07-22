@@ -344,11 +344,33 @@ pub fn save_media_match_v3_record_with_stats(
     record: &MediaFingerprintRecord,
     now: i64,
 ) -> Result<MediaMatchV3SaveStats, String> {
+    save_media_match_v3_record_with_stats_and_hook(connection, record, now, |_| Ok(()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V3SaveProgress {
+    FingerprintWritten,
+    AnchorsDeleted,
+    AnchorInserted(usize),
+}
+
+fn save_media_match_v3_record_with_stats_and_hook<F>(
+    connection: &Connection,
+    record: &MediaFingerprintRecord,
+    now: i64,
+    mut after_progress: F,
+) -> Result<MediaMatchV3SaveStats, String>
+where
+    F: FnMut(V3SaveProgress) -> Result<(), String>,
+{
     let started_at = Instant::now();
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("failed starting media-match V3 save transaction: {error}"))?;
     let settings_hash = media_extraction_settings_hash(&record.extraction_settings);
-    let settings_id = ensure_media_match_v3_settings_id(connection, settings_hash, now)?;
+    let settings_id = ensure_media_match_v3_settings_id(&transaction, settings_hash, now)?;
     let duration_ms = duration_ms_from_seconds(record.duration_seconds);
-    let file_id = upsert_media_file_v3(connection, record, duration_ms, now)?;
+    let file_id = upsert_media_file_v3(&transaction, record, duration_ms, now)?;
     let blob_started_at = Instant::now();
     let blob = media_fingerprint_blob_v3_from_record(record);
     let audio_blob = (!blob.audio_landmarks.is_empty()).then(|| {
@@ -360,7 +382,7 @@ pub fn save_media_match_v3_record_with_stats(
     let blob_encode_millis = blob_started_at.elapsed().as_millis();
     let audio_index = audio_index_landmarks_v3_from_record(record);
     let error = record.audio_error.clone();
-    connection
+    transaction
         .execute(
             "INSERT OR REPLACE INTO fingerprints_v3 (
                 file_id, settings_id, duration_ms, audio_blob,
@@ -378,9 +400,10 @@ pub fn save_media_match_v3_record_with_stats(
             ],
         )
         .map_err(|error| format!("failed saving media-match V3 fingerprint: {error}"))?;
+    after_progress(V3SaveProgress::FingerprintWritten)?;
 
     let index_started_at = Instant::now();
-    connection
+    transaction
         .execute(
             "DELETE FROM audio_anchor_occurrences_v3
              WHERE file_id = ?1
@@ -390,16 +413,17 @@ pub fn save_media_match_v3_record_with_stats(
             params![file_id, settings_id],
         )
         .map_err(|error| format!("failed deleting stale V3 anchors: {error}"))?;
+    after_progress(V3SaveProgress::AnchorsDeleted)?;
     let mut bucket_ids = BTreeMap::<u32, i64>::new();
-    for landmark in &audio_index {
+    for (index, landmark) in audio_index.iter().enumerate() {
         let bucket_id = audio_anchor_bucket_id_v3(
-            connection,
+            &transaction,
             settings_id,
             landmark.hash,
             now,
             &mut bucket_ids,
         )?;
-        connection
+        transaction
             .execute(
                 "INSERT OR REPLACE INTO audio_anchor_occurrences_v3 (
                     bucket_id, file_id, t_ms, weight
@@ -412,13 +436,18 @@ pub fn save_media_match_v3_record_with_stats(
                 ],
             )
             .map_err(|error| format!("failed inserting V3 audio anchor: {error}"))?;
+        after_progress(V3SaveProgress::AnchorInserted(index + 1))?;
     }
-    mark_anchor_stats_v3_dirty(connection, &settings_hash)?;
-    Ok(MediaMatchV3SaveStats {
+    mark_anchor_stats_v3_dirty(&transaction, &settings_hash)?;
+    let stats = MediaMatchV3SaveStats {
         sqlite_save_millis: started_at.elapsed().as_millis(),
         blob_encode_millis,
         index_insert_millis: index_started_at.elapsed().as_millis(),
-    })
+    };
+    transaction
+        .commit()
+        .map_err(|error| format!("failed committing media-match V3 save transaction: {error}"))?;
+    Ok(stats)
 }
 
 fn upsert_media_file_v3(
@@ -1513,6 +1542,73 @@ mod tests {
 
         assert_eq!(loaded.audio_anchors.len(), 4);
         assert_eq!(loaded.identity, record.identity);
+    }
+
+    #[test]
+    fn v3_record_save_rolls_back_every_reported_partial_write_cut_point() {
+        let failpoints = [
+            V3SaveProgress::FingerprintWritten,
+            V3SaveProgress::AnchorsDeleted,
+            V3SaveProgress::AnchorInserted(1),
+            V3SaveProgress::AnchorInserted(2),
+            V3SaveProgress::AnchorInserted(3),
+            V3SaveProgress::AnchorInserted(4),
+        ];
+
+        for failpoint in failpoints {
+            let connection = Connection::open_in_memory().unwrap();
+            initialize_media_match_v3_index(&connection).unwrap();
+            let original = test_record("transactional.mkv", &[1, 2, 3, 4]);
+            save_media_match_v3_record(&connection, &original, None).unwrap();
+            refresh_all_anchor_stats_v3(&connection, 100).unwrap();
+            let settings_hash = media_extraction_settings_hash(&original.extraction_settings);
+            assert!(!anchor_stats_v3_dirty(&connection, &settings_hash).unwrap());
+
+            let mut replacement = test_record("transactional.mkv", &[11, 12, 13, 14]);
+            replacement.identity.modified_unix_millis = 99;
+            replacement.identity.size_bytes = 1234;
+            replacement.container_fingerprint = "replacement-container".to_owned();
+            let error = save_media_match_v3_record_with_stats_and_hook(
+                &connection,
+                &replacement,
+                200,
+                |progress| {
+                    if progress == failpoint {
+                        Err(format!("injected V3 save failure at {progress:?}"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("the selected V3 save failpoint should abort the transaction");
+            assert!(error.contains("injected V3 save failure"));
+
+            let loaded = load_media_match_v3_record_for_path(
+                &connection,
+                &original.identity.normalized_path,
+                &original.extraction_settings,
+                original.identity.modified_unix_millis,
+                original.identity.size_bytes,
+            )
+            .unwrap()
+            .expect("the prior fingerprint must survive a failed replacement");
+            assert_eq!(
+                loaded.identity, original.identity,
+                "failpoint {failpoint:?}"
+            );
+            assert_eq!(
+                loaded.container_fingerprint, original.container_fingerprint,
+                "failpoint {failpoint:?}"
+            );
+            assert_eq!(
+                loaded.audio_anchors, original.audio_anchors,
+                "failpoint {failpoint:?}"
+            );
+            assert!(
+                !anchor_stats_v3_dirty(&connection, &settings_hash).unwrap(),
+                "dirty-stat mutation must roll back at {failpoint:?}"
+            );
+        }
     }
 
     #[test]

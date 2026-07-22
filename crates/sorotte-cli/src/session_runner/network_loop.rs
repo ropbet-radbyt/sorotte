@@ -1,5 +1,14 @@
 use super::*;
 
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+fn cli_connect_timeout() -> Duration {
+    env_non_negative_f64("SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS")
+        .filter(|seconds| *seconds > 0.0)
+        .map(Duration::from_secs_f64)
+        .unwrap_or(DEFAULT_CONNECT_TIMEOUT)
+}
+
 fn ensure_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Result<()> {
     if let Some(ClientEvent::OperationFailed { message, .. }) = events
         .into_iter()
@@ -135,6 +144,7 @@ where
     file_difference_sink: G,
     plex_config: PlexClientConfig,
     network_options_health_reporter: CliNetworkOptionsHealthReporter,
+    tls_policy_override: Option<TlsPolicy>,
     retries: u32,
 }
 
@@ -233,6 +243,9 @@ where
             file_difference_sink,
             plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
             network_options_health_reporter: CliNetworkOptionsHealthReporter::default(),
+            tls_policy_override: stored_settings
+                .and_then(|settings| settings.tls_policy.as_deref())
+                .and_then(TlsPolicy::parse),
             retries: 0_u32,
         },
         _managed_mpv_process_guard: managed_mpv_process_guard,
@@ -263,6 +276,7 @@ where
             diagnostics_config,
             plex_config: &retry_state.plex_config,
             network_options_health_reporter: &mut retry_state.network_options_health_reporter,
+            tls_policy_override: retry_state.tls_policy_override,
         },
         retries: &mut retry_state.retries,
         network_start,
@@ -336,22 +350,40 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    let connect_result =
-        await_with_player_integration_maintenance(launch.runtime, TcpStream::connect(endpoint))
-            .await;
+    let connect_timeout = cli_connect_timeout();
+    let connect_result = await_with_player_integration_maintenance(
+        launch.runtime,
+        tokio::time::timeout(connect_timeout, TcpStream::connect(endpoint)),
+    )
+    .await;
     Ok(match connect_result {
-        Ok(stream) => (
-            client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
-                run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
-                    stream, launch,
-                )
-                .await?,
-            ),
-            None,
-        ),
-        Err(connect_err) => (
+        Ok(Ok(stream)) => {
+            match run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+                stream, launch,
+            )
+            .await
+            {
+                Ok(exit) => (
+                    client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
+                        exit,
+                    ),
+                    None,
+                ),
+                // The caller deliberately converts every pre-session/session error into the
+                // same reconnect attempt plan used for TCP-connect failures.
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Err(connect_err)) => (
             client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
             Some(connect_err.into()),
+        ),
+        Err(_) => (
+            client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+            Some(anyhow!(
+                "TCP connection to {endpoint} timed out after {:.1} seconds",
+                connect_timeout.as_secs_f64()
+            )),
         ),
     })
 }
@@ -380,24 +412,38 @@ where
         diagnostics_config,
         plex_config,
         network_options_health_reporter,
+        tls_policy_override,
     } = launch;
-    let (attempt_execution_plan, connect_error) =
-        client_network_loop_transport_attempt_execution_plan_legacy_compatible(
-            endpoint,
-            ConnectedSessionLaunchContext {
-                runtime: &mut *runtime,
-                config,
-                chat_message_on_connect,
-                startup_playlist_file_on_connect,
-                local_input_rx,
-                notification_sink,
-                file_difference_sink,
-                diagnostics_config,
-                plex_config,
-                network_options_health_reporter,
-            },
-        )
-        .await?;
+    let attempt_result = client_network_loop_transport_attempt_execution_plan_legacy_compatible(
+        endpoint,
+        ConnectedSessionLaunchContext {
+            runtime: &mut *runtime,
+            config,
+            chat_message_on_connect,
+            startup_playlist_file_on_connect,
+            local_input_rx,
+            notification_sink,
+            file_difference_sink,
+            diagnostics_config,
+            plex_config,
+            network_options_health_reporter,
+            tls_policy_override,
+        },
+    )
+    .await;
+    let (attempt_execution_plan, connect_error) = match attempt_result {
+        Ok(result) => result,
+        Err(error) => {
+            emit_application_service_events(runtime.shutdown_plex_service().await);
+            ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
+                now_seconds: network_start.elapsed().as_secs_f64(),
+            }))?;
+            (
+                client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+                Some(error),
+            )
+        }
+    };
     let attempt_disposition =
         client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible(
             attempt_execution_plan,

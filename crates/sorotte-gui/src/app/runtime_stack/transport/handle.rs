@@ -99,6 +99,7 @@ struct GuiTrackedOutboundProtocolDelivery {
 #[derive(Clone, Default)]
 pub(in crate::app) struct GuiQueuedSessionTransportHandle {
     queued_inbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+    queued_transport_warnings: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_liveness_protocol_line: Arc<Mutex<Option<String>>>,
     tracked_outbound_protocol_delivery: Arc<Mutex<GuiTrackedOutboundProtocolDeliveryState>>,
@@ -134,6 +135,21 @@ impl GuiQueuedSessionTransportHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+
+    pub(in crate::app) fn push_transport_warning(&self, warning: impl Into<String>) {
+        self.queued_transport_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(warning.into());
+    }
+
+    pub(in crate::app) fn drain_transport_warnings(&self) -> Vec<String> {
+        self.queued_transport_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+            .collect()
     }
 
     pub(in crate::app) fn try_push_outbound_protocol_delivery(
