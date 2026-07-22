@@ -4,7 +4,7 @@ This project is intended to be built from source. The server also has packaging 
 
 ## Prerequisites
 
-- Rust `1.96.0` with `rustfmt` and `clippy`
+- Rust `1.97.1` with `rustfmt` and `clippy`
 - PowerShell for the provided scripts
 - `mpv` 0.41.0 or newer for client playback
 - Python with `twisted`, `pyopenssl`, and `service_identity` for compatibility and server release verification

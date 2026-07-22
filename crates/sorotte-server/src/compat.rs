@@ -211,7 +211,7 @@ pub(crate) fn playlist_is_valid(files: &[String]) -> bool {
 }
 
 pub(crate) fn legacy_server_password_token_md5_hex(token: &str) -> String {
-    format!("{:x}", Md5::digest(token.as_bytes()))
+    lowercase_hex(Md5::digest(token.as_bytes()))
 }
 
 pub(crate) fn server_password_token_matches_legacy_compatible(

@@ -1232,9 +1232,10 @@ pub fn media_match_v3_sqlite_size_report(
         .query_row(
             "SELECT COALESCE(SUM(COALESCE(length(audio_blob), 0)), 0) FROM fingerprints_v3",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, i64>(0),
         )
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0) as u64;
     let fingerprint_bytes = db_object_bytes_available.then(|| {
         object_bytes
             .iter()
@@ -1297,8 +1298,9 @@ pub fn media_match_v3_sqlite_size_report(
 fn sqlite_pragma_u64(connection: &Connection, pragma_name: &str) -> Result<u64, String> {
     connection
         .query_row(&format!("PRAGMA {pragma_name}"), [], |row| {
-            row.get::<_, u64>(0)
+            row.get::<_, i64>(0)
         })
+        .map(|value| value.max(0) as u64)
         .map_err(|error| format!("failed reading SQLite pragma {pragma_name}: {error}"))
 }
 

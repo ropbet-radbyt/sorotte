@@ -636,14 +636,19 @@ impl GuiWidgetEguiRenderer {
         } else {
             egui::RichText::new(Self::display_text(node))
         };
-        let response = ui.add_enabled_ui(node.enabled, |ui| {
-            ui.add_sized(
-                [tab_width.max(0.0), 0.0],
-                egui::Button::new(label).selected(node.selected),
-            )
-        });
-        Self::register_automation_id(ui, &response.inner, node);
-        if response.inner.clicked() {
+        let tab_height = ui.spacing().interact_size.y;
+        let response = ui
+            .push_id(&node.id, |ui| {
+                ui.add_enabled(
+                    node.enabled,
+                    egui::Button::new(label)
+                        .selected(node.selected)
+                        .min_size(egui::vec2(tab_width.max(0.0), tab_height)),
+                )
+            })
+            .inner;
+        Self::register_automation_id(ui, &response, node);
+        if response.clicked() {
             self.actions
                 .extend(Self::actions_for_clicked_button(state, node));
         }

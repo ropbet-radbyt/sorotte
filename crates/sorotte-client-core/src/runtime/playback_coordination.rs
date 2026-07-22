@@ -2773,7 +2773,7 @@ fn normalized_positive_seconds(value: f64, fallback: f64) -> f64 {
 
 fn new_playback_barrier_request_id(local_media_generation: u64) -> String {
     let mut bytes = [0_u8; 16];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     }
 

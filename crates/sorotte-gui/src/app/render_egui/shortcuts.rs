@@ -48,7 +48,7 @@ impl GuiWidgetEguiRenderer {
         ctx: &egui::Context,
         state: &SorotteGuiShellAppState,
     ) -> Vec<GuiShellAction> {
-        if state.open_modal.is_some() || ctx.wants_keyboard_input() {
+        if state.open_modal.is_some() || ctx.egui_wants_keyboard_input() {
             return Vec::new();
         }
 

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     io::Cursor,
     path::{Component, Path, PathBuf},
@@ -21,6 +22,15 @@ use zip::ZipArchive;
 use super::child_process::configure_gui_child_process;
 
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
+
+fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
 const LEGACY_SYNCPLAY_MILESTONE: &str = "Yoitsu";
 const LEGACY_SYNCPLAY_RELEASE_NUMBER: &str = "116";
 const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 86_400;
@@ -1200,7 +1210,7 @@ fn validate_sha256_bytes(bytes: &[u8], expected: &str) -> Result<(), String> {
     validate_sha256_hex(expected)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = lowercase_hex(hasher.finalize());
     if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())
     } else {

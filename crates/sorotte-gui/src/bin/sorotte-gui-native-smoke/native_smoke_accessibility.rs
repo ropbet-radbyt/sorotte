@@ -95,6 +95,7 @@ pub(super) fn wait_for_accessible_name<D: NativeGuiDriver>(
                 last_snapshot = Some(render_accessible_name_snapshot_for_patterns(
                     &names,
                     &[
+                        expected_name,
                         "view:",
                         "self=",
                         "ready=",
@@ -103,6 +104,7 @@ pub(super) fn wait_for_accessible_name<D: NativeGuiDriver>(
                         "Busy",
                         "Save",
                         "Reload",
+                        "Connection",
                         "Connection / Port",
                         "Timeout",
                         "Warning",
@@ -456,6 +458,24 @@ pub(super) fn select_top_tab_with_wait<D: NativeGuiDriver>(
     invoke_named_control_with_wait(driver, window, tab_name, NativeControlKind::Button, timeout)
         .map_err(|error| {
             format!("failed to activate top tab {tab_name:?} before waiting for {expected_name:?}: {error}")
+        })?;
+    if wait_for_accessible_name(
+        driver,
+        window,
+        expected_name,
+        timeout.min(Duration::from_millis(500)),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    driver
+        .click_named_control(window, tab_name, NativeControlKind::Button)
+        .map_err(|error| {
+            format!(
+                "failed to click top tab {tab_name:?} after its accessibility invoke did not reveal {expected_name:?}: {error}"
+            )
         })?;
     wait_for_accessible_name(driver, window, expected_name, timeout).map(|_| ())
 }

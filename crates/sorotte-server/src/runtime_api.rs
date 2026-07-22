@@ -92,13 +92,7 @@ impl ServerRuntime {
     }
 
     pub fn set_motd_template(&mut self, template: Option<String>) {
-        self.motd_template = template.and_then(|template| {
-            if template.trim().is_empty() {
-                None
-            } else {
-                Some(template)
-            }
-        });
+        self.motd_template = template.filter(|template| !template.trim().is_empty());
     }
 
     pub fn set_server_password_token(&mut self, token: Option<SecretValue>) {

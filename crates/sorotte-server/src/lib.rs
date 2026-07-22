@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
     sync::{
@@ -59,6 +60,15 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
+
+fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
 const SERVER_REAL_VERSION: &str = LEGACY_COMPAT_SERVER_VERSION;
 const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =

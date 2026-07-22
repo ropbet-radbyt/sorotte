@@ -1,14 +1,15 @@
 use super::*;
 
 impl eframe::App for GuiNativeApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        Self::apply_test_theme_override_from_lookup(ctx, &env_trimmed);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        Self::apply_test_theme_override_from_lookup(&ctx, &env_trimmed);
         let mut renderer = GuiWidgetEguiRenderer::default();
         self.state.render_shell_widgets(&mut renderer);
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
         let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(
             &self.state,
-            renderer.show(ctx, &self.state, show_manual_pending_controls),
+            renderer.show(ui, &self.state, show_manual_pending_controls),
         );
         let mut close_requested = renderer.take_close_requested();
         let mut selected_media_files = renderer.take_selected_media_files();
@@ -350,7 +351,7 @@ impl eframe::App for GuiNativeApp {
             }
         }
         let (playback_prompt_actions, playback_prompt_state_changed) =
-            self.show_playback_prompt(ctx);
+            self.show_playback_prompt(&ctx);
         for action in playback_prompt_actions {
             state_changed |= self.state.apply(action);
         }

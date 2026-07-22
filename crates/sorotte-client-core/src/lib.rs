@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::Md5;
@@ -23,6 +24,15 @@ use sorotte_protocol::{
 use sorotte_secret::SecretValue;
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
+
+fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
 const DEFAULT_REWIND_THRESHOLD_SECONDS: f64 = 4.0;
 const DEFAULT_FASTFORWARD_THRESHOLD_SECONDS: f64 = 5.0;
 const FASTFORWARD_BEHIND_THRESHOLD_SECONDS: f64 = 1.75;
@@ -82,7 +92,7 @@ pub const AUTOPLAY_TICK_INTERVAL_SECONDS: f64 = AUTOPLAY_COUNTDOWN_STEP_SECONDS;
 const LEGACY_PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 
 pub fn legacy_server_password_token(password: &str) -> String {
-    format!("{:x}", Md5::digest(password.as_bytes()))
+    lowercase_hex(Md5::digest(password.as_bytes()))
 }
 
 /// Builds the privacy-safe, source-stable identity used by playback
@@ -101,7 +111,7 @@ pub fn logical_media_id_for_local_file_update(update: &LocalFileUpdate) -> Logic
         digest.update(b"\0");
         digest.update(update.size_bytes.unwrap_or_default().to_le_bytes());
     }
-    LogicalMediaId::new(format!("media-sha256:{:x}", digest.finalize()))
+    LogicalMediaId::new(format!("media-sha256:{}", lowercase_hex(digest.finalize())))
         .expect("SHA-256 logical media identity is non-empty")
 }
 
