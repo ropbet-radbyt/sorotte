@@ -31,7 +31,9 @@ use crate::{
     },
 };
 
-const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 6;
+// Version 7 invalidates indexes whose path identities were unconditionally case-folded. Those
+// keys cannot safely address files on case-sensitive filesystems and must be rebuilt.
+const MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION: i64 = 7;
 const MEDIA_MATCH_V3_INDEX_FILE: &str = "index-v3.sqlite3";
 const MEDIA_MATCH_V3_ANCHOR_STATS_DIRTY_PREFIX: &str = "anchor_stats_v3_dirty:";
 
@@ -321,7 +323,7 @@ fn reset_media_match_v3_schema(connection: &Connection) -> Result<(), String> {
                 ON audio_anchor_occurrences_v3(file_id, bucket_id, t_ms, weight);
 
             INSERT INTO metadata (key, value)
-            VALUES ('schema_version', '6');
+            VALUES ('schema_version', '7');
             ",
         )
         .map_err(|error| format!("failed resetting media-match V3 schema: {error}"))?;
@@ -1465,6 +1467,29 @@ mod tests {
         assert!(!table_has_column(&connection, "fingerprints_v3", "video_index_count").unwrap());
         assert!(table_has_column(&connection, "fingerprints_v3", "audio_blob").unwrap());
         assert!(table_has_column(&connection, "fingerprints_v3", "audio_index_count").unwrap());
+    }
+
+    #[test]
+    fn previous_schema_version_resets_cached_path_identities() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_media_match_v3_index(&connection).unwrap();
+        let record = test_record("MixedCase/Show.S01E01.mkv", &[1, 2, 3, 4]);
+        save_media_match_v3_record(&connection, &record, None).unwrap();
+        connection
+            .execute(
+                "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+                [MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION - 1],
+            )
+            .unwrap();
+
+        initialize_media_match_v3_index(&connection).unwrap();
+
+        assert_eq!(
+            sqlite_schema_version(&connection).unwrap(),
+            MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION
+        );
+        assert_eq!(row_count(&connection, "media_files_v3"), 0);
+        assert_eq!(row_count(&connection, "fingerprints_v3"), 0);
     }
 
     #[test]

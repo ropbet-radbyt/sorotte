@@ -28,11 +28,12 @@ use sorotte_player_api::PlayerAdapter;
 
 use super::super::media_match_support::{
     MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult,
-    MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool, MediaMatchToolProgress,
-    clear_persisted_media_match_cache_at_root, import_managed_media_match_tool_with_progress,
+    MediaMatchInventoryExactResolution, MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool,
+    MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
+    import_managed_media_match_tool_with_progress,
     install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
     media_match_cached_probable_candidate_for_remote_signature,
-    media_match_inventory_exact_candidate_for_targets, media_match_tool_paths_for_settings,
+    media_match_inventory_exact_resolution_for_targets, media_match_tool_paths_for_settings,
     rebuild_persisted_media_match_candidates_with_progress_and_cancel,
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,

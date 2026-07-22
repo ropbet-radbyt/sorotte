@@ -1,5 +1,5 @@
 use super::*;
-use crate::{LogicalMediaId, MediaTransportKind};
+use crate::{LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig};
 use sorotte_protocol::{MediaLoadIntent, PlaybackBarrierPolicy};
 
 #[test]
@@ -301,6 +301,10 @@ fn client_runtime_replay_uses_fresh_server_episode_with_readiness_v2() {
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+        policy: Some(PlaybackBarrierPolicy::AllEligible),
+        ..PlaybackBarrierStartConfig::default()
+    });
     let initial_plan = runtime.prepare_playback_media(
         LogicalMediaId::new("episode1-logical-id").expect("logical ID should be valid"),
         MediaTransportKind::LocalFile,

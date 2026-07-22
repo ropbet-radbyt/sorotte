@@ -391,7 +391,7 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         r#"{"event":"property-change","name":"pause","data":true}"#,
         r#"{"event":"property-change","name":"paused-for-cache","data":true}"#,
         r#"{"event":"property-change","name":"core-idle","data":true}"#,
-        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":10.0,"end":80.0},{"start":90.0,"end":85.0}],"cache-duration":5.25,"fw-bytes":345678,"raw-input-rate":2000000}}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-state","data":{"seekable-ranges":[{"start":10.0,"end":80.0},{"start":90.0,"end":85.0}],"cache-duration":5.25,"fw-bytes":345678,"raw-input-rate":2000000,"reader-pts":42.5,"cache-end":47.75,"eof":false,"underrun":true}}"#,
         r#"{"event":"property-change","name":"demuxer-cache-idle","data":false}"#,
         r#"{"event":"property-change","name":"cache-buffering-state","data":42.5}"#,
         r#"{"request_id":2,"error":"success"}"#,
@@ -425,6 +425,10 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     let mut updates = Vec::new();
     while let Some(update) = adapter.take_transport_telemetry_update() {
         updates.push(update);
+    }
+    let mut cache_updates = Vec::new();
+    while let Some(update) = adapter.take_cache_telemetry_update() {
+        cache_updates.push(update);
     }
 
     let generation = adapter
@@ -471,6 +475,30 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     assert_eq!(rebuffering.buffered_ahead_seconds, Some(5.25));
     assert_eq!(rebuffering.buffered_ahead_bytes, Some(345_678));
     assert_eq!(rebuffering.input_rate_bytes_per_second, Some(2_000_000));
+    let cache_snapshot = rebuffering
+        .media_generation
+        .and_then(|generation| {
+            cache_updates
+                .iter()
+                .rev()
+                .find(|update| update.media_generation == Some(generation))
+        })
+        .expect("demuxer-cache-state should emit a complete replacement snapshot");
+    assert_eq!(cache_snapshot.reader_position_seconds, Some(42.5));
+    assert_eq!(cache_snapshot.cache_end_seconds, Some(47.75));
+    assert_eq!(cache_snapshot.eof, Some(false));
+    assert_eq!(cache_snapshot.underrun, Some(true));
+    let diagnostics = adapter.network_media_diagnostic_snapshot();
+    assert_eq!(diagnostics.media_generation, Some(generation));
+    assert_eq!(diagnostics.cache_duration_seconds, Some(5.25));
+    assert_eq!(diagnostics.forward_bytes, Some(345_678));
+    assert_eq!(diagnostics.raw_input_rate_bytes_per_second, Some(2_000_000));
+    assert_eq!(diagnostics.reader_position_seconds, Some(42.5));
+    assert_eq!(diagnostics.cache_end_seconds, Some(47.75));
+    assert_eq!(diagnostics.cache_eof, Some(false));
+    assert_eq!(diagnostics.cache_underrun, Some(true));
+    assert_eq!(diagnostics.demuxer_cache_idle, Some(false));
+    assert_eq!(diagnostics.paused_for_cache, Some(true));
     assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Rebuffering);
 
     adapter

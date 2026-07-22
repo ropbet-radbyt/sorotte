@@ -346,6 +346,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) startup_stream_helper_probe_rx:
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
+    pub(super) player_attachment_epoch: u64,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
@@ -365,6 +366,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) last_published_media_match_signature: Option<serde_json::Value>,
     pub(super) local_shared_playlist_media_match_signature_path: Option<String>,
     pub(super) playlist_resolution: GuiPlaylistResolutionCoordinator,
+    playlist_resolution_attempt: Option<player::PlaylistResolutionAttempt>,
+    plex_miss_state: Option<player::PlexMissState>,
+    plex_context_media_resolution_pending: bool,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
@@ -885,7 +889,7 @@ pub(super) struct GuiPlexPlaylistResolveWorkerResult {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveOutcome {
-    pub(super) stream_target: Option<PlexStreamTarget>,
+    pub(super) stream_target: Result<Option<PlexStreamTarget>, String>,
     pub(super) cache: PlexMatchCache,
 }
 
@@ -893,7 +897,14 @@ impl std::fmt::Debug for GuiPlexStreamResolveOutcome {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GuiPlexStreamResolveOutcome")
-            .field("stream_target_resolved", &self.stream_target.is_some())
+            .field("resolution_succeeded", &self.stream_target.is_ok())
+            .field(
+                "stream_target_resolved",
+                &self
+                    .stream_target
+                    .as_ref()
+                    .is_ok_and(|target| target.is_some()),
+            )
             .field("cache", &sorotte_secret::REDACTED_SECRET)
             .finish()
     }
@@ -1038,6 +1049,9 @@ pub(super) enum GuiUserMediaTargetResolution {
         path: String,
         source: GuiUserMediaTargetResolutionSource,
     },
+    Ambiguous {
+        candidate_count: usize,
+    },
     Pending,
     Missing,
 }
@@ -1049,6 +1063,10 @@ impl std::fmt::Debug for GuiUserMediaTargetResolution {
                 .debug_struct("Resolved")
                 .field("path", &sorotte_secret::REDACTED_SECRET)
                 .field("source", source)
+                .finish(),
+            Self::Ambiguous { candidate_count } => formatter
+                .debug_struct("Ambiguous")
+                .field("candidate_count", candidate_count)
                 .finish(),
             Self::Pending => formatter.write_str("Pending"),
             Self::Missing => formatter.write_str("Missing"),
@@ -1069,6 +1087,7 @@ pub(super) struct GuiAutomaticMediaResolutionTrigger {
     pub(super) playlist_entry_id: Option<GuiPlaylistEntryId>,
     pub(super) playlist_generation: u64,
     pub(super) source_provider: String,
+    pub(super) plex_operation_context: Option<GuiPlexOperationContext>,
     pub(super) roots: Vec<String>,
     pub(super) media_match_remote_targets: String,
     pub(super) current_player_path: Option<String>,
@@ -1084,6 +1103,7 @@ impl std::fmt::Debug for GuiAutomaticMediaResolutionTrigger {
             .field("playlist_entry_id", &self.playlist_entry_id)
             .field("playlist_generation", &self.playlist_generation)
             .field("source_provider", &self.source_provider)
+            .field("plex_operation_context", &self.plex_operation_context)
             .field("root_count", &self.roots.len())
             .field(
                 "media_match_remote_targets",
@@ -1131,6 +1151,12 @@ pub(super) struct GuiPendingLogicalMediaOverride {
     pub(super) loaded_target_secret: SecretPlexPlaybackUrl,
     pub(super) logical_file: LocalFileUpdate,
     pub(super) user_initiated: bool,
+    pub(super) player_command_id: Option<sorotte_player_api::PlayerCommandId>,
+    pub(super) player_media_generation: Option<sorotte_player_api::PlayerMediaGeneration>,
+    pub(super) playlist_row_id: Option<GuiPlaylistEntryId>,
+    pub(super) playlist_generation: u64,
+    pub(super) load_completed: bool,
+    pub(super) logical_file_observed: bool,
 }
 
 impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
@@ -1140,6 +1166,12 @@ impl std::fmt::Debug for GuiPendingLogicalMediaOverride {
             .field("loaded_target_secret", &self.loaded_target_secret)
             .field("logical_file", &sorotte_secret::REDACTED_SECRET)
             .field("user_initiated", &self.user_initiated)
+            .field("player_command_id", &self.player_command_id)
+            .field("player_media_generation", &self.player_media_generation)
+            .field("playlist_row_id", &self.playlist_row_id)
+            .field("playlist_generation", &self.playlist_generation)
+            .field("load_completed", &self.load_completed)
+            .field("logical_file_observed", &self.logical_file_observed)
             .finish()
     }
 }
@@ -1172,6 +1204,16 @@ mod media_target_debug_tests {
             playlist_entry_id: Some(GuiPlaylistEntryId::next()),
             playlist_generation: 11,
             source_provider: "plex".to_owned(),
+            plex_operation_context: Some(GuiPlexOperationContext {
+                identity_generation: 13,
+                user_token_fingerprint: Some(17),
+                selected_server_token_fingerprint: Some(19),
+                selected_server_id: Some("server-id".to_owned()),
+                selected_server_url: Some(secret.to_owned()),
+                plugin_enabled: true,
+                sync_enabled: true,
+                streaming_enabled: true,
+            }),
             roots: vec![secret.to_owned()],
             media_match_remote_targets: secret.to_owned(),
             current_player_path: Some(secret.to_owned()),

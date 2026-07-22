@@ -110,6 +110,10 @@ Settings live in `[client_settings]` in `sorotte.ini` and are editable in the GU
 
 Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes` for Sorotte-opened network media. These are mpv per-file options in managed and attached players: mpv restores the prior values when the stream ends, so local files keep the player's cache defaults and user configuration. Later advanced player arguments win for network media; the GUI shows both configured and effective values.
 
+The mpv network-policy hook applies options in a fixed semantic order, attempts every option even when one is rejected, and reads back an allowlisted set of effective cache properties after `file-loaded`. The result is explicitly `Applied`, `PartiallyApplied`, or `Failed`; protocol v3 keeps the legacy `failed` wire status for partial application and carries the precise state in an additive field, so an older adapter still fails closed. A rejected write or mismatched critical read-back never reports a ready policy. `MpvNetworkMediaDiagnosticSnapshot` correlates that result with the media and policy generations plus demuxer idle, cache duration, forward bytes, input rate, reader/cache-end timestamps, cache EOF/underrun, cache pause, and transport phase. The additive `PlayerAdapter::take_cache_telemetry_update` channel carries each complete generation-scoped cache observation, so omitted metrics and seek boundaries clear older same-generation evidence without changing the established public transport-update shape. Diagnostic values are parsed and canonicalized by fixed option type; the snapshot never retains media URLs, paths, credentials, invalid free-form cache values, or arbitrary advanced option values.
+
+Set `SOROTTE_CLIENT_LOG_PLAYER_TELEMETRY=1` for a CLI support reproduction. In addition to playback telemetry, the CLI emits a change-gated `mpv-network-media` line for successful and failed policy applications. It includes media/policy generation, hook load sequence, verification state, ordered per-option applied/rejected/mismatched results, desired/effective allowlisted cache values, and current cache evidence; raw media targets and arbitrary advanced-option values are excluded.
+
 ### Recovery
 
 | Key | Default | Range/values |
@@ -142,6 +146,8 @@ Capable clients publish generation/revision-bound transitions between buffering 
 | `streamingStartQuorumPercent` | `75` | 1–100 |
 | `streamingStartTimeout` | `15` | positive seconds; server clamps to 1–30 |
 | `streamingStartTimeoutAction` | `continue` | `continue`, `remain-paused`, `ask-controller` |
+
+An omitted `streamingStartPolicy`, including in settings files created by older releases, keeps the compatibility behavior of starting immediately. Coordinated policies such as `wait-all` remain explicit opt-ins.
 
 With a non-immediate policy, the initiating client starts `sorottePlaybackBarrierV1`. The timeout action travels in the prepare request and is enforced atomically by the server. `continue` performs a best-effort commit. `remain-paused` ends the prepare phase as degraded without committing or transiently unpausing. `ask-controller` enters the distinct `awaitingDecision` phase while the canonical room remains paused; the GUI explains that the controller can decide manually. An authorized ordinary play/pause transition supplies that decision and retires `awaitingDecision` as terminal degraded history before applying the canonical room state. A later missing `started` acknowledgement is reported as `startedAckTimedOut` and never reuses the prepare-timeout action.
 
@@ -214,10 +220,16 @@ cargo test -p sorotte-sim
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 ```
 
-Required Linux PR CI builds the minimum supported mpv 0.41.0 release and runs deterministic real-player checks: paused load/seek/resume semantics, coordinator prepare/start followed by an ordinary aligned pause, one bounded local-HTTP rebuffer episode, and the longer HTTP-stall recovery harness:
+Required Linux PR CI builds the minimum supported mpv 0.41.0 release and runs deterministic real-player checks: paused load/seek/resume semantics, coordinator prepare/start followed by an ordinary aligned pause, one bounded local-HTTP rebuffer episode, a byte-cap idle/drain/input-resume sequence, and the longer HTTP-stall recovery harness:
 
 ```powershell
 cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
+```
+
+The byte-cap regression uses a high time limit and a small packet cap so it completes in seconds. Its local HTTP fixture fills the initial cap, holds further response bytes until the observed cache has drained below half, and then releases them. The test requires intentional `demuxer-cache-idle`, a post-release cache increase with positive input, continued playback beyond the initially cached media, and no underrun/rebuffer observation:
+
+```powershell
+cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_cache_cap_drains_and_input_resumes -- --ignored --exact --nocapture
 ```
 
 The same required mpv 0.41.0 CI job also runs the longer local-HTTP fault and bounded-recovery harness:

@@ -13,16 +13,18 @@ use sorotte_client_core::{
     SeekPreparationTerminalOutcome, SeekTargetAvailability,
 };
 use sorotte_player_api::{
-    PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
-    PlayerPlayIntent, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
+    PlayerCommandProgressState, PlayerCommandResult, PlayerPlayIntent, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
 };
-use sorotte_player_mpv::{ConnectedMpvPlayer, MpvAdapter};
+use sorotte_player_mpv::{ConnectedMpvPlayer, MpvAdapter, MpvNetworkMediaPolicyApplicationState};
 use sorotte_sim::{BurstStall, FaultInjectingHttpServer, HttpMediaFixture, NetworkFaultProfile};
 
 const TEST_DURATION: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SEMANTICS_TIMEOUT: Duration = Duration::from_secs(10);
 const PR_STALL_TIMEOUT: Duration = Duration::from_secs(14);
+const CACHE_CAP_TIMEOUT: Duration = Duration::from_secs(18);
 
 #[test]
 #[ignore = "required Linux CI integration test; requires the mpv binary"]
@@ -163,6 +165,278 @@ fn real_mpv_pause_seek_resume_semantics() {
     verify_barrier_start_then_ordinary_pause_with_real_mpv(&media);
     verify_one_bounded_rebuffer_episode_with_real_mpv();
     verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv();
+}
+
+#[test]
+#[ignore = "required Linux CI integration test; requires the mpv binary"]
+fn real_mpv_cache_cap_drains_and_input_resumes() {
+    const MAX_FORWARD_BYTES: u64 = 524_288;
+    const HOLD_AFTER_BODY_BYTES: usize = 600_000;
+    let cache_options = [
+        ("cache", "yes"),
+        ("cache-pause", "yes"),
+        ("cache-pause-initial", "yes"),
+        ("cache-pause-wait", "0.3"),
+        // Make the byte cap, rather than the time cap, the deterministic limiting factor.
+        ("cache-secs", "60"),
+        ("demuxer-max-bytes", "524288"),
+        ("demuxer-max-back-bytes", "65536"),
+    ];
+    let server = FaultInjectingHttpServer::start_with_transmission_holds(
+        BTreeMap::from([(
+            "/cap.wav".to_owned(),
+            HttpMediaFixture::static_bytes("audio/wav", pcm_wav(30)).with_faults(
+                NetworkFaultProfile {
+                    bytes_per_second: Some(2_000_000),
+                    ..NetworkFaultProfile::default()
+                },
+            ),
+        )]),
+        BTreeMap::from([("/cap.wav".to_owned(), HOLD_AFTER_BODY_BYTES)]),
+    )
+    .expect("cache-cap HTTP fixture should start");
+    let (process, connected) = MpvProcess::start_with_cache_options(30_000, &cache_options);
+    let mut player = connected.into_inner();
+    player.configure_network_media_options(cache_options);
+    player
+        .execute(PlayerCommand::SetPaused(true))
+        .expect("cache-cap fixture should begin intentionally paused");
+    let mut observed = PlayerTransportTelemetryUpdate::default();
+    let mut observed_cache = PlayerCacheTelemetryUpdate::default();
+    let load_id = player
+        .execute_tracked(PlayerCommand::OpenFile(server.url("/cap.wav")))
+        .expect("mpv should accept the byte-cap fixture");
+    wait_for_completed_command(&mut player, &mut observed, load_id, "byte-cap media load");
+
+    let expected_cache_options = cache_options
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    let policy_deadline = Instant::now() + SEMANTICS_TIMEOUT;
+    loop {
+        drain_transport_updates(&mut player, &mut observed);
+        drain_cache_updates(&mut player, &mut observed_cache);
+        let diagnostics = player.network_media_diagnostic_snapshot();
+        if diagnostics.media_generation == observed.media_generation
+            && diagnostics.load_sequence.is_some()
+            && diagnostics.application_state == Some(MpvNetworkMediaPolicyApplicationState::Applied)
+            && diagnostics.verification_complete
+            && diagnostics.desired_cache_options == expected_cache_options
+            && diagnostics.effective_cache_options == expected_cache_options
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < policy_deadline,
+            "real mpv never verified the generation-bound network policy through the Lua hook/readback path: diagnostics={diagnostics:?}, transport={observed:?}, cache={observed_cache:?}"
+        );
+        sleep(POLL_INTERVAL);
+    }
+
+    let cap_deadline = Instant::now() + CACHE_CAP_TIMEOUT;
+    let (capped_forward_bytes, capped_cache_end_seconds) = loop {
+        drain_transport_updates(&mut player, &mut observed);
+        drain_cache_updates(&mut player, &mut observed_cache);
+        if observed.demuxer_cache_idle == Some(true)
+            && observed.paused_for_cache == Some(false)
+            && observed.logical_pause == Some(true)
+            && observed.phase == Some(PlayerTransportPhase::ReadyPaused)
+            && observed_cache
+                .buffered_ahead_bytes
+                .is_some_and(|bytes| bytes >= MAX_FORWARD_BYTES / 2)
+            && observed_cache
+                .cache_end_seconds
+                .is_some_and(|cache_end| cache_end.is_finite())
+            && observed_cache.eof != Some(true)
+        {
+            break (
+                observed_cache
+                    .buffered_ahead_bytes
+                    .expect("the cap predicate established forward bytes"),
+                observed_cache
+                    .cache_end_seconds
+                    .expect("the cap predicate established a finite cache end"),
+            );
+        }
+        assert!(
+            Instant::now() < cap_deadline,
+            "mpv never reached an intentional byte-cap idle state: transport={observed:?}, cache={observed_cache:?}"
+        );
+        sleep(POLL_INTERVAL);
+    };
+
+    let position_before_start = observed.position_seconds.unwrap_or_default();
+    assert!(
+        capped_cache_end_seconds > position_before_start,
+        "the capped cache end must be ahead of the playback head: position={position_before_start:.3}, cache_end={capped_cache_end_seconds:.3}, observed={observed:?}"
+    );
+    assert!(
+        server.wait_for_held_transmissions(1, Duration::from_secs(3)),
+        "the deterministic HTTP fixture must hold the response after filling the initial cap"
+    );
+    player
+        .execute(PlayerCommand::SetPaused(false))
+        .expect("mpv should accept playback after filling the byte cap");
+    let mut history = Vec::new();
+    let mut resume_evidence = CacheCapResumeEvidence::default();
+    let mut observed_underrun = false;
+    let mut steady_playback_started = false;
+    let mut observed_mid_play_cache_pause = false;
+    let mut source_released = false;
+    let playback_deadline = Instant::now() + CACHE_CAP_TIMEOUT;
+    // Crossing the cache-end value captured while mpv was idle proves that
+    // playback consumed beyond the media initially held under the byte cap.
+    let must_advance_past_seconds = capped_cache_end_seconds + 1.0;
+    loop {
+        let previous_len = history.len();
+        drain_transport_history(&mut player, &mut observed, &mut history);
+        let cache_updates = drain_cache_updates(&mut player, &mut observed_cache);
+        observed_underrun |= cache_updates
+            .iter()
+            .any(|update| update.underrun == Some(true));
+        for sample in &history[previous_len..] {
+            let update = &sample.update;
+            let state = &sample.state_after;
+            steady_playback_started |= state.phase == Some(PlayerTransportPhase::Playing)
+                && state
+                    .position_seconds
+                    .is_some_and(|position| position > position_before_start + 0.05);
+            if steady_playback_started {
+                observed_mid_play_cache_pause |= state.paused_for_cache == Some(true)
+                    || state.phase == Some(PlayerTransportPhase::Rebuffering);
+            }
+            resume_evidence.observe(update, capped_forward_bytes);
+        }
+        if !source_released
+            && resume_evidence.drain_observed
+            && resume_evidence.resumed_idle_observed
+        {
+            server.release_held_transmissions();
+            resume_evidence.mark_source_released();
+            source_released = true;
+        }
+        if source_released
+            && resume_evidence.fresh_positive_input_observed
+            && observed
+                .position_seconds
+                .is_some_and(|position| position > must_advance_past_seconds)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < playback_deadline,
+            "mpv did not drain below half its cap, release the held source, and refill beyond the release floor; cap={capped_forward_bytes}, target={must_advance_past_seconds:.3}, source_released={source_released}, evidence={resume_evidence:?}, latest={observed:?}, history_tail={:?}",
+            history.iter().rev().take(12).collect::<Vec<_>>()
+        );
+        sleep(POLL_INTERVAL);
+    }
+
+    assert!(
+        resume_evidence.drain_observed,
+        "forward bytes never drained below the cap"
+    );
+    assert!(
+        resume_evidence.resumed_idle_observed,
+        "demuxer input did not leave its capped idle state after the cache drained"
+    );
+    assert!(
+        resume_evidence.fresh_positive_input_observed,
+        "no positive input-rate cache refill grew beyond the post-drain release floor"
+    );
+    assert!(!observed_underrun, "decoder cache underrun was observed");
+    assert!(
+        !observed_mid_play_cache_pause,
+        "playback rebuffered after advancement began while draining/resuming the cache cap"
+    );
+    assert!(
+        server.wait_for_requests(1, Duration::from_secs(3)),
+        "real mpv should fetch the deterministic cache-cap route"
+    );
+    drop(player);
+    drop(process);
+}
+
+#[test]
+fn cache_cap_resume_evidence_requires_fresh_input_after_drain() {
+    const CAPPED_FORWARD_BYTES: u64 = 512;
+    let mut combined = CacheCapResumeEvidence::default();
+    combined.observe(
+        &PlayerTransportTelemetryUpdate {
+            buffered_ahead_bytes: Some(CAPPED_FORWARD_BYTES / 2),
+            demuxer_cache_idle: Some(false),
+            input_rate_bytes_per_second: Some(10_000),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(combined.drain_observed);
+    assert!(combined.resumed_idle_observed);
+    assert!(
+        !combined.fresh_positive_input_observed,
+        "a positive input sample observed before source release must not count as resume evidence"
+    );
+
+    let mut evidence = CacheCapResumeEvidence::default();
+
+    evidence.observe(
+        &PlayerTransportTelemetryUpdate {
+            demuxer_cache_idle: Some(false),
+            input_rate_bytes_per_second: Some(10_000),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(evidence.resumed_idle_observed);
+    assert!(!evidence.drain_observed);
+    assert!(!evidence.fresh_positive_input_observed);
+
+    evidence.observe(
+        &PlayerTransportTelemetryUpdate {
+            buffered_ahead_bytes: Some(CAPPED_FORWARD_BYTES / 2),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(evidence.drain_observed);
+    assert!(!evidence.fresh_positive_input_observed);
+
+    evidence.mark_source_released();
+    let release_floor = evidence
+        .release_forward_bytes
+        .expect("the drain observation should establish a release floor");
+    evidence.observe(
+        &PlayerTransportTelemetryUpdate {
+            input_rate_bytes_per_second: Some(10_000),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(
+        !evidence.fresh_positive_input_observed,
+        "a positive rate without a post-release cache increase must not satisfy resume evidence"
+    );
+
+    evidence.observe(
+        &PlayerTransportTelemetryUpdate {
+            buffered_ahead_bytes: Some(release_floor + 1),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(
+        !evidence.fresh_positive_input_observed,
+        "a post-release cache increase without a positive input rate must not count"
+    );
+
+    evidence.observe(
+        &PlayerTransportTelemetryUpdate {
+            buffered_ahead_bytes: Some(release_floor + 2),
+            input_rate_bytes_per_second: Some(10_000),
+            ..PlayerTransportTelemetryUpdate::default()
+        },
+        CAPPED_FORWARD_BYTES,
+    );
+    assert!(evidence.fresh_positive_input_observed);
 }
 
 #[test]
@@ -733,7 +1007,7 @@ fn wait_for_real_mpv_client(
 }
 
 fn pause_and_wait(
-    player: &mut ConnectedMpvPlayer,
+    player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
     description: &str,
 ) {
@@ -750,7 +1024,7 @@ fn pause_and_wait(
 }
 
 fn seek_and_wait(
-    player: &mut ConnectedMpvPlayer,
+    player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
     target_seconds: f64,
     description: &str,
@@ -768,7 +1042,7 @@ fn seek_and_wait(
 }
 
 fn wait_for_completed_command(
-    player: &mut ConnectedMpvPlayer,
+    player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
     command_id: PlayerCommandId,
     description: &str,
@@ -805,7 +1079,7 @@ fn wait_for_completed_command(
 }
 
 fn wait_for_observation(
-    player: &mut ConnectedMpvPlayer,
+    player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
     description: &str,
     predicate: impl Fn(&PlayerTransportTelemetryUpdate) -> bool,
@@ -825,7 +1099,7 @@ fn wait_for_observation(
 }
 
 fn drain_transport_updates(
-    player: &mut ConnectedMpvPlayer,
+    player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
 ) {
     // Production GUI/CLI polling also asks for local-file metadata. That IPC
@@ -836,6 +1110,96 @@ fn drain_transport_updates(
             eprintln!("mpv transport update: {update:?}");
         }
         merge_current_generation(observed, update);
+    }
+}
+
+fn drain_cache_updates(
+    player: &mut impl PlayerAdapter,
+    observed: &mut PlayerCacheTelemetryUpdate,
+) -> Vec<PlayerCacheTelemetryUpdate> {
+    let mut updates = Vec::new();
+    while let Some(update) = player.take_cache_telemetry_update() {
+        if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
+            eprintln!("mpv cache telemetry update: {update:?}");
+        }
+        if update.media_generation.is_some() && observed.media_generation != update.media_generation
+        {
+            *observed = PlayerCacheTelemetryUpdate::default();
+        }
+        *observed = update.clone();
+        updates.push(update);
+    }
+    updates
+}
+
+#[derive(Clone, Debug)]
+struct TransportHistorySample {
+    update: PlayerTransportTelemetryUpdate,
+    state_after: PlayerTransportTelemetryUpdate,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CacheCapResumeEvidence {
+    drain_observed: bool,
+    resumed_idle_observed: bool,
+    drained_forward_bytes: Option<u64>,
+    release_forward_bytes: Option<u64>,
+    source_released: bool,
+    fresh_positive_input_observed: bool,
+}
+
+impl CacheCapResumeEvidence {
+    fn observe(&mut self, update: &PlayerTransportTelemetryUpdate, capped_forward_bytes: u64) {
+        if let Some(bytes) = update.buffered_ahead_bytes
+            && bytes <= capped_forward_bytes / 2
+        {
+            self.drain_observed = true;
+            self.drained_forward_bytes = Some(
+                self.drained_forward_bytes
+                    .map_or(bytes, |previous| previous.min(bytes)),
+            );
+        }
+        if update.demuxer_cache_idle == Some(false) {
+            self.resumed_idle_observed = true;
+        }
+        if self.source_released
+            && update.buffered_ahead_bytes.is_some_and(|bytes| {
+                self.release_forward_bytes
+                    .is_some_and(|release_bytes| bytes > release_bytes)
+            })
+            && update
+                .input_rate_bytes_per_second
+                .is_some_and(|bytes_per_second| bytes_per_second > 0)
+        {
+            self.fresh_positive_input_observed = true;
+        }
+    }
+
+    fn mark_source_released(&mut self) {
+        assert!(
+            self.drain_observed && self.resumed_idle_observed,
+            "the deterministic source must remain held until the cache visibly drains and leaves its capped idle state"
+        );
+        self.release_forward_bytes = self.drained_forward_bytes;
+        self.source_released = true;
+    }
+}
+
+fn drain_transport_history(
+    player: &mut impl PlayerAdapter,
+    observed: &mut PlayerTransportTelemetryUpdate,
+    history: &mut Vec<TransportHistorySample>,
+) {
+    let _ = player.take_local_file_update();
+    while let Some(update) = player.take_transport_telemetry_update() {
+        if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
+            eprintln!("mpv cache-cap transport update: {update:?}");
+        }
+        merge_current_generation(observed, update.clone());
+        history.push(TransportHistorySample {
+            update,
+            state_after: observed.clone(),
+        });
     }
 }
 
@@ -1205,6 +1569,24 @@ struct MpvProcess {
 
 impl MpvProcess {
     fn start(index: usize) -> (Self, ConnectedMpvPlayer) {
+        Self::start_with_cache_options(
+            index,
+            &[
+                ("cache", "yes"),
+                ("cache-pause", "yes"),
+                ("cache-pause-initial", "yes"),
+                ("cache-pause-wait", "0.3"),
+                ("cache-secs", "1"),
+                ("demuxer-max-bytes", "524288"),
+                ("demuxer-max-back-bytes", "65536"),
+            ],
+        )
+    }
+
+    fn start_with_cache_options(
+        index: usize,
+        cache_options: &[(&str, &str)],
+    ) -> (Self, ConnectedMpvPlayer) {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after Unix epoch")
@@ -1219,21 +1601,19 @@ impl MpvProcess {
         } else {
             Stdio::null()
         };
-        let child = Command::new(mpv)
+        let mut command = Command::new(mpv);
+        command
             .arg("--no-config")
             .arg("--idle=yes")
             .arg("--pause=yes")
             .arg("--force-window=no")
             .arg("--video=no")
             .arg("--audio-display=no")
-            .arg("--ao=null")
-            .arg("--cache=yes")
-            .arg("--cache-pause=yes")
-            .arg("--cache-pause-initial=yes")
-            .arg("--cache-pause-wait=0.3")
-            .arg("--cache-secs=1")
-            .arg("--demuxer-max-bytes=524288")
-            .arg("--demuxer-max-back-bytes=65536")
+            .arg("--ao=null");
+        for (name, value) in cache_options {
+            command.arg(format!("--{name}={value}"));
+        }
+        let child = command
             .arg(format!("--input-ipc-server={}", socket.display()))
             .stdout(Stdio::null())
             .stderr(stderr)

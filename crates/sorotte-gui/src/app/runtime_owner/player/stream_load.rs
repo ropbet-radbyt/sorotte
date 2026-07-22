@@ -282,6 +282,18 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn handle_player_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
         if outcome.succeeded() {
+            let tracked_playlist_load_unconfirmed =
+                self.tracked_playlist_resolution_load_matches_outcome(&outcome);
+            let observed_target_matches_placeholder =
+                self.player_local_file.as_ref().is_some_and(|file| {
+                    file.path.as_deref() == Some(outcome.requested_target.as_str())
+                        || outcome.loaded_target.as_deref().is_some_and(|loaded| {
+                            file.path.as_deref() == Some(loaded) || file.name == loaded
+                        })
+                });
+            if observed_target_matches_placeholder && !tracked_playlist_load_unconfirmed {
+                self.player_local_file_placeholder = false;
+            }
             self.clear_pending_stream_load_context_for_target(&outcome.requested_target);
             if self.pending_stream_retry_target.as_deref()
                 == Some(outcome.requested_target.as_str())
@@ -291,11 +303,23 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        self.player_local_file = None;
-        self.player_local_file_placeholder = false;
-        self.player_position_seconds = None;
-        self.last_published_local_file = None;
-        self.last_published_media_match_signature = None;
+        let failure_matches_pending_logical_override = self
+            .pending_logical_media_override_matches_loaded_target(&outcome.requested_target)
+            || outcome.loaded_target.as_deref().is_some_and(|target| {
+                self.pending_logical_media_override_matches_loaded_target(target)
+            });
+        let failure_matches_current_file = self.player_local_file.as_ref().is_some_and(|file| {
+            file.path.as_deref() == Some(outcome.requested_target.as_str())
+                || file.name == outcome.requested_target
+                || outcome.loaded_target.as_deref().is_some_and(|loaded| {
+                    file.path.as_deref() == Some(loaded) || file.name == loaded
+                })
+        });
+        if failure_matches_pending_logical_override || failure_matches_current_file {
+            self.player_local_file = None;
+            self.player_local_file_placeholder = false;
+            self.player_position_seconds = None;
+        }
         let user_initiated =
             self.take_pending_stream_load_user_initiated_for_target(&outcome.requested_target);
         let logical_failure_context =
@@ -354,10 +378,10 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn open_media_files_through_attached_player_result_impl(
+    pub(in crate::app::runtime_owner) fn open_media_files_through_attached_player_result_impl(
         &mut self,
         paths: &[String],
-    ) -> Option<Result<String, String>> {
+    ) -> Option<Result<StartedMediaLoad, String>> {
         if paths.is_empty() || self.player.is_none() {
             return None;
         }
@@ -371,7 +395,7 @@ impl GuiPersistedConfigRuntimeOwner {
             (player.name(), player.open_file_tracked(&selected_path))
         };
         Some(match open_result {
-            Ok(()) => {
+            Ok(started) => {
                 let logical_file = Self::placeholder_local_file_for_path(&selected_path);
                 let logical_id = logical_media_id_for_local_file_update(&logical_file);
                 let kind = if browser_is_url(&selected_path) {
@@ -396,12 +420,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 ));
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
-                self.player_local_file_placeholder = browser_is_url(&selected_path);
+                self.player_local_file_placeholder = true;
                 self.player_position_seconds = Some(0.0);
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
                 self.pending_attached_room_unpause_observation = None;
-                self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched
                         && self.session.as_ref().is_some_and(|session| {
@@ -412,11 +435,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 {
                     let _ = session.mark_local_media_opened_not_ready();
                 }
-                Ok(Self::media_open_success_message(
-                    player_name,
-                    &selected_path,
-                    paths.len(),
-                ))
+                Ok(StartedMediaLoad {
+                    feedback_message: Self::media_open_success_message(
+                        player_name,
+                        &selected_path,
+                        paths.len(),
+                    ),
+                    player_command_id: started.player_command_id,
+                    player_media_generation: started.player_media_generation,
+                })
             }
             Err(error) => {
                 self.clear_pending_stream_load_context_for_target(&selected_path);
@@ -433,7 +460,7 @@ impl GuiPersistedConfigRuntimeOwner {
         requested_target: &str,
         stream_target: PlexStreamTarget,
         user_initiated: bool,
-    ) -> Option<Result<String, String>> {
+    ) -> Option<Result<StartedMediaLoad, String>> {
         self.player.as_ref()?;
 
         let loaded_target_secret = stream_target.playback_url.clone();
@@ -450,7 +477,7 @@ impl GuiPersistedConfigRuntimeOwner {
             )
         };
         Some(match open_result {
-            Ok(()) => {
+            Ok(started) => {
                 let logical_id = logical_media_id_for_local_file_update(&logical_file);
                 if let Some(session) = self.session.as_mut()
                     && let Err(error) = session.prepare_attached_playback_media(
@@ -473,20 +500,30 @@ impl GuiPersistedConfigRuntimeOwner {
                 if user_initiated {
                     self.pending_stream_retry_target = None;
                 }
+                let (playlist_row_id, playlist_generation) = self
+                    .playlist_resolution_attempt
+                    .as_ref()
+                    .map(|attempt| (Some(attempt.row_id), attempt.playlist_generation))
+                    .unwrap_or((None, self.playlist_resolution.generation));
                 self.pending_logical_media_override =
                     Some(super::super::GuiPendingLogicalMediaOverride {
                         requested_target: requested_target.to_owned(),
                         loaded_target_secret,
                         logical_file: logical_file.clone(),
                         user_initiated,
+                        player_command_id: started.player_command_id,
+                        player_media_generation: started.player_media_generation,
+                        playlist_row_id,
+                        playlist_generation,
+                        load_completed: started.player_command_id.is_none(),
+                        logical_file_observed: false,
                     });
                 self.player_local_file = Some(logical_file);
-                self.player_local_file_placeholder = false;
+                self.player_local_file_placeholder = true;
                 self.player_position_seconds = Some(0.0);
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
                 self.pending_attached_room_unpause_observation = None;
-                self.refresh_player_state_impl();
                 let preserve_ready_for_auto_advanced_playlist_item =
                     self.playlist_auto_advance_eof_latched
                         && self.session.as_ref().is_some_and(|session| {
@@ -497,9 +534,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 {
                     let _ = session.mark_local_media_opened_not_ready();
                 }
-                Ok(format!(
-                    "Started loading Plex media stream through the attached {player_name} player: {logical_name}."
-                ))
+                Ok(StartedMediaLoad {
+                    feedback_message: format!(
+                        "Started loading Plex media stream through the attached {player_name} player: {logical_name}."
+                    ),
+                    player_command_id: started.player_command_id,
+                    player_media_generation: started.player_media_generation,
+                })
             }
             Err(error) => {
                 self.pending_logical_media_override = None;
@@ -516,8 +557,9 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         paths: Vec<String>,
     ) {
+        self.supersede_playlist_resolution_attempt();
         match self.open_media_files_through_attached_player_result_impl(&paths) {
-            Some(Ok(message)) => Self::push_player_success_impl(handle, message),
+            Some(Ok(started)) => Self::push_player_success_impl(handle, started.feedback_message),
             Some(Err(message)) => Self::push_player_error_impl(handle, message),
             None => {}
         }

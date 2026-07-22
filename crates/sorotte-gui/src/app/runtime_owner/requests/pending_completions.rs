@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::app::runtime_owner::GuiUserMediaTargetResolutionSource;
 use crate::app::{
     LEGACY_GUI_QSETTINGS_STORE_NAMES, shell_state::GuiConfigStorageChangeTarget,
     ui_state::legacy_gui_qsettings_store_path,
@@ -214,24 +215,33 @@ impl GuiPersistedConfigRuntimeOwner {
         match search_result {
             Ok(result) => {
                 let found_path = match result {
-                    GuiUserMediaTargetResolution::Resolved { path, .. } => {
-                        normalized_editable_text(&path)
+                    GuiUserMediaTargetResolution::Resolved { path, source } => {
+                        normalized_editable_text(&path).map(|path| (path, source))
                     }
                     GuiUserMediaTargetResolution::Pending => return true,
-                    GuiUserMediaTargetResolution::Missing => {
-                        target_file_name.as_deref().and_then(|target| {
+                    GuiUserMediaTargetResolution::Ambiguous { .. }
+                    | GuiUserMediaTargetResolution::Missing => target_file_name
+                        .as_deref()
+                        .and_then(|target| {
                             self.media_match_cached_room_candidate_for_target(
                                 projected_state,
                                 target,
                             )
                         })
-                    }
+                        .map(|path| {
+                            (
+                                path,
+                                GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
+                            )
+                        }),
                 };
                 self.ensure_configured_player_attached();
                 match found_path {
-                    Some(path) if self.player.is_some() => {
+                    Some((path, source)) if self.player.is_some() => {
                         self.clear_pending_operation_runtime_state(handle, projected_state);
-                        if self.current_player_matches_media_target(&path) {
+                        if self.current_player_matches_media_target(&path)
+                            || self.current_player_is_loading_media_target(&path)
+                        {
                             let player_name = self
                                 .player
                                 .as_ref()
@@ -244,13 +254,30 @@ impl GuiPersistedConfigRuntimeOwner {
                                 ),
                             );
                         } else {
-                            self.open_media_files_through_attached_player(handle, vec![path]);
+                            self.supersede_playlist_resolution_attempt();
+                            match self.open_media_files_through_attached_player_result_impl(
+                                std::slice::from_ref(&path),
+                            ) {
+                                Some(Ok(started)) => {
+                                    self.bind_started_local_media_load_to_current_playlist(
+                                        projected_state,
+                                        path,
+                                        source,
+                                        &started,
+                                    );
+                                    Self::push_player_success(handle, started.feedback_message);
+                                }
+                                Some(Err(message)) => Self::push_player_error(handle, message),
+                                None => {}
+                            }
                         }
                     }
                     found_path => Self::push_actions_and_project(
                         handle,
                         projected_state,
-                        vec![GuiShellAction::CompleteMissingMediaSearch(found_path)],
+                        vec![GuiShellAction::CompleteMissingMediaSearch(
+                            found_path.map(|(path, _)| path),
+                        )],
                     ),
                 }
             }

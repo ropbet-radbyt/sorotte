@@ -6,8 +6,8 @@ use sorotte_client_app::app_boundary::commands::{
 };
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_player_mpv::{
-    MpvAdapter, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
-    MpvNetworkOptionsRuntimeHealthSnapshot,
+    MpvAdapter, MpvNetworkMediaDiagnosticSnapshot, MpvNetworkMediaPolicyState,
+    MpvNetworkOptionsHookHealth, MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 use sorotte_protocol::DirectReadinessSurface;
 
@@ -21,9 +21,16 @@ pub(super) struct CliNetworkOptionsHealthReporter {
     last_revision: Option<u64>,
     last_reported_hook_failure: Option<String>,
     last_reported_policy_failure: Option<String>,
+    player_telemetry_diagnostics_enabled: bool,
+    last_network_media_diagnostic_line: Option<String>,
 }
 
 impl CliNetworkOptionsHealthReporter {
+    pub(crate) fn set_player_telemetry_diagnostics_enabled(&mut self, enabled: bool) {
+        self.player_telemetry_diagnostics_enabled = enabled;
+        self.last_network_media_diagnostic_line = None;
+    }
+
     fn current_failure(&self) -> Option<&str> {
         self.last_reported_hook_failure
             .as_deref()
@@ -76,6 +83,69 @@ impl CliNetworkOptionsHealthReporter {
         }
         lines
     }
+
+    fn line_for_network_media_diagnostic_snapshot(
+        &mut self,
+        snapshot: &MpvNetworkMediaDiagnosticSnapshot,
+    ) -> Option<String> {
+        if !self.player_telemetry_diagnostics_enabled {
+            return None;
+        }
+        let line = network_media_diagnostic_support_line(snapshot);
+        if self.last_network_media_diagnostic_line.as_deref() == Some(line.as_str()) {
+            return None;
+        }
+        self.last_network_media_diagnostic_line = Some(line.clone());
+        Some(line)
+    }
+}
+
+fn cache_options_support_text(options: &std::collections::BTreeMap<String, String>) -> String {
+    options
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn network_option_results_support_text(snapshot: &MpvNetworkMediaDiagnosticSnapshot) -> String {
+    let mut results = snapshot.option_results.iter().collect::<Vec<_>>();
+    results.sort_by(|left, right| left.name.cmp(&right.name));
+    results
+        .into_iter()
+        .map(|result| format!("{}={:?}", result.name, result.status))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn network_media_diagnostic_support_line(snapshot: &MpvNetworkMediaDiagnosticSnapshot) -> String {
+    let media_generation = snapshot
+        .media_generation
+        .map(|generation| generation.get().to_string())
+        .unwrap_or_else(|| "none".to_owned());
+    let load_sequence = snapshot
+        .load_sequence
+        .map(|sequence| sequence.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+    format!(
+        "diagnostic: mpv-network-media media-generation={media_generation} policy-generation={} load-sequence={load_sequence} application={:?} verification-complete={} option-results=[{}] desired-cache=[{}] effective-cache=[{}] transport={:?} cache-pause={:?} demuxer-idle={:?} cache-duration-seconds={:?} forward-bytes={:?} input-rate-bytes-per-second={:?} reader-position-seconds={:?} cache-end-seconds={:?} cache-eof={:?} cache-underrun={:?}",
+        snapshot.network_policy_generation,
+        snapshot.application_state,
+        snapshot.verification_complete,
+        network_option_results_support_text(snapshot),
+        cache_options_support_text(&snapshot.desired_cache_options),
+        cache_options_support_text(&snapshot.effective_cache_options),
+        snapshot.transport_phase,
+        snapshot.paused_for_cache,
+        snapshot.demuxer_cache_idle,
+        snapshot.cache_duration_seconds,
+        snapshot.forward_bytes,
+        snapshot.raw_input_rate_bytes_per_second,
+        snapshot.reader_position_seconds,
+        snapshot.cache_end_seconds,
+        snapshot.cache_eof,
+        snapshot.cache_underrun,
+    )
 }
 
 pub(super) fn publish_pending_local_file_updates(
@@ -122,13 +192,17 @@ fn surface_network_media_options_transition_outcomes_to_sink(
         .with_player_io(MpvAdapter::take_network_media_policy_outcome_nonblocking)
         .is_some()
     {}
-    let (snapshot, player_connected) = application.with_player_io(|player| {
+    let (snapshot, diagnostic_snapshot, player_connected) = application.with_player_io(|player| {
         (
             player.network_options_runtime_health_snapshot(),
+            player.network_media_diagnostic_snapshot(),
             player.is_connected(),
         )
     });
-    let lines = reporter.lines_for_snapshot(snapshot);
+    let mut lines = reporter.lines_for_snapshot(snapshot);
+    if let Some(line) = reporter.line_for_network_media_diagnostic_snapshot(&diagnostic_snapshot) {
+        lines.push(line);
+    }
     if !player_connected && let Some(error) = reporter.current_failure() {
         return Err(network_media_options_fatal_error(error));
     }
@@ -294,7 +368,9 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
 #[cfg(test)]
 mod network_media_options_transition_outcome_tests {
     use super::*;
-    use sorotte_player_mpv::LegacySyncplayUiSettings;
+    use sorotte_player_mpv::{
+        LegacySyncplayUiSettings, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
+    };
 
     fn snapshot(
         revision: u64,
@@ -511,5 +587,100 @@ mod network_media_options_transition_outcome_tests {
             assert!(!fatal.contains(&source));
             assert!(!fatal.contains(&resolved));
         }
+    }
+
+    #[test]
+    fn production_support_projection_is_change_gated_and_excludes_advanced_secrets() {
+        const CANARY: &str = "SOROTTE-NETWORK-DIAGNOSTIC-SECRET-CANARY";
+        let mut adapter = MpvAdapter::default();
+        adapter.configure_network_media_options([
+            ("cache-secs".to_owned(), "60".to_owned()),
+            ("demuxer-max-bytes".to_owned(), "524288".to_owned()),
+            (
+                "http-header-fields".to_owned(),
+                format!("Authorization: Bearer {CANARY}"),
+            ),
+        ]);
+        adapter.inject_test_verified_network_media_diagnostic_snapshot(42);
+        let expected_policy_generation = adapter
+            .network_media_diagnostic_snapshot()
+            .network_policy_generation;
+        let mut application = ClientApplication::with_default_session(adapter);
+        let mut reporter = CliNetworkOptionsHealthReporter::default();
+        reporter.set_player_telemetry_diagnostics_enabled(true);
+        let mut lines = Vec::new();
+
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("a successful diagnostic projection should remain nonfatal");
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("an unchanged diagnostic projection should remain nonfatal");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("diagnostic: mpv-network-media"))
+                .count(),
+            1,
+        );
+
+        reporter.set_player_telemetry_diagnostics_enabled(true);
+        surface_network_media_options_transition_outcomes_to_sink(
+            &mut application,
+            &mut reporter,
+            |line| lines.push(line),
+        )
+        .expect("a new connected-session boundary should emit an initial projection");
+
+        let diagnostic_lines = lines
+            .iter()
+            .filter(|line| line.starts_with("diagnostic: mpv-network-media"))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostic_lines.len(), 2);
+        assert_eq!(diagnostic_lines[0], diagnostic_lines[1]);
+        let line = diagnostic_lines[0];
+        assert!(line.contains("media-generation=1"));
+        assert!(line.contains(&format!("policy-generation={expected_policy_generation}")));
+        assert!(line.contains("load-sequence=42"));
+        assert!(line.contains("application=Some(Applied)"));
+        assert!(line.contains("verification-complete=true"));
+        assert!(line.contains("cache-secs=Applied"));
+        assert!(line.contains("demuxer-max-bytes=Applied"));
+        assert!(line.contains("http-header-fields=Applied"));
+        assert!(line.contains("cache-secs=60"));
+        assert!(line.contains("demuxer-max-bytes=524288"));
+        assert!(line.contains("forward-bytes=Some(524288)"));
+        assert!(!line.contains(CANARY));
+    }
+
+    #[test]
+    fn support_projection_orders_and_labels_every_option_result_status() {
+        let snapshot = MpvNetworkMediaDiagnosticSnapshot {
+            option_results: vec![
+                MpvNetworkOptionApplyResult {
+                    name: "zeta-option".to_owned(),
+                    status: MpvNetworkOptionApplyStatus::Rejected,
+                },
+                MpvNetworkOptionApplyResult {
+                    name: "alpha-option".to_owned(),
+                    status: MpvNetworkOptionApplyStatus::Mismatched,
+                },
+                MpvNetworkOptionApplyResult {
+                    name: "middle-option".to_owned(),
+                    status: MpvNetworkOptionApplyStatus::Applied,
+                },
+            ],
+            ..MpvNetworkMediaDiagnosticSnapshot::default()
+        };
+
+        assert!(network_media_diagnostic_support_line(&snapshot).contains(
+            "option-results=[alpha-option=Mismatched,middle-option=Applied,zeta-option=Rejected]"
+        ));
     }
 }

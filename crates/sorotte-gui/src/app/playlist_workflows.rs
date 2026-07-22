@@ -5,11 +5,11 @@ use sha2::{Digest, Sha256};
 use super::shell_state::{
     GuiMediaMatchToolHealth, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
     GuiPlaylistDefaultSourceOption, GuiPlaylistDefaultSourceState, GuiPlaylistResolutionStep,
-    GuiPlaylistSourceOption, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
-    GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult, GuiPlexPlaylistSearchState,
-    GuiPluginSelection, GuiShellView, GuiTransientNotificationLevel, GuiUrlEditSessionState,
-    MainWindowPlaylistRow, SorotteGuiShellAppState, playlist_entries_multiline_text,
-    shuffle_playlist_entries_in_place,
+    GuiPlaylistSourceOption, GuiPlaylistSourcePolicy, GuiPlaylistSourceState,
+    GuiPlaylistSourceStatus, GuiPlaylistTextEditSessionState, GuiPlexPlaylistSearchResult,
+    GuiPlexPlaylistSearchState, GuiPluginSelection, GuiShellView, GuiTransientNotificationLevel,
+    GuiUrlEditSessionState, MainWindowPlaylistRow, SorotteGuiShellAppState,
+    playlist_entries_multiline_text, shuffle_playlist_entries_in_place,
 };
 use super::support::normalized_editable_text;
 
@@ -88,14 +88,37 @@ impl SorotteGuiShellAppState {
         entry: &str,
         mut state: GuiPlaylistSourceState,
     ) -> GuiPlaylistSourceState {
-        state.options = self.playlist_source_options_for_entry(entry, &state.current_provider_id);
-        if let Some(selected_option) = state
+        let unresolved_automatic = state.policy == GuiPlaylistSourcePolicy::Automatic
+            && state.resolved_provider_id.is_none()
+            && matches!(
+                state.status,
+                GuiPlaylistSourceStatus::Resolving | GuiPlaylistSourceStatus::Missing
+            );
+        let selected_provider_id = state
+            .preferred_provider_id()
+            .cloned()
+            .unwrap_or_else(|| state.current_provider_id.clone());
+        state.options = self.playlist_source_options_for_entry(entry, &selected_provider_id);
+        if unresolved_automatic {
+            state.current_label = "Automatic".to_owned();
+            for option in &mut state.options {
+                option.selected = false;
+            }
+            return state;
+        }
+        if let Some(actual_provider) = state
             .options
             .iter()
             .find(|option| option.provider_id == state.current_provider_id)
         {
-            state.current_label = selected_option.label.clone();
-            if !selected_option.enabled {
+            state.current_label = actual_provider.label.clone();
+        }
+        if let Some(selected_option) = state
+            .options
+            .iter()
+            .find(|option| option.provider_id == selected_provider_id)
+        {
+            if !selected_option.enabled && state.resolved_provider_id.is_none() {
                 state.status = GuiPlaylistSourceStatus::Disabled;
                 state.detail = selected_option.detail.clone();
             } else if state.status == GuiPlaylistSourceStatus::Disabled {

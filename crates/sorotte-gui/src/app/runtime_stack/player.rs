@@ -3,9 +3,9 @@ use std::{collections::VecDeque, path::Path};
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
-    PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
-    PlayerTransportTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
+    PlayerCommandProgress, PlayerError, PlayerMediaGeneration, PlayerMediaLoadOutcome,
+    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
@@ -108,6 +108,12 @@ pub(in super::super) enum GuiOwnedPlayer {
     Custom(Box<dyn PlayerAdapter + Send>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) struct GuiStartedMediaLoad {
+    pub(in super::super) player_command_id: Option<PlayerCommandId>,
+    pub(in super::super) player_media_generation: Option<PlayerMediaGeneration>,
+}
+
 impl GuiOwnedPlayer {
     pub(in super::super) fn name(&self) -> &'static str {
         match self {
@@ -128,10 +134,22 @@ impl GuiOwnedPlayer {
         }
     }
 
-    pub(in super::super) fn open_file_tracked(&mut self, path: &str) -> Result<(), PlayerError> {
+    pub(in super::super) fn open_file_tracked(
+        &mut self,
+        path: &str,
+    ) -> Result<GuiStartedMediaLoad, PlayerError> {
         match self.execute_tracked(PlayerCommand::OpenFile(path.to_owned())) {
-            Ok(_) => Ok(()),
-            Err(PlayerError::Unsupported("execute_tracked")) => self.open_file(path),
+            Ok(player_command_id) => Ok(GuiStartedMediaLoad {
+                player_command_id: Some(player_command_id),
+                player_media_generation: None,
+            }),
+            Err(PlayerError::Unsupported("execute_tracked")) => {
+                self.open_file(path)?;
+                Ok(GuiStartedMediaLoad {
+                    player_command_id: None,
+                    player_media_generation: None,
+                })
+            }
             Err(error) => Err(error),
         }
     }
@@ -254,6 +272,15 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.take_transport_telemetry_update(),
             #[cfg(test)]
             Self::Custom(player) => player.take_transport_telemetry_update(),
+        }
+    }
+
+    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+        match self {
+            Self::Test(player) => player.take_cache_telemetry_update(),
+            Self::Mpv(player) => player.take_cache_telemetry_update(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_cache_telemetry_update(),
         }
     }
 

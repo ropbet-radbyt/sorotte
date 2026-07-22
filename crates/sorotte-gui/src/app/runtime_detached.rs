@@ -232,7 +232,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let player_local_file = self.player_local_file.clone();
         let media_match_signature =
             self.media_match_wire_signature_for_local_file(state, player_local_file.as_ref());
-        let file_publish_pending = !self.player_local_file_placeholder
+        let file_publish_pending = self.player_local_file_identity_confirmed_for_shared_sync()
             && (player_local_file != self.last_published_local_file
                 || (player_local_file.is_some()
                     && media_match_signature != self.last_published_media_match_signature));

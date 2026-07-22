@@ -80,6 +80,9 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         target: &str,
     ) -> bool {
+        if self.player_local_file_placeholder {
+            return false;
+        }
         let Some(local_file) = self.player_local_file.as_ref() else {
             return false;
         };
@@ -139,6 +142,23 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
+    pub(in crate::app::runtime_owner) fn current_player_is_loading_media_target(
+        &self,
+        target: &str,
+    ) -> bool {
+        self.player_local_file_placeholder
+            && self
+                .playlist_resolution_attempt
+                .as_ref()
+                .is_some_and(|attempt| {
+                    attempt.state == PlaylistResolutionAttemptState::Loading
+                        && attempt
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.matches_loaded_target(target))
+                })
+    }
+
     fn plex_playlist_target_identity_matches(left: &str, right: &str) -> bool {
         if !is_plex_playlist_uri(left) || !is_plex_playlist_uri(right) {
             return false;
@@ -186,11 +206,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if local_file_name.is_empty() {
             return false;
         }
-        let name_matches = if cfg!(windows) {
-            local_file_name.eq_ignore_ascii_case(target_file_name)
-        } else {
-            local_file_name == target_file_name
-        };
+        // The Plex filename is a remote alias rather than a local filesystem identity.
+        let name_matches = local_file_name.eq_ignore_ascii_case(target_file_name);
         if !name_matches {
             return false;
         }

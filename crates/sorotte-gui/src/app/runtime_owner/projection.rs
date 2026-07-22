@@ -11,10 +11,10 @@ use super::super::runtime_stack::GuiPlayerLaunchRuntimeState;
 use super::super::shell_state::{
     GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
     GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
-    GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
-    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, GuiShellAction,
-    MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SorotteGuiShellAppState,
+    GuiPlayerSetupRuntimeSnapshot, GuiPlaylistSourcePolicy, GuiSeekPreparationDegradedReason,
+    GuiSeekPreparationPhase, GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState,
+    GuiShellAction, MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
@@ -314,6 +314,46 @@ impl GuiPersistedConfigRuntimeOwner {
             let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
         }
+        let plex_context_media_resolution_pending =
+            std::mem::take(&mut self.plex_context_media_resolution_pending)
+                && self
+                    .current_shared_playlist_index_and_target(state)
+                    .and_then(|(index, _)| state.main_window.playlist.get(index))
+                    .is_some_and(|row| {
+                        matches!(
+                            row.source_state.policy,
+                            GuiPlaylistSourcePolicy::Automatic | GuiPlaylistSourcePolicy::ForcePlex
+                        )
+                    });
+        if plex_context_media_resolution_pending {
+            self.plex_miss_state = None;
+        }
+        let active_resolution_retry_due =
+            self.active_plex_miss_retry_due(state) || self.active_playlist_candidate_retry_due();
+        if active_resolution_retry_due {
+            self.last_attached_media_resolution_trigger = None;
+        }
+        if plex_context_media_resolution_pending || active_resolution_retry_due {
+            let projected_state = state.clone();
+            self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
+        }
+        let resolution_retry_or_handoff = self.take_playlist_resolution_fallback_pending()
+            | self.take_playlist_resolution_handoff_pending();
+        if resolution_retry_or_handoff {
+            let projected_state = state.clone();
+            self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);
+        }
+        let attempt_source_state = self.playlist_resolution_source_state_for_projection(state);
+        let attempt_source_state_changed =
+            attempt_source_state
+                .as_ref()
+                .is_some_and(|(index, desired)| {
+                    state
+                        .main_window
+                        .playlist
+                        .get(*index)
+                        .is_some_and(|row| &row.source_state != desired)
+                });
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();
         let shared_playlist_enabled = self.runtime_shared_playlist_enabled(state);
@@ -343,6 +383,7 @@ impl GuiPersistedConfigRuntimeOwner {
             || !state.main_window.playback.can_set_offset
             || state.main_window.playback.can_manage_playlist != can_manage_playlist
             || desired_playlist.is_some()
+            || attempt_source_state_changed
             || desired_paused.is_some_and(|paused| state.main_window.playback_paused != paused)
             || (state.main_window.user_offset_seconds - self.user_offset_seconds).abs()
                 > f64::EPSILON;
@@ -360,6 +401,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 desired_main_window.playlist_entry_ids.clear();
                 desired_main_window.playlist_source_states.clear();
                 desired_main_window.active_playlist_index = None;
+            }
+            if let Some((index, source_state)) = attempt_source_state
+                && let Some(current) = desired_main_window.playlist_source_states.get_mut(index)
+            {
+                *current = source_state;
             }
             if let Some(paused) = desired_paused {
                 desired_main_window.playback_paused = paused;

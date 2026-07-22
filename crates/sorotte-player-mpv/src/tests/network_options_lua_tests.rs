@@ -21,12 +21,13 @@ function tostring(value)
 end
 os.time = function() return __wall_clock_time end
 __harness = {
-    messages = {}, hooks = {}, timers = {}, properties = {}, writes = {}, emissions = {},
+    messages = {}, hooks = {}, events = {}, timers = {}, properties = {}, writes = {}, emissions = {},
     reject = nil, time = __start_time,
 }
 mp = { keep_running = true }
 function mp.get_script_name() return __script_name end
 function mp.register_script_message(name, callback) __harness.messages[name] = callback end
+function mp.register_event(name, callback) __harness.events[name] = callback end
 function mp.add_hook(name, priority, callback) __harness.hooks[name] = callback end
 function mp.add_periodic_timer(interval, callback)
     table.insert(__harness.timers, { interval = interval, callback = callback })
@@ -41,6 +42,8 @@ end
 function mp.set_property(name, value)
     table.insert(__harness.writes, { name = name, value = value, path = __harness.properties.path })
     if __harness.reject == name then return nil, 'rejected ' .. name end
+    local option_name = name:match('^file%-local%-options/(.+)$')
+    if option_name ~= nil then __harness.properties[option_name] = value end
     return true
 end
 function mp.commandv(...)
@@ -162,6 +165,18 @@ impl Harness {
         callback.call(())
     }
 
+    fn invoke_file_loaded(&self) -> mlua::Result<()> {
+        let events: Table = self.table()?.get("events")?;
+        let callback: Function = events.get("file-loaded")?;
+        callback.call(())
+    }
+
+    fn invoke_end_file(&self) -> mlua::Result<()> {
+        let events: Table = self.table()?.get("events")?;
+        let callback: Function = events.get("end-file")?;
+        callback.call(())
+    }
+
     fn advance(&self, seconds: f64) -> mlua::Result<()> {
         let table = self.table()?;
         let now: f64 = table.get("time")?;
@@ -276,6 +291,7 @@ fn configuration_reports_stable_instance_and_monotonic_load_sequence() -> mlua::
     harness.set_path("path", "https://media.example.test/a.m3u8")?;
     harness.set_path("stream-open-filename", "https://media.example.test/a.m3u8")?;
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
     let transition = &harness.emissions("sorotte-network-options-transition-result")?[0];
     assert_eq!(transition["hookInstanceId"], instance_id);
     assert_eq!(transition["loadSequence"], 1);
@@ -295,6 +311,7 @@ fn configuration_reports_stable_instance_and_monotonic_load_sequence() -> mlua::
     assert_eq!(configured[2]["currentLoadSequence"], 1);
 
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[1]["loadSequence"], 2);
     Ok(())
@@ -410,10 +427,12 @@ fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> m
     harness.set_path("path", "https://media.example.test/a.m3u8")?;
     harness.set_path("stream-open-filename", "https://media.example.test/a.m3u8")?;
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
 
-    let mut writes = harness.writes()?;
-    writes.sort_unstable();
+    let writes = harness.writes()?;
     assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0].0, "file-local-options/cache-pause-wait");
+    assert_eq!(writes[1].0, "file-local-options/cache-secs");
     assert!(
         writes
             .iter()
@@ -431,12 +450,173 @@ fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> m
     harness.set_path("path", "https://media.example.test/b.m3u8")?;
     harness.set_path("stream-open-filename", "https://media.example.test/b.m3u8")?;
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[1]["status"], "failed");
+    assert_eq!(transitions[1]["applicationState"], "partially-applied");
     assert_eq!(transitions[1]["loadSequence"], 2);
     assert_eq!(
         transitions[1]["sourcePath"],
         "https://media.example.test/b.m3u8"
+    );
+    assert_eq!(
+        transitions[1]["optionResults"],
+        json!([
+            {"name": "cache-pause-wait", "status": "applied"},
+            {"name": "cache-secs", "status": "rejected"},
+        ])
+    );
+    assert_eq!(
+        harness.writes()?[3].0,
+        "file-local-options/cache-secs",
+        "the rejected option should still be recorded in deterministic order"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_loaded_readback_reports_effective_values_after_all_writes() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as(
+        "owner-a",
+        "attachment-a",
+        9,
+        json!({
+            "cache": "auto",
+            "cache-secs": "30",
+            "demuxer-max-bytes": "150MiB",
+            "cache-on-disk": "no",
+            "ytdl-format": "best",
+        }),
+    )?;
+    harness.set_path("path", "https://media.example.test/readback.m3u8")?;
+    harness.set_path(
+        "stream-open-filename",
+        "https://media.example.test/readback.m3u8",
+    )?;
+    harness.invoke_on_load()?;
+    assert!(
+        harness
+            .emissions("sorotte-network-options-transition-result")?
+            .is_empty(),
+        "a network write acknowledgement is not authoritative until file-loaded readback"
+    );
+    harness.set_path("cache-secs", "45")?;
+    harness.invoke_file_loaded()?;
+
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0]["verification"], "complete");
+    assert_eq!(transitions[0]["configurationGeneration"], 9);
+    assert_eq!(transitions[0]["loadSequence"], 1);
+    assert_eq!(transitions[0]["effectiveOptions"]["cache"], "auto");
+    assert_eq!(transitions[0]["effectiveOptions"]["cache-secs"], "45");
+    assert_eq!(
+        transitions[0]["effectiveOptions"]["demuxer-max-bytes"],
+        "150MiB"
+    );
+    assert_eq!(transitions[0]["effectiveOptions"]["cache-on-disk"], "no");
+    assert!(
+        transitions[0]["effectiveOptions"]
+            .get("ytdl-format")
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_load_terminally_reports_and_clears_pending_verification() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as(
+        "owner-a",
+        "attachment-a",
+        9,
+        json!({"cache-pause-wait": "5", "cache-secs": "30"}),
+    )?;
+    harness.set_path(
+        "path",
+        "https://media.example.test/fails-before-file-loaded",
+    )?;
+    harness.set_path(
+        "stream-open-filename",
+        "https://media.example.test/fails-before-file-loaded",
+    )?;
+    harness.invoke_on_load()?;
+    assert!(
+        harness
+            .emissions("sorotte-network-options-transition-result")?
+            .is_empty()
+    );
+
+    harness.invoke_end_file()?;
+    let transitions = harness.emissions("sorotte-network-options-transition-result")?;
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0]["status"], "failed");
+    assert_eq!(transitions[0]["applicationState"], "failed");
+    assert_eq!(transitions[0]["verification"], "incomplete");
+    assert_eq!(
+        transitions[0]["optionResults"],
+        json!([
+            {"name": "cache-pause-wait", "status": "applied"},
+            {"name": "cache-secs", "status": "applied"},
+        ])
+    );
+
+    harness.invoke_file_loaded()?;
+    assert_eq!(
+        harness
+            .emissions("sorotte-network-options-transition-result")?
+            .len(),
+        1,
+        "a later event must not resurrect the failed load or its retained target"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejected_option_does_not_stop_later_deterministically_ordered_writes() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as(
+        "owner-a",
+        "attachment-a",
+        10,
+        json!({
+            "cache": "auto",
+            "cache-secs": "30",
+            "demuxer-max-bytes": "150MiB",
+        }),
+    )?;
+    harness.set_rejected_property(Some("file-local-options/cache-secs"))?;
+    harness.set_path("path", "https://media.example.test/partial.m3u8")?;
+    harness.set_path(
+        "stream-open-filename",
+        "https://media.example.test/partial.m3u8",
+    )?;
+    harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
+
+    let writes = harness.writes()?;
+    assert_eq!(
+        writes
+            .iter()
+            .map(|write| write.0.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "file-local-options/cache",
+            "file-local-options/cache-secs",
+            "file-local-options/demuxer-max-bytes",
+        ]
+    );
+    let result = &harness.emissions("sorotte-network-options-transition-result")?[0];
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["applicationState"], "partially-applied");
+    assert_eq!(
+        result["optionResults"],
+        json!([
+            {"name": "cache", "status": "applied"},
+            {"name": "cache-secs", "status": "rejected"},
+            {"name": "demuxer-max-bytes", "status": "applied"},
+        ])
     );
     Ok(())
 }
@@ -455,6 +635,7 @@ fn rewritten_stream_target_is_classified_separately_and_same_source_loads_are_se
     harness.set_path("path", source)?;
     harness.set_path("stream-open-filename", "edl://resolved-stream-a")?;
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
 
     assert_eq!(
         harness.writes()?.len(),
@@ -473,8 +654,10 @@ fn rewritten_stream_target_is_classified_separately_and_same_source_loads_are_se
     harness.set_rejected_property(Some("file-local-options/cache-secs"))?;
     harness.set_path("stream-open-filename", "edl://resolved-stream-b")?;
     harness.invoke_on_load()?;
+    harness.invoke_file_loaded()?;
     let transitions = harness.emissions("sorotte-network-options-transition-result")?;
     assert_eq!(transitions[1]["status"], "failed");
+    assert_eq!(transitions[1]["applicationState"], "partially-applied");
     assert_eq!(transitions[1]["loadSequence"], 2);
     assert_eq!(transitions[1]["sourcePath"], source);
     assert_eq!(

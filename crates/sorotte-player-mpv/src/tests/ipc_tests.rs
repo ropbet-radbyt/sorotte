@@ -1,8 +1,12 @@
 use super::*;
 use crate::constants::SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT;
 use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient};
+use crate::{
+    MpvNetworkMediaPolicyApplicationState, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
+};
 use sorotte_player_api::PlayerCapabilities;
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -2426,6 +2430,254 @@ fn defer_v3_transition(
 
 fn apply_deferred_v3_transition(adapter: &mut MpvAdapter) {
     adapter.flush_test_network_options_hook_v3_transition();
+}
+
+#[test]
+fn verified_network_policy_reports_partial_rejection_and_privacy_safe_readback() {
+    let secret = "advanced-format-token-canary";
+    let source = "https://media.example.test/watch?access_token=must-not-be-retained";
+    let mut adapter =
+        MpvAdapter::with_network_options_hook_test_transport(NeverRespondingTransport);
+    adapter.configure_network_media_options([
+        ("cache-pause-wait", "5"),
+        ("cache-secs", "75"),
+        ("ytdl-format", secret),
+    ]);
+    adapter.prepare_test_network_options_hook_v3_reducer();
+    adapter.handle_test_network_options_start_file(501);
+    let generation = adapter
+        .media_generation()
+        .expect("start-file should establish a diagnostic generation");
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        source,
+        "partially-applied",
+        &[
+            ("cache-pause-wait", "applied"),
+            ("cache-secs", "rejected"),
+            ("ytdl-format", "applied"),
+        ],
+        &[
+            ("cache-pause-wait", "5.0"),
+            ("cache-secs", "30"),
+            ("ytdl-format", secret),
+        ],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(error))
+            if error.to_string().contains("partially applied")
+    ));
+    let snapshot = adapter.network_media_diagnostic_snapshot();
+    assert_eq!(snapshot.media_generation, Some(generation));
+    assert_eq!(snapshot.load_sequence, Some(1));
+    assert_eq!(
+        snapshot.application_state,
+        Some(MpvNetworkMediaPolicyApplicationState::PartiallyApplied)
+    );
+    assert!(snapshot.verification_complete);
+    assert_eq!(
+        snapshot.option_results,
+        vec![
+            MpvNetworkOptionApplyResult {
+                name: "cache-pause-wait".to_owned(),
+                status: MpvNetworkOptionApplyStatus::Applied,
+            },
+            MpvNetworkOptionApplyResult {
+                name: "cache-secs".to_owned(),
+                status: MpvNetworkOptionApplyStatus::Rejected,
+            },
+            MpvNetworkOptionApplyResult {
+                name: "ytdl-format".to_owned(),
+                status: MpvNetworkOptionApplyStatus::Applied,
+            },
+        ]
+    );
+    assert_eq!(
+        snapshot.desired_cache_options,
+        BTreeMap::from([
+            ("cache-pause-wait".to_owned(), "5".to_owned()),
+            ("cache-secs".to_owned(), "75".to_owned()),
+        ])
+    );
+    assert_eq!(
+        snapshot.effective_cache_options,
+        BTreeMap::from([
+            ("cache-pause-wait".to_owned(), "5".to_owned()),
+            ("cache-secs".to_owned(), "30".to_owned()),
+        ])
+    );
+    let debug = format!("{snapshot:?}");
+    assert!(!debug.contains(secret));
+    assert!(!debug.contains("must-not-be-retained"));
+}
+
+#[test]
+fn verified_network_policy_treats_critical_readback_mismatch_as_partial() {
+    let mut adapter =
+        MpvAdapter::with_network_options_hook_test_transport(NeverRespondingTransport);
+    adapter.configure_network_media_options([("cache-pause-wait", "5"), ("cache-secs", "75")]);
+    adapter.prepare_test_network_options_hook_v3_reducer();
+    adapter.handle_test_network_options_start_file(502);
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        "https://media.example.test/mismatch.m3u8",
+        "network-updated",
+        &[("cache-pause-wait", "applied"), ("cache-secs", "applied")],
+        &[("cache-pause-wait", "5"), ("cache-secs", "30")],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::Failed(_))
+    ));
+    let snapshot = adapter.network_media_diagnostic_snapshot();
+    assert_eq!(
+        snapshot.application_state,
+        Some(MpvNetworkMediaPolicyApplicationState::PartiallyApplied)
+    );
+    assert_eq!(
+        snapshot.option_results,
+        vec![
+            MpvNetworkOptionApplyResult {
+                name: "cache-pause-wait".to_owned(),
+                status: MpvNetworkOptionApplyStatus::Applied,
+            },
+            MpvNetworkOptionApplyResult {
+                name: "cache-secs".to_owned(),
+                status: MpvNetworkOptionApplyStatus::Mismatched,
+            },
+        ]
+    );
+}
+
+#[test]
+fn new_media_generation_clears_diagnostics_and_ignores_stale_hook_result() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.handle_test_network_options_start_file(503);
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        "https://media.example.test/first.m3u8",
+        "network-updated",
+        &[("cache-secs", "applied")],
+        &[("cache-secs", "75")],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter
+            .network_media_diagnostic_snapshot()
+            .application_state,
+        Some(MpvNetworkMediaPolicyApplicationState::Applied)
+    );
+    let first_generation = adapter.media_generation();
+
+    adapter.handle_test_network_options_start_file(504);
+    let second_generation = adapter.media_generation();
+    assert_ne!(second_generation, first_generation);
+    let reset = adapter.network_media_diagnostic_snapshot();
+    assert_eq!(reset.media_generation, second_generation);
+    assert_eq!(reset.application_state, None);
+    assert!(reset.option_results.is_empty());
+    assert!(reset.effective_cache_options.is_empty());
+
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        "https://media.example.test/stale-first.m3u8",
+        "network-updated",
+        &[("cache-secs", "applied")],
+        &[("cache-secs", "75")],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter
+            .network_media_diagnostic_snapshot()
+            .application_state,
+        None,
+        "a completed older hook load must not repopulate the next generation"
+    );
+}
+
+#[test]
+fn unaccepted_delayed_load_result_cannot_rebind_to_the_next_media_generation() {
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.handle_test_network_options_start_file(505);
+    let first_generation = adapter.media_generation();
+
+    adapter.handle_test_network_options_start_file(506);
+    let second_generation = adapter.media_generation();
+    assert_ne!(second_generation, first_generation);
+
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        "https://media.example.test/delayed-first.m3u8",
+        "network-updated",
+        &[("cache-secs", "applied")],
+        &[("cache-secs", "75")],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    assert_eq!(
+        adapter
+            .network_media_diagnostic_snapshot()
+            .application_state,
+        None,
+        "an unaccepted result below the current generation's expected load sequence is stale"
+    );
+
+    adapter.defer_test_network_options_hook_verified_transition(
+        2,
+        "https://media.example.test/current-second.m3u8",
+        "network-updated",
+        &[("cache-secs", "applied")],
+        &[("cache-secs", "75")],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+    let snapshot = adapter.network_media_diagnostic_snapshot();
+    assert_eq!(snapshot.media_generation, second_generation);
+    assert_eq!(snapshot.load_sequence, Some(2));
+    assert_eq!(
+        snapshot.application_state,
+        Some(MpvNetworkMediaPolicyApplicationState::Applied)
+    );
+}
+
+#[test]
+fn diagnostic_snapshot_drops_invalid_values_even_under_allowlisted_cache_keys() {
+    let secret = "https://private.example/cache?access_token=allowlist-canary";
+    let mut adapter = configured_v3_hook_reducer_adapter();
+    adapter.configure_network_media_options([
+        ("cache", secret),
+        ("cache-secs", secret),
+        ("demuxer-max-bytes", secret),
+        ("ytdl-format", secret),
+    ]);
+    adapter.prepare_test_network_options_hook_v3_reducer();
+    adapter.handle_test_network_options_start_file(507);
+    adapter.defer_test_network_options_hook_verified_transition(
+        1,
+        "https://media.example.test/privacy.m3u8",
+        "network-updated",
+        &[
+            ("cache", "applied"),
+            ("cache-secs", "applied"),
+            ("demuxer-max-bytes", "applied"),
+            ("ytdl-format", "applied"),
+        ],
+        &[
+            ("cache", secret),
+            ("cache-secs", secret),
+            ("demuxer-max-bytes", secret),
+            ("ytdl-format", secret),
+        ],
+    );
+    apply_deferred_v3_transition(&mut adapter);
+
+    let snapshot = adapter.network_media_diagnostic_snapshot();
+    assert!(snapshot.desired_cache_options.is_empty());
+    assert!(snapshot.effective_cache_options.is_empty());
+    assert!(!format!("{snapshot:?}").contains(secret));
 }
 
 fn assert_sanitized_hook_failure(

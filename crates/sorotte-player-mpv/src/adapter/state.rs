@@ -71,6 +71,10 @@ impl fmt::Debug for MpvAdapter {
                 "pending_transport_telemetry_updates",
                 &self.pending_transport_telemetry_updates,
             )
+            .field(
+                "pending_cache_telemetry_updates",
+                &self.pending_cache_telemetry_updates,
+            )
             .field("pending_tracked_commands", &self.pending_tracked_commands)
             .field(
                 "pending_command_progress_updates",
@@ -215,11 +219,18 @@ impl Default for MpvAdapter {
             next_network_media_options_hook_heartbeat_nonce: 1,
             network_media_options_hook_instance_id: None,
             network_media_options_hook_last_accepted_load_sequence: None,
+            network_media_options_hook_latest_started_load_sequence: None,
+            network_media_options_expected_transition: None,
             network_media_options_hook_health: MpvNetworkOptionsHookHealth::Pending,
             network_media_options_hook_ownership_possible: false,
             network_media_options_hook_configuration_in_progress: false,
             network_media_options_policy_state: MpvNetworkMediaPolicyState::Unknown,
             network_media_options_runtime_health_revision: 0,
+            network_media_options_application_state: None,
+            network_media_options_diagnostic_load_sequence: None,
+            network_media_options_verification_complete: false,
+            network_media_options_option_results: Vec::new(),
+            network_media_options_effective_cache_options: BTreeMap::new(),
             pending_network_media_options_hook_active_result: None,
             deferred_network_media_options_hook_transition_result: None,
             network_media_options_embedded_load: None,
@@ -233,6 +244,7 @@ impl Default for MpvAdapter {
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
+            pending_cache_telemetry_updates: VecDeque::new(),
             pending_tracked_commands: VecDeque::new(),
             pending_command_progress_updates: VecDeque::new(),
             pending_media_load_outcomes: VecDeque::new(),
@@ -311,6 +323,14 @@ pub(super) struct MpvObservedState {
     pub(super) core_idle: Option<bool>,
     pub(super) demuxer_cache_idle: Option<bool>,
     pub(super) eof_reached: Option<bool>,
+    pub(super) buffered_ahead_seconds: Option<f64>,
+    pub(super) buffered_ahead_bytes: Option<u64>,
+    pub(super) input_rate_bytes_per_second: Option<u64>,
+    pub(super) cache_reader_position_seconds: Option<f64>,
+    pub(super) cache_end_seconds: Option<f64>,
+    pub(super) cache_eof: Option<bool>,
+    pub(super) cache_underrun: Option<bool>,
+    pub(super) cache_metrics_observed_at: Option<PlayerObservationTimestamp>,
 }
 
 impl std::fmt::Debug for MpvObservedState {
@@ -334,6 +354,20 @@ impl std::fmt::Debug for MpvObservedState {
             .field("core_idle", &self.core_idle)
             .field("demuxer_cache_idle", &self.demuxer_cache_idle)
             .field("eof_reached", &self.eof_reached)
+            .field("buffered_ahead_seconds", &self.buffered_ahead_seconds)
+            .field("buffered_ahead_bytes", &self.buffered_ahead_bytes)
+            .field(
+                "input_rate_bytes_per_second",
+                &self.input_rate_bytes_per_second,
+            )
+            .field(
+                "cache_reader_position_seconds",
+                &self.cache_reader_position_seconds,
+            )
+            .field("cache_end_seconds", &self.cache_end_seconds)
+            .field("cache_eof", &self.cache_eof)
+            .field("cache_underrun", &self.cache_underrun)
+            .field("cache_metrics_observed_at", &self.cache_metrics_observed_at)
             .finish()
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::runtime_owner::{
-    GuiPendingPlaylistSourceResolution, player::SelectedPlaylistMediaSyncOutcome,
+    GuiPendingPlaylistSourceResolution,
+    player::{PlaylistResolutionAttemptState, SelectedPlaylistMediaSyncOutcome},
 };
 use crate::app::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
@@ -151,6 +152,16 @@ fn activate_playlist_row_and_assert_exact_local_origin(
             .as_ref()
             .and_then(|file| file.path.as_deref())
             == Some(expected_path.as_str())
+            && !owner
+                .playlist_resolution_attempt
+                .as_ref()
+                .is_some_and(|attempt| {
+                    matches!(
+                        attempt.state,
+                        PlaylistResolutionAttemptState::Resolving
+                            | PlaylistResolutionAttemptState::Loading
+                    )
+                })
         {
             break;
         }
@@ -227,7 +238,7 @@ fn full_replacement_binds_same_basename_local_paths_to_distinct_row_ids() {
     );
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
+        SelectedPlaylistMediaSyncOutcome::NoChange,
         "an idle sync should leave the first duplicate's trigger cached"
     );
     activate_playlist_row_and_assert_exact_local_origin(
@@ -595,7 +606,7 @@ fn duplicate_plex_identity_versions_bind_their_distinct_local_origins() {
     );
     assert_eq!(
         owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
-        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
+        SelectedPlaylistMediaSyncOutcome::NoChange,
         "an idle sync should leave the first Plex version's trigger cached"
     );
     activate_playlist_row_and_assert_exact_local_origin(
@@ -631,6 +642,9 @@ fn room_runtime_snapshot_change_clears_same_basename_local_origin() {
             .get(&entry_id),
         Some(&first_path)
     );
+    // Observe completion of Room A's accepted open before switching scope; a
+    // later Room B pump must not be the first consumer of Room A telemetry.
+    owner.refresh_player_state_impl();
 
     let mut room_two_state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

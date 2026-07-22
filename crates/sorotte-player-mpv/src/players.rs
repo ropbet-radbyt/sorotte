@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
-    PlayerTransportTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapabilities, PlayerCommand,
+    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerMediaLoadOutcome,
+    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 
 use crate::MpvAdapter;
@@ -105,6 +105,10 @@ macro_rules! impl_player_wrapper {
                 self.0.take_transport_telemetry_update()
             }
 
+            fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+                self.0.take_cache_telemetry_update()
+            }
+
             fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
                 self.0.take_command_progress()
             }
@@ -122,3 +126,21 @@ macro_rules! impl_player_wrapper {
 
 impl_player_wrapper!(ConnectedMpvPlayer, "mpv");
 impl_player_wrapper!(SimulatedPlayer, "simulated-mpv");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simulated_wrapper_forwards_cache_telemetry() {
+        let mut player = SimulatedPlayer::new();
+        player.0.inject_test_cache_telemetry_update();
+
+        let update = player
+            .take_cache_telemetry_update()
+            .expect("wrapper should forward cache telemetry from the inner adapter");
+        assert!(update.media_generation.is_some());
+        assert!(update.observed_at.is_some());
+        assert_eq!(update.buffered_ahead_seconds, Some(5.0));
+    }
+}

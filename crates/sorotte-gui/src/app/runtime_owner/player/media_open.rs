@@ -14,6 +14,16 @@ impl GuiPersistedConfigRuntimeOwner {
             .resolve_main_window_user_media_target(projected_state, &target)
         {
             Ok(GuiUserMediaTargetResolution::Resolved { path, .. }) => path,
+            Ok(GuiUserMediaTargetResolution::Ambiguous { candidate_count }) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!(
+                        "Could not choose local user media because {candidate_count} equally credible files matched; use a more specific path."
+                    ),
+                );
+                return;
+            }
             Ok(GuiUserMediaTargetResolution::Pending) => {
                 Self::push_actions_and_project(
                     handle,
@@ -138,8 +148,7 @@ impl GuiPersistedConfigRuntimeOwner {
         ) {
             return false;
         }
-        source_state.current_provider_id = GuiMediaSourceProviderId::local();
-        source_state.current_label = "Local".to_owned();
+        source_state.set_resolved_provider(GuiMediaSourceProviderId::local());
         source_state.status = GuiPlaylistSourceStatus::Available;
         source_state.detail = Some("Added from the local filesystem.".to_owned());
         source_state.resolution_steps.clear();
@@ -279,11 +288,26 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(selected_index) = selected_playlist_index else {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
-        let Some(row) = projected_state.main_window.playlist.get(selected_index) else {
+        let Some((row_id, row_label, source_policy, preferred_provider)) = projected_state
+            .main_window
+            .playlist
+            .get(selected_index)
+            .map(|row| {
+                (
+                    row.entry_id,
+                    row.label.clone(),
+                    row.source_state.policy,
+                    row.source_state
+                        .preferred_provider_id()
+                        .cloned()
+                        .unwrap_or_else(|| row.source_state.current_provider_id.clone()),
+                )
+            })
+        else {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
         if matches!(
-            row.source_state.policy,
+            source_policy,
             GuiPlaylistSourcePolicy::Automatic
                 | GuiPlaylistSourcePolicy::ForceLocal
                 | GuiPlaylistSourcePolicy::PreferMediaMatching
@@ -292,20 +316,26 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(selected_path) = selected_path else {
                 self.playlist_resolution
                     .local_origins_by_row
-                    .remove(&row.entry_id);
+                    .remove(&row_id);
                 self.last_attached_media_resolution_trigger = None;
                 return self
                     .sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
             };
             self.clear_plex_stream_resolution_state();
+            self.ensure_playlist_resolution_attempt(
+                row_id,
+                self.playlist_resolution.generation,
+                &row_label,
+                source_policy,
+            );
             return self.open_selected_playlist_media_path_through_attached_player_impl(
                 projected_state,
                 &[selected_path],
             );
         }
 
-        let target = row.label.clone();
-        let provider_id = row.source_state.current_provider_id.clone();
+        let target = row_label;
+        let provider_id = preferred_provider;
         if !self.preflight_room_stream_target(projected_state, &target) {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
@@ -368,6 +398,16 @@ impl GuiPersistedConfigRuntimeOwner {
             .resolve_main_window_user_media_target(projected_state, &target)
         {
             Ok(GuiUserMediaTargetResolution::Resolved { path, .. }) => path,
+            Ok(GuiUserMediaTargetResolution::Ambiguous { candidate_count }) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!(
+                        "Could not choose a containing folder because {candidate_count} equally credible local files matched; use a more specific path."
+                    ),
+                );
+                return;
+            }
             Ok(GuiUserMediaTargetResolution::Pending) => {
                 Self::push_actions_and_project(
                     handle,
@@ -677,7 +717,7 @@ impl GuiPersistedConfigRuntimeOwner {
         } else {
             SelectedPlaylistMediaSyncOutcome::NoChange
         };
-        if selected_media_sync.selection_ready()
+        if selected_media_sync.selection_started()
             && let Some(session) = self.session.as_mut()
         {
             session.note_local_playlist_index_reset_intent(true);

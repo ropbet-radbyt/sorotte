@@ -38,7 +38,7 @@ pub struct PlaybackBarrierStartConfig {
 impl Default for PlaybackBarrierStartConfig {
     fn default() -> Self {
         Self {
-            policy: Some(PlaybackBarrierPolicy::AllEligible),
+            policy: None,
             quorum_percent: 75,
             timeout_seconds: 15.0,
             timeout_action: PlaybackBarrierTimeoutAction::Continue,
@@ -839,8 +839,8 @@ impl RuntimePlaybackCoordination {
             .unwrap_or_else(|| self.next_room_barrier_request_nonce());
         let mut extension = PlaybackBarrierSetExtension::new();
         let mut start_requested = false;
-        // The default is AllEligible. Applications can preserve an explicit
-        // Immediate compatibility selection by setting this value to `None`.
+        // `None` preserves the immediate compatibility behavior. Applications
+        // opt in to a coordinated start by supplying a barrier policy.
         let effective_start_policy = self.barrier_start_config.policy;
         if intent.include_start_barrier
             && let Some(policy) = effective_start_policy
@@ -3886,6 +3886,11 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::time::Duration;
 
+    #[test]
+    fn playback_barrier_start_defaults_to_immediate() {
+        assert_eq!(PlaybackBarrierStartConfig::default().policy, None);
+    }
+
     fn barrier_session() -> ClientSession {
         let mut session = ClientSession::default();
         session
@@ -4417,6 +4422,39 @@ mod tests {
         assert_eq!(buffering.policy, RoomBufferingPolicy::Quorum);
         assert_eq!(buffering.quorum_percent, Some(70));
         assert_eq!(buffering.max_pause_ms, Some(20_000));
+    }
+
+    #[test]
+    fn default_media_prepare_omits_the_start_barrier() {
+        let mut runtime = ClientRuntime::new(
+            barrier_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("media-sha256:immediate-default").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set) = &runtime.control().outbound_messages()[0] else {
+            panic!("media preparation should emit a reliable Set");
+        };
+        let extension = set
+            .set
+            .playback_barrier_v1()
+            .expect("extension should decode")
+            .expect("extension should be present");
+        assert!(
+            extension.prepare.is_none(),
+            "the immediate default must not opt in to a coordinated start"
+        );
+        assert!(
+            extension.buffering_policy.is_some(),
+            "ongoing room-buffering policy remains independent of start coordination"
+        );
     }
 
     #[test]

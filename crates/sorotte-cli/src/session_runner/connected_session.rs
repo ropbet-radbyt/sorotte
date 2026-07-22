@@ -413,6 +413,8 @@ where
         plex_config,
         network_options_health_reporter,
     } = launch;
+    network_options_health_reporter
+        .set_player_telemetry_diagnostics_enabled(diagnostics_config.log_player_telemetry);
     let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
         && (runtime.session().readiness_snapshot().is_some()
             || runtime.session().pending_readiness_intent().is_some());

@@ -32,6 +32,7 @@ const DEFAULT_TIMELINE_INTERVAL: Duration = Duration::from_secs(10);
 const MATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const SEEK_REPORT_THRESHOLD_MILLIS: i64 = 15_000;
 const PLEX_CACHE_ABANDONED_TEMP_FILE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const PLEX_METADATA_NOT_FOUND_RESPONSE: &str = "Plex metadata was not found";
 static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 static PLEX_CACHE_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -83,6 +84,14 @@ impl std::error::Error for PlexError {
             }
         }
     }
+}
+
+fn metadata_not_found_error() -> PlexError {
+    PlexError::InvalidResponse(PLEX_METADATA_NOT_FOUND_RESPONSE.to_owned())
+}
+
+fn is_metadata_not_found_error(error: &PlexError) -> bool {
+    matches!(error, PlexError::InvalidResponse(message) if message == PLEX_METADATA_NOT_FOUND_RESPONSE)
 }
 
 impl From<reqwest::Error> for PlexError {
@@ -1280,6 +1289,9 @@ impl PlexHttpClient {
             .send()?;
         let status = response.status();
         let body = response.text()?;
+        if matches!(status.as_u16(), 404 | 410) {
+            return Err(metadata_not_found_error());
+        }
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "metadata lookup returned HTTP {status}"
@@ -1652,12 +1664,69 @@ where
         {
             file = file.with_path(target.to_owned());
         }
-        let Some(matched_item) = self.resolve_match_for_local_file(&file, now)? else {
+        let Some(file_key) = server_scoped_cache_key_for_file(&self.config, &file) else {
             return Ok(None);
         };
-        let metadata =
-            self.transport
-                .metadata_by_rating_key(&server_url, &token, &matched_item.rating_key)?;
+        let cached_match = self.cache.entries.get(&file_key).cloned().map(Into::into);
+        let matched_was_cached = cached_match.is_some();
+        let mut matched_item = match cached_match {
+            Some(item) => item,
+            None => {
+                if media_match_retry_pending(&self.unmatched_keys, &file_key, now) {
+                    return Ok(None);
+                }
+                let Some(item) = search_media_match_for_file(
+                    &self.transport,
+                    &mut self.unmatched_keys,
+                    PlexMatchServerRef {
+                        url: &server_url,
+                        token: &token,
+                    },
+                    &file,
+                    &file_key,
+                    now,
+                )?
+                else {
+                    return Ok(None);
+                };
+                item
+            }
+        };
+        let mut cache_match_on_success = !matched_was_cached;
+        let metadata = match self.transport.metadata_by_rating_key(
+            &server_url,
+            &token,
+            &matched_item.rating_key,
+        ) {
+            Ok(metadata) => metadata,
+            Err(error) if matched_was_cached && is_metadata_not_found_error(&error) => {
+                self.cache.entries.remove(&file_key);
+                self.unmatched_keys.remove(&file_key);
+                let Some(refreshed_item) = search_media_match_for_file(
+                    &self.transport,
+                    &mut self.unmatched_keys,
+                    PlexMatchServerRef {
+                        url: &server_url,
+                        token: &token,
+                    },
+                    &file,
+                    &file_key,
+                    now,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let refreshed_metadata = self.transport.metadata_by_rating_key(
+                    &server_url,
+                    &token,
+                    &refreshed_item.rating_key,
+                )?;
+                matched_item = refreshed_item;
+                cache_match_on_success = true;
+                refreshed_metadata
+            }
+            Err(error) => return Err(error),
+        };
         if !metadata.media_type.is_video_watch_type() {
             return Err(PlexError::InvalidResponse(format!(
                 "Plex metadata {} is not playable video media",
@@ -1675,8 +1744,20 @@ where
             &metadata,
             matched_item.duration_millis,
         )?;
-        self.stream_target_from_metadata(&server_url, &token, playlist_uri, matched_item, metadata)
-            .map(Some)
+        let stream_target = self.stream_target_from_metadata(
+            &server_url,
+            &token,
+            playlist_uri,
+            matched_item,
+            metadata,
+        )?;
+        if cache_match_on_success {
+            self.cache.entries.insert(
+                file_key,
+                PlexCachedMatch::from(stream_target.matched_item.clone()),
+            );
+        }
+        Ok(Some(stream_target))
     }
 
     fn resolve_stream_target_for_playlist_uri(
@@ -2098,21 +2179,46 @@ where
     if let Some(cached) = cache.entries.get(file_key).cloned() {
         return Ok(Some(cached.into()));
     }
-    if unmatched_keys
+    if media_match_retry_pending(unmatched_keys, file_key, now) {
+        return Ok(None);
+    }
+    let matched =
+        search_media_match_for_file(transport, unmatched_keys, server, file, file_key, now)?;
+    if let Some(item) = matched.as_ref() {
+        cache
+            .entries
+            .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+    }
+    Ok(matched)
+}
+
+fn media_match_retry_pending(
+    unmatched_keys: &BTreeMap<String, SystemTime>,
+    file_key: &str,
+    now: SystemTime,
+) -> bool {
+    unmatched_keys
         .get(file_key)
         .and_then(|last_attempt| now.duration_since(*last_attempt).ok())
         .is_some_and(|elapsed| elapsed < MATCH_RETRY_INTERVAL)
-    {
-        return Ok(None);
-    }
+}
+
+fn search_media_match_for_file<T>(
+    transport: &T,
+    unmatched_keys: &mut BTreeMap<String, SystemTime>,
+    server: PlexMatchServerRef<'_>,
+    file: &LocalFileUpdate,
+    file_key: &str,
+    now: SystemTime,
+) -> PlexResult<Option<PlexMatchedItem>>
+where
+    T: PlexSyncTransport,
+{
     if let Some(file_name) = media_file_name_for_file(file)
         && let Ok(results) =
             transport.search_media_by_file_name(server.url, server.token, &file_name)
         && let Some(item) = choose_file_path_media_match(file, &results)
     {
-        cache
-            .entries
-            .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
         unmatched_keys.remove(file_key);
         return Ok(Some(item));
     }
@@ -2125,9 +2231,6 @@ where
     let matched = choose_best_media_match(file, &results);
     match matched {
         Some(item) => {
-            cache
-                .entries
-                .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
             unmatched_keys.remove(file_key);
             Ok(Some(item))
         }
@@ -2371,11 +2474,7 @@ fn parse_metadata_response(
                 .is_some_and(|value| value == requested_rating_key)
         })
         .or_else(|| metadata_items.first().copied())
-        .ok_or_else(|| {
-            PlexError::InvalidResponse(format!(
-                "metadata lookup for {requested_rating_key} returned no metadata"
-            ))
-        })?;
+        .ok_or_else(metadata_not_found_error)?;
     parse_metadata_item(selected)
 }
 
@@ -3706,6 +3805,12 @@ mod tests {
         assert!(!debug.contains("access-token-secret"));
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum FakeMetadataFailure {
+        Missing,
+        Transient,
+    }
+
     #[derive(Clone, Default)]
     struct FakeTransport {
         searches: Rc<RefCell<Vec<String>>>,
@@ -3716,6 +3821,7 @@ mod tests {
         discovered_servers: Rc<RefCell<Vec<PlexServerConnection>>>,
         metadata_lookups: Rc<RefCell<Vec<String>>>,
         metadata_results: Rc<RefCell<BTreeMap<String, PlexMediaMetadata>>>,
+        metadata_failures: Rc<RefCell<BTreeMap<String, FakeMetadataFailure>>>,
         machine_identifier_lookups: Rc<RefCell<Vec<String>>>,
         machine_identifier_result: Rc<RefCell<String>>,
         stream_parts: Rc<RefCell<Vec<String>>>,
@@ -3766,6 +3872,14 @@ mod tests {
             self.metadata_lookups
                 .borrow_mut()
                 .push(format!("{server_url}|{token}|{rating_key}"));
+            if let Some(failure) = self.metadata_failures.borrow().get(rating_key).copied() {
+                return match failure {
+                    FakeMetadataFailure::Missing => Err(metadata_not_found_error()),
+                    FakeMetadataFailure::Transient => {
+                        Err(PlexError::Http("temporary metadata failure".to_owned()))
+                    }
+                };
+            }
             self.metadata_results
                 .borrow()
                 .get(rating_key)
@@ -3865,14 +3979,71 @@ mod tests {
         }
     }
 
+    fn stream_resolver_config() -> PlexClientConfig {
+        PlexClientConfig {
+            streaming_enabled: true,
+            selected_server_id: Some("abc123machine".to_owned()),
+            selected_server_url: Some("http://plex.local:32400".to_owned()),
+            selected_server_token: Some("server-token".into()),
+            ..PlexClientConfig::default()
+        }
+    }
+
+    fn metadata_for_rating_key(rating_key: &str) -> PlexMediaMetadata {
+        let mut metadata = example_metadata();
+        metadata.rating_key = rating_key.to_owned();
+        metadata.title = format!("Example {rating_key}");
+        metadata
+    }
+
+    fn search_result_for_file(rating_key: &str, file_name: &str) -> PlexMediaSearchResult {
+        PlexMediaSearchResult {
+            rating_key: rating_key.to_owned(),
+            title: "Example Movie 2024".to_owned(),
+            parent_title: None,
+            grandparent_title: None,
+            media_type: PlexMediaType::Movie,
+            duration_millis: Some(7_200_000),
+            file_paths: vec![format!("/library/movies/{file_name}")],
+        }
+    }
+
+    fn cache_with_stream_match(
+        config: &PlexClientConfig,
+        target: &str,
+        rating_key: &str,
+    ) -> (String, PlexMatchCache) {
+        let file = LocalFileUpdate::new(target);
+        let file_key = server_scoped_cache_key_for_file(config, &file)
+            .expect("ordinary media target should have a cache key");
+        let cache = PlexMatchCache {
+            entries: BTreeMap::from([(
+                file_key.clone(),
+                PlexCachedMatch {
+                    rating_key: rating_key.to_owned(),
+                    title: format!("Example {rating_key}"),
+                    media_type: PlexMediaType::Movie,
+                    duration_millis: Some(7_200_000),
+                },
+            )]),
+        };
+        (file_key, cache)
+    }
+
     fn serve_plex_json_responses(responses: Vec<String>) -> (String, mpsc::Receiver<String>) {
+        serve_plex_http_responses(responses.into_iter().map(|body| (200, body)).collect())
+    }
+
+    fn serve_plex_http_responses(
+        responses: Vec<(u16, String)>,
+    ) -> (String, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("Plex test listener should bind");
         let address = listener
             .local_addr()
             .expect("Plex test listener should expose its address");
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            for body in responses {
+            for (status, body) in responses {
                 let (mut stream, _) = listener.accept().expect("Plex test server should accept");
                 let mut buffer = [0_u8; 8192];
                 let read = stream
@@ -3881,8 +4052,14 @@ mod tests {
                 let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
                 tx.send(request)
                     .expect("Plex test server should send captured request");
+                let reason = match status {
+                    200 => "OK",
+                    404 => "Not Found",
+                    410 => "Gone",
+                    _ => "Test Response",
+                };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -3994,6 +4171,51 @@ mod tests {
         assert!(!invalid_display.contains("other-secret"));
         assert!(invalid_debug.contains("x-plex-token: <redacted>"));
         assert!(!invalid_debug.contains("other-secret"));
+    }
+
+    #[test]
+    fn metadata_lookup_classifies_only_missing_http_statuses_as_not_found() {
+        let (server_url, requests) = serve_plex_http_responses(vec![
+            (404, "{}".to_owned()),
+            (410, "{}".to_owned()),
+            (500, "{}".to_owned()),
+        ]);
+        let client = PlexHttpClient::with_base_urls(
+            &server_url,
+            "http://auth.invalid",
+            "metadata-status-client",
+            "MetadataStatus",
+        )
+        .expect("Plex HTTP client should construct");
+
+        for rating_key in ["missing", "gone"] {
+            let error = client
+                .metadata_by_rating_key(&server_url, "token", rating_key)
+                .expect_err("missing metadata status should fail");
+            assert!(is_metadata_not_found_error(&error));
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("metadata request should reach test server");
+        }
+
+        let transient = client
+            .metadata_by_rating_key(&server_url, "token", "temporary")
+            .expect_err("server failure should remain an invalid response");
+        assert!(matches!(transient, PlexError::InvalidResponse(_)));
+        requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("transient metadata request should reach test server");
+    }
+
+    #[test]
+    fn empty_metadata_response_is_classified_as_not_found() {
+        let error = parse_metadata_response(
+            &serde_json::json!({ "MediaContainer": { "Metadata": [] } }),
+            "missing",
+        )
+        .expect_err("empty metadata response should be a missing identity");
+
+        assert!(is_metadata_not_found_error(&error));
     }
 
     #[test]
@@ -4146,6 +4368,147 @@ mod tests {
         let debug = format!("{url:?}");
         assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
         assert!(!debug.contains("secret-token"));
+    }
+
+    #[test]
+    fn stale_cached_stream_match_is_replaced_by_one_fresh_search() {
+        let target = "Example.Movie.2024.mkv";
+        let config = stream_resolver_config();
+        let (file_key, cache) = cache_with_stream_match(&config, target, "stale");
+        let transport = FakeTransport::default();
+        transport
+            .metadata_failures
+            .borrow_mut()
+            .insert("stale".to_owned(), FakeMetadataFailure::Missing);
+        transport
+            .file_search_results
+            .borrow_mut()
+            .push(search_result_for_file("fresh", target));
+        transport
+            .metadata_results
+            .borrow_mut()
+            .insert("fresh".to_owned(), metadata_for_rating_key("fresh"));
+        let mut resolver = PlexMediaResolver::new(config, transport.clone(), cache);
+
+        let resolved = resolver
+            .resolve_stream_target(target, SystemTime::UNIX_EPOCH)
+            .expect("stale positive cache entry should self-heal")
+            .expect("fresh Plex match should resolve a stream");
+
+        assert_eq!(resolved.matched_item.rating_key, "fresh");
+        assert_eq!(
+            transport.file_searches.borrow().as_slice(),
+            &[target.to_owned()]
+        );
+        assert!(transport.searches.borrow().is_empty());
+        assert_eq!(
+            transport.metadata_lookups.borrow().as_slice(),
+            &[
+                "http://plex.local:32400|server-token|stale".to_owned(),
+                "http://plex.local:32400|server-token|fresh".to_owned(),
+            ]
+        );
+        assert_eq!(
+            resolver
+                .cache()
+                .entries
+                .get(&file_key)
+                .map(|entry| entry.rating_key.as_str()),
+            Some("fresh")
+        );
+
+        let repeated = resolver
+            .resolve_stream_target(target, SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .expect("validated replacement should remain usable")
+            .expect("validated replacement should remain cached");
+        assert_eq!(repeated.matched_item.rating_key, "fresh");
+        assert_eq!(transport.file_searches.borrow().len(), 1);
+    }
+
+    #[test]
+    fn stale_cached_stream_match_is_evicted_when_fresh_search_misses() {
+        let target = "Example.Movie.2024.mkv";
+        let config = stream_resolver_config();
+        let (file_key, cache) = cache_with_stream_match(&config, target, "stale");
+        let transport = FakeTransport::default();
+        transport
+            .metadata_failures
+            .borrow_mut()
+            .insert("stale".to_owned(), FakeMetadataFailure::Missing);
+        let mut resolver = PlexMediaResolver::new(config, transport.clone(), cache);
+
+        let resolved = resolver
+            .resolve_stream_target(target, SystemTime::UNIX_EPOCH)
+            .expect("a fresh search miss should not be an error");
+
+        assert_eq!(resolved, None);
+        assert!(!resolver.cache().entries.contains_key(&file_key));
+        assert_eq!(
+            transport.file_searches.borrow().as_slice(),
+            &[target.to_owned()]
+        );
+        assert_eq!(
+            transport.searches.borrow().as_slice(),
+            &["example movie 2024".to_owned()]
+        );
+        assert_eq!(transport.metadata_lookups.borrow().len(), 1);
+    }
+
+    #[test]
+    fn transient_cached_metadata_failure_does_not_evict_or_search() {
+        let target = "Example.Movie.2024.mkv";
+        let config = stream_resolver_config();
+        let (file_key, cache) = cache_with_stream_match(&config, target, "cached");
+        let transport = FakeTransport::default();
+        transport
+            .metadata_failures
+            .borrow_mut()
+            .insert("cached".to_owned(), FakeMetadataFailure::Transient);
+        let mut resolver = PlexMediaResolver::new(config, transport.clone(), cache);
+
+        let error = resolver
+            .resolve_stream_target(target, SystemTime::UNIX_EPOCH)
+            .expect_err("transient metadata failure should remain visible");
+
+        assert!(matches!(error, PlexError::Http(_)));
+        assert_eq!(
+            resolver
+                .cache()
+                .entries
+                .get(&file_key)
+                .map(|entry| entry.rating_key.as_str()),
+            Some("cached")
+        );
+        assert!(transport.file_searches.borrow().is_empty());
+        assert!(transport.searches.borrow().is_empty());
+        assert_eq!(transport.metadata_lookups.borrow().len(), 1);
+    }
+
+    #[test]
+    fn stale_cached_stream_match_retries_same_unusable_key_only_once() {
+        let target = "Example.Movie.2024.mkv";
+        let config = stream_resolver_config();
+        let (file_key, cache) = cache_with_stream_match(&config, target, "stale");
+        let transport = FakeTransport::default();
+        transport
+            .metadata_failures
+            .borrow_mut()
+            .insert("stale".to_owned(), FakeMetadataFailure::Missing);
+        transport
+            .file_search_results
+            .borrow_mut()
+            .push(search_result_for_file("stale", target));
+        let mut resolver = PlexMediaResolver::new(config, transport.clone(), cache);
+
+        let error = resolver
+            .resolve_stream_target(target, SystemTime::UNIX_EPOCH)
+            .expect_err("the one refreshed match is still unusable");
+
+        assert!(is_metadata_not_found_error(&error));
+        assert!(!resolver.cache().entries.contains_key(&file_key));
+        assert_eq!(transport.file_searches.borrow().len(), 1);
+        assert!(transport.searches.borrow().is_empty());
+        assert_eq!(transport.metadata_lookups.borrow().len(), 2);
     }
 
     #[test]

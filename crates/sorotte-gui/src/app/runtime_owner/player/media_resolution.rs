@@ -57,7 +57,7 @@ impl std::fmt::Debug for GuiMediaResolutionTarget {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct GuiMediaResolutionCandidate {
+pub(in crate::app::runtime_owner) struct GuiMediaResolutionCandidate {
     provider: GuiMediaResolutionProviderKind,
     phase: GuiMediaResolutionPhase,
     priority: GuiMediaResolutionPriority,
@@ -214,6 +214,14 @@ impl GuiMediaResolutionPlan {
             .min_by_key(|candidate| candidate.selection_key())
     }
 
+    pub(super) fn exclude_failed_candidates(
+        &mut self,
+        failed_candidates: &[GuiMediaResolutionCandidate],
+    ) {
+        self.candidates
+            .retain(|candidate| !failed_candidates.contains(candidate));
+    }
+
     pub(super) fn decision(
         &self,
         fallback_policy: GuiMediaResolutionFallbackPolicy,
@@ -272,6 +280,32 @@ impl GuiMediaResolutionCandidate {
 
     pub(super) fn target(&self) -> &GuiMediaResolutionTarget {
         &self.target
+    }
+
+    pub(super) fn provider_kind(&self) -> GuiMediaResolutionProviderKind {
+        self.provider
+    }
+
+    pub(super) fn provider_id(&self) -> GuiMediaSourceProviderId {
+        match self.provider {
+            GuiMediaResolutionProviderKind::Core | GuiMediaResolutionProviderKind::MediaSearch => {
+                GuiMediaSourceProviderId::local()
+            }
+            GuiMediaResolutionProviderKind::MediaMatch => {
+                GuiMediaSourceProviderId::media_matching()
+            }
+            GuiMediaResolutionProviderKind::Plex => GuiMediaSourceProviderId::plex_stream(),
+        }
+    }
+
+    pub(super) fn matches_loaded_target(&self, loaded_target: &str) -> bool {
+        match &self.target {
+            GuiMediaResolutionTarget::CurrentPlayer => false,
+            GuiMediaResolutionTarget::LocalPath(path) => path == loaded_target,
+            GuiMediaResolutionTarget::PlexStream(stream_target) => {
+                stream_target.playback_url.as_str() == loaded_target
+            }
+        }
     }
 }
 
