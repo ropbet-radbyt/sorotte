@@ -112,7 +112,10 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .expect("portable tcp churn smoke first server should signal user-left state");
 
         release_first_rx
-            .recv_timeout(Duration::from_secs(1))
+            // The release is intentionally sent only after the complete replacement-session
+            // churn has been asserted. Parallel CI can legitimately take longer than one second
+            // to exercise that second connection even though transport switching is healthy.
+            .recv_timeout(Duration::from_secs(10))
             .expect("portable tcp churn smoke first server should be releasable");
     });
 

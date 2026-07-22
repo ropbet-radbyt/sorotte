@@ -218,7 +218,9 @@ fn running_installed_updater_recovers_interrupted_replacement_and_restarts() {
     loop {
         let rolled_back = fs::read(target.join(GUI_EXE)).is_ok_and(|bytes| bytes == original_gui);
         let finished = !target.join(".sorotte-update-journal-v1.jsonl").exists();
-        if rolled_back && finished {
+        let completion_logged = fs::read_to_string(&log)
+            .is_ok_and(|body| body.contains("interrupted update recovery completed"));
+        if rolled_back && finished && completion_logged {
             break;
         }
         assert!(
