@@ -47,7 +47,8 @@ const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAYBACK_ADVANCEMENT_EPSILON_SECONDS: f64 = 0.01;
 const INTERRUPTED_NETWORK_STREAM_MINIMUM_REMAINING_SECONDS: f64 = 15.0;
 const INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS: f64 = 2.0;
-const MAX_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
+const MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
+const MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 5;
 const NETWORK_CACHE_STALL_RECOVERY_DELAY: Duration = Duration::from_secs(20);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
@@ -59,7 +60,10 @@ const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_
 const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
 const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
-const NETWORK_OPTIONS_HOOK_OWNER_LEASE_MS: u64 = 2_000;
+// GUI rendering, synchronous settings work, and OS scheduling can legitimately delay the
+// integration pump for more than two seconds. Keep ownership failover bounded while leaving
+// enough room for those transient stalls; heartbeats still run every 500 ms.
+const NETWORK_OPTIONS_HOOK_OWNER_LEASE_MS: u64 = 10_000;
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_millis(750);
 const MINIMUM_SUPPORTED_MPV_VERSION_COMPONENTS: (u64, u64, u64) = (0, 41, 0);
@@ -260,7 +264,8 @@ struct EmbeddedNetworkMediaOptions {
 struct InterruptedNetworkStreamRecovery {
     media_generation: PlayerMediaGeneration,
     resume_position_seconds: f64,
-    attempts: usize,
+    consecutive_attempts: usize,
+    total_attempts: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1388,13 +1393,33 @@ impl MpvAdapter {
     pub fn apply_network_media_options_to_active_media_classified(
         &mut self,
     ) -> Result<MpvActiveNetworkMediaOptionsApplyOutcome, PlayerError> {
-        let result = self.apply_network_media_options_to_active_media_classified_inner();
+        let mut result = self.apply_network_media_options_to_active_media_classified_inner();
+        if result
+            .as_ref()
+            .is_err_and(Self::network_options_hook_ownership_failure)
+        {
+            // A lease can expire between the last runtime pump and an explicit settings apply.
+            // The Lua hook has already released the old owner, so retry the full configure/apply
+            // transaction once instead of surfacing a sticky error that only an app restart can
+            // clear.
+            self.network_media_options_hook_configuration_error = None;
+            result = self.apply_network_media_options_to_active_media_classified_inner();
+        }
         if let Err(error) = &result {
             self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Failed(
                 error.to_string(),
             ));
         }
         result
+    }
+
+    fn network_options_hook_ownership_failure(error: &PlayerError) -> bool {
+        let PlayerError::OperationFailed(reason) = error else {
+            return false;
+        };
+        reason.contains("network-options hook lease expired")
+            || reason.contains("network-options hook ownership was replaced")
+            || reason.contains("network-options hook ownership was lost")
     }
 
     fn apply_network_media_options_to_active_media_classified_inner(
@@ -1594,6 +1619,10 @@ impl MpvAdapter {
     }
 
     fn ensure_network_media_options_hook_configured_inner(&mut self) -> Result<(), PlayerError> {
+        // Ownership/configuration failures describe the previous transaction. Leaving one set
+        // here lets a delayed lease-expired event abort a new configuration before its positive
+        // acknowledgement is reduced.
+        self.network_media_options_hook_configuration_error = None;
         if !self.network_media_options_hook_loaded {
             let path = materialize_bundled_sorotte_network_options_hook().map_err(|error| {
                 PlayerError::OperationFailed(format!(
@@ -1685,6 +1714,10 @@ impl MpvAdapter {
                 && result.generation == generation
             {
                 break result;
+            }
+            if let Some(error) = self.network_media_options_hook_configuration_error.take() {
+                self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
+                return Err(PlayerError::OperationFailed(error));
             }
             if Instant::now() >= deadline {
                 self.invalidate_network_media_options_hook_delivery();
@@ -2525,16 +2558,18 @@ impl MpvAdapter {
 
     fn observe_interrupted_network_stream_recovery_progress(&mut self, position_seconds: f64) {
         let generation = self.observation_media_generation();
-        if self
-            .interrupted_network_stream_recovery
-            .is_some_and(|recovery| {
-                Some(recovery.media_generation) == generation
-                    && position_seconds
-                        >= recovery.resume_position_seconds
-                            + INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS
-            })
+        if let Some(recovery) =
+            self.interrupted_network_stream_recovery
+                .as_mut()
+                .filter(|recovery| {
+                    Some(recovery.media_generation) == generation
+                        && position_seconds
+                            >= recovery.resume_position_seconds
+                                + INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS
+                })
         {
-            self.interrupted_network_stream_recovery = None;
+            recovery.resume_position_seconds = position_seconds;
+            recovery.consecutive_attempts = 0;
         }
     }
 
@@ -2572,18 +2607,26 @@ impl MpvAdapter {
             return false;
         }
 
-        let attempts = self
+        let (consecutive_attempts, total_attempts) = self
             .interrupted_network_stream_recovery
             .filter(|recovery| recovery.media_generation == generation)
-            .map_or(1, |recovery| recovery.attempts.saturating_add(1));
-        if attempts > MAX_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS {
+            .map_or((1, 1), |recovery| {
+                (
+                    recovery.consecutive_attempts.saturating_add(1),
+                    recovery.total_attempts.saturating_add(1),
+                )
+            });
+        if consecutive_attempts > MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS
+            || total_attempts > MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS
+        {
             return false;
         }
 
         self.interrupted_network_stream_recovery = Some(InterruptedNetworkStreamRecovery {
             media_generation: generation,
             resume_position_seconds: position_seconds,
-            attempts,
+            consecutive_attempts,
+            total_attempts,
         });
         self.pending_load_request = Some(path.clone());
         self.pending_load_generation = Some(generation);
@@ -6803,7 +6846,8 @@ mod interrupted_network_stream_recovery_tests {
             generation.map(|media_generation| InterruptedNetworkStreamRecovery {
                 media_generation,
                 resume_position_seconds: 257.25,
-                attempts: 1,
+                consecutive_attempts: 1,
+                total_attempts: 1,
             })
         );
         assert!(
@@ -6843,7 +6887,7 @@ mod interrupted_network_stream_recovery_tests {
         assert_eq!(
             adapter
                 .interrupted_network_stream_recovery
-                .map(|recovery| recovery.attempts),
+                .map(|recovery| recovery.consecutive_attempts),
             Some(2)
         );
 
@@ -6879,13 +6923,42 @@ mod interrupted_network_stream_recovery_tests {
     }
 
     #[test]
-    fn forward_progress_rearms_future_interrupted_stream_recovery() {
+    fn forward_progress_rearms_consecutive_budget_without_resetting_total_budget() {
         let mut adapter = loaded_network_vod(257.25, 1_919.0);
         adapter.handle_end_file_event(&json!({ "reason": "eof" }));
         assert!(adapter.interrupted_network_stream_recovery.is_some());
 
         adapter.observe_interrupted_network_stream_recovery_progress(259.25);
 
+        assert_eq!(
+            adapter.interrupted_network_stream_recovery,
+            adapter.active_media_generation.map(|media_generation| {
+                InterruptedNetworkStreamRecovery {
+                    media_generation,
+                    resume_position_seconds: 259.25,
+                    consecutive_attempts: 0,
+                    total_attempts: 1,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn forward_progress_cannot_rearm_recovery_past_generation_total_budget() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+
+        for attempt in 1..=MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS {
+            let position = 257.25 + (attempt as f64 - 1.0) * 3.0;
+            restore_false_eof_fixture(&mut adapter, position);
+            adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+            assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+            adapter.observe_interrupted_network_stream_recovery_progress(position + 2.0);
+        }
+
+        restore_false_eof_fixture(&mut adapter, 275.25);
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Ended);
         assert!(adapter.interrupted_network_stream_recovery.is_none());
     }
 
@@ -6914,7 +6987,8 @@ mod interrupted_network_stream_recovery_tests {
             Some(InterruptedNetworkStreamRecovery {
                 media_generation: generation,
                 resume_position_seconds: 257.25,
-                attempts: 1,
+                consecutive_attempts: 1,
+                total_attempts: 1,
             })
         );
     }

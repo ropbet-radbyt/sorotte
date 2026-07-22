@@ -183,6 +183,13 @@ jobs:
             real_mpv_cache_cap_drains_and_input_resumes \
             -- --ignored --exact --nocapture
 
+      - name: Required real mpv premature-disconnect recovery semantics
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness \
+            real_mpv_premature_http_disconnect_recovers_same_media_generation \
+            -- --ignored --exact --nocapture
+
       - name: Full deterministic HTTP-stall and rebuffer harness
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"

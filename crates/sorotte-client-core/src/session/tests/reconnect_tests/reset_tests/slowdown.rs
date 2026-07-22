@@ -151,8 +151,9 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconne
     );
 
     session
-            .apply_message_json(
+            .apply_message_json_at(
                 r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+                1.0,
             )
             .expect("post-reconnect self-setBy state should apply");
 
@@ -218,8 +219,9 @@ fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_across_post_recon
     );
 
     session
-            .apply_message_json(
+            .apply_message_json_at(
                 r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":true,"setBy":"alice"}}}"#,
+                1.0,
             )
             .expect("post-reconnect doSeek self-setBy state should apply");
     let post_reconnect_do_seek_suppressed =

@@ -575,7 +575,8 @@ impl StreamingPlaybackConfig {
         advanced_arguments: &[String],
     ) -> Vec<EffectiveMpvStreamingOption> {
         let advanced = parse_mpv_option_arguments(advanced_arguments);
-        self.network_media_mpv_arguments()
+        let mut effective = self
+            .network_media_mpv_arguments()
             .into_iter()
             .filter_map(|argument| {
                 let body = argument.strip_prefix("--")?;
@@ -590,7 +591,18 @@ impl StreamingPlaybackConfig {
                     overridden_by_advanced_arguments: override_value.is_some(),
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if !effective.iter().any(|option| option.name == "ytdl-format")
+            && let Some(format) = advanced.get("ytdl-format")
+        {
+            effective.push(EffectiveMpvStreamingOption {
+                name: "ytdl-format".to_owned(),
+                configured_value: String::new(),
+                effective_value: format.clone(),
+                overridden_by_advanced_arguments: true,
+            });
+        }
+        effective
     }
 
     pub fn quality_downgrade_suggestion(
@@ -2100,6 +2112,7 @@ mod tests {
         let effective = config.effective_mpv_options(&[
             "--cache-pause-wait=12".to_owned(),
             "--no-cache-on-disk".to_owned(),
+            "--ytdl-format=bestvideo[height<=1440]+bestaudio".to_owned(),
         ]);
 
         let wait = effective
@@ -2116,6 +2129,14 @@ mod tests {
             .expect("disk option should be present");
         assert_eq!(disk.effective_value, "no");
         assert!(disk.overridden_by_advanced_arguments);
+
+        let ytdl = effective
+            .iter()
+            .find(|option| option.name == "ytdl-format")
+            .expect("advanced-only YouTube format should be present");
+        assert_eq!(ytdl.configured_value, "");
+        assert_eq!(ytdl.effective_value, "bestvideo[height<=1440]+bestaudio");
+        assert!(ytdl.overridden_by_advanced_arguments);
     }
 
     #[test]

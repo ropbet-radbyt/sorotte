@@ -141,7 +141,7 @@ fn desync_correction_fastforward_requires_sustained_behind_window() {
 }
 
 #[test]
-fn desync_correction_skips_actions_when_set_by_matches_local_user() {
+fn desync_correction_rearms_after_local_room_state_echo() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -153,9 +153,119 @@ fn desync_correction_skips_actions_when_set_by_matches_local_user() {
                 r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
             )
             .expect("state should apply");
+    session
+        .model
+        .room
+        .playstate_authority_changed_at_seconds
+        .insert("room1".to_owned(), 0.0);
+
+    let action = session.evaluate_desync_correction(3.0, 6.0, false, false, true);
+    assert_eq!(
+        action,
+        DesyncCorrectionAction::Rewind {
+            target_position: 0.0,
+            set_by: Some("alice".to_owned())
+        },
+        "the last room controller must not remain exempt from steady-state correction forever"
+    );
+}
+
+#[test]
+fn repeated_self_attributed_room_updates_do_not_extend_correction_grace() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            0.0,
+        )
+        .expect("initial self echo should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            10.0,
+        )
+        .expect("periodic self-attributed state should apply");
+
+    assert_eq!(
+        session.evaluate_desync_correction(10.0, 16.0, false, false, true),
+        DesyncCorrectionAction::Rewind {
+            target_position: 10.0,
+            set_by: Some("alice".to_owned())
+        }
+    );
+}
+
+#[test]
+fn a_new_self_attributed_seek_gets_a_fresh_bounded_correction_grace() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            0.0,
+        )
+        .expect("initial self echo should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"alice"}}}"#,
+            10.0,
+        )
+        .expect("new self seek should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.1,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            10.1,
+        )
+        .expect("post-seek steady state should apply");
+
+    assert_eq!(
+        session.evaluate_desync_correction(11.0, 16.0, false, false, true),
+        DesyncCorrectionAction::None
+    );
+    assert!(matches!(
+        session.evaluate_desync_correction(13.0, 20.0, false, false, true),
+        DesyncCorrectionAction::Rewind { .. }
+    ));
+}
+
+#[test]
+fn desync_correction_gently_speeds_up_a_client_drifting_behind() {
+    let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
 
     let action = session.evaluate_desync_correction(0.0, 6.0, false, false, true);
-    assert_eq!(action, DesyncCorrectionAction::None);
+    assert_eq!(
+        action,
+        DesyncCorrectionAction::SpeedUp {
+            rate: 1.05,
+            set_by: Some("bob".to_owned())
+        }
+    );
+}
+
+#[test]
+fn desync_correction_reasserts_rate_after_player_reports_external_reset() {
+    let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+
+    assert!(matches!(
+        session.evaluate_desync_correction(0.0, 2.0, true, false, true),
+        DesyncCorrectionAction::SlowDown { rate: 0.95, .. }
+    ));
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default().with_playback_rate(1.0),
+    );
+    assert!(matches!(
+        session.evaluate_desync_correction(0.1, 2.0, true, false, true),
+        DesyncCorrectionAction::SlowDown { rate: 0.95, .. }
+    ));
 }
 
 #[test]

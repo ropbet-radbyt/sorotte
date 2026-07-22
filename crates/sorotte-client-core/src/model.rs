@@ -56,12 +56,14 @@ pub struct RoomState {
     pub(crate) known_rooms: BTreeSet<String>,
     pub(crate) playstates: BTreeMap<String, RoomPlaystateView>,
     pub(crate) playstate_updated_at_seconds: BTreeMap<String, f64>,
+    pub(crate) playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Default)]
 pub struct PlaybackSyncState {
     pub(crate) desync_config: DesyncCorrectionConfig,
     pub(crate) speed_changed: bool,
+    pub(crate) speed_correction_rate: Option<f64>,
     pub(crate) behind_first_detected_at_seconds: Option<f64>,
     pub(crate) last_paused_on_leave_at_seconds: Option<f64>,
     pub(crate) last_advanced_at_seconds: Option<f64>,

@@ -9,6 +9,8 @@ impl ClientSession {
     ) {
         let room_key = room_name.clone();
         let room_playstate = self.model.room.playstates.entry(room_name).or_default();
+        let authority_changed =
+            room_playstate.set_by != playstate.set_by || playstate.do_seek == Some(true);
         if let Some(position) = playstate.position {
             room_playstate.position = Some(position);
         }
@@ -17,6 +19,12 @@ impl ClientSession {
         }
         room_playstate.do_seek = Some(playstate.do_seek.unwrap_or(false));
         room_playstate.set_by = playstate.set_by;
+        if authority_changed {
+            self.model
+                .room
+                .playstate_authority_changed_at_seconds
+                .insert(room_key.clone(), updated_at_seconds);
+        }
         self.model
             .room
             .playstate_updated_at_seconds

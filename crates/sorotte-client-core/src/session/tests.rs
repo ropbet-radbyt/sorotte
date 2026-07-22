@@ -134,6 +134,11 @@ fn desync_session_with_remote_state(
         .apply_message_json(&state_line)
         .expect("remote state should apply");
     session
+        .model
+        .room
+        .playstate_authority_changed_at_seconds
+        .insert("room1".to_owned(), 0.0);
+    session
 }
 
 #[derive(Default)]

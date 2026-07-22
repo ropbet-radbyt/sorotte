@@ -440,6 +440,75 @@ fn cache_cap_resume_evidence_requires_fresh_input_after_drain() {
 }
 
 #[test]
+#[ignore = "required Linux CI integration test; requires the mpv binary"]
+fn real_mpv_premature_http_disconnect_recovers_same_media_generation() {
+    let server = FaultInjectingHttpServer::start(BTreeMap::from([(
+        "/temporary-disconnect.wav".to_owned(),
+        HttpMediaFixture::static_bytes("audio/wav", pcm_wav(12)).with_faults(NetworkFaultProfile {
+            bytes_per_second: Some(350_000),
+            disconnect_after_body_bytes: Some(500_000),
+            temporary_disconnect_requests: 1,
+            ..NetworkFaultProfile::default()
+        }),
+    )]))
+    .expect("temporary-disconnect HTTP server should start");
+    let mut client = RealMpvClient::start(10_004, &server.url("/temporary-disconnect.wav"));
+    let started_at = Instant::now();
+    while started_at.elapsed() < Duration::from_secs(16) {
+        client.poll();
+        let requests = server.requests();
+        if requests.iter().any(|request| request.disconnected_early)
+            && requests.len() >= 2
+            && client.latest_transport.phase == Some(PlayerTransportPhase::Playing)
+            && client
+                .latest_transport
+                .position_seconds
+                .is_some_and(|position| position >= 4.0)
+        {
+            break;
+        }
+        sleep(POLL_INTERVAL);
+    }
+
+    let requests = server.requests();
+    assert!(
+        requests
+            .first()
+            .is_some_and(|request| request.disconnected_early),
+        "the first HTTP response should terminate prematurely: {requests:?}"
+    );
+    assert!(
+        requests.len() >= 2,
+        "mpv/Sorotte should issue a later request after premature EOF: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .skip(1)
+            .any(|request| !request.disconnected_early),
+        "the temporary network fault should be followed by a complete response: {requests:?}"
+    );
+    assert_eq!(
+        client.latest_transport.phase,
+        Some(PlayerTransportPhase::Playing),
+        "premature EOF must not remain latched as terminal telemetry: {:?}",
+        client.latest_transport
+    );
+    assert!(
+        client
+            .latest_transport
+            .position_seconds
+            .is_some_and(|position| position >= 4.0),
+        "recovered playback should advance beyond the disconnect point: {:?}",
+        client.latest_transport
+    );
+    assert!(
+        client.adapter_generation.is_some(),
+        "recovery should retain an observed adapter media generation"
+    );
+}
+
+#[test]
 #[ignore = "scheduled integration test; requires the mpv binary"]
 fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
     let media = pcm_wav(30);

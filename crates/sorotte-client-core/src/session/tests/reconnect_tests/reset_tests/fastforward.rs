@@ -77,8 +77,8 @@ fn reset_sync_state_for_reconnect_prevents_stale_fastforward_after_pre_reconnect
 }
 
 #[test]
-fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_window_before_post_reconnect_desync_evaluation()
- {
+fn reset_sync_state_for_reconnect_clears_fastforward_cooldown_after_self_attribution_grace_expires()
+{
     let mut session = desync_session_with_remote_state(10.0, false, false, "alice");
 
     let pre_reconnect_timer_start =
@@ -94,12 +94,12 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
         "precondition: behind timer should start at first detection time"
     );
 
-    let pre_reconnect_self_setby_suppressed =
+    let pre_reconnect_self_attribution_grace_expired =
         session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
     assert_eq!(
-        pre_reconnect_self_setby_suppressed,
-        Vec::<ClientRuntimeAction>::new(),
-        "self-attributed fastforward candidate should be suppressed before reconnect"
+        pre_reconnect_self_attribution_grace_expired,
+        vec![ClientRuntimeAction::SetPosition(10.25)],
+        "stale self attribution must not suppress fastforward after the bounded grace expires"
     );
     assert!(
         session
@@ -107,13 +107,13 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
             .playback
             .behind_first_detected_at_seconds
             .is_some_and(|t| t > 4.0),
-        "self-attributed fastforward suppression should leave a future suppression-window timer"
+        "fastforward should leave a future cooldown timer"
     );
 
     session.reset_sync_state_for_reconnect();
     assert_eq!(
         session.model.playback.behind_first_detected_at_seconds, None,
-        "reconnect reset should clear stale self-setby fastforward suppression window"
+        "reconnect reset should clear the pre-reconnect fastforward cooldown window"
     );
 
     session
@@ -127,7 +127,7 @@ fn reset_sync_state_for_reconnect_clears_self_setby_fastforward_suppression_wind
     assert_eq!(
         post_reconnect_timer_restart,
         Vec::<ClientRuntimeAction>::new(),
-        "post-reconnect behind detection should restart instead of inheriting stale self-setby suppression window"
+        "post-reconnect behind detection should restart instead of inheriting the stale cooldown window"
     );
     assert_eq!(
         session.model.playback.behind_first_detected_at_seconds,

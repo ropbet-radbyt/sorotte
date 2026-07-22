@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use sorotte_player_api::{
     PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState,
-    PlayerCommandResult, PlayerMediaGeneration, PlayerTransportTelemetryUpdate,
+    PlayerCommandResult, PlayerMediaGeneration, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
@@ -3158,6 +3159,11 @@ where
         update: PlayerTransportTelemetryUpdate,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
+        if let Some(playback_rate) = update.playback_rate {
+            self.session.apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default().with_playback_rate(playback_rate),
+            );
+        }
         let mut actions = self
             .playback_coordination
             .observe_transport(update, now_seconds);
@@ -4330,6 +4336,26 @@ mod tests {
         coordination.observe_transport(catchup, 13.0);
         assert!(coordination.snapshot().recovery_episode.is_some());
         coordination
+    }
+
+    #[test]
+    fn external_transport_rate_updates_legacy_correction_ownership() {
+        let mut runtime = ClientRuntime::new(
+            ClientSession::default(),
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.session.model.playback.local_playback_rate = Some(0.95);
+        let mut observed = transport(1, 0.0, PlayerTransportPhase::Playing, 0.0);
+        observed.playback_rate = Some(1.0);
+
+        runtime.observe_external_player_transport(observed, 0.0);
+
+        assert_eq!(
+            runtime.session.model.playback.local_playback_rate,
+            Some(1.0),
+            "an external coordinator/mpv rate reset must re-arm legacy drift correction"
+        );
     }
 
     #[test]

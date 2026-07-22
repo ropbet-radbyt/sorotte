@@ -68,6 +68,10 @@ impl ClientSession {
         self.model.playlist.rooms.clear();
         self.model.room.playstates.clear();
         self.model.room.playstate_updated_at_seconds.clear();
+        self.model
+            .room
+            .playstate_authority_changed_at_seconds
+            .clear();
         self.model.playlist.pending = None;
         self.model.playlist.pending_remote_revision = 0;
         self.model.playlist.pending_local_change_echoes.clear();
@@ -91,6 +95,7 @@ impl ClientSession {
         self.model.readiness.autoplay_time_left_seconds =
             self.model.readiness.config.autoplay_delay_seconds;
         self.model.playback.speed_changed = false;
+        self.model.playback.speed_correction_rate = None;
         self.model.playback.behind_first_detected_at_seconds = None;
         self.model.playback.last_paused_on_leave_at_seconds = None;
         self.model.playback.last_advanced_at_seconds = None;

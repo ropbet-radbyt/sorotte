@@ -206,7 +206,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         "local on-load must complete the installed policy without a file-local write"
     );
 
-    sleep(Duration::from_millis(2_200));
+    sleep(Duration::from_millis(10_200));
     assert!(matches!(
         wait_for_network_outcome(&mut contender),
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)

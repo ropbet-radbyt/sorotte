@@ -41,6 +41,8 @@ struct NetworkOptionsHookScenarioTransport {
     target: HookSupersessionTarget,
     lose_ownership_on_heartbeat: bool,
     acknowledge_heartbeats: bool,
+    expire_ownership_on_second_active_apply: bool,
+    active_apply_count: usize,
 }
 
 impl NetworkOptionsHookScenarioTransport {
@@ -113,6 +115,22 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         .expect("apply command should contain JSON"),
                 )
                 .expect("apply payload should be valid");
+                self.active_apply_count += 1;
+                if self.expire_ownership_on_second_active_apply && self.active_apply_count == 2 {
+                    self.push(Self::client_message(
+                        "sorotte-network-options-ownership",
+                        json!({
+                            "protocol": "sorotte-network-options-v3",
+                            "ownerId": payload["ownerId"],
+                            "attachmentId": payload["attachmentId"],
+                            "configurationGeneration": payload["configurationGeneration"],
+                            "hookInstanceId": "scenario-hook-instance",
+                            "status": "lease-expired",
+                        }),
+                    ));
+                    self.push(json!({"request_id": request_id, "error": "success"}));
+                    return Ok(());
+                }
                 let base = json!({
                     "protocol": "sorotte-network-options-v3",
                     "ownerId": payload["ownerId"],
@@ -2354,6 +2372,8 @@ fn run_core_hook_supersession_scenario(
         target,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -2386,6 +2406,8 @@ fn superseded_network_options_adapter_awaiting_hook_result() -> MpvAdapter {
         target: HookSupersessionTarget::NetworkAwaitingResult,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3403,6 +3425,8 @@ fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
         target: HookSupersessionTarget::StableNetwork,
         lose_ownership_on_heartbeat: true,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3443,6 +3467,48 @@ fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
         Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
     ));
     assert!(adapter.is_connected());
+}
+
+#[test]
+fn active_network_options_apply_reacquires_an_expired_hook_lease() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::StableNetwork,
+        lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: true,
+        active_apply_count: 0,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial hook ownership should configure"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an expired lease should be reacquired within the explicit apply"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+
+    let configure_count = writes
+        .lock()
+        .expect("lease recovery writes should not be poisoned")
+        .iter()
+        .filter(|write| write.contains("sorotte_network_options_configure"))
+        .count();
+    assert_eq!(
+        configure_count, 2,
+        "the expired owner should perform exactly one fresh configuration"
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -3777,6 +3843,8 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: true,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3818,6 +3886,8 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3863,6 +3933,8 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3907,6 +3979,8 @@ fn graceful_cleanup_releases_the_core_hook_before_optional_bridge_release() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
