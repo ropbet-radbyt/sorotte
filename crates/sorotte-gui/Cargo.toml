@@ -16,6 +16,7 @@ default = []
 gui-semantic-smoke = []
 gui-native-smoke = ["live-python-interop"]
 live-python-interop = ["dep:sorotte-compat"]
+updater-integration-test = []
 
 [dependencies]
 eframe.workspace = true

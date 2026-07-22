@@ -16,6 +16,7 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 const GUI_EXE: &str = "sorotte-gui.exe";
 const UPDATER_EXE: &str = "sorotte-gui-updater.exe";
 const INSTALL_MANIFEST: &str = "sorotte-install.json";
+const ALLOW_ELEVATED_TEST_ENV: &str = "SOROTTE_UPDATER_INTEGRATION_TEST_ALLOW_ELEVATED";
 
 fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -100,6 +101,7 @@ fn running_installed_updater_can_replace_its_own_installed_path() {
     let log_arg = log.display().to_string();
 
     let status = Command::new(target.join(UPDATER_EXE))
+        .env(ALLOW_ELEVATED_TEST_ENV, "1")
         .args([
             "--pid",
             &impossible_pid,
@@ -192,6 +194,7 @@ fn running_installed_updater_recovers_interrupted_replacement_and_restarts() {
     let log_arg = log.display().to_string();
 
     let status = Command::new(target.join(UPDATER_EXE))
+        .env(ALLOW_ELEVATED_TEST_ENV, "1")
         .args([
             "--recover",
             "--pid",

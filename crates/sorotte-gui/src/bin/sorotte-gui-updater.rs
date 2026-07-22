@@ -15,6 +15,9 @@ use zip::ZipArchive;
 
 const GUI_EXE: &str = "sorotte-gui.exe";
 const UPDATER_EXE: &str = "sorotte-gui-updater.exe";
+#[cfg(all(debug_assertions, feature = "updater-integration-test"))]
+const UPDATER_INTEGRATION_ALLOW_ELEVATED_ENV: &str =
+    "SOROTTE_UPDATER_INTEGRATION_TEST_ALLOW_ELEVATED";
 const INSTALL_MANIFEST: &str = "sorotte-install.json";
 const INSTALL_MANIFEST_SCHEMA: &str = "sorotte-gui-install-manifest-v2";
 const INSTALL_TARGET: &str = "windows-x86_64";
@@ -140,7 +143,26 @@ fn main() -> ExitCode {
 }
 
 fn run_update(args: UpdaterArgs) -> Result<(), String> {
-    run_update_with_elevation_check(args, process_is_elevated)
+    let integration_test_override = updater_integration_test_allows_elevated_process(&args);
+    run_update_with_elevation_check(args, move || {
+        if integration_test_override {
+            Ok(false)
+        } else {
+            process_is_elevated()
+        }
+    })
+}
+
+#[cfg(all(debug_assertions, feature = "updater-integration-test"))]
+fn updater_integration_test_allows_elevated_process(args: &UpdaterArgs) -> bool {
+    env::var_os(UPDATER_INTEGRATION_ALLOW_ELEVATED_ENV).as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && args.target_dir.starts_with(env::temp_dir())
+}
+
+#[cfg(not(all(debug_assertions, feature = "updater-integration-test")))]
+fn updater_integration_test_allows_elevated_process(_args: &UpdaterArgs) -> bool {
+    false
 }
 
 fn run_update_with_elevation_check<F>(args: UpdaterArgs, elevation_check: F) -> Result<(), String>

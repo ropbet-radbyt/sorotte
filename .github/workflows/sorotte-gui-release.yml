@@ -41,7 +41,7 @@ jobs:
         run: |
           cargo test -p sorotte-gui --lib update_
           cargo test -p sorotte-gui --bin sorotte-gui-updater
-          cargo test -p sorotte-gui --test updater_self_replacement_windows
+          cargo test -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
 
       - name: Build GUI release binaries
         shell: pwsh
