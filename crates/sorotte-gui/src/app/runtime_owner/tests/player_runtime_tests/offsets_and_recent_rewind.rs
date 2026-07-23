@@ -460,6 +460,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         attached_native_seek_tracker: Default::default(),
+        pending_attached_coordinator_seek: None,
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
         player_paused_for_cache: None,

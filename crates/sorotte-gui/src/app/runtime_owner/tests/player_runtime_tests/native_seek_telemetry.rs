@@ -89,6 +89,13 @@ impl PlayerAdapter for PositionTelemetryPlayer {
         "position-telemetry"
     }
 
+    fn set_position(
+        &mut self,
+        _position_seconds: f64,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        Ok(())
+    }
+
     fn take_transport_telemetry_update(
         &mut self,
     ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
@@ -138,6 +145,21 @@ fn sparse_position_update(
     position_seconds: f64,
 ) -> sorotte_player_api::PlayerTransportTelemetryUpdate {
     sparse_update(observed_at_seconds).with_position_seconds(position_seconds)
+}
+
+fn position_update_with_delivery(
+    observed_at_seconds: f64,
+    delivery_reference_seconds: f64,
+    position_seconds: f64,
+) -> sorotte_player_api::PlayerTransportTelemetryUpdate {
+    let mut update = position_update(observed_at_seconds, position_seconds);
+    update.observed_at = Some(
+        sorotte_player_api::PlayerObservationTimestamp::from_adapter_observation(
+            std::time::Duration::from_secs_f64(observed_at_seconds),
+            std::time::Duration::from_secs_f64(delivery_reference_seconds),
+        ),
+    );
+    update
 }
 
 #[test]
@@ -195,6 +217,143 @@ fn attached_position_telemetry_does_not_republish_sorotte_owned_seek() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(state.recorded_manual_seeks.is_empty());
     assert_eq!(state.local_position_seconds, Some(20.0));
+}
+
+#[test]
+fn coordinator_seek_completion_is_never_republished_as_a_native_seek() {
+    for completed_position_seconds in [39.5, 40.0, 40.5] {
+        let session_state =
+            std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+        let mut seeking = sparse_update(0.1);
+        seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
+        seeking.seeking = Some(true);
+        let mut seek_complete = position_update_at_rate(0.2, completed_position_seconds, 1.0);
+        seek_complete.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+        seek_complete.seeking = Some(false);
+        let mut baseline_player = PositionTelemetryPlayer::default();
+        baseline_player
+            .updates
+            .push_back(position_update_at_rate(0.0, 10.0, 1.0));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+        owner.session = Some(Box::new(PositionSession {
+            state: session_state.clone(),
+        }));
+        owner.refresh_player_state_impl();
+
+        let mut seek_player = PositionTelemetryPlayer::default();
+        seek_player.updates.extend([seeking, seek_complete]);
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(seek_player)));
+
+        assert!(owner.apply_attached_player_runtime_actions_impl(
+            vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+                command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+            }],
+            "coordinator seek ownership regression",
+        ));
+        owner.refresh_player_state_impl();
+
+        let state = session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state.manual_seek_attempts.is_empty(),
+            "coordinator completion at {completed_position_seconds} must not enter the manual-seek path"
+        );
+        assert_eq!(
+            state.local_position_seconds,
+            Some(completed_position_seconds)
+        );
+    }
+}
+
+#[test]
+fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([
+        position_update_with_delivery(0.0, 0.0, 10.0),
+        position_update_with_delivery(1.0, 5.0, 20.0),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(
+        state.synchronized_positions,
+        vec![10.0],
+        "the four-second-old position must not be mirrored into the session before core rejects it"
+    );
+}
+
+#[test]
+fn untimestamped_position_disarms_comparison_until_a_fresh_baseline() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut untimestamped = position_update(1.0, 20.0);
+    untimestamped.observed_at = None;
+    untimestamped.playback_rate = Some(4.0);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([
+        position_update(0.0, 10.0),
+        untimestamped,
+        sparse_position_update(2.0, 20.1),
+        sparse_position_update(3.0, 24.1),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(
+        state.synchronized_positions,
+        vec![10.0, 20.1, 24.1],
+        "the untimestamped position must not be grounded or bridged into a later comparison, while its transport state remains effective"
+    );
+}
+
+#[test]
+fn regressing_position_timestamp_is_rejected_instead_of_becoming_the_anchor() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([
+        position_update(2.0, 10.0),
+        position_update(1.0, 20.0),
+        position_update(3.0, 20.1),
+        position_update(4.0, 21.1),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(
+        state.synchronized_positions,
+        vec![10.0, 20.1, 21.1],
+        "the regressed position must not be mirrored or installed as a comparison anchor"
+    );
 }
 
 #[test]

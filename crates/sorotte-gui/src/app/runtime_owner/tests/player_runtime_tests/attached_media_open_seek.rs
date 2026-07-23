@@ -145,6 +145,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         attached_native_seek_tracker: Default::default(),
+        pending_attached_coordinator_seek: None,
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,

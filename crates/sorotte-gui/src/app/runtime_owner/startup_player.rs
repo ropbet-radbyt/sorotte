@@ -67,6 +67,7 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_attached_player_pause_confirmation_pump: None,
             pending_attached_player_pause_command: None,
             attached_native_seek_tracker: GuiAttachedNativeSeekTracker::default(),
+            pending_attached_coordinator_seek: None,
             player_position_seconds: None,
             player_paused: None,
             player_paused_for_cache: None,
@@ -217,6 +218,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
+        self.pending_attached_coordinator_seek = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.nearest_match = None;

@@ -388,6 +388,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
+    pub(super) pending_attached_coordinator_seek: Option<GuiPendingAttachedCoordinatorSeek>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -457,6 +458,7 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct GuiAttachedNativeSeekTracker {
     pub(super) media_generation: Option<u64>,
+    pub(super) last_observed_at_seconds: Option<f64>,
     pub(super) phase: Option<PlayerTransportPhase>,
     pub(super) playback_rate: Option<f64>,
     pub(super) logical_pause: Option<bool>,
@@ -466,6 +468,14 @@ pub(super) struct GuiAttachedNativeSeekTracker {
     pub(super) position_anchor: Option<GuiAttachedPlayerPositionObservation>,
     pub(super) interval_disarmed: bool,
     pub(super) seeking_since_anchor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GuiPendingAttachedCoordinatorSeek {
+    pub(super) player_attachment_epoch: u64,
+    pub(super) media_generation: Option<u64>,
+    pub(super) issued_after_observed_at_seconds: Option<f64>,
+    pub(super) target_position_seconds: f64,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

@@ -267,6 +267,17 @@ impl GuiPersistedConfigRuntimeOwner {
                     command_id,
                     command,
                 } => {
+                    let coordinator_seek_target = match command {
+                        CoordinatorPlayerCommand::SetPosition(position_seconds) => {
+                            Some(position_seconds)
+                        }
+                        CoordinatorPlayerCommand::SetPaused(_)
+                        | CoordinatorPlayerCommand::Play(_)
+                        | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
+                    };
+                    if coordinator_seek_target.is_some() {
+                        self.pending_attached_coordinator_seek = None;
+                    }
                     let pause_target = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => Some(paused),
                         CoordinatorPlayerCommand::Play(_) => Some(false),
@@ -305,6 +316,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         }
                     };
                     let accepted = result.is_ok();
+                    if accepted && let Some(target_position_seconds) = coordinator_seek_target {
+                        self.note_attached_coordinator_seek_dispatched(target_position_seconds);
+                    }
                     if accepted && let Some(paused) = pause_target {
                         self.note_local_attached_player_pause_command(paused);
                     }
