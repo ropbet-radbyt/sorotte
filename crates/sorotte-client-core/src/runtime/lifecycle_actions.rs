@@ -482,7 +482,7 @@ where
             self.session.model.playback.behind_first_detected_at_seconds = None;
             return Ok(());
         }
-        let Some(local_position) = self.session.model.playback.local_position else {
+        let Some(local_position) = self.projected_local_position_at(now_seconds) else {
             return Ok(());
         };
         let local_position =

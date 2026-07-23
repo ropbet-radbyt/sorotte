@@ -129,6 +129,131 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
 }
 
 #[test]
+fn timestamped_local_and_room_samples_are_compared_at_the_same_clock() {
+    fn observed(
+        seconds: f64,
+        phase: PlayerTransportPhase,
+        position: f64,
+        paused: bool,
+    ) -> PlayerTransportTelemetryUpdate {
+        let mut update = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(std::time::Duration::from_secs_f64(
+                seconds,
+            )),
+        )
+        .with_phase(phase)
+        .with_position_seconds(position)
+        .with_logical_pause(paused);
+        update.paused_for_cache = Some(false);
+        update.seeking = Some(false);
+        update.seekable = Some(true);
+        update.core_idle = Some(false);
+        update
+    }
+
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .unwrap();
+    adapter
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            100.0,
+        )
+        .unwrap();
+    adapter
+        .prepare_attached_playback_media(
+            LogicalMediaId::new("clock-aligned-episode.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            MediaLoadIntent::NewPlayback,
+            100.0,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(0.0, PlayerTransportPhase::ReadyPaused, 0.0, true),
+            100.0,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(0.2, PlayerTransportPhase::Playing, 0.0, false),
+            100.2,
+        )
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(0.4, PlayerTransportPhase::Playing, 0.2, false),
+            100.4,
+        )
+        .unwrap();
+
+    let bootstrap = adapter.attached_player_runtime_actions(100.4).unwrap();
+    if let Some((command_id, target)) = bootstrap.iter().find_map(|action| match action {
+        GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id,
+            command: CoordinatorPlayerCommand::SetPosition(position),
+        } => Some((*command_id, *position)),
+        _ => None,
+    }) {
+        adapter.report_attached_coordinator_command_dispatch(command_id, true, 100.4);
+        adapter
+            .sync_attached_player_transport_telemetry(
+                observed(0.5, PlayerTransportPhase::Playing, target, false),
+                100.5,
+            )
+            .unwrap();
+    } else {
+        for action in &bootstrap {
+            if let GuiAttachedPlayerRuntimeAction::Coordinator { command_id, .. } = action {
+                adapter.report_attached_coordinator_command_dispatch(*command_id, true, 100.4);
+            }
+        }
+    }
+    assert!(
+        !adapter
+            .runtime
+            .playback_coordination_snapshot()
+            .ordinary_correction_blocked
+    );
+
+    adapter
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":11.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            101.0,
+        )
+        .unwrap();
+    adapter
+        .sync_local_playback_telemetry(Some(false), Some(11.0))
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(1.0, PlayerTransportPhase::Playing, 11.0, false),
+            101.0,
+        )
+        .unwrap();
+
+    let actions = adapter.attached_player_runtime_actions(101.8).unwrap();
+    assert!(
+        !actions.iter().any(|action| matches!(
+            action,
+            GuiAttachedPlayerRuntimeAction::Position(_)
+                | GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate { .. }
+                | GuiAttachedPlayerRuntimeAction::Coordinator {
+                    command: CoordinatorPlayerCommand::SetPosition(_)
+                        | CoordinatorPlayerCommand::SetPlaybackRate(_),
+                    ..
+                }
+        )),
+        "aligned timestamped samples must remain aligned after both sides advance to the same evaluation clock: {actions:?}"
+    );
+}
+
+#[test]
 fn rich_transport_keeps_steady_state_attached_drift_correction() {
     fn observed(
         seconds: f64,
@@ -252,6 +377,15 @@ fn rich_transport_keeps_steady_state_attached_drift_correction() {
         )
         .unwrap();
     let _ = adapter.attached_player_runtime_actions(now + 4.0).unwrap();
+    adapter
+        .sync_local_playback_telemetry(Some(false), Some(5.0))
+        .unwrap();
+    adapter
+        .sync_attached_player_transport_telemetry(
+            observed(10.0, PlayerTransportPhase::Playing, 5.0, false),
+            now + 9.0,
+        )
+        .unwrap();
     let behind_actions = adapter.attached_player_runtime_actions(now + 9.0).unwrap();
     assert!(behind_actions.iter().any(|action| matches!(
         action,

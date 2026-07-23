@@ -787,6 +787,11 @@ where
         )
     }
 
+    pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {
+        self.playback_coordination
+            .projected_local_position_at(now_seconds, self.session.model.playback.local_position)
+    }
+
     pub fn into_parts(self) -> (ClientSession, P, C) {
         (self.session, self.player, self.control)
     }

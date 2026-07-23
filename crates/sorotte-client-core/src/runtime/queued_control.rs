@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StateSyncReconcileClocks {
+    received_at_seconds: f64,
+    response_at_seconds: f64,
+}
+
 macro_rules! runtime_notification_outbox_methods {
     (
         $pending:ident,
@@ -38,15 +44,15 @@ where
         now_seconds: f64,
         dont_slow_down_with_me: bool,
     ) -> Option<f64> {
-        let local_position = self.session.model.playback.local_position?;
-        if !dont_slow_down_with_me {
-            return Some(local_position);
+        if dont_slow_down_with_me {
+            return self
+                .session
+                .current_room_playstate_at(now_seconds)
+                .and_then(|playstate| playstate.position)
+                .or_else(|| self.projected_local_position_at(now_seconds));
         }
 
-        self.session
-            .current_room_playstate_at(now_seconds)
-            .and_then(|playstate| playstate.position)
-            .or(Some(local_position))
+        self.projected_local_position_at(now_seconds)
     }
 
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
@@ -72,14 +78,19 @@ where
             dont_slow_down_with_me,
             received_at_seconds,
             received_at_seconds,
+            received_at_seconds,
         )
     }
 
+    /// Reconciles an inbound State while preserving separate receipt, reply,
+    /// and legacy ping clocks. The local playback sample is projected to the
+    /// reply clock; inbound room state remains anchored to network receipt.
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
         &mut self,
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
         received_at_seconds: f64,
+        response_at_seconds: f64,
         ping_received_at_seconds: f64,
     ) -> bool {
         let inbound_state = normalize_client_state_payload(inbound_state);
@@ -96,7 +107,10 @@ where
             self.ping_metrics_legacy_compatible.client_rtt_seconds(),
             dont_slow_down_with_me,
             local_state_change_global_playstate,
-            received_at_seconds,
+            StateSyncReconcileClocks {
+                received_at_seconds,
+                response_at_seconds,
+            },
         )
     }
 
@@ -107,24 +121,28 @@ where
         client_rtt: f64,
         dont_slow_down_with_me: bool,
     ) -> bool {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
             client_latency_calculation,
             client_rtt,
             dont_slow_down_with_me,
             None,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            StateSyncReconcileClocks {
+                received_at_seconds: now_seconds,
+                response_at_seconds: now_seconds,
+            },
         )
     }
 
-    pub(crate) fn run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
+    fn run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
         &mut self,
         inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
         dont_slow_down_with_me: bool,
         local_state_change_global_playstate: Option<RoomPlaystateView>,
-        received_at_seconds: f64,
+        clocks: StateSyncReconcileClocks,
     ) -> bool {
         // Legacy peers may send State before their authoritative Hello. The
         // inbound message itself proves which live transport generation owns
@@ -133,14 +151,17 @@ where
         self.control.activate_protocol_connection_generation();
         self.sync_player_playback_telemetry_into_session_and_buffer();
         let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(received_at_seconds, dont_slow_down_with_me),
+            self.outbound_state_sync_position_seconds(
+                clocks.response_at_seconds,
+                dont_slow_down_with_me,
+            ),
             self.session.model.playback.local_paused,
         ) else {
             let outbound_state = self.session.reconcile_ping_only_state_response(
                 inbound_state,
                 client_latency_calculation,
                 client_rtt,
-                received_at_seconds,
+                clocks.received_at_seconds,
             );
             return self.control.queue_connection_scoped_state(outbound_state);
         };
@@ -155,7 +176,7 @@ where
                 client_rtt,
                 crate::session::StateReconcileContext {
                     local_state_change_global_playstate,
-                    received_at_seconds,
+                    received_at_seconds: clocks.received_at_seconds,
                 },
             );
         self.control.queue_connection_scoped_state(outbound_state)

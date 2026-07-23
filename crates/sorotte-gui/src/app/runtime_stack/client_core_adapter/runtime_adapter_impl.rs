@@ -1170,11 +1170,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
         let Some(room_playstate) = self
             .runtime
-            .current_room_playstate_legacy_ping_compatible_now()
+            .current_room_playstate_legacy_ping_compatible_at(now_seconds)
         else {
             return Ok(Vec::new());
         };
-        let Some(local_position) = self.runtime.session().local_position_seconds() else {
+        let Some(local_position) = self.runtime.projected_local_position_at(now_seconds) else {
             return Ok(Vec::new());
         };
 

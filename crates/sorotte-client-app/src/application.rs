@@ -1098,6 +1098,7 @@ where
                             state.state,
                             dont_slow_down_with_me,
                             received_at_seconds,
+                            received_at_seconds,
                             ping_received_at_seconds,
                         );
                 }
@@ -1825,6 +1826,24 @@ where
             )
     }
 
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        &mut self,
+        state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+        response_at_seconds: f64,
+        ping_received_at_seconds: f64,
+    ) -> bool {
+        self.runtime
+            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                state,
+                dont_slow_down_with_me,
+                received_at_seconds,
+                response_at_seconds,
+                ping_received_at_seconds,
+            )
+    }
+
     pub fn run_reconnect_transition_if_needed(&mut self) -> Result<(), PlayerError> {
         self.runtime.run_reconnect_transition_if_needed()
     }
@@ -1879,6 +1898,10 @@ where
     pub fn current_room_playstate_legacy_ping_compatible_now(&self) -> Option<RoomPlaystateView> {
         self.runtime
             .current_room_playstate_legacy_ping_compatible_now()
+    }
+
+    pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {
+        self.runtime.projected_local_position_at(now_seconds)
     }
 
     pub fn run_state_sync_heartbeat_legacy_ping_compatible(

@@ -27,6 +27,9 @@ use crate::player_transition::{
 const PLAYBACK_BARRIER_RETRY_MIN_SECONDS: f64 = 0.1;
 const PLAYBACK_BARRIER_RETRY_MAX_SECONDS: f64 = 30.0;
 const PLAYBACK_BARRIER_RETRY_MAX_BACKOFF_EXPONENT: u32 = 5;
+const MAX_MISMATCHING_LOCAL_PAUSE_INTENT_UPDATES: u8 = 3;
+const LOCAL_PAUSE_INTENT_MISMATCH_WINDOW_SECONDS: f64 = 10.0;
+const MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackBarrierStartConfig {
@@ -225,7 +228,7 @@ struct ConnectionLocalControlAuthority {
     freshness: LocalControlAuthorityFreshness,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PendingLocalPauseIntent {
     paused: bool,
     room: String,
@@ -233,6 +236,9 @@ struct PendingLocalPauseIntent {
     connection_generation: u64,
     authorization: LocalIntentAuthorization,
     replay_player_after_reauthorization: bool,
+    last_canonical_playstate_updated_at_seconds: Option<f64>,
+    mismatching_canonical_playstate_updates: u8,
+    first_mismatching_canonical_playstate_at_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +253,13 @@ struct NativePlayAuthorityState {
 struct PendingNativePlayAuthorityFence {
     first_observed_at_seconds: f64,
     authority: NativePlayAuthorityState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LocalPositionObservation {
+    media_generation: u64,
+    observed_at_seconds: f64,
+    position_seconds: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +293,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
+    latest_position_observation: Option<LocalPositionObservation>,
     adapter_clock_offset_seconds: Option<f64>,
     last_external_now_seconds: Option<f64>,
     last_coordinator_now_seconds: Option<f64>,
@@ -417,6 +431,7 @@ impl RuntimePlaybackCoordination {
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
         self.latest_observation = None;
+        self.latest_position_observation = None;
         self.transport_telemetry_observed = false;
         self.player_command_bindings.clear();
         let classifier_adapter_epoch = self.classifier_adapter_epoch();
@@ -498,6 +513,7 @@ impl RuntimePlaybackCoordination {
         self.pending_native_play_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
+        self.latest_position_observation = None;
         self.adapter_clock_offset_seconds = None;
         self.last_external_now_seconds = None;
         self.last_coordinator_now_seconds = None;
@@ -1328,6 +1344,16 @@ impl RuntimePlaybackCoordination {
                 candidate_offset_seconds,
             );
             self.transport_telemetry_observed = true;
+            if observation.position_seconds.is_some() {
+                self.latest_position_observation = observation
+                    .position_seconds
+                    .filter(|position| position.is_finite())
+                    .map(|position_seconds| LocalPositionObservation {
+                        media_generation,
+                        observed_at_seconds,
+                        position_seconds,
+                    });
+            }
             self.merge_latest_observation(observation.clone());
         }
         let actions = self.coordinator.observe(observation);
@@ -1576,6 +1602,48 @@ impl RuntimePlaybackCoordination {
             .map(|observation| observation.observed_at_seconds)
     }
 
+    pub(crate) fn projected_local_position_at(
+        &self,
+        external_now_seconds: f64,
+        legacy_position_seconds: Option<f64>,
+    ) -> Option<f64> {
+        if !self.transport_telemetry_observed {
+            return legacy_position_seconds;
+        }
+        let observation = self.latest_observation.as_ref()?;
+        let position = self.latest_position_observation?;
+        if self.coordinator.current_media_generation() != Some(position.media_generation)
+            || observation.media_generation != position.media_generation
+            || observation.paused_for_cache == Some(true)
+            || observation.seeking == Some(true)
+        {
+            return None;
+        }
+        if observation.phase == Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused)
+            && observation.logical_pause == Some(true)
+        {
+            return Some(position.position_seconds);
+        }
+        if observation.phase != Some(sorotte_player_api::PlayerTransportPhase::Playing)
+            || observation.logical_pause == Some(true)
+            || observation.core_idle == Some(true)
+        {
+            return None;
+        }
+        let playback_rate = observation.playback_rate.unwrap_or(NORMAL_PLAYBACK_RATE);
+        if !playback_rate.is_finite() || playback_rate <= 0.0 {
+            return None;
+        }
+        let sample_age_seconds =
+            self.coordinator_now(external_now_seconds) - position.observed_at_seconds;
+        if !sample_age_seconds.is_finite()
+            || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS).contains(&sample_age_seconds)
+        {
+            return None;
+        }
+        Some(position.position_seconds + sample_age_seconds * playback_rate)
+    }
+
     pub(crate) fn stage_local_pause_intent(&mut self, paused: bool, session: &ClientSession) {
         let Some(room) = session.room() else {
             self.pending_local_pause_intent = None;
@@ -1631,6 +1699,14 @@ impl RuntimePlaybackCoordination {
             authorization,
             replay_player_after_reauthorization: authorization
                 == LocalIntentAuthorization::AwaitingControlledRoomReauthentication,
+            last_canonical_playstate_updated_at_seconds: session
+                .model
+                .room
+                .playstate_updated_at_seconds
+                .get(room)
+                .copied(),
+            mismatching_canonical_playstate_updates: 0,
+            first_mismatching_canonical_playstate_at_seconds: None,
         });
         self.last_local_pause_intent_stage_accepted = Some(true);
     }
@@ -1842,7 +1918,80 @@ impl RuntimePlaybackCoordination {
         if self.pending_local_pause_intent.is_some() && !intent_context_matches {
             self.pending_local_pause_intent = None;
         }
-        if canonical_local_echo
+        let canonical_playstate_updated_at_seconds = session.room().and_then(|room| {
+            session
+                .model
+                .room
+                .playstate_updated_at_seconds
+                .get(room)
+                .copied()
+        });
+        let mut retire_confirmed_or_stale_local_intent = false;
+        if let Some(intent) = self.pending_local_pause_intent.as_mut() {
+            let canonical_playstate_changed = match (
+                canonical_playstate_updated_at_seconds,
+                intent.last_canonical_playstate_updated_at_seconds,
+            ) {
+                // State messages are applied in transport order. Treat any
+                // changed receipt timestamp as a new canonical observation so
+                // a wall-clock rollback cannot strand an overlay indefinitely;
+                // equal timestamps still coalesce batched/replayed updates.
+                (Some(current), Some(previous)) => current != previous,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if canonical_playstate_changed && intent.paused == paused {
+                // The server may attribute a matching state to another user
+                // after selecting its room anchor. Matching canonical truth
+                // still acknowledges the command and must retire the overlay.
+                retire_confirmed_or_stale_local_intent = true;
+            } else if authority_may_accept_local_intent
+                && intent.paused != paused
+                && intent.connection_generation == self.connection_generation
+                && intent.authorization == LocalIntentAuthorization::Authorized
+            {
+                if canonical_playstate_changed {
+                    intent.last_canonical_playstate_updated_at_seconds =
+                        canonical_playstate_updated_at_seconds;
+                    intent.mismatching_canonical_playstate_updates = intent
+                        .mismatching_canonical_playstate_updates
+                        .saturating_add(1);
+                    intent
+                        .first_mismatching_canonical_playstate_at_seconds
+                        .get_or_insert(external_now_seconds);
+                }
+                let mismatch_window_elapsed = intent
+                    .first_mismatching_canonical_playstate_at_seconds
+                    .is_some_and(|first_mismatch_at| {
+                        let elapsed_seconds = external_now_seconds - first_mismatch_at;
+                        elapsed_seconds.is_finite()
+                            && elapsed_seconds >= LOCAL_PAUSE_INTENT_MISMATCH_WINDOW_SECONDS
+                    });
+                if intent
+                    .first_mismatching_canonical_playstate_at_seconds
+                    .is_some_and(|first_mismatch_at| external_now_seconds < first_mismatch_at)
+                {
+                    // GUI session clocks are wall-clock based. If the system
+                    // clock moves backwards, restart the bounded wait on the
+                    // adjusted timeline rather than waiting for the old wall
+                    // time to catch up.
+                    intent.first_mismatching_canonical_playstate_at_seconds =
+                        Some(external_now_seconds);
+                }
+                retire_confirmed_or_stale_local_intent = intent
+                    .mismatching_canonical_playstate_updates
+                    >= MAX_MISMATCHING_LOCAL_PAUSE_INTENT_UPDATES
+                    && mismatch_window_elapsed;
+            }
+        }
+        if retire_confirmed_or_stale_local_intent {
+            // A local overlay only bridges the command/echo race. Matching
+            // canonical truth acknowledges it; repeated, sufficiently spaced
+            // disagreement means it was rejected, lost, or superseded.
+            self.pending_local_pause_intent = None;
+        }
+        if self.pending_local_pause_intent.is_some()
+            && canonical_local_echo
             && self
                 .pending_local_pause_intent
                 .as_ref()
@@ -6538,6 +6687,152 @@ mod tests {
     }
 
     #[test]
+    fn desync_position_projection_uses_the_position_sample_clock_and_rejects_stale_samples() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        assert_eq!(
+            runtime.projected_local_position_at(100.0, Some(7.0)),
+            Some(7.0),
+            "legacy adapters without transport timestamps retain point-sample compatibility"
+        );
+        runtime.prepare_media(
+            LogicalMediaId::new("clock-aligned-position").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+
+        let mut sparse_update = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.5)),
+        )
+        .with_phase(PlayerTransportPhase::Playing)
+        .with_logical_pause(false);
+        sparse_update.paused_for_cache = Some(false);
+        sparse_update.seeking = Some(false);
+        sparse_update.core_idle = Some(false);
+        runtime.observe_transport(sparse_update, 101.5);
+
+        let projected = runtime
+            .projected_local_position_at(101.8, Some(10.0))
+            .expect("a fresh playing sample should be projected");
+        assert!(
+            (projected - 10.8).abs() <= 0.000_001,
+            "a newer sparse event must not rewrite the older position field's sample clock"
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(103.1, Some(10.0)),
+            None,
+            "room synchronization must wait for fresh telemetry instead of aging a stale point sample indefinitely"
+        );
+
+        let mut slowed = transport(1, 4.0, PlayerTransportPhase::Playing, 20.0);
+        slowed.playback_rate = Some(0.95);
+        runtime.observe_transport(slowed, 104.0);
+        let projected_slowed = runtime
+            .projected_local_position_at(104.5, Some(20.0))
+            .expect("fresh slowed playback should remain projectable");
+        assert!((projected_slowed - 20.475).abs() <= 0.000_001);
+
+        runtime.observe_transport(
+            paused_transport(1, 5.0, PlayerTransportPhase::ReadyPaused, 30.0),
+            105.0,
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(120.0, Some(30.0)),
+            Some(30.0),
+            "a positively paused point sample does not age"
+        );
+
+        runtime.observe_transport(
+            transport(1, 6.0, PlayerTransportPhase::Rebuffering, 30.0),
+            106.0,
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(106.1, Some(30.0)),
+            None,
+            "room synchronization must not project a cache-stalled sample"
+        );
+    }
+
+    #[test]
+    fn outbound_state_sync_projects_rich_position_and_omits_blocked_samples() {
+        let mut session = barrier_session();
+        session.model.playback.local_position = Some(10.0);
+        session.model.playback.local_paused = Some(false);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("outbound-position-clock").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.playback_coordination.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+
+        let outbound_position = runtime
+            .outbound_state_sync_position_seconds(101.8, false)
+            .expect("fresh rich transport should emit a playback sample");
+        assert!(
+            (outbound_position - 10.8).abs() <= 0.000_001,
+            "the server must receive the local position projected to the State message clock"
+        );
+
+        runtime.playback_coordination.observe_transport(
+            transport(1, 4.5, PlayerTransportPhase::Playing, 14.5),
+            104.5,
+        );
+        assert!(
+            runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(5.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                ),
+                false,
+                100.0,
+                105.0,
+                100.0,
+            )
+        );
+        let ProtocolMessage::State(delayed_response) = runtime
+            .control()
+            .outbound_messages()
+            .back()
+            .expect("the delayed inbound State should receive a response")
+        else {
+            panic!("the delayed inbound State response should remain a State message");
+        };
+        let delayed_response_position = delayed_response
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position);
+        assert!(
+            delayed_response_position.is_some_and(|position| (position - 15.0).abs() <= 0.000_001),
+            "receipt time remains the inbound clock, but the outbound local sample must be projected to the later response clock: {delayed_response_position:?}"
+        );
+
+        runtime.playback_coordination.observe_transport(
+            transport(1, 5.0, PlayerTransportPhase::Rebuffering, 15.0),
+            105.0,
+        );
+        assert_eq!(
+            runtime.outbound_state_sync_position_seconds(105.1, false),
+            None,
+            "cache-stalled rich telemetry must produce ping-only State instead of re-anchoring the room"
+        );
+    }
+
+    #[test]
     fn adapter_epoch_reset_accepts_restarted_generation_and_rejects_old_epoch() {
         let mut runtime = RuntimePlaybackCoordination::default();
         runtime.prepare_media(
@@ -6859,6 +7154,173 @@ mod tests {
     }
 
     #[test]
+    fn matching_remote_canonical_pause_state_retires_the_local_overlay() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("remote-acknowledged-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                0.3,
+            )
+            .unwrap();
+        coordination.update_desired_from_session(&session, 0.3);
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            None,
+            "matching canonical truth acknowledges the command even when the room anchor is attributed to another user"
+        );
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.4,
+            )
+            .unwrap();
+        coordination.update_desired_from_session(&session, 0.4);
+        assert!(
+            coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| desired.paused && !desired.local_echo),
+            "a retired command must not override a later legitimate room pause"
+        );
+    }
+
+    #[test]
+    fn staged_local_unpause_retires_after_repeated_newer_canonical_pauses() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("stale-local-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+        coordination.observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+
+        for update_at in [1.0, 6.0] {
+            session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    update_at,
+                )
+                .unwrap();
+            let actions = coordination.update_desired_from_session(&session, update_at);
+            assert!(!has_pause_play_or_seek(&actions));
+            assert_eq!(
+                coordination.snapshot().pending_local_pause_intent,
+                Some(false),
+                "a bounded command/echo window must tolerate delayed canonical delivery"
+            );
+        }
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                11.0,
+            )
+            .unwrap();
+        let reconciliation = coordination.update_desired_from_session(&session, 11.0);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        assert!(
+            reconciliation.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "after the bounded echo window the canonical room pause must regain player authority"
+        );
+    }
+
+    #[test]
+    fn rapid_canonical_pause_burst_does_not_cancel_a_high_latency_local_command() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("high-latency-local-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+        coordination.observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+
+        for (received_at, evaluated_at) in [(0.2, 0.2), (-0.1, -0.1), (0.4, 0.4)] {
+            session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    received_at,
+                )
+                .unwrap();
+            let actions = coordination.update_desired_from_session(&session, evaluated_at);
+            assert!(!has_pause_play_or_seek(&actions));
+            assert_eq!(
+                coordination.snapshot().pending_local_pause_intent,
+                Some(false),
+                "packet bursts inside the echo window must retain the in-flight command even across a wall-clock rollback"
+            );
+        }
+
+        let reconciliation = coordination.update_desired_from_session(&session, 10.3);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        assert!(
+            reconciliation.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "after both the packet-count and elapsed-time bounds, canonical pause authority must recover"
+        );
+    }
+
+    #[test]
     fn staged_controller_decision_survives_awaiting_decision_but_not_committed_start() {
         let logical_id = "phase-aware-local-intent";
         let mut awaiting_session = barrier_session();
@@ -6917,6 +7379,27 @@ mod tests {
                 .as_ref()
                 .is_some_and(|desired| !desired.paused && desired.local_echo),
             "a room controller must be able to resolve AwaitingDecision with ordinary play"
+        );
+        for update_at in [1.0, 6.0, 11.0] {
+            awaiting_session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":4.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    update_at,
+                )
+                .unwrap();
+            assert!(matches!(
+                awaiting_session.current_room_playstate_authority(),
+                Some(RoomPlaystateAuthority::ServerBarrier {
+                    media_generation: 21,
+                    ..
+                })
+            ));
+            awaiting.update_desired_from_session(&awaiting_session, update_at);
+        }
+        assert_eq!(
+            awaiting.snapshot().pending_local_pause_intent,
+            None,
+            "an overlay-capable barrier authority must also retire a repeatedly rejected local command"
         );
 
         let mut committed_session = barrier_session();

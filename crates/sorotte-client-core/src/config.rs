@@ -48,10 +48,6 @@ pub enum DesyncCorrectionAction {
         rate: f64,
         set_by: Option<String>,
     },
-    SpeedUp {
-        rate: f64,
-        set_by: Option<String>,
-    },
     RestoreSpeed {
         rate: f64,
     },

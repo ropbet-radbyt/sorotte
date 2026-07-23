@@ -327,31 +327,25 @@ fn reconciled_self_origin_state_uses_the_runtime_clock_for_correction_grace() {
 }
 
 #[test]
-fn desync_correction_gently_speeds_up_a_client_drifting_behind() {
+fn ordinary_behind_drift_does_not_change_playback_rate() {
     let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
 
     let action = session.evaluate_desync_correction(0.0, 6.0, false, false, true);
     assert_eq!(
         action,
-        DesyncCorrectionAction::SpeedUp {
-            rate: 1.05,
-            set_by: Some("bob".to_owned())
-        }
+        DesyncCorrectionAction::None,
+        "ordinary drift must not feed a high-latency client speed-up back into the room clock"
     );
 }
 
 #[test]
-fn catchup_restores_normal_speed_when_client_jumps_past_room_position() {
+fn behind_controller_drift_does_not_change_playback_rate() {
     let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
 
-    assert!(matches!(
-        session.evaluate_desync_correction(0.0, 6.0, false, false, true),
-        DesyncCorrectionAction::SpeedUp { rate: 1.05, .. }
-    ));
     assert_eq!(
-        session.evaluate_desync_correction(0.1, 12.0, false, false, true),
-        DesyncCorrectionAction::RestoreSpeed { rate: 1.0 },
-        "crossing from behind to ahead must neutralize catch-up before considering slowdown"
+        session.evaluate_desync_correction(0.0, 6.0, true, false, true),
+        DesyncCorrectionAction::None,
+        "controllers must not accelerate toward a room clock that may already be based on their delayed sample"
     );
 }
 
@@ -366,7 +360,7 @@ fn slowdown_restores_normal_speed_when_client_jumps_behind_room_position() {
     assert_eq!(
         session.evaluate_desync_correction(0.1, 6.0, true, false, true),
         DesyncCorrectionAction::RestoreSpeed { rate: 1.0 },
-        "crossing from ahead to behind must neutralize slowdown before considering catch-up"
+        "crossing from ahead to behind must neutralize slowdown"
     );
 }
 

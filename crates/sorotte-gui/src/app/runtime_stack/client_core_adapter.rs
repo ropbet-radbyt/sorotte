@@ -825,11 +825,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             self.message_updates_authoritative_local_ready_state(&message);
         let result = match message {
             ProtocolMessage::State(state_message) => {
+                let response_at_seconds = system_time_seconds();
                 let _ = self
                     .runtime
-                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
                         state_message.state,
                         self.dont_slow_down_with_me,
+                        received_at_seconds,
+                        response_at_seconds,
                         received_at_seconds,
                     );
                 if self.request_user_list_on_first_state_without_media {
