@@ -349,15 +349,38 @@ impl From<u64> for PlayerMediaGeneration {
 /// to order observations and calculate local elapsed durations without making
 /// a platform-specific `Instant` part of the player API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PlayerObservationTimestamp(std::time::Duration);
+pub struct PlayerObservationTimestamp {
+    observed_at: std::time::Duration,
+    delivery_reference: std::time::Duration,
+}
 
 impl PlayerObservationTimestamp {
     pub const fn from_adapter_start(elapsed: std::time::Duration) -> Self {
-        Self(elapsed)
+        Self {
+            observed_at: elapsed,
+            delivery_reference: elapsed,
+        }
+    }
+
+    /// Records an observation together with the adapter clock sampled when it
+    /// was delivered. Consumers can preserve queue dwell without exposing a
+    /// platform-specific monotonic clock.
+    pub const fn from_adapter_observation(
+        observed_at: std::time::Duration,
+        delivery_reference: std::time::Duration,
+    ) -> Self {
+        Self {
+            observed_at,
+            delivery_reference,
+        }
     }
 
     pub const fn elapsed_since_adapter_start(self) -> std::time::Duration {
-        self.0
+        self.observed_at
+    }
+
+    pub const fn delivery_reference_since_adapter_start(self) -> std::time::Duration {
+        self.delivery_reference
     }
 }
 

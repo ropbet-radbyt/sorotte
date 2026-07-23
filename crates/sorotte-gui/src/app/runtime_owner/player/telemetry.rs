@@ -1,63 +1,209 @@
 use super::*;
 use crate::app::runtime_owner::{
-    GuiAttachedPlayerPositionObservation, GuiCorePlayerConfigurationHealth,
-    GuiStreamingDegradationOrigin,
+    GuiAttachedNativeSeekTracker, GuiAttachedPlayerPositionObservation,
+    GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin,
 };
+use sorotte_player_api::{PlayerTransportPhase, PlayerTransportTelemetryUpdate};
 use sorotte_player_mpv::{
     MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
     MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 
 const ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS: f64 = 1.0;
-const ATTACHED_MAXIMUM_UNTRACKED_PLAYBACK_RATE: f64 = 2.0;
+const ATTACHED_SOROTTE_OWNED_SEEK_TOLERANCE_SECONDS: f64 = 0.25;
+
+impl GuiAttachedNativeSeekTracker {
+    fn observe(&mut self, update: &PlayerTransportTelemetryUpdate) -> bool {
+        let Some(media_generation) = update.media_generation.map(|generation| generation.get())
+        else {
+            if update.position_seconds.is_some() {
+                self.position_anchor = None;
+                self.interval_disarmed = true;
+            }
+            return false;
+        };
+        if self.media_generation != Some(media_generation) {
+            *self = Self {
+                media_generation: Some(media_generation),
+                ..Self::default()
+            };
+        }
+
+        let previously_seeking = self.seeking == Some(true)
+            || self.phase == Some(PlayerTransportPhase::Seeking)
+            || self.seeking_since_anchor;
+        let state_transition = update.phase.is_some_and(|phase| self.phase != Some(phase))
+            || update
+                .playback_rate
+                .is_some_and(|rate| self.playback_rate != Some(rate))
+            || update
+                .logical_pause
+                .is_some_and(|paused| self.logical_pause != Some(paused))
+            || update
+                .paused_for_cache
+                .is_some_and(|paused| self.paused_for_cache != Some(paused))
+            || update
+                .core_idle
+                .is_some_and(|core_idle| self.core_idle != Some(core_idle));
+
+        if let Some(phase) = update.phase {
+            self.phase = Some(phase);
+        }
+        if let Some(playback_rate) = update.playback_rate {
+            self.playback_rate =
+                (playback_rate.is_finite() && playback_rate > 0.0).then_some(playback_rate);
+        }
+        if let Some(logical_pause) = update.logical_pause {
+            self.logical_pause = Some(logical_pause);
+        }
+        if let Some(paused_for_cache) = update.paused_for_cache {
+            self.paused_for_cache = Some(paused_for_cache);
+        }
+        if let Some(seeking) = update.seeking {
+            self.seeking = Some(seeking);
+        }
+        if let Some(core_idle) = update.core_idle {
+            self.core_idle = Some(core_idle);
+        }
+
+        let observed_at_seconds = update
+            .observed_at
+            .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64())
+            .filter(|observed_at_seconds| observed_at_seconds.is_finite());
+        if self.phase == Some(PlayerTransportPhase::Loading) {
+            self.position_anchor = None;
+            self.interval_disarmed = true;
+            self.seeking_since_anchor = false;
+            return false;
+        }
+
+        let currently_seeking =
+            self.seeking == Some(true) || self.phase == Some(PlayerTransportPhase::Seeking);
+        if currently_seeking {
+            self.seeking_since_anchor = true;
+            if let (Some(anchor), Some(observed_at_seconds)) =
+                (self.position_anchor.as_mut(), observed_at_seconds)
+            {
+                anchor.observed_at_seconds = anchor.observed_at_seconds.max(observed_at_seconds);
+            }
+            return false;
+        }
+        if state_transition && !previously_seeking {
+            self.interval_disarmed = true;
+        }
+
+        let Some((position_seconds, observed_at_seconds)) =
+            update.position_seconds.zip(observed_at_seconds)
+        else {
+            return false;
+        };
+        let Some((phase, playback_rate, logical_pause, paused_for_cache, false, core_idle)) = self
+            .phase
+            .zip(self.playback_rate)
+            .zip(self.logical_pause)
+            .zip(self.paused_for_cache)
+            .zip(self.seeking)
+            .zip(self.core_idle)
+            .map(
+                |(
+                    ((((phase, playback_rate), logical_pause), paused_for_cache), seeking),
+                    core_idle,
+                )| {
+                    (
+                        phase,
+                        playback_rate,
+                        logical_pause,
+                        paused_for_cache,
+                        seeking,
+                        core_idle,
+                    )
+                },
+            )
+        else {
+            self.position_anchor = None;
+            self.interval_disarmed = true;
+            return false;
+        };
+        let current = GuiAttachedPlayerPositionObservation {
+            media_generation,
+            observed_at_seconds,
+            position_seconds,
+            phase,
+            playback_rate,
+            logical_pause,
+            paused_for_cache,
+            core_idle,
+        };
+        if !current.is_stable() {
+            self.position_anchor = Some(current);
+            self.interval_disarmed = true;
+            return false;
+        }
+        if self.interval_disarmed && !self.seeking_since_anchor {
+            self.position_anchor = Some(current);
+            self.interval_disarmed = false;
+            return false;
+        }
+
+        let unexpected_position_jump = self.position_anchor.is_some_and(|previous| {
+            previous.media_generation == current.media_generation
+                && previous.is_stable()
+                && current.observed_at_seconds >= previous.observed_at_seconds
+                && (self.seeking_since_anchor || previous.same_motion_regime(current))
+                && {
+                    let elapsed_seconds =
+                        current.observed_at_seconds - previous.observed_at_seconds;
+                    let expected_advance = if previous.logical_pause {
+                        0.0
+                    } else {
+                        elapsed_seconds * previous.playback_rate
+                    };
+                    let actual_advance = current.position_seconds - previous.position_seconds;
+                    actual_advance < expected_advance - ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                        || actual_advance
+                            > expected_advance + ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                }
+        });
+        self.position_anchor = Some(current);
+        self.interval_disarmed = false;
+        self.seeking_since_anchor = false;
+        unexpected_position_jump
+    }
+}
+
+impl GuiAttachedPlayerPositionObservation {
+    fn is_stable(self) -> bool {
+        !self.paused_for_cache
+            && self.playback_rate.is_finite()
+            && self.playback_rate > 0.0
+            && matches!(
+                (self.phase, self.logical_pause, self.core_idle),
+                (PlayerTransportPhase::Playing, false, false)
+                    | (PlayerTransportPhase::ReadyPaused, true, _)
+            )
+    }
+
+    fn same_motion_regime(self, other: Self) -> bool {
+        self.phase == other.phase
+            && self.playback_rate == other.playback_rate
+            && self.logical_pause == other.logical_pause
+            && self.paused_for_cache == other.paused_for_cache
+            && self.core_idle == other.core_idle
+    }
+}
 
 impl GuiPersistedConfigRuntimeOwner {
     fn sync_attached_player_position_observation(
         &mut self,
-        media_generation: Option<u64>,
-        observed_at_seconds: Option<f64>,
         position_seconds: f64,
-    ) {
-        let observation = media_generation
-            .zip(observed_at_seconds)
-            .filter(|(_, observed_at_seconds)| observed_at_seconds.is_finite())
-            .map(
-                |(media_generation, observed_at_seconds)| GuiAttachedPlayerPositionObservation {
-                    media_generation,
-                    observed_at_seconds,
-                    position_seconds,
-                },
-            );
-        let unexpected_position_jump = observation.is_some_and(|observation| {
-            self.last_attached_player_position_observation
-                .filter(|previous| {
-                    previous.media_generation == observation.media_generation
-                        && observation.observed_at_seconds >= previous.observed_at_seconds
-                })
-                .is_some_and(|previous| {
-                    let elapsed_seconds =
-                        observation.observed_at_seconds - previous.observed_at_seconds;
-                    let maximum_expected_forward_advance = if self.player_paused == Some(false)
-                        && self.player_paused_for_cache != Some(true)
-                    {
-                        elapsed_seconds * ATTACHED_MAXIMUM_UNTRACKED_PLAYBACK_RATE
-                    } else {
-                        0.0
-                    };
-                    let advancement_seconds =
-                        observation.position_seconds - previous.position_seconds;
-                    advancement_seconds < -ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
-                        || advancement_seconds
-                            > maximum_expected_forward_advance
-                                + ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
-                })
-        });
+        unexpected_position_jump: bool,
+    ) -> bool {
         let position_already_owned_by_session = self.session.as_ref().is_some_and(|session| {
             session
                 .local_position_seconds()
                 .is_some_and(|known_position| {
                     (known_position - position_seconds).abs()
-                        <= ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                        <= ATTACHED_SOROTTE_OWNED_SEEK_TOLERANCE_SECONDS
                 })
         });
 
@@ -80,24 +226,21 @@ impl GuiPersistedConfigRuntimeOwner {
             };
         }
 
-        if publish_succeeded {
-            if let Some(session) = self.session.as_mut()
-                && let Err(error) = session.sync_local_playback_telemetry(
-                    // Pause edges have their own causal classifier. Mirroring the
-                    // just-observed pause value here would erase a native Play or
-                    // Pause edge before transport telemetry can classify it.
-                    None,
-                    Some(position_seconds),
-                )
-            {
-                eprintln!(
-                    "warning: failed to ground the session position in attached-player telemetry: {error}"
-                );
-            }
-            if let Some(observation) = observation {
-                self.last_attached_player_position_observation = Some(observation);
-            }
+        if publish_succeeded
+            && let Some(session) = self.session.as_mut()
+            && let Err(error) = session.sync_local_playback_telemetry(
+                // Pause edges have their own causal classifier. Mirroring the
+                // just-observed pause value here would erase a native Play or
+                // Pause edge before transport telemetry can classify it.
+                None,
+                Some(position_seconds),
+            )
+        {
+            eprintln!(
+                "warning: failed to ground the session position in attached-player telemetry: {error}"
+            );
         }
+        publish_succeeded
     }
 
     pub(in crate::app::runtime_owner) fn emit_gui_actions_to_attached_player_impl(
@@ -419,17 +562,32 @@ impl GuiPersistedConfigRuntimeOwner {
         for update in transport_updates {
             self.reconcile_pending_logical_override_media_generation(update.media_generation);
             let update = transport_update_on_room_timeline(update, user_offset_seconds);
+            let previous_native_seek_tracker = self.attached_native_seek_tracker;
+            let unexpected_position_jump = self.attached_native_seek_tracker.observe(&update);
             if let Some(paused_for_cache) = update.paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
             }
             if let Some(position_seconds) = update.position_seconds {
-                self.sync_attached_player_position_observation(
-                    update.media_generation.map(|generation| generation.get()),
-                    update
-                        .observed_at
-                        .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64()),
-                    position_seconds,
-                );
+                let transport_transition_is_in_progress = self.attached_native_seek_tracker.seeking
+                    == Some(true)
+                    || self.attached_native_seek_tracker.phase
+                        == Some(PlayerTransportPhase::Seeking)
+                    || self.attached_native_seek_tracker.phase
+                        == Some(PlayerTransportPhase::Loading);
+                if !transport_transition_is_in_progress {
+                    let position_accepted = self.sync_attached_player_position_observation(
+                        position_seconds,
+                        unexpected_position_jump,
+                    );
+                    if unexpected_position_jump && !position_accepted {
+                        self.attached_native_seek_tracker.position_anchor =
+                            previous_native_seek_tracker.position_anchor;
+                        self.attached_native_seek_tracker.interval_disarmed =
+                            previous_native_seek_tracker.interval_disarmed;
+                        self.attached_native_seek_tracker.seeking_since_anchor =
+                            previous_native_seek_tracker.seeking_since_anchor;
+                    }
+                }
                 self.player_position_seconds = Some(position_seconds);
             }
             if let Some(logical_pause) = update.logical_pause

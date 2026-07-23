@@ -259,7 +259,9 @@ struct PendingNativePlayAuthorityFence {
 struct LocalPositionObservation {
     media_generation: u64,
     observed_at_seconds: f64,
+    last_actual_position_observed_at_seconds: f64,
     position_seconds: f64,
+    playback_rate: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1244,18 +1246,26 @@ impl RuntimePlaybackCoordination {
         &self,
         update: &PlayerTransportTelemetryUpdate,
         external_now_seconds: f64,
-    ) -> (f64, Option<f64>) {
-        let raw_seconds = update
-            .observed_at
-            .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64());
-        match raw_seconds {
-            Some(raw_seconds) => {
+    ) -> (f64, Option<f64>, f64) {
+        match update.observed_at {
+            Some(timestamp) => {
+                let raw_seconds = timestamp.elapsed_since_adapter_start().as_secs_f64();
+                let delivery_reference_seconds = timestamp
+                    .delivery_reference_since_adapter_start()
+                    .as_secs_f64();
                 let offset = self
                     .adapter_clock_offset_seconds
-                    .unwrap_or(external_now_seconds - raw_seconds);
-                (raw_seconds + offset, Some(offset))
+                    .unwrap_or(external_now_seconds - delivery_reference_seconds);
+                (
+                    raw_seconds + offset,
+                    Some(offset),
+                    delivery_reference_seconds + offset,
+                )
             }
-            None => (self.coordinator_now(external_now_seconds), None),
+            None => {
+                let coordinator_now = self.coordinator_now(external_now_seconds);
+                (coordinator_now, None, coordinator_now)
+            }
         }
     }
 
@@ -1274,7 +1284,7 @@ impl RuntimePlaybackCoordination {
     fn commit_observation_clock(
         &mut self,
         external_now_seconds: f64,
-        observed_at_seconds: f64,
+        delivery_reference_seconds: f64,
         candidate_offset_seconds: Option<f64>,
     ) {
         if self.adapter_clock_offset_seconds.is_none() {
@@ -1288,8 +1298,8 @@ impl RuntimePlaybackCoordination {
         );
         self.last_coordinator_now_seconds = Some(
             self.last_coordinator_now_seconds
-                .map_or(observed_at_seconds, |current| {
-                    current.max(observed_at_seconds)
+                .map_or(delivery_reference_seconds, |current| {
+                    current.max(delivery_reference_seconds)
                 }),
         );
     }
@@ -1314,7 +1324,7 @@ impl RuntimePlaybackCoordination {
         };
         let owns_current_media =
             self.coordinator.current_media_generation() == Some(media_generation);
-        let (observed_at_seconds, candidate_offset_seconds) =
+        let (observed_at_seconds, candidate_offset_seconds, delivery_reference_seconds) =
             self.map_observation_time(&update, external_now_seconds);
         let observation = PlayerTransportObservation {
             media_generation,
@@ -1340,18 +1350,62 @@ impl RuntimePlaybackCoordination {
         if owns_current_media && timestamp_accepted {
             self.commit_observation_clock(
                 external_now_seconds,
-                observed_at_seconds,
+                delivery_reference_seconds,
                 candidate_offset_seconds,
             );
             self.transport_telemetry_observed = true;
-            if observation.position_seconds.is_some() {
+            let reported_or_retained_playback_rate = observation.playback_rate.or_else(|| {
+                self.latest_observation
+                    .as_ref()
+                    .and_then(|current| current.playback_rate)
+            });
+            let motion_regime_transition =
+                self.latest_observation.as_ref().is_some_and(|current| {
+                    observation
+                        .phase
+                        .is_some_and(|phase| current.phase != Some(phase))
+                        || observation
+                            .playback_rate
+                            .is_some_and(|rate| current.playback_rate != Some(rate))
+                        || observation
+                            .logical_pause
+                            .is_some_and(|paused| current.logical_pause != Some(paused))
+                        || observation
+                            .paused_for_cache
+                            .is_some_and(|paused| current.paused_for_cache != Some(paused))
+                        || observation
+                            .seeking
+                            .is_some_and(|seeking| current.seeking != Some(seeking))
+                        || observation
+                            .core_idle
+                            .is_some_and(|core_idle| current.core_idle != Some(core_idle))
+                });
+            let invalid_playback_rate = reported_or_retained_playback_rate
+                .is_some_and(|rate| !rate.is_finite() || rate <= 0.0);
+            let effective_playback_rate = reported_or_retained_playback_rate
+                .filter(|rate| rate.is_finite() && *rate > 0.0)
+                .unwrap_or(NORMAL_PLAYBACK_RATE);
+            if invalid_playback_rate {
+                self.latest_position_observation = None;
+            } else if observation.position_seconds.is_some() {
                 self.latest_position_observation = observation
                     .position_seconds
                     .filter(|position| position.is_finite())
                     .map(|position_seconds| LocalPositionObservation {
                         media_generation,
                         observed_at_seconds,
+                        last_actual_position_observed_at_seconds: observed_at_seconds,
                         position_seconds,
+                        playback_rate: effective_playback_rate,
+                    });
+            } else if motion_regime_transition {
+                self.latest_position_observation = self
+                    .project_position_observation_to(observed_at_seconds)
+                    .map(|mut position| {
+                        if observation.playback_rate.is_some() {
+                            position.playback_rate = effective_playback_rate;
+                        }
+                        position
                     });
             }
             self.merge_latest_observation(observation.clone());
@@ -1602,6 +1656,55 @@ impl RuntimePlaybackCoordination {
             .map(|observation| observation.observed_at_seconds)
     }
 
+    fn project_position_observation_to(
+        &self,
+        observed_at_seconds: f64,
+    ) -> Option<LocalPositionObservation> {
+        let observation = self.latest_observation.as_ref()?;
+        let mut position = self.latest_position_observation?;
+        if observation.media_generation != position.media_generation
+            || !observed_at_seconds.is_finite()
+            || observed_at_seconds < position.observed_at_seconds
+            || observation.seeking == Some(true)
+        {
+            return None;
+        }
+        let elapsed_seconds = observed_at_seconds - position.observed_at_seconds;
+        let advancing = observation.phase
+            == Some(sorotte_player_api::PlayerTransportPhase::Playing)
+            && observation.logical_pause == Some(false)
+            && observation.paused_for_cache != Some(true)
+            && observation.core_idle != Some(true)
+            && position.playback_rate.is_finite()
+            && position.playback_rate > 0.0;
+        let stationary = observation.logical_pause == Some(true)
+            || observation.paused_for_cache == Some(true)
+            || observation.core_idle == Some(true)
+            || matches!(
+                observation.phase,
+                Some(
+                    sorotte_player_api::PlayerTransportPhase::ReadyPaused
+                        | sorotte_player_api::PlayerTransportPhase::Prebuffering
+                        | sorotte_player_api::PlayerTransportPhase::Rebuffering
+                )
+            );
+        if advancing {
+            let actual_sample_age_seconds =
+                observed_at_seconds - position.last_actual_position_observed_at_seconds;
+            if !actual_sample_age_seconds.is_finite()
+                || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS)
+                    .contains(&actual_sample_age_seconds)
+            {
+                return None;
+            }
+            position.position_seconds += elapsed_seconds * position.playback_rate;
+        } else if !stationary {
+            return None;
+        }
+        position.observed_at_seconds = observed_at_seconds;
+        Some(position)
+    }
+
     pub(crate) fn projected_local_position_at(
         &self,
         external_now_seconds: f64,
@@ -1630,18 +1733,23 @@ impl RuntimePlaybackCoordination {
         {
             return None;
         }
-        let playback_rate = observation.playback_rate.unwrap_or(NORMAL_PLAYBACK_RATE);
+        let playback_rate = position.playback_rate;
         if !playback_rate.is_finite() || playback_rate <= 0.0 {
             return None;
         }
-        let sample_age_seconds =
-            self.coordinator_now(external_now_seconds) - position.observed_at_seconds;
+        let sample_age_seconds = self.coordinator_now(external_now_seconds)
+            - position.last_actual_position_observed_at_seconds;
         if !sample_age_seconds.is_finite()
             || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS).contains(&sample_age_seconds)
         {
             return None;
         }
-        Some(position.position_seconds + sample_age_seconds * playback_rate)
+        let projection_elapsed_seconds =
+            self.coordinator_now(external_now_seconds) - position.observed_at_seconds;
+        if !projection_elapsed_seconds.is_finite() || projection_elapsed_seconds < 0.0 {
+            return None;
+        }
+        Some(position.position_seconds + projection_elapsed_seconds * playback_rate)
     }
 
     pub(crate) fn stage_local_pause_intent(&mut self, paused: bool, session: &ClientSession) {
@@ -6754,6 +6862,246 @@ mod tests {
             runtime.projected_local_position_at(106.1, Some(30.0)),
             None,
             "room synchronization must not project a cache-stalled sample"
+        );
+    }
+
+    #[test]
+    fn sparse_rate_transitions_preserve_piecewise_position_and_actual_sample_age() {
+        for playback_rate in [0.5, 0.95, 2.0, 4.0] {
+            let mut position_then_speed = RuntimePlaybackCoordination::default();
+            position_then_speed.prepare_media(
+                LogicalMediaId::new(format!("position-then-speed-{playback_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            position_then_speed.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
+            );
+            speed.playback_rate = Some(playback_rate);
+            position_then_speed.observe_transport(speed, 102.0);
+
+            let projected = position_then_speed
+                .projected_local_position_at(102.5, None)
+                .expect("a fresh piecewise position should remain projectable");
+            let expected = 11.0 + 0.5 * playback_rate;
+            assert!(
+                (projected - expected).abs() <= 0.000_001,
+                "position->speed at {playback_rate}x projected {projected}, expected {expected}"
+            );
+            assert_eq!(
+                position_then_speed.projected_local_position_at(103.1, None),
+                None,
+                "a rate transition must not refresh the last actual position at {playback_rate}x"
+            );
+
+            let mut speed_then_position = RuntimePlaybackCoordination::default();
+            speed_then_position.prepare_media(
+                LogicalMediaId::new(format!("speed-then-position-{playback_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            let mut initial = transport(1, 0.0, PlayerTransportPhase::Playing, 0.0);
+            initial.playback_rate = Some(1.0);
+            speed_then_position.observe_transport(initial, 100.0);
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.0)),
+            );
+            speed.playback_rate = Some(playback_rate);
+            speed_then_position.observe_transport(speed, 101.0);
+            let expected_position = 1.0 + playback_rate;
+            let mut position = transport(1, 2.0, PlayerTransportPhase::Playing, expected_position);
+            position.playback_rate = None;
+            speed_then_position.observe_transport(position, 102.0);
+
+            let projected = speed_then_position
+                .projected_local_position_at(102.5, None)
+                .expect("a position after a sparse rate should remain projectable");
+            let expected = expected_position + 0.5 * playback_rate;
+            assert!(
+                (projected - expected).abs() <= 0.000_001,
+                "speed->position at {playback_rate}x projected {projected}, expected {expected}"
+            );
+        }
+
+        let mut multiple_transitions = RuntimePlaybackCoordination::default();
+        multiple_transitions.prepare_media(
+            LogicalMediaId::new("multiple-rate-transitions").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        multiple_transitions.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+        for (observed_at_seconds, playback_rate) in [(1.5, 2.0), (2.0, 0.5)] {
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(
+                    observed_at_seconds,
+                )),
+            );
+            speed.playback_rate = Some(playback_rate);
+            multiple_transitions.observe_transport(speed, 100.0 + observed_at_seconds);
+        }
+        let projected = multiple_transitions
+            .projected_local_position_at(102.5, None)
+            .expect("multiple sparse rate segments should remain projectable");
+        assert!((projected - 11.75).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn first_delayed_transport_sample_preserves_queue_dwell_and_invalid_rates_fail_closed() {
+        let mut delayed = RuntimePlaybackCoordination::default();
+        delayed.prepare_media(
+            LogicalMediaId::new("first-delayed-transport-sample").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        let mut delayed_position = transport(1, 1.0, PlayerTransportPhase::Playing, 10.0);
+        delayed_position.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        ));
+        delayed.observe_transport(delayed_position, 105.0);
+        assert_eq!(
+            delayed.projected_local_position_at(105.0, None),
+            None,
+            "the first rich sample must retain its four seconds of queue dwell"
+        );
+
+        for invalid_rate in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut runtime = RuntimePlaybackCoordination::default();
+            runtime.prepare_media(
+                LogicalMediaId::new(format!("invalid-rate-{invalid_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            runtime.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut invalid = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+            );
+            invalid.playback_rate = Some(invalid_rate);
+            runtime.observe_transport(invalid, 102.0);
+            assert_eq!(
+                runtime.projected_local_position_at(102.1, None),
+                None,
+                "invalid playback rate {invalid_rate} must make projection unavailable"
+            );
+            runtime.observe_transport(
+                transport(1, 2.2, PlayerTransportPhase::Playing, 11.0),
+                102.2,
+            );
+            assert_eq!(
+                runtime.projected_local_position_at(102.3, None),
+                None,
+                "an absent rate must not silently replace invalid rate {invalid_rate}"
+            );
+            let mut recovered = transport(1, 2.4, PlayerTransportPhase::Playing, 11.2);
+            recovered.playback_rate = Some(1.0);
+            runtime.observe_transport(recovered, 102.4);
+            assert!(
+                runtime.projected_local_position_at(102.5, None).is_some(),
+                "a later valid rate should recover projection"
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_pause_and_cache_transitions_close_and_resume_the_position_clock() {
+        for cache_pause in [false, true] {
+            let mut runtime = RuntimePlaybackCoordination::default();
+            runtime.prepare_media(
+                LogicalMediaId::new(format!("sparse-motion-transition-{cache_pause}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            runtime.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut stopped = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.5)),
+            );
+            stopped.phase = Some(if cache_pause {
+                PlayerTransportPhase::Rebuffering
+            } else {
+                PlayerTransportPhase::ReadyPaused
+            });
+            stopped.logical_pause = Some(!cache_pause);
+            stopped.paused_for_cache = Some(cache_pause);
+            stopped.core_idle = Some(!cache_pause);
+            runtime.observe_transport(stopped, 101.5);
+            if !cache_pause {
+                assert_eq!(
+                    runtime.projected_local_position_at(120.0, None),
+                    Some(10.5),
+                    "pause edge must retain progress through its own timestamp"
+                );
+            }
+
+            let mut resumed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+            );
+            resumed.phase = Some(PlayerTransportPhase::Playing);
+            resumed.logical_pause = Some(false);
+            resumed.paused_for_cache = Some(false);
+            resumed.core_idle = Some(false);
+            runtime.observe_transport(resumed, 102.0);
+            let projected = runtime
+                .projected_local_position_at(102.2, None)
+                .expect("a short sparse stop should remain projectable after resume");
+            assert!(
+                (projected - 10.7).abs() <= 0.000_001,
+                "projection must exclude the stopped interval for cache_pause={cache_pause}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_playing_sample_cannot_become_a_trusted_sparse_pause_anchor() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("stale-playing-to-sparse-pause").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+        let mut paused = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(4)),
+        );
+        paused.phase = Some(PlayerTransportPhase::ReadyPaused);
+        paused.logical_pause = Some(true);
+        paused.paused_for_cache = Some(false);
+        paused.seeking = Some(false);
+        paused.core_idle = Some(true);
+
+        runtime.observe_transport(paused, 104.0);
+
+        assert_eq!(
+            runtime.projected_local_position_at(104.0, None),
+            None,
+            "a sparse pause must not make a position last sampled three seconds ago authoritative"
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(120.0, None),
+            None,
+            "the rejected inferred pause anchor must not become permanently trusted"
         );
     }
 

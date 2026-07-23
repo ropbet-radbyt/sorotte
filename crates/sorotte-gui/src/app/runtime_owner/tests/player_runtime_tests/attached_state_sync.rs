@@ -175,7 +175,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
-        last_attached_player_position_observation: None,
+        attached_native_seek_tracker: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,

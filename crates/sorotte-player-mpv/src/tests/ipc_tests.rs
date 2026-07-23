@@ -878,6 +878,45 @@ fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others(
 }
 
 #[test]
+fn mpv_ipc_events_preserve_ingress_time_across_ordinary_and_control_lanes() {
+    let (transport, _state) = fake_transport_with_reads(&[]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    let ordinary_received_at = Instant::now() - Duration::from_secs(4);
+    let control_received_at = ordinary_received_at + Duration::from_secs(1);
+    client.inject_test_event_received_at(
+        json!({
+            "event": "property-change",
+            "name": "time-pos",
+            "data": 10.0,
+        }),
+        ordinary_received_at,
+    );
+    client.inject_test_event_received_at(
+        json!({
+            "event": "client-message",
+            "args": [SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT, "{}"],
+        }),
+        control_received_at,
+    );
+
+    let control = client.take_nonblocking_runtime_items_matching(|event| {
+        event.get("event").and_then(Value::as_str) == Some("client-message")
+    });
+    assert!(matches!(
+        control.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event)]
+            if event.received_at == control_received_at
+    ));
+    let ordinary = client.take_pending_timed_events();
+    assert_eq!(ordinary.len(), 1);
+    assert_eq!(ordinary[0].received_at, ordinary_received_at);
+    assert_eq!(
+        ordinary[0].value.get("name").and_then(Value::as_str),
+        Some("time-pos")
+    );
+}
+
+#[test]
 fn mpv_ipc_nonblocking_runtime_items_bypass_an_earlier_unselected_event() {
     let property_event = json!({
         "event": "property-change",
@@ -915,7 +954,7 @@ fn mpv_ipc_nonblocking_runtime_items_bypass_an_earlier_unselected_event() {
     assert_eq!(runtime_items.len(), 2);
     assert!(matches!(
         &runtime_items[0],
-        crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) if event == &lease_event
+        crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) if event.value == lease_event
     ));
     assert!(matches!(
         &runtime_items[1],

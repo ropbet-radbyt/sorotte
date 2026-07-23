@@ -678,6 +678,7 @@ pub struct MpvAdapter {
     observers_registered: bool,
     transport_observers_registered: bool,
     observation_clock_origin: Instant,
+    current_ipc_event_observed_at: Option<PlayerObservationTimestamp>,
     next_media_generation: u64,
     active_media_generation: Option<PlayerMediaGeneration>,
     pending_load_generation: Option<PlayerMediaGeneration>,
@@ -4496,7 +4497,16 @@ impl MpvAdapter {
     }
 
     fn observation_timestamp(&self) -> PlayerObservationTimestamp {
-        PlayerObservationTimestamp::from_adapter_start(self.observation_clock_origin.elapsed())
+        self.current_ipc_event_observed_at.unwrap_or_else(|| {
+            PlayerObservationTimestamp::from_adapter_start(self.observation_clock_origin.elapsed())
+        })
+    }
+
+    fn observation_timestamp_for(&self, observed_at: Instant) -> PlayerObservationTimestamp {
+        PlayerObservationTimestamp::from_adapter_observation(
+            observed_at.saturating_duration_since(self.observation_clock_origin),
+            self.observation_clock_origin.elapsed(),
+        )
     }
 
     fn transport_update(&self) -> PlayerTransportTelemetryUpdate {
@@ -4581,7 +4591,16 @@ impl MpvAdapter {
                             && update.position_seconds.is_none()
                             && pending.position_seconds.is_some())
                 });
+        let projection_clock_boundary = self
+            .pending_transport_telemetry_updates
+            .back()
+            .is_some_and(|pending| {
+                update.playback_rate.is_some()
+                    || pending.playback_rate.is_some()
+                    || (pending.position_seconds.is_some() && update.position_seconds.is_none())
+            });
         let lifecycle_boundary = cache_position_boundary
+            || projection_clock_boundary
             || self
                 .pending_transport_telemetry_updates
                 .back()
@@ -4928,7 +4947,7 @@ impl MpvAdapter {
         let mut processed_any = false;
         loop {
             let pending_events = match self.ipc_client.as_mut() {
-                Some(ipc_client) => ipc_client.take_pending_events(),
+                Some(ipc_client) => ipc_client.take_pending_timed_events(),
                 None => Vec::new(),
             };
             if pending_events.is_empty() {
@@ -4936,7 +4955,11 @@ impl MpvAdapter {
             }
             processed_any = true;
             for event in pending_events {
-                self.handle_ipc_event(&event);
+                let previous_observed_at = self
+                    .current_ipc_event_observed_at
+                    .replace(self.observation_timestamp_for(event.received_at));
+                self.handle_ipc_event(&event.value);
+                self.current_ipc_event_observed_at = previous_observed_at;
             }
         }
         self.network_media_options_event_batch_depth -= 1;

@@ -575,12 +575,20 @@ impl MpvJsonIpcClient {
             });
     }
 
+    #[cfg(test)]
     pub(crate) fn take_pending_events(&mut self) -> Vec<Value> {
+        self.take_pending_timed_events()
+            .into_iter()
+            .map(|event| event.value)
+            .collect()
+    }
+
+    pub(crate) fn take_pending_timed_events(&mut self) -> Vec<MpvIpcEvent> {
         self.poll_nonblocking_command();
         self.runtime_queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_pending_events()
+            .take_pending_timed_events()
     }
 
     #[cfg(test)]
@@ -639,6 +647,11 @@ impl MpvJsonIpcClient {
 
     #[cfg(test)]
     pub(crate) fn inject_test_event(&mut self, event: Value) {
+        self.inject_test_event_received_at(event, Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_event_received_at(&mut self, event: Value, received_at: Instant) {
         let sequence = self.next_runtime_item_sequence();
         self.runtime_queues
             .lock()
@@ -646,6 +659,7 @@ impl MpvJsonIpcClient {
             .push_event(SequencedMpvIpcEvent {
                 sequence,
                 value: event,
+                received_at,
             });
     }
 
@@ -835,11 +849,16 @@ impl MpvIpcWorker {
     }
 
     fn push_pending_event(&self, value: Value) {
+        let received_at = Instant::now();
         let sequence = next_nonzero_sequence(&self.next_runtime_item_sequence);
         self.runtime_queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_event(SequencedMpvIpcEvent { sequence, value });
+            .push_event(SequencedMpvIpcEvent {
+                sequence,
+                value,
+                received_at,
+            });
     }
 
     fn send_command(
@@ -999,9 +1018,15 @@ struct PendingMpvIpcCommand {
     response_deadline: Instant,
 }
 
+pub(crate) struct MpvIpcEvent {
+    pub(crate) value: Value,
+    pub(crate) received_at: Instant,
+}
+
 struct SequencedMpvIpcEvent {
     sequence: u64,
     value: Value,
+    received_at: Instant,
 }
 
 struct SequencedMpvIpcControlItem {
@@ -1010,7 +1035,7 @@ struct SequencedMpvIpcControlItem {
 }
 
 enum MpvIpcControlItem {
-    Event(Value),
+    Event(MpvIpcEvent),
     Completion(MpvIpcNonblockingCommandCompletion),
     ControlQueueOverflow,
     OrdinaryQueueOverflow,
@@ -1027,7 +1052,10 @@ impl MpvIpcRuntimeQueues {
         if is_sorotte_control_event(&event.value) {
             self.push_control_item(SequencedMpvIpcControlItem {
                 sequence: event.sequence,
-                value: MpvIpcControlItem::Event(event.value),
+                value: MpvIpcControlItem::Event(MpvIpcEvent {
+                    value: event.value,
+                    received_at: event.received_at,
+                }),
             });
             return;
         }
@@ -1108,7 +1136,7 @@ impl MpvIpcRuntimeQueues {
         self.control_items.insert(insert_at, item);
     }
 
-    fn take_pending_events(&mut self) -> Vec<Value> {
+    fn take_pending_timed_events(&mut self) -> Vec<MpvIpcEvent> {
         let control_barrier = self.control_items.iter().find_map(|item| {
             matches!(
                 &item.value,
@@ -1128,7 +1156,13 @@ impl MpvIpcRuntimeQueues {
                 .ordinary_events
                 .pop_front()
                 .expect("the ordinary-event front was present");
-            events.push((event.sequence, event.value));
+            events.push((
+                event.sequence,
+                MpvIpcEvent {
+                    value: event.value,
+                    received_at: event.received_at,
+                },
+            ));
         }
         while self
             .control_items
@@ -1166,8 +1200,8 @@ impl MpvIpcRuntimeQueues {
         let mut control_retained = VecDeque::with_capacity(self.control_items.len());
         while let Some(item) = self.control_items.pop_front() {
             match item.value {
-                MpvIpcControlItem::Event(event) if predicate(&event) => {
-                    matching.push((item.sequence, event));
+                MpvIpcControlItem::Event(event) if predicate(&event.value) => {
+                    matching.push((item.sequence, event.value));
                 }
                 value => control_retained.push_back(SequencedMpvIpcControlItem {
                     sequence: item.sequence,
@@ -1188,7 +1222,7 @@ impl MpvIpcRuntimeQueues {
         let mut retained = VecDeque::with_capacity(self.control_items.len());
         while let Some(item) = self.control_items.pop_front() {
             match item.value {
-                MpvIpcControlItem::Event(event) if predicate(&event) => {
+                MpvIpcControlItem::Event(event) if predicate(&event.value) => {
                     selected.push((item.sequence, MpvIpcNonblockingRuntimeItem::Event(event)))
                 }
                 MpvIpcControlItem::Completion(completion) => selected.push((
@@ -1228,7 +1262,7 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
 }
 
 pub(crate) enum MpvIpcNonblockingRuntimeItem {
-    Event(Value),
+    Event(MpvIpcEvent),
     Completion(MpvIpcNonblockingCommandCompletion),
     ControlQueueOverflow,
     OrdinaryQueueOverflow,

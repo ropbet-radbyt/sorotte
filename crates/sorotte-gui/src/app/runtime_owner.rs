@@ -38,7 +38,7 @@ use sorotte_client_app::app_boundary::{
     },
 };
 use sorotte_client_core::PlayerCommandCause;
-use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
+use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerTransportPhase};
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
@@ -387,8 +387,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<GuiPendingAttachedRoomUnpauseObservation>,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
-    pub(super) last_attached_player_position_observation:
-        Option<GuiAttachedPlayerPositionObservation>,
+    pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -448,6 +447,25 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
     pub(super) media_generation: u64,
     pub(super) observed_at_seconds: f64,
     pub(super) position_seconds: f64,
+    pub(super) phase: PlayerTransportPhase,
+    pub(super) playback_rate: f64,
+    pub(super) logical_pause: bool,
+    pub(super) paused_for_cache: bool,
+    pub(super) core_idle: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct GuiAttachedNativeSeekTracker {
+    pub(super) media_generation: Option<u64>,
+    pub(super) phase: Option<PlayerTransportPhase>,
+    pub(super) playback_rate: Option<f64>,
+    pub(super) logical_pause: Option<bool>,
+    pub(super) paused_for_cache: Option<bool>,
+    pub(super) seeking: Option<bool>,
+    pub(super) core_idle: Option<bool>,
+    pub(super) position_anchor: Option<GuiAttachedPlayerPositionObservation>,
+    pub(super) interval_disarmed: bool,
+    pub(super) seeking_since_anchor: bool,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

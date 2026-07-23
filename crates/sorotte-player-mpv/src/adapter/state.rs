@@ -263,6 +263,7 @@ impl Default for MpvAdapter {
             observers_registered: false,
             transport_observers_registered: false,
             observation_clock_origin: Instant::now(),
+            current_ipc_event_observed_at: None,
             next_media_generation: 1,
             active_media_generation: None,
             pending_load_generation: None,

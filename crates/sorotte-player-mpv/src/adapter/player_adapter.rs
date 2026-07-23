@@ -27,12 +27,17 @@ impl MpvAdapter {
             match item {
                 crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) => {
                     let is_transition_result = event
+                        .value
                         .get("args")
                         .and_then(Value::as_array)
                         .and_then(|args| args.first())
                         .and_then(Value::as_str)
                         == Some(SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT);
-                    self.handle_client_message_event(&event);
+                    let previous_observed_at = self
+                        .current_ipc_event_observed_at
+                        .replace(self.observation_timestamp_for(event.received_at));
+                    self.handle_client_message_event(&event.value);
+                    self.current_ipc_event_observed_at = previous_observed_at;
                     if is_transition_result
                         && let Some(result) = self
                             .deferred_network_media_options_hook_transition_result
@@ -904,7 +909,14 @@ impl PlayerAdapter for MpvAdapter {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.observe_unhealthy_ipc_transport();
-        self.pending_transport_telemetry_updates.pop_front()
+        let mut update = self.pending_transport_telemetry_updates.pop_front()?;
+        if let Some(observed_at) = update.observed_at {
+            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+                observed_at.elapsed_since_adapter_start(),
+                self.observation_clock_origin.elapsed(),
+            ));
+        }
+        Some(update)
     }
 
     fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
@@ -912,7 +924,14 @@ impl PlayerAdapter for MpvAdapter {
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.observe_unhealthy_ipc_transport();
-        self.pending_cache_telemetry_updates.pop_front()
+        let mut update = self.pending_cache_telemetry_updates.pop_front()?;
+        if let Some(observed_at) = update.observed_at {
+            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+                observed_at.elapsed_since_adapter_start(),
+                self.observation_clock_origin.elapsed(),
+            ));
+        }
+        Some(update)
     }
 
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
@@ -1642,6 +1661,198 @@ mod nonblocking_maintenance_tests {
             (0, 0),
             "full maintenance must not leave the overflow sentinel or later events stuck"
         );
+    }
+
+    #[test]
+    fn pending_position_and_rate_events_keep_their_individual_sample_clocks() {
+        let generation = PlayerMediaGeneration::new(1);
+        for position_then_speed in [true, false] {
+            let mut adapter = MpvAdapter {
+                active_media_generation: Some(generation),
+                transport_phase: PlayerTransportPhase::Playing,
+                ..MpvAdapter::default()
+            };
+            let mut position = PlayerTransportTelemetryUpdate::new(
+                generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(
+                    if position_then_speed { 1 } else { 2 },
+                )),
+            )
+            .with_position_seconds(10.0);
+            position.phase = Some(PlayerTransportPhase::Playing);
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(
+                    if position_then_speed { 2 } else { 1 },
+                )),
+            );
+            speed.playback_rate = Some(4.0);
+
+            if position_then_speed {
+                adapter.queue_transport_telemetry_update(position);
+                adapter.queue_transport_telemetry_update(speed);
+            } else {
+                adapter.queue_transport_telemetry_update(speed);
+                adapter.queue_transport_telemetry_update(position);
+            }
+
+            assert_eq!(adapter.pending_transport_telemetry_updates.len(), 2);
+            let clocks = adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .map(|update| {
+                    (
+                        update.position_seconds,
+                        update.playback_rate,
+                        update
+                            .observed_at
+                            .expect("queued transport telemetry should have a clock")
+                            .elapsed_since_adapter_start(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if position_then_speed {
+                assert_eq!(
+                    clocks,
+                    vec![
+                        (Some(10.0), None, Duration::from_secs(1)),
+                        (None, Some(4.0), Duration::from_secs(2)),
+                    ]
+                );
+            } else {
+                assert_eq!(
+                    clocks,
+                    vec![
+                        (None, Some(4.0), Duration::from_secs(1)),
+                        (Some(10.0), None, Duration::from_secs(2)),
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_event_cannot_retimestamp_a_pending_position() {
+        let generation = PlayerMediaGeneration::new(1);
+        let mut adapter = MpvAdapter {
+            active_media_generation: Some(generation),
+            transport_phase: PlayerTransportPhase::Playing,
+            ..MpvAdapter::default()
+        };
+        adapter.queue_transport_telemetry_update(
+            PlayerTransportTelemetryUpdate::new(
+                generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+            )
+            .with_position_seconds(10.0),
+        );
+        let mut sparse = PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+        );
+        sparse.logical_pause = Some(false);
+        adapter.queue_transport_telemetry_update(sparse);
+
+        assert_eq!(adapter.pending_transport_telemetry_updates.len(), 2);
+        assert_eq!(
+            adapter.pending_transport_telemetry_updates[0]
+                .observed_at
+                .expect("position should retain its own clock")
+                .elapsed_since_adapter_start(),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn delayed_ordinary_event_uses_ipc_ingress_time_not_drain_time() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            RejectingHeartbeatTransport {
+                responses: VecDeque::new(),
+            },
+            Duration::from_millis(100),
+        );
+        let origin = Instant::now() - Duration::from_secs(10);
+        let received_at = origin + Duration::from_secs(1);
+        adapter.observation_clock_origin = origin;
+        let generation = PlayerMediaGeneration::new(1);
+        adapter.active_media_generation = Some(generation);
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter
+            .ipc_client
+            .as_mut()
+            .expect("test adapter should remain attached")
+            .inject_test_event_received_at(
+                json!({
+                    "event": MPV_EVENT_PROPERTY_CHANGE,
+                    "name": MPV_PROPERTY_TIME_POS,
+                    "data": 10.0,
+                }),
+                received_at,
+            );
+
+        assert!(adapter.drain_ipc_events_without_network_options_flush());
+        let position = adapter
+            .pending_transport_telemetry_updates
+            .iter()
+            .find(|update| update.position_seconds == Some(10.0))
+            .expect("time-pos event should emit transport telemetry");
+        assert_eq!(
+            position
+                .observed_at
+                .expect("event-derived telemetry should be timestamped")
+                .elapsed_since_adapter_start(),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn telemetry_delivery_reference_includes_adapter_queue_dwell() {
+        let mut adapter = MpvAdapter {
+            observation_clock_origin: Instant::now() - Duration::from_secs(10),
+            ..MpvAdapter::default()
+        };
+        let generation = PlayerMediaGeneration::new(1);
+        adapter
+            .pending_transport_telemetry_updates
+            .push_back(PlayerTransportTelemetryUpdate::new(
+                generation,
+                PlayerObservationTimestamp::from_adapter_observation(
+                    Duration::from_secs(1),
+                    Duration::from_secs(2),
+                ),
+            ));
+        adapter
+            .pending_cache_telemetry_updates
+            .push_back(PlayerCacheTelemetryUpdate {
+                media_generation: Some(generation),
+                observed_at: Some(PlayerObservationTimestamp::from_adapter_observation(
+                    Duration::from_secs(1),
+                    Duration::from_secs(2),
+                )),
+                ..PlayerCacheTelemetryUpdate::default()
+            });
+
+        let transport_timestamp = adapter
+            .take_transport_telemetry_update()
+            .and_then(|update| update.observed_at)
+            .expect("transport telemetry should retain a timestamp");
+        let cache_timestamp = adapter
+            .take_cache_telemetry_update()
+            .and_then(|update| update.observed_at)
+            .expect("cache telemetry should retain a timestamp");
+
+        for timestamp in [transport_timestamp, cache_timestamp] {
+            assert_eq!(
+                timestamp.elapsed_since_adapter_start(),
+                Duration::from_secs(1),
+                "popping telemetry must preserve the original observation clock"
+            );
+            assert!(
+                timestamp.delivery_reference_since_adapter_start() >= Duration::from_secs(9),
+                "popping telemetry must retag delivery after its adapter-queue dwell"
+            );
+        }
     }
 
     #[test]
