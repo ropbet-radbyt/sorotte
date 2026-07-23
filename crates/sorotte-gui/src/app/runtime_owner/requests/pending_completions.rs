@@ -254,6 +254,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             self.supersede_playlist_resolution_attempt();
                             match self.open_media_files_through_attached_player_result_impl(
                                 std::slice::from_ref(&path),
+                                true,
                             ) {
                                 Some(Ok(started)) => {
                                     self.bind_started_local_media_load_to_current_playlist(

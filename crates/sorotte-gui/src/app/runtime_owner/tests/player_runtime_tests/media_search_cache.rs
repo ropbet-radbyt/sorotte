@@ -13,6 +13,52 @@ use crate::app::{
     GuiPlaylistSourceStatus,
 };
 
+struct RecordingMediaLoadIntentSession {
+    intents: std::sync::Arc<std::sync::Mutex<Vec<sorotte_client_core::MediaLoadIntent>>>,
+}
+
+impl GuiSessionRuntimeAdapter for RecordingMediaLoadIntentSession {
+    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn connect_public_server(
+        &mut self,
+        _selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Ok(current_servers)
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn prepare_attached_playback_media(
+        &mut self,
+        _logical_id: sorotte_client_core::LogicalMediaId,
+        _kind: sorotte_client_core::MediaTransportKind,
+        intent: sorotte_client_core::MediaLoadIntent,
+        _now_seconds: f64,
+    ) -> Result<Option<sorotte_client_core::MediaLoadPlan>, String> {
+        self.intents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(intent);
+        Ok(None)
+    }
+}
+
 fn wait_for_media_match_remote_lookup(owner: &mut GuiPersistedConfigRuntimeOwner) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -4000,6 +4046,10 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let load_intents = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    owner.session = Some(Box::new(RecordingMediaLoadIntentSession {
+        intents: load_intents.clone(),
+    }));
     owner.active_shared_playlist_index = Some(0);
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
@@ -4018,8 +4068,15 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
             .playlist_resolution_attempt
             .as_ref()
             .and_then(|attempt| attempt.candidate_provider.clone()),
-        Some(GuiMediaSourceProviderId::media_matching()),
-        "an exact inventory path must remain attributed to Media Matching"
+        Some(GuiMediaSourceProviderId::local()),
+        "an exact local inventory path should be presented as Local even when Media Matching's persisted inventory found it"
+    );
+    assert_eq!(
+        *load_intents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![sorotte_client_core::MediaLoadIntent::TransportRefresh],
+        "automatically joining an existing playlist item must not originate a new playback episode"
     );
     assert!(
         owner.pending_attached_media_resolution.is_none(),

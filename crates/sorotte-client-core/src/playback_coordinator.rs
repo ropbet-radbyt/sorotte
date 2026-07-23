@@ -804,6 +804,38 @@ impl PlaybackCoordinator {
         requested_intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> MediaLoadPlan {
+        self.prepare_media_with_intent_internal(
+            logical_id,
+            kind,
+            requested_intent,
+            now_seconds,
+            false,
+        )
+    }
+
+    pub fn prepare_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.prepare_media_with_intent_internal(
+            logical_id,
+            kind,
+            MediaLoadIntent::TransportRefresh,
+            now_seconds,
+            true,
+        )
+    }
+
+    fn prepare_media_with_intent_internal(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        requested_intent: MediaLoadIntent,
+        now_seconds: f64,
+        preserve_changed_identity_transport_refresh: bool,
+    ) -> MediaLoadPlan {
         let load_restart_baseline = self
             .observed
             .map_or(0, |observed| observed.playback_restart_sequence);
@@ -816,9 +848,14 @@ impl PlaybackCoordinator {
             (true, MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay) => {
                 MediaLoadIntent::Replay
             }
+            (false, MediaLoadIntent::TransportRefresh)
+                if preserve_changed_identity_transport_refresh =>
+            {
+                MediaLoadIntent::TransportRefresh
+            }
             (false, _) => MediaLoadIntent::NewPlayback,
         };
-        if load_intent == MediaLoadIntent::TransportRefresh {
+        if same_logical_media && load_intent == MediaLoadIntent::TransportRefresh {
             let ready_handoff_to_rearm = self
                 .last_seek_preparation_terminal
                 .as_ref()
@@ -3434,6 +3471,31 @@ mod tests {
             .prepare_media(LogicalMediaId::new("episode-1").unwrap(), kind, 0.0)
             .media_generation;
         (coordinator, generation)
+    }
+
+    #[test]
+    fn transport_refresh_preserves_room_participation_intent_for_changed_local_identity() {
+        let mut coordinator = PlaybackCoordinator::default();
+        let initial = coordinator.prepare_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode").unwrap(),
+            MediaTransportKind::LocalFile,
+            1.0,
+        );
+
+        assert!(initial.logical_media_changed);
+        assert!(initial.playback_episode_changed);
+        assert_eq!(initial.load_intent, MediaLoadIntent::TransportRefresh);
+
+        let replacement = coordinator.prepare_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode-local-match").unwrap(),
+            MediaTransportKind::LocalFile,
+            2.0,
+        );
+
+        assert!(replacement.logical_media_changed);
+        assert!(replacement.playback_episode_changed);
+        assert_eq!(replacement.load_intent, MediaLoadIntent::TransportRefresh);
+        assert_ne!(replacement.media_generation, initial.media_generation);
     }
 
     fn desired(generation: u64, revision: u64, paused: bool, position: f64) -> DesiredRoomPlayback {

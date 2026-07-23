@@ -1188,8 +1188,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
                 let player_paths = [resolved_target.clone()];
                 self.prepare_stream_load_tracking(&player_paths[0], user_initiated);
-                let open_result =
-                    self.open_media_files_through_attached_player_result_impl(&player_paths);
+                let open_result = self.open_media_files_through_attached_player_result_impl(
+                    &player_paths,
+                    user_initiated,
+                );
                 match open_result {
                     Some(Ok(started)) => {
                         self.begin_playlist_resolution_candidate_load(candidate.clone(), &started);

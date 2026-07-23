@@ -356,7 +356,7 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, None, now_seconds)
+        self.prepare_media_internal(logical_id, kind, None, now_seconds, false)
     }
 
     pub(crate) fn prepare_media_with_intent(
@@ -366,7 +366,22 @@ impl RuntimePlaybackCoordination {
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds)
+        self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds, false)
+    }
+
+    pub(crate) fn prepare_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.prepare_media_internal(
+            logical_id,
+            kind,
+            Some(MediaLoadIntent::TransportRefresh),
+            now_seconds,
+            true,
+        )
     }
 
     fn prepare_media_internal(
@@ -375,20 +390,28 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         intent: Option<MediaLoadIntent>,
         now_seconds: f64,
+        room_participation: bool,
     ) -> MediaLoadPlan {
         let placeholder_adapter_generation = self
             .coordinator
             .current_logical_media_id()
             .filter(|logical_id| logical_id.as_str().starts_with("adapter-media-generation-"))
             .and(self.highest_bound_adapter_generation);
-        let plan = match intent {
-            Some(intent) => {
-                self.coordinator
-                    .prepare_media_with_intent(logical_id, kind, intent, now_seconds)
+        let plan = if room_participation {
+            self.coordinator
+                .prepare_media_for_room_participation(logical_id, kind, now_seconds)
+        } else {
+            match intent {
+                Some(intent) => self.coordinator.prepare_media_with_intent(
+                    logical_id,
+                    kind,
+                    intent,
+                    now_seconds,
+                ),
+                None => self
+                    .coordinator
+                    .prepare_media(logical_id, kind, now_seconds),
             }
-            None => self
-                .coordinator
-                .prepare_media(logical_id, kind, now_seconds),
         };
         self.adapter_generation_bindings
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
@@ -417,16 +440,18 @@ impl RuntimePlaybackCoordination {
             self.accepted_barrier = None;
             self.pending_barrier_recovery = None;
             self.accepted_barrier_terminal = false;
-            self.pending_media_coordination = Some(PendingMediaCoordinationIntent {
-                local_media_generation: plan.media_generation,
-                load_intent: plan.load_intent,
-                include_start_barrier: true,
-                request_id: new_playback_barrier_request_id(plan.media_generation),
-                retry_request_nonce: None,
-                retry_not_before_seconds: None,
-                retry_attempts: 0,
-                room: None,
-            });
+            self.pending_media_coordination = (plan.load_intent
+                != MediaLoadIntent::TransportRefresh)
+                .then(|| PendingMediaCoordinationIntent {
+                    local_media_generation: plan.media_generation,
+                    load_intent: plan.load_intent,
+                    include_start_barrier: true,
+                    request_id: new_playback_barrier_request_id(plan.media_generation),
+                    retry_request_nonce: None,
+                    retry_not_before_seconds: None,
+                    retry_attempts: 0,
+                    room: None,
+                });
             self.handled_barrier_timeout = None;
             self.pending_barrier_timeout_action = None;
             self.last_reported_room_buffering = None;
@@ -2924,6 +2949,26 @@ where
             intent,
             now_seconds,
         );
+        self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    pub fn prepare_playback_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        let plan = self
+            .playback_coordination
+            .prepare_media_for_room_participation(logical_id, kind, now_seconds);
+        self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    fn finish_prepared_playback_media(
+        &mut self,
+        plan: MediaLoadPlan,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
         if let Some(room) = self.session.room() {
             self.control
                 .retain_protocol_playback_barrier_scope(room, plan.media_generation);
@@ -3905,6 +3950,41 @@ mod tests {
     #[test]
     fn playback_barrier_start_defaults_to_immediate() {
         assert_eq!(PlaybackBarrierStartConfig::default().policy, None);
+    }
+
+    #[test]
+    fn changed_media_transport_refresh_does_not_start_a_room_barrier() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"controller":true}}}}"#,
+            )
+            .expect("controller authority should apply");
+        let mut runtime =
+            ClientRuntime::new(session, DisconnectedPlayer, QueuedRuntimeControl::default());
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+
+        let plan = runtime.prepare_playback_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode").unwrap(),
+            MediaTransportKind::LocalFile,
+            1.0,
+        );
+
+        assert_eq!(plan.load_intent, MediaLoadIntent::TransportRefresh);
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_none(),
+            "room participation must not queue a controller-owned start barrier"
+        );
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "room participation must not emit a playback-barrier request"
+        );
     }
 
     fn barrier_session() -> ClientSession {

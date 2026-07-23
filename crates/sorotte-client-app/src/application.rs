@@ -1498,6 +1498,16 @@ where
             .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
     }
 
+    pub fn prepare_playback_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media_for_room_participation(logical_id, kind, now_seconds)
+    }
+
     pub fn observe_external_player_transport(
         &mut self,
         update: PlayerTransportTelemetryUpdate,

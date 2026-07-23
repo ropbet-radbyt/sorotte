@@ -611,12 +611,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> Result<Option<MediaLoadPlan>, String> {
-        Ok(Some(self.runtime.prepare_playback_media_with_intent(
-            logical_id,
-            kind,
-            intent,
-            now_seconds,
-        )))
+        let plan = if intent == MediaLoadIntent::TransportRefresh {
+            self.runtime.prepare_playback_media_for_room_participation(
+                logical_id,
+                kind,
+                now_seconds,
+            )
+        } else {
+            self.runtime
+                .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
+        };
+        Ok(Some(plan))
     }
 
     fn sync_attached_player_transport_telemetry(
