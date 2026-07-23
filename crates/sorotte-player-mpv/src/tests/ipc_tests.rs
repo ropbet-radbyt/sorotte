@@ -3877,6 +3877,55 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
 }
 
 #[test]
+fn full_maintenance_reacquires_lost_hook_ownership_without_explicit_retry() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::StableNetwork,
+        lose_ownership_on_heartbeat: true,
+        acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial hook ownership should configure"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    adapter.maintain_runtime_integrations();
+
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error))
+            if error.to_string().contains("ownership was replaced")
+    ));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "bounded full maintenance should positively recover the transient ownership loss"
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+    assert!(adapter.is_connected());
+
+    let configure_count = writes
+        .lock()
+        .expect("lease recovery writes should not be poisoned")
+        .iter()
+        .filter(|write| write.contains("sorotte_network_options_configure"))
+        .count();
+    assert_eq!(
+        configure_count, 2,
+        "maintenance should reacquire exactly once"
+    );
+}
+
+#[test]
 fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let transport = NetworkOptionsHookScenarioTransport {

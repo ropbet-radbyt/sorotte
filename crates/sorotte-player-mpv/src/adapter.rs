@@ -1411,11 +1411,14 @@ impl MpvAdapter {
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
         self.drain_ipc_events_if_attached();
+        self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_media_options_hook_lease();
         self.maintain_legacy_syncplayintf_lease();
         // Synchronous heartbeat commands can themselves harvest a bounded batch of events. Flush
-        // their control faults and ordinary observations before returning to a full-pump owner.
+        // their control faults and ordinary observations, then recover an ownership loss in the
+        // same pump so a transient lease expiry never reaches the GUI as incomplete setup.
         self.drain_ipc_events_if_attached();
+        self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_cache_stall_recovery();
     }
 
@@ -1460,9 +1463,34 @@ impl MpvAdapter {
         let PlayerError::OperationFailed(reason) = error else {
             return false;
         };
+        Self::network_options_hook_ownership_failure_reason(reason)
+    }
+
+    fn network_options_hook_ownership_failure_reason(reason: &str) -> bool {
         reason.contains("network-options hook lease expired")
             || reason.contains("network-options hook ownership was replaced")
             || reason.contains("network-options hook ownership was lost")
+    }
+
+    fn recover_network_media_options_hook_ownership_if_needed(&mut self) {
+        let should_recover = matches!(
+            &self.network_media_options_hook_health,
+            MpvNetworkOptionsHookHealth::Degraded(reason)
+                if Self::network_options_hook_ownership_failure_reason(reason)
+        );
+        if !should_recover || !self.network_media_options_hook_should_run() {
+            return;
+        }
+
+        if let Err(error) = self.apply_network_media_options_to_active_media_classified() {
+            // Do not enter a blocking retry loop on every runtime tick when another live owner
+            // legitimately won the lease or mpv stopped answering. The original degradation is
+            // already queued for observers; record the failed automatic attempt as the current
+            // authoritative health and leave subsequent recovery to the explicit retry action.
+            self.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Degraded(format!(
+                "automatic network-options hook ownership recovery failed: {error}"
+            )));
+        }
     }
 
     fn apply_network_media_options_to_active_media_classified_inner(

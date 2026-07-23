@@ -50,7 +50,6 @@ use super::super::shell_state::{
     GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
     SorotteGuiShellAppState, browser_stream_target_kind,
 };
-use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
     StreamHelperRemediationProgress, import_managed_stream_helper_downloader_with_progress,
@@ -76,7 +75,6 @@ impl GuiPersistedConfigRuntimeOwner {
             .config_path
             .as_deref()
             .map(PathBuf::from)
-            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)
     }
 
     pub(in crate::app::runtime_owner) fn persist_saved_settings_patch(
