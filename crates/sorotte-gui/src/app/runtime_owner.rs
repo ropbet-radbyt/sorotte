@@ -388,7 +388,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
-    pub(super) attached_coordinator_seek_ownership: VecDeque<GuiAttachedCoordinatorSeekOwnership>,
+    pub(super) attached_system_seek_ownership: VecDeque<GuiAttachedSystemSeekOwnership>,
+    pub(super) attached_system_seek_fail_closed: Option<GuiAttachedSystemSeekFailClosedGuard>,
     pub(super) attached_transport_telemetry_available: bool,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
@@ -472,14 +473,22 @@ pub(super) struct GuiAttachedNativeSeekTracker {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GuiAttachedCoordinatorSeekOwnershipState {
+pub(super) enum GuiAttachedSystemSeekSource {
+    Coordinator(CoordinatorCommandId),
+    RuntimeAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiAttachedSystemSeekOwnershipState {
     Active,
     SupersededMayArrive,
+    CompletedAwaitingStablePosition,
+    MayStillArrive,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct GuiAttachedCoordinatorSeekOwnership {
-    pub(super) coordinator_command_id: CoordinatorCommandId,
+pub(super) struct GuiAttachedSystemSeekOwnership {
+    pub(super) source: GuiAttachedSystemSeekSource,
     pub(super) adapter_player_command_id: Option<PlayerCommandId>,
     pub(super) player_attachment_epoch: u64,
     pub(super) session_generation: u64,
@@ -488,8 +497,17 @@ pub(super) struct GuiAttachedCoordinatorSeekOwnership {
     pub(super) issued_after_observed_at_seconds: Option<f64>,
     pub(super) target_position_seconds: f64,
     pub(super) tolerance_seconds: f64,
-    pub(super) expires_at: Instant,
-    pub(super) state: GuiAttachedCoordinatorSeekOwnershipState,
+    pub(super) retire_after: Instant,
+    pub(super) state: GuiAttachedSystemSeekOwnershipState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiAttachedSystemSeekFailClosedGuard {
+    pub(super) player_attachment_epoch: u64,
+    pub(super) session_generation: u64,
+    pub(super) room_name: Option<String>,
+    pub(super) media_generation: Option<u64>,
+    pub(super) retire_after: Instant,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

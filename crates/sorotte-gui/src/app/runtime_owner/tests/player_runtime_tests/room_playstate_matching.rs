@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
 use sorotte_client_app::app_boundary::application::ClientCommand;
 use sorotte_client_core::{CoordinatorPlayerCommand, PlaybackCoordinationSnapshot};
 
@@ -713,6 +714,21 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
         );
         recorded.set_positions.clear();
     }
+    assert_eq!(
+        owner
+            .attached_system_seek_ownership
+            .back()
+            .map(|ownership| ownership.source),
+        Some(GuiAttachedSystemSeekSource::RuntimeAction),
+        "legacy room-state correction should retain ownership of its physical player seek"
+    );
+    assert!(
+        owner
+            .attached_system_seek_ownership
+            .back()
+            .is_some_and(|ownership| (ownership.target_position_seconds - 30.0).abs() < 0.01),
+        "legacy room-state ownership should retain the aged room target"
+    );
     assert!(owner.pending_attached_room_unpause_observation.is_some());
     assert_eq!(owner.player_paused, Some(false));
     assert_eq!(owner.last_applied_attached_room_playstate, None);

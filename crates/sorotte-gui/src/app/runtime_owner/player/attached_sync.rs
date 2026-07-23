@@ -228,8 +228,11 @@ impl GuiPersistedConfigRuntimeOwner {
                         return state_changed;
                     };
                     match player.set_position_tracked(sync_position_seconds) {
-                        Ok(_) => {
-                            self.attached_coordinator_seek_ownership.clear();
+                        Ok(adapter_player_command_id) => {
+                            self.note_attached_runtime_position_dispatched(
+                                adapter_player_command_id,
+                                position_seconds,
+                            );
                             self.player_position_seconds = Some(position_seconds);
                             state_changed = true;
                             if let Some(session) = self.session.as_mut()
@@ -546,8 +549,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.last_applied_attached_room_playstate = None;
                     return;
                 };
-                match player.set_position(sync_position_seconds) {
-                    Ok(()) => {
+                let position_result = player.set_position_tracked(sync_position_seconds);
+                match position_result {
+                    Ok(adapter_player_command_id) => {
+                        self.note_attached_runtime_position_dispatched(
+                            adapter_player_command_id,
+                            position_seconds,
+                        );
                         self.player_position_seconds = Some(position_seconds);
                         state_changed = true;
                     }

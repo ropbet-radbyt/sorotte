@@ -24,7 +24,6 @@ use sorotte_client_app::app_boundary::{
         persist_sorotte_client_install_locator,
     },
 };
-use sorotte_player_api::PlayerAdapter;
 
 use super::super::media_match_support::{
     MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult,

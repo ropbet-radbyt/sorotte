@@ -460,7 +460,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
         attached_native_seek_tracker: Default::default(),
-        attached_coordinator_seek_ownership: std::collections::VecDeque::new(),
+        attached_system_seek_ownership: std::collections::VecDeque::new(),
+        attached_system_seek_fail_closed: None,
         attached_transport_telemetry_available: false,
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
@@ -553,6 +554,15 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
             .set_positions,
         vec![105.0, 107.0, 49.0],
         "offset commands should target player-local time, while global seeks add the active offset only once"
+    );
+    assert_eq!(
+        owner
+            .attached_system_seek_ownership
+            .iter()
+            .map(|ownership| ownership.target_position_seconds)
+            .collect::<Vec<_>>(),
+        vec![100.0, 100.0, 42.0],
+        "offset rebases and GUI seeks should share physical-effect ownership on the global timeline"
     );
     assert_eq!(
         owner.player_position_seconds,

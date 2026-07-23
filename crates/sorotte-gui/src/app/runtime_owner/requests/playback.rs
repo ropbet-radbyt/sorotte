@@ -320,11 +320,15 @@ impl GuiPersistedConfigRuntimeOwner {
                     };
                     (
                         player.name(),
-                        player.set_position(player_target_position_seconds),
+                        player.set_position_tracked(player_target_position_seconds),
                     )
                 };
                 match undo_result {
-                    Ok(()) => {
+                    Ok(adapter_player_command_id) => {
+                        self.note_attached_runtime_position_dispatched(
+                            adapter_player_command_id,
+                            target_position_seconds,
+                        );
                         let commit_result = self.commit_undo_seek_into_detached_session(
                             projected_state,
                             target_position_seconds,
@@ -399,8 +403,13 @@ impl GuiPersistedConfigRuntimeOwner {
         let _ = self.interrupt_attached_playback_recovery_impl("local offset change");
         if let Some(player) = self.player.as_mut() {
             let player_name = player.name();
-            match player.set_position(target_player_position_seconds) {
-                Ok(()) => {
+            let position_result = player.set_position_tracked(target_player_position_seconds);
+            match position_result {
+                Ok(adapter_player_command_id) => {
+                    self.note_attached_runtime_position_dispatched(
+                        adapter_player_command_id,
+                        previous_position_seconds,
+                    );
                     self.refresh_player_state();
                     Self::push_player_success(
                         handle,
@@ -510,11 +519,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 };
                 (
                     player.name(),
-                    player.set_position(player_target_position_seconds),
+                    player.set_position_tracked(player_target_position_seconds),
                 )
             };
             match seek_result {
-                Ok(()) => {
+                Ok(adapter_player_command_id) => {
+                    self.note_attached_runtime_position_dispatched(
+                        adapter_player_command_id,
+                        target_position_seconds,
+                    );
                     self.player_position_seconds = Some(target_position_seconds);
                     self.refresh_player_state();
                     match self.sync_manual_seek_into_detached_session(
@@ -586,11 +599,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 };
                 (
                     player.name(),
-                    player.set_position(player_target_position_seconds),
+                    player.set_position_tracked(player_target_position_seconds),
                 )
             };
             match seek_result {
-                Ok(()) => {
+                Ok(adapter_player_command_id) => {
+                    self.note_attached_runtime_position_dispatched(
+                        adapter_player_command_id,
+                        target_position_seconds,
+                    );
                     self.player_position_seconds = Some(target_position_seconds);
                     self.refresh_player_state();
                     match self.sync_manual_seek_into_detached_session(

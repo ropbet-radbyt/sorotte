@@ -57,13 +57,17 @@ impl GuiPersistedConfigRuntimeOwner {
                     let player_target_position_seconds = self
                         .player_target_position_seconds_for_global_position_impl(position_seconds);
                     if let Some(player) = self.player.as_mut() {
-                        player
-                            .set_position(player_target_position_seconds)
+                        let adapter_player_command_id = player
+                            .set_position_tracked(player_target_position_seconds)
                             .map_err(|error| {
                             format!(
                                 "Attached player shared-playlist advance seek dispatch failed: {error}"
                             )
                             })?;
+                        self.note_attached_runtime_position_dispatched(
+                            adapter_player_command_id,
+                            position_seconds,
+                        );
                     }
                     self.player_position_seconds = Some(position_seconds);
                     self.clamp_player_position_to_file_duration();
@@ -175,14 +179,15 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(position_result) = self
             .player
             .as_mut()
-            .map(|player| player.set_position(reset_target_position_seconds))
+            .map(|player| player.set_position_tracked(reset_target_position_seconds))
         else {
             return;
         };
 
         let mut state_changed = false;
         match position_result {
-            Ok(()) => {
+            Ok(adapter_player_command_id) => {
+                self.note_attached_runtime_position_dispatched(adapter_player_command_id, 0.0);
                 self.player_position_seconds = Some(0.0);
                 state_changed = true;
             }
