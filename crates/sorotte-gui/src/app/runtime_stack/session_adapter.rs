@@ -356,6 +356,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn current_room_name(&self) -> Option<&str> {
+        None
+    }
+
     fn server_handshake_completed(&self) -> bool {
         true
     }

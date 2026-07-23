@@ -14,6 +14,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) {
+        self.clear_session_attached_player_sync_state();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active_session_settings = None;
         self.active_session_configured_settings = None;
@@ -33,6 +34,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn remove_session_runtime(&mut self) {
         if self.session.take().is_some() {
+            self.clear_session_attached_player_sync_state();
             self.session_generation = self.session_generation.wrapping_add(1);
         }
         self.active_session_settings = None;

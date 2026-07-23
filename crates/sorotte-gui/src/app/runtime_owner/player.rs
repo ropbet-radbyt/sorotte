@@ -14,8 +14,8 @@ use std::{
 use sorotte_client_app::app_boundary::state::ClientConfig;
 use sorotte_client_app::app_boundary::state::StreamingQualitySuggestionReason;
 use sorotte_client_core::{
-    CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind, PlaybackBarrierTimeoutAction,
-    PlayerCommandCause, logical_media_id_for_local_file_update,
+    CoordinatorCommandId, CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind,
+    PlaybackBarrierTimeoutAction, PlayerCommandCause, logical_media_id_for_local_file_update,
 };
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommandFailureKind, PlayerCommandId,

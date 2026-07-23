@@ -227,8 +227,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     let Some(player) = self.player.as_mut() else {
                         return state_changed;
                     };
-                    match player.set_position(sync_position_seconds) {
-                        Ok(()) => {
+                    match player.set_position_tracked(sync_position_seconds) {
+                        Ok(_) => {
+                            self.attached_coordinator_seek_ownership.clear();
                             self.player_position_seconds = Some(position_seconds);
                             state_changed = true;
                             if let Some(session) = self.session.as_mut()
@@ -275,9 +276,6 @@ impl GuiPersistedConfigRuntimeOwner {
                         | CoordinatorPlayerCommand::Play(_)
                         | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
                     };
-                    if coordinator_seek_target.is_some() {
-                        self.pending_attached_coordinator_seek = None;
-                    }
                     let pause_target = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => Some(paused),
                         CoordinatorPlayerCommand::Play(_) => Some(false),
@@ -305,19 +303,26 @@ impl GuiPersistedConfigRuntimeOwner {
                         }
                         return state_changed;
                     };
+                    let mut adapter_player_command_id = None;
                     let result = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => player.set_paused(paused),
                         CoordinatorPlayerCommand::Play(_) => player.set_paused(false),
-                        CoordinatorPlayerCommand::SetPosition(position_seconds) => {
-                            player.set_position((position_seconds + user_offset_seconds).max(0.0))
-                        }
+                        CoordinatorPlayerCommand::SetPosition(position_seconds) => player
+                            .set_position_tracked((position_seconds + user_offset_seconds).max(0.0))
+                            .map(|command_id| {
+                                adapter_player_command_id = command_id;
+                            }),
                         CoordinatorPlayerCommand::SetPlaybackRate(rate) => {
                             player.set_playback_rate(rate)
                         }
                     };
                     let accepted = result.is_ok();
                     if accepted && let Some(target_position_seconds) = coordinator_seek_target {
-                        self.note_attached_coordinator_seek_dispatched(target_position_seconds);
+                        self.note_attached_coordinator_seek_dispatched(
+                            command_id,
+                            adapter_player_command_id,
+                            target_position_seconds,
+                        );
                     }
                     if accepted && let Some(paused) = pause_target {
                         self.note_local_attached_player_pause_command(paused);

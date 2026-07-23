@@ -846,6 +846,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().username()
     }
 
+    fn current_room_name(&self) -> Option<&str> {
+        self.runtime.session().room()
+    }
+
     fn server_handshake_completed(&self) -> bool {
         self.runtime.session().is_active()
     }

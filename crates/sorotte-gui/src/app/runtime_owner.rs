@@ -37,8 +37,8 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
-use sorotte_client_core::PlayerCommandCause;
-use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerTransportPhase};
+use sorotte_client_core::{CoordinatorCommandId, PlayerCommandCause};
+use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerTransportPhase};
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
@@ -388,7 +388,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
-    pub(super) pending_attached_coordinator_seek: Option<GuiPendingAttachedCoordinatorSeek>,
+    pub(super) attached_coordinator_seek_ownership: VecDeque<GuiAttachedCoordinatorSeekOwnership>,
+    pub(super) attached_transport_telemetry_available: bool,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -470,12 +471,25 @@ pub(super) struct GuiAttachedNativeSeekTracker {
     pub(super) seeking_since_anchor: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct GuiPendingAttachedCoordinatorSeek {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiAttachedCoordinatorSeekOwnershipState {
+    Active,
+    SupersededMayArrive,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiAttachedCoordinatorSeekOwnership {
+    pub(super) coordinator_command_id: CoordinatorCommandId,
+    pub(super) adapter_player_command_id: Option<PlayerCommandId>,
     pub(super) player_attachment_epoch: u64,
+    pub(super) session_generation: u64,
+    pub(super) room_name: Option<String>,
     pub(super) media_generation: Option<u64>,
     pub(super) issued_after_observed_at_seconds: Option<f64>,
     pub(super) target_position_seconds: f64,
+    pub(super) tolerance_seconds: f64,
+    pub(super) expires_at: Instant,
+    pub(super) state: GuiAttachedCoordinatorSeekOwnershipState,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

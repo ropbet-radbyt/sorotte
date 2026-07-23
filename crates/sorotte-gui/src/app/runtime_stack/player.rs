@@ -153,6 +153,20 @@ impl GuiOwnedPlayer {
             Err(error) => Err(error),
         }
     }
+
+    pub(in super::super) fn set_position_tracked(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, PlayerError> {
+        match self.execute_tracked(PlayerCommand::SetPosition(position_seconds)) {
+            Ok(player_command_id) => Ok(Some(player_command_id)),
+            Err(PlayerError::Unsupported("execute_tracked")) => {
+                self.set_position(position_seconds)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl PlayerAdapter for GuiOwnedPlayer {

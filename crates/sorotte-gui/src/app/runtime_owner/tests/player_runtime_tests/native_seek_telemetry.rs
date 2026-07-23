@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiAttachedCoordinatorSeekOwnershipState;
 
 #[derive(Debug, Default)]
 struct PositionSessionState {
@@ -77,11 +78,52 @@ impl GuiSessionRuntimeAdapter for PositionSession {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .local_position_seconds
     }
+
+    fn current_room_name(&self) -> Option<&str> {
+        Some("room1")
+    }
+}
+
+struct AlternateRoomPositionSession;
+
+impl GuiSessionRuntimeAdapter for AlternateRoomPositionSession {
+    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn connect_public_server(
+        &mut self,
+        _selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Ok(current_servers)
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn current_room_name(&self) -> Option<&str> {
+        Some("room2")
+    }
 }
 
 #[derive(Default)]
 struct PositionTelemetryPlayer {
     updates: std::collections::VecDeque<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+    playback_updates: std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+    set_position_calls: usize,
+    fail_set_position_call: Option<usize>,
 }
 
 impl PlayerAdapter for PositionTelemetryPlayer {
@@ -93,7 +135,19 @@ impl PlayerAdapter for PositionTelemetryPlayer {
         &mut self,
         _position_seconds: f64,
     ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.set_position_calls += 1;
+        if self.fail_set_position_call == Some(self.set_position_calls) {
+            return Err(sorotte_player_api::PlayerError::OperationFailed(
+                "test set-position failure".to_owned(),
+            ));
+        }
         Ok(())
+    }
+
+    fn take_playback_telemetry_update(
+        &mut self,
+    ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        self.playback_updates.pop_front()
     }
 
     fn take_transport_telemetry_update(
@@ -162,6 +216,20 @@ fn position_update_with_delivery(
     update
 }
 
+fn seek_transition(
+    seeking_at_seconds: f64,
+    completed_at_seconds: f64,
+    completed_position_seconds: f64,
+) -> [sorotte_player_api::PlayerTransportTelemetryUpdate; 2] {
+    let mut seeking = sparse_update(seeking_at_seconds);
+    seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
+    seeking.seeking = Some(true);
+    let mut completed = position_update(completed_at_seconds, completed_position_seconds);
+    completed.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+    completed.seeking = Some(false);
+    [seeking, completed]
+}
+
 #[test]
 fn attached_position_telemetry_grounds_normal_progress_and_publishes_native_seek() {
     let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
@@ -209,6 +277,7 @@ fn attached_position_telemetry_does_not_republish_sorotte_owned_seek() {
         .local_position_seconds = Some(20.0);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(PositionTelemetryPlayer {
         updates: std::collections::VecDeque::from([position_update(0.1, 20.0)]),
+        ..PositionTelemetryPlayer::default()
     })));
     owner.refresh_player_state_impl();
 
@@ -269,6 +338,237 @@ fn coordinator_seek_completion_is_never_republished_as_a_native_seek() {
 }
 
 #[test]
+fn superseded_coordinator_seek_effects_remain_owned_after_replacement_dispatch() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+
+    let mut seek_player = PositionTelemetryPlayer::default();
+    seek_player.updates.extend(seek_transition(0.1, 0.2, 40.0));
+    seek_player.updates.extend(seek_transition(0.3, 0.4, 20.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(seek_player)));
+
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+                command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+            },
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id: sorotte_client_core::CoordinatorCommandId::new(2),
+                command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(20.0),
+            },
+        ],
+        "superseded coordinator seek regression",
+    );
+
+    assert_eq!(owner.attached_coordinator_seek_ownership.len(), 2);
+    assert_eq!(
+        owner.attached_coordinator_seek_ownership[0].state,
+        GuiAttachedCoordinatorSeekOwnershipState::SupersededMayArrive
+    );
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(state.synchronized_positions, vec![10.0, 40.0, 20.0]);
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+}
+
+#[test]
+fn failed_replacement_dispatch_preserves_the_accepted_seek_ownership() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+
+    let mut seek_player = PositionTelemetryPlayer {
+        fail_set_position_call: Some(2),
+        ..PositionTelemetryPlayer::default()
+    };
+    seek_player.updates.extend(seek_transition(0.1, 0.2, 40.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(seek_player)));
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+                command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+            },
+            GuiAttachedPlayerRuntimeAction::Coordinator {
+                command_id: sorotte_client_core::CoordinatorCommandId::new(2),
+                command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(20.0),
+            },
+        ],
+        "failed coordinator replacement regression",
+    );
+
+    assert_eq!(owner.attached_coordinator_seek_ownership.len(), 1);
+    assert_eq!(
+        owner.attached_coordinator_seek_ownership[0].coordinator_command_id,
+        sorotte_client_core::CoordinatorCommandId::new(1)
+    );
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(state.local_position_seconds, Some(40.0));
+}
+
+#[test]
+fn expired_coordinator_seek_does_not_consume_a_later_native_seek_to_the_same_target() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+
+    let mut seek_player = PositionTelemetryPlayer::default();
+    seek_player.updates.extend(seek_transition(0.1, 0.2, 40.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(seek_player)));
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+            command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+        }],
+        "expired coordinator seek regression",
+    );
+    owner.attached_coordinator_seek_ownership[0].expires_at =
+        std::time::Instant::now() - std::time::Duration::from_secs(1);
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(state.manual_seek_attempts, vec![40.0]);
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+}
+
+#[test]
+fn terminal_adapter_failure_retires_command_scoped_seek_ownership() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state,
+    }));
+    let adapter_command_id = sorotte_player_api::PlayerCommandId::new(7);
+    owner.note_attached_coordinator_seek_dispatched(
+        sorotte_client_core::CoordinatorCommandId::new(1),
+        Some(adapter_command_id),
+        40.0,
+    );
+
+    owner.reconcile_attached_coordinator_seek_command_progress(
+        sorotte_player_api::PlayerCommandProgress::finished(
+            adapter_command_id,
+            Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
+            None,
+            None,
+            sorotte_player_api::PlayerCommandResult::Failed(
+                sorotte_player_api::PlayerCommandFailureKind::TimedOut,
+            ),
+        ),
+    );
+
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+}
+
+#[test]
+fn direct_position_and_session_lifecycle_changes_retire_seek_ownership() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        PositionTelemetryPlayer::default(),
+    )));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    let coordinator_seek = GuiAttachedPlayerRuntimeAction::Coordinator {
+        command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+        command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+    };
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![coordinator_seek.clone()],
+        "direct position lifecycle regression",
+    );
+    assert_eq!(owner.attached_coordinator_seek_ownership.len(), 1);
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![GuiAttachedPlayerRuntimeAction::Position(20.0)],
+        "direct position lifecycle regression",
+    );
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![coordinator_seek.clone()],
+        "session replacement lifecycle regression",
+    );
+    owner.install_session_runtime(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![coordinator_seek],
+        "transport reconnect lifecycle regression",
+    );
+    owner.clear_session_attached_player_sync_state();
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+    assert_eq!(owner.attached_native_seek_tracker.media_generation, None);
+    assert!(!owner.attached_transport_telemetry_available);
+}
+
+#[test]
+fn room_change_retires_seek_ownership_even_when_the_session_instance_survives() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        PositionTelemetryPlayer::default(),
+    )));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state,
+    }));
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+            command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+        }],
+        "room change lifecycle regression",
+    );
+    assert_eq!(owner.attached_coordinator_seek_ownership.len(), 1);
+
+    owner.session = Some(Box::new(AlternateRoomPositionSession));
+    owner.refresh_player_state_impl();
+
+    assert!(owner.attached_coordinator_seek_ownership.is_empty());
+}
+
+#[test]
 fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
     let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
     let mut player = PositionTelemetryPlayer::default();
@@ -293,6 +593,70 @@ fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
         vec![10.0],
         "the four-second-old position must not be mirrored into the session before core rejects it"
     );
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(10.0),
+        "stale rich telemetry must not overwrite the GUI's authoritative position"
+    );
+}
+
+#[test]
+fn stale_rich_position_also_blocks_the_untimestamped_legacy_position_channel() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut player = PositionTelemetryPlayer::default();
+    player.playback_updates.push_back(
+        sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(99.5)
+            .with_paused(true),
+    );
+    player.updates.extend([
+        position_update_with_delivery(0.0, 0.0, 10.0),
+        position_update_with_delivery(1.0, 5.0, 99.5),
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_position_seconds, Some(10.0));
+    assert!(!owner.playlist_auto_advance_eof_latched);
+    assert_eq!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .synchronized_positions,
+        vec![10.0]
+    );
+}
+
+#[test]
+fn delayed_old_media_generation_cannot_replace_the_authoritative_position() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut current = position_update(2.0, 10.0);
+    current.media_generation = Some(sorotte_player_api::PlayerMediaGeneration::new(2));
+    let old = position_update(3.0, 50.0);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([current, old]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_position_seconds, Some(10.0));
+    assert_eq!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .synchronized_positions,
+        vec![10.0]
+    );
+    assert_eq!(owner.attached_native_seek_tracker.media_generation, Some(2));
 }
 
 #[test]
