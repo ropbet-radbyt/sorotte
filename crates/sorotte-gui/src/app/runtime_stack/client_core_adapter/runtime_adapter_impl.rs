@@ -92,6 +92,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
     }
 
+    fn apply_message_json_at(
+        &mut self,
+        json_line: &str,
+        received_at_seconds: f64,
+    ) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::apply_message_json_at(
+            self,
+            json_line,
+            received_at_seconds,
+        )
+    }
+
     fn set_room(&mut self, room: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room,
@@ -1162,6 +1174,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         };
 
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        let rollback = self
+            .runtime
+            .session_mut()
+            .desync_correction_dispatch_snapshot();
         let actions = self
             .runtime
             .session_mut()
@@ -1185,13 +1201,26 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
                 }
                 ClientRuntimeAction::SetPlaybackRate(playback_rate) => {
-                    Some(GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate))
+                    Some(GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate {
+                        playback_rate,
+                        rollback,
+                    })
                 }
                 _ => None,
             })
             .collect::<Vec<_>>();
         actions.splice(0..0, coordinator_actions);
         Ok(actions)
+    }
+
+    fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .restore_desync_correction_dispatch_snapshot(snapshot);
+        Ok(())
     }
 
     fn publish_local_file_legacy_compatible(

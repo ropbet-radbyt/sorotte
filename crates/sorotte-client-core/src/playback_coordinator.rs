@@ -2976,8 +2976,10 @@ impl PlaybackCoordinator {
         });
         let stable_interval_elapsed =
             stable.is_some_and(|elapsed| elapsed >= self.config.stability_interval_seconds);
-        let converged =
-            (local_position - room_position).abs() <= self.config.negligible_lag_seconds;
+        // Recovery owns catch-up after buffering and only needs to prove that the player is no
+        // longer behind the room. If it has crossed ahead, hand the stable transport back to the
+        // ordinary bidirectional drift policy instead of retaining recovery ownership forever.
+        let converged = lag <= self.config.negligible_lag_seconds;
         let catchup_timed_out = self.recovery.as_ref().is_some_and(|episode| {
             episode.catchup_active
                 && episode
@@ -5405,6 +5407,48 @@ mod tests {
         assert!(coordinator.recovery_episode().is_some());
         coordinator.observe(playing(generation, 6.1, 6.1));
         assert!(coordinator.recovery_episode().is_none());
+    }
+
+    #[test]
+    fn ahead_after_recovery_releases_to_ordinary_correction_after_stable_playback() {
+        let config = PlaybackCoordinatorConfig {
+            stability_interval_seconds: 1.0,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let mut coordinator = PlaybackCoordinator::new(config);
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("ahead-after-recovery").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordinator.update_desired_room_state(desired(generation, 1, false, 0.0));
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(0.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+
+        coordinator.observe(playing(generation, 1.0, 3.0));
+        coordinator.observe(playing(generation, 2.0, 4.0));
+        let released = coordinator.observe(playing(generation, 3.1, 5.1));
+
+        assert!(!released.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(_)
+                    | CoordinatorPlayerCommand::SetPlaybackRate(_),
+                ..
+            }
+        )));
+        assert!(coordinator.recovery_episode().is_none());
+        assert!(
+            !coordinator.ordinary_correction_blocked(),
+            "stable ahead playback must be handed back to ordinary slowdown correction"
+        );
     }
 
     #[test]

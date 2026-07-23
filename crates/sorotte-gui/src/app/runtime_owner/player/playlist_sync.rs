@@ -77,6 +77,12 @@ impl GuiPersistedConfigRuntimeOwner {
                         })?;
                     }
                 }
+                action @ GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate { .. } => {
+                    let _ = self.apply_attached_player_runtime_actions_impl(
+                        vec![action],
+                        "shared-playlist advance",
+                    );
+                }
                 GuiAttachedPlayerRuntimeAction::Coordinator {
                     command_id,
                     command,

@@ -3,7 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::{
-        Arc, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -106,19 +106,29 @@ struct GuiDnsResolutionRequest {
     host: String,
     port: u16,
     resolver: GuiDnsResolver,
-    result_tx: mpsc::SyncSender<io::Result<Vec<SocketAddr>>>,
+    shared_result: Arc<GuiDnsResolutionSharedResult>,
+}
+
+#[derive(Default)]
+struct GuiDnsResolutionSharedResult {
+    result: Mutex<Option<Result<Vec<SocketAddr>, String>>>,
+    ready: Condvar,
+}
+
+struct GuiDnsPendingResolution {
+    host: String,
+    port: u16,
+    shared_result: Arc<GuiDnsResolutionSharedResult>,
 }
 
 struct GuiDnsResolverService {
     request_tx: mpsc::SyncSender<GuiDnsResolutionRequest>,
-    request_in_flight: Arc<AtomicBool>,
+    pending: Mutex<Option<GuiDnsPendingResolution>>,
 }
 
 impl GuiDnsResolverService {
     fn start() -> Result<Self, String> {
         let (request_tx, request_rx) = mpsc::sync_channel::<GuiDnsResolutionRequest>(1);
-        let request_in_flight = Arc::new(AtomicBool::new(false));
-        let worker_request_in_flight = request_in_flight.clone();
         thread::Builder::new()
             .name("sorotte-gui-dns-resolver".to_owned())
             .spawn(move || {
@@ -126,9 +136,14 @@ impl GuiDnsResolverService {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         (request.resolver)(request.host, request.port)
                     }))
-                    .unwrap_or_else(|_| Err(io::Error::other("DNS resolver worker panicked")));
-                    worker_request_in_flight.store(false, Ordering::Release);
-                    let _ = request.result_tx.send(result);
+                    .unwrap_or_else(|_| Err(io::Error::other("DNS resolver worker panicked")))
+                    .map_err(|error| error.to_string());
+                    *request
+                        .shared_result
+                        .result
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+                    request.shared_result.ready.notify_all();
                 }
             })
             .map_err(|error| {
@@ -136,7 +151,7 @@ impl GuiDnsResolverService {
             })?;
         Ok(Self {
             request_tx,
-            request_in_flight,
+            pending: Mutex::new(None),
         })
     }
 
@@ -145,31 +160,62 @@ impl GuiDnsResolverService {
         host: String,
         port: u16,
         resolver: R,
-    ) -> Result<mpsc::Receiver<io::Result<Vec<SocketAddr>>>, String>
+    ) -> Result<Arc<GuiDnsResolutionSharedResult>, String>
     where
         R: FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static,
     {
-        self.request_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                format!(
-                    "Session transport TCP address resolution for {host}:{port} cannot start because a previous resolution is still in flight."
-                )
-            })?;
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = pending.as_ref() {
+            if existing.host == host && existing.port == port {
+                return Ok(existing.shared_result.clone());
+            }
+            let existing_finished = existing
+                .shared_result
+                .result
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some();
+            if !existing_finished {
+                return Err(format!(
+                    "Session transport TCP address resolution for {host}:{port} cannot start because a different resolution is still in flight."
+                ));
+            }
+            *pending = None;
+        }
+        let shared_result = Arc::new(GuiDnsResolutionSharedResult::default());
         let request = GuiDnsResolutionRequest {
-            host,
+            host: host.clone(),
             port,
             resolver: Box::new(resolver),
-            result_tx,
+            shared_result: shared_result.clone(),
         };
         if let Err(error) = self.request_tx.try_send(request) {
-            self.request_in_flight.store(false, Ordering::Release);
             return Err(format!(
                 "Session transport TCP address resolution worker is unavailable: {error}"
             ));
         }
-        Ok(result_rx)
+        *pending = Some(GuiDnsPendingResolution {
+            host,
+            port,
+            shared_result: shared_result.clone(),
+        });
+        Ok(shared_result)
+    }
+
+    fn clear_pending_if_same(&self, shared_result: &Arc<GuiDnsResolutionSharedResult>) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending
+            .as_ref()
+            .is_some_and(|pending| Arc::ptr_eq(&pending.shared_result, shared_result))
+        {
+            *pending = None;
+        }
     }
 }
 
@@ -257,24 +303,38 @@ impl GuiTcpSessionTransportDriver {
                 Self::CONNECT_TIMEOUT,
             ));
         }
-        let result_rx =
+        let shared_result =
             resolver_service.begin_resolution(normalized_host.clone(), port, resolver)?;
-        let mut addresses = match result_rx.recv_timeout(remaining) {
-            Ok(Ok(addresses)) => addresses,
-            Ok(Err(error)) => {
+        let result_guard = shared_result
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (mut result_guard, wait_result) = shared_result
+            .ready
+            .wait_timeout_while(result_guard, remaining, |result| result.is_none())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = result_guard.take();
+        drop(result_guard);
+        let mut addresses = match result {
+            Some(Ok(addresses)) => {
+                resolver_service.clear_pending_if_same(&shared_result);
+                addresses
+            }
+            Some(Err(error)) => {
+                resolver_service.clear_pending_if_same(&shared_result);
                 return Err(format!(
                     "Session transport TCP address resolution for {normalized_host}:{port} failed: {error}"
                 ));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            None if wait_result.timed_out() => {
                 return Err(format!(
                     "Session transport TCP address resolution for {normalized_host}:{port} timed out within {:?}.",
                     Self::CONNECT_TIMEOUT,
                 ));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            None => {
                 return Err(format!(
-                    "Session transport TCP address resolution worker for {normalized_host}:{port} exited unexpectedly."
+                    "Session transport TCP address resolution worker for {normalized_host}:{port} did not publish a result."
                 ));
             }
         };
@@ -1374,7 +1434,7 @@ mod tests {
     }
 
     #[test]
-    fn timed_out_resolution_blocks_duplicate_workers_until_it_finishes() {
+    fn timed_out_resolution_is_reused_by_the_next_attempt() {
         let resolver_service =
             GuiDnsResolverService::start().expect("test resolver service should start");
         let first_deadline = Instant::now() + Duration::from_millis(25);
@@ -1393,20 +1453,23 @@ mod tests {
 
         let duplicate_ran = Arc::new(AtomicBool::new(false));
         let worker_duplicate_ran = duplicate_ran.clone();
-        let duplicate_error =
+        let addresses =
             GuiTcpSessionTransportDriver::ordered_connect_addresses_with_deadline_using(
                 "resolver.example",
                 8999,
-                Instant::now() + Duration::from_millis(25),
+                Instant::now() + Duration::from_millis(250),
                 &resolver_service,
                 move |_host, _port| {
                     worker_duplicate_ran.store(true, Ordering::Release);
                     Ok(Vec::new())
                 },
             )
-            .expect_err("a second resolver must not be spawned while the first is blocked");
+            .expect("the next attempt should await and reuse the in-flight resolution");
 
-        assert!(duplicate_error.contains("previous resolution is still in flight"));
+        assert_eq!(
+            addresses,
+            vec!["127.0.0.1:8999".parse().expect("test address")]
+        );
         assert!(!duplicate_ran.load(Ordering::Acquire));
     }
 

@@ -414,6 +414,77 @@ fn runtime_actions_for_desync_correction_maps_slowdown_to_rate_change() {
 }
 
 #[test]
+fn failed_desync_rate_command_rolls_back_correction_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        fail_set_playback_rate: true,
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    assert!(
+        runtime
+            .run_desync_correction_if_needed(0.0, true, false, true)
+            .is_err()
+    );
+    assert!(!runtime.session().model.playback.speed_changed);
+    assert_eq!(runtime.session().model.playback.speed_correction_rate, None);
+    assert_eq!(runtime.session().model.playback.local_playback_rate, None);
+}
+
+#[test]
+fn disabling_slow_on_desync_restores_speed_and_failed_restore_retains_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+
+    let mut config = runtime.session().desync_config().clone();
+    config.slow_on_desync = false;
+    runtime.session_mut().set_desync_config(config);
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+
+    assert!(
+        runtime
+            .run_desync_correction_if_needed(0.1, true, false, true)
+            .is_err()
+    );
+    assert!(runtime.session().model.playback.speed_changed);
+    assert_eq!(
+        runtime.session().model.playback.speed_correction_rate,
+        Some(0.95)
+    );
+    assert_eq!(
+        runtime.session().model.playback.local_playback_rate,
+        Some(0.95)
+    );
+
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+    runtime
+        .run_desync_correction_if_needed(0.2, true, false, true)
+        .expect("retry should restore normal speed");
+    assert_eq!(runtime.player().playback_rate, Some(1.0));
+    assert!(!runtime.session().model.playback.speed_changed);
+    assert_eq!(runtime.session().model.playback.speed_correction_rate, None);
+}
+
+#[test]
 fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_is_observed() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {

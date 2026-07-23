@@ -492,6 +492,7 @@ where
             return Ok(());
         };
 
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
             .runtime_actions_for_desync_correction_against_room_playstate(
@@ -502,7 +503,13 @@ where
                 dont_slow_down_with_me,
                 speed_supported,
             );
-        self.dispatch_runtime_actions_with_causal_tracking(&actions)
+        match self.dispatch_runtime_actions_with_causal_tracking(&actions) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.session.restore_local_action_state(session_snapshot);
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn desync_local_position_with_legacy_ping_forward_delay(

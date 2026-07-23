@@ -1040,6 +1040,29 @@ where
         dont_slow_down_with_me: bool,
         apply_fallback_json: bool,
     ) -> Result<ProtocolLineApplyOutcome, ProtocolError> {
+        self.apply_protocol_line_prefix_at_clocks(
+            line,
+            received_at_seconds,
+            received_at_seconds,
+            reconcile_inbound_state,
+            dont_slow_down_with_me,
+            apply_fallback_json,
+        )
+    }
+
+    /// Applies a line when session scheduling and legacy ping timestamps use
+    /// different clock domains. GUI receipt timestamps are wall-clock values,
+    /// while the CLI intentionally uses a monotonic runtime clock for session
+    /// lifecycle timers and a wall clock for protocol ping echoes.
+    pub fn apply_protocol_line_prefix_at_clocks(
+        &mut self,
+        line: &str,
+        received_at_seconds: f64,
+        ping_received_at_seconds: f64,
+        reconcile_inbound_state: bool,
+        dont_slow_down_with_me: bool,
+        apply_fallback_json: bool,
+    ) -> Result<ProtocolLineApplyOutcome, ProtocolError> {
         let messages = decode_message_line_items(line)?;
         if messages.is_empty() {
             if apply_fallback_json {
@@ -1071,10 +1094,11 @@ where
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
                         .runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
                             state.state,
                             dont_slow_down_with_me,
                             received_at_seconds,
+                            ping_received_at_seconds,
                         );
                 }
                 other => self

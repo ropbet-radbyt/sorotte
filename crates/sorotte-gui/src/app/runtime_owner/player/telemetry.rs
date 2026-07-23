@@ -1,11 +1,105 @@
 use super::*;
-use crate::app::runtime_owner::{GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin};
+use crate::app::runtime_owner::{
+    GuiAttachedPlayerPositionObservation, GuiCorePlayerConfigurationHealth,
+    GuiStreamingDegradationOrigin,
+};
 use sorotte_player_mpv::{
     MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionsHookHealth,
     MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 
+const ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS: f64 = 1.0;
+const ATTACHED_MAXIMUM_UNTRACKED_PLAYBACK_RATE: f64 = 2.0;
+
 impl GuiPersistedConfigRuntimeOwner {
+    fn sync_attached_player_position_observation(
+        &mut self,
+        media_generation: Option<u64>,
+        observed_at_seconds: Option<f64>,
+        position_seconds: f64,
+    ) {
+        let observation = media_generation
+            .zip(observed_at_seconds)
+            .filter(|(_, observed_at_seconds)| observed_at_seconds.is_finite())
+            .map(
+                |(media_generation, observed_at_seconds)| GuiAttachedPlayerPositionObservation {
+                    media_generation,
+                    observed_at_seconds,
+                    position_seconds,
+                },
+            );
+        let unexpected_position_jump = observation.is_some_and(|observation| {
+            self.last_attached_player_position_observation
+                .filter(|previous| {
+                    previous.media_generation == observation.media_generation
+                        && observation.observed_at_seconds >= previous.observed_at_seconds
+                })
+                .is_some_and(|previous| {
+                    let elapsed_seconds =
+                        observation.observed_at_seconds - previous.observed_at_seconds;
+                    let maximum_expected_forward_advance = if self.player_paused == Some(false)
+                        && self.player_paused_for_cache != Some(true)
+                    {
+                        elapsed_seconds * ATTACHED_MAXIMUM_UNTRACKED_PLAYBACK_RATE
+                    } else {
+                        0.0
+                    };
+                    let advancement_seconds =
+                        observation.position_seconds - previous.position_seconds;
+                    advancement_seconds < -ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                        || advancement_seconds
+                            > maximum_expected_forward_advance
+                                + ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                })
+        });
+        let position_already_owned_by_session = self.session.as_ref().is_some_and(|session| {
+            session
+                .local_position_seconds()
+                .is_some_and(|known_position| {
+                    (known_position - position_seconds).abs()
+                        <= ATTACHED_NATIVE_SEEK_THRESHOLD_SECONDS
+                })
+        });
+
+        let mut publish_succeeded = true;
+        if unexpected_position_jump && !position_already_owned_by_session {
+            let _ = self.interrupt_attached_playback_recovery_impl("native player seek");
+            publish_succeeded = match self
+                .session
+                .as_mut()
+                .map(|session| session.record_manual_seek_to_position(position_seconds))
+            {
+                Some(Ok(true)) | None => true,
+                Some(Ok(false)) => false,
+                Some(Err(error)) => {
+                    eprintln!(
+                        "warning: failed to publish native attached-player seek to the room: {error}"
+                    );
+                    false
+                }
+            };
+        }
+
+        if publish_succeeded {
+            if let Some(session) = self.session.as_mut()
+                && let Err(error) = session.sync_local_playback_telemetry(
+                    // Pause edges have their own causal classifier. Mirroring the
+                    // just-observed pause value here would erase a native Play or
+                    // Pause edge before transport telemetry can classify it.
+                    None,
+                    Some(position_seconds),
+                )
+            {
+                eprintln!(
+                    "warning: failed to ground the session position in attached-player telemetry: {error}"
+                );
+            }
+            if let Some(observation) = observation {
+                self.last_attached_player_position_observation = Some(observation);
+            }
+        }
+    }
+
     pub(in crate::app::runtime_owner) fn emit_gui_actions_to_attached_player_impl(
         &mut self,
         actions: &[GuiShellAction],
@@ -329,6 +423,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_paused_for_cache = Some(paused_for_cache);
             }
             if let Some(position_seconds) = update.position_seconds {
+                self.sync_attached_player_position_observation(
+                    update.media_generation.map(|generation| generation.get()),
+                    update
+                        .observed_at
+                        .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64()),
+                    position_seconds,
+                );
                 self.player_position_seconds = Some(position_seconds);
             }
             if let Some(logical_pause) = update.logical_pause

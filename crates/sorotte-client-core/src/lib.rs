@@ -226,7 +226,9 @@ pub use self::runtime::{
     PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
 };
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
-pub use self::session::{ClientSession, playback_uri_is_trusted_legacy_compatible};
+pub use self::session::{
+    ClientSession, DesyncCorrectionDispatchSnapshot, playback_uri_is_trusted_legacy_compatible,
+};
 pub use self::views::{
     ClientMediaMatchPeerFileState, ClientUserView, RoomPlaylistView, RoomPlaystateAuthority,
     RoomPlaystateView,

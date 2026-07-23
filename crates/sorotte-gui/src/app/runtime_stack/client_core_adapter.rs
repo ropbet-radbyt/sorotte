@@ -813,7 +813,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn apply_protocol_message(&mut self, message: ProtocolMessage) -> Result<(), String> {
+    fn apply_protocol_message(
+        &mut self,
+        message: ProtocolMessage,
+        received_at_seconds: f64,
+    ) -> Result<(), String> {
         let inbound_is_server_hello = matches!(&message, ProtocolMessage::Hello(_));
         let message_updates_authoritative_local_room =
             self.message_updates_authoritative_local_room(&message);
@@ -823,9 +827,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             ProtocolMessage::State(state_message) => {
                 let _ = self
                     .runtime
-                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
                         state_message.state,
                         self.dont_slow_down_with_me,
+                        received_at_seconds,
                     );
                 if self.request_user_list_on_first_state_without_media {
                     self.request_user_list_on_first_state_without_media = false;
@@ -851,7 +856,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             other => self
                 .runtime
                 .session_mut()
-                .apply_protocol_message(other)
+                .apply_protocol_message_at(other, received_at_seconds)
                 .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
         };
         if result.is_ok() && inbound_is_server_hello && self.pending_ready_at_start_on_server_hello
@@ -884,13 +889,21 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(in crate::app) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
+        self.apply_message_json_at(json_line, system_time_seconds())
+    }
+
+    pub(in crate::app) fn apply_message_json_at(
+        &mut self,
+        json_line: &str,
+        received_at_seconds: f64,
+    ) -> Result<(), String> {
         let items = decode_message_line_items(json_line)
             .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
         for item in items {
             let message = item.message.map_err(|error| {
                 format!("Inbound client-session message decode failed: {error}")
             })?;
-            self.apply_protocol_message(message)?;
+            self.apply_protocol_message(message, received_at_seconds)?;
         }
         Ok(())
     }

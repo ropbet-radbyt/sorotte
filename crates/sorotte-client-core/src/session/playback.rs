@@ -267,6 +267,18 @@ impl ClientSession {
             self.model.playback.behind_first_detected_at_seconds = None;
         }
 
+        if speed_supported
+            && self.model.playback.speed_changed
+            && !self.model.playback.desync_config.slow_on_desync
+        {
+            self.model.playback.speed_changed = false;
+            self.model.playback.speed_correction_rate = None;
+            self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
+            return DesyncCorrectionAction::RestoreSpeed {
+                rate: NORMAL_PLAYBACK_RATE,
+            };
+        }
+
         if speed_supported && !global_paused && self.model.playback.desync_config.slow_on_desync {
             let threshold = self.model.playback.desync_config.slowdown_threshold_seconds;
             let reset_threshold = self

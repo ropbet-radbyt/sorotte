@@ -148,6 +148,7 @@ struct RecordingPlayer {
     playback_rate: Option<f64>,
     fail_set_paused: bool,
     fail_set_position: bool,
+    fail_set_playback_rate: bool,
     player_effects: Vec<ClientEffect>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
@@ -182,6 +183,9 @@ impl PlayerAdapter for RecordingPlayer {
     fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
         self.player_effects
             .push(ClientEffect::SetPlayerPlaybackRate(rate));
+        if self.fail_set_playback_rate {
+            return Err(PlayerError::Unsupported("set_playback_rate_failed"));
+        }
         self.playback_rate = Some(rate);
         Ok(())
     }

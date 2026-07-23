@@ -297,6 +297,18 @@ impl<'a> ClientSessionUpdate<'a> {
             )
     }
 
+    pub fn desync_correction_dispatch_snapshot(&self) -> DesyncCorrectionDispatchSnapshot {
+        self.session.desync_correction_dispatch_snapshot()
+    }
+
+    pub fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) {
+        self.session
+            .restore_desync_correction_dispatch_snapshot(snapshot);
+    }
+
     pub fn set_autoplay_enabled(&mut self, enabled: bool) {
         self.session.set_autoplay_enabled(enabled);
     }

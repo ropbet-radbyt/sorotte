@@ -600,7 +600,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 let Some(session) = self.session.as_mut() else {
                     return false;
                 };
-                session.apply_message_json(&inbound_protocol_line)
+                session.apply_message_json_at(
+                    &inbound_protocol_line.line,
+                    inbound_protocol_line.received_at_seconds,
+                )
             };
             if let Err(error) = apply_result {
                 let stop_reconnect_requested = self

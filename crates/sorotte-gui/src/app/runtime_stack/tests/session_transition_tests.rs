@@ -4,6 +4,41 @@ use crate::app::support::system_time_seconds;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 #[test]
+fn gui_client_core_adapter_uses_network_receipt_time_after_delayed_owner_drain() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("server Hello should apply");
+    adapter
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"},"ping":{"clientLatencyCalculation":99.8,"serverRtt":0.1}}}"#,
+            100.0,
+        )
+        .expect("timestamped room state should apply");
+
+    let playstate = adapter
+        .runtime
+        .session()
+        .current_room_playstate_at(104.0)
+        .expect("room playstate should remain available after delayed drain");
+    assert_eq!(playstate.position, Some(14.0));
+    let ping_adjusted_playstate = adapter
+        .runtime
+        .current_room_playstate_legacy_ping_compatible_at(104.0)
+        .expect("ping-adjusted room playstate should remain available");
+    assert!(
+        ping_adjusted_playstate
+            .position
+            .is_some_and(|position| (position - 14.2).abs() < 1e-9),
+        "owner queue delay must advance room time without inflating ping RTT or forward delay: {:?}",
+        ping_adjusted_playstate.position
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_before_server_hello() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),

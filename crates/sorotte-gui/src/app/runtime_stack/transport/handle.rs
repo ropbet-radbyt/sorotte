@@ -7,6 +7,14 @@ use std::{
     },
 };
 
+use crate::app::support::system_time_seconds;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::app) struct GuiInboundProtocolLine {
+    pub(in crate::app) line: String,
+    pub(in crate::app) received_at_seconds: f64,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiOutboundProtocolDelivery {
     pub(in crate::app) token: u64,
@@ -98,7 +106,7 @@ struct GuiTrackedOutboundProtocolDelivery {
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct GuiQueuedSessionTransportHandle {
-    queued_inbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+    queued_inbound_protocol_lines: Arc<Mutex<VecDeque<GuiInboundProtocolLine>>>,
     queued_transport_warnings: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_liveness_protocol_line: Arc<Mutex<Option<String>>>,
@@ -116,21 +124,42 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn push_inbound_protocol_line(&self, line: impl Into<String>) {
-        self.push_inbound_protocol_lines([line.into()]);
+        self.push_inbound_protocol_line_at(line, system_time_seconds());
+    }
+
+    pub(in crate::app) fn push_inbound_protocol_line_at(
+        &self,
+        line: impl Into<String>,
+        received_at_seconds: f64,
+    ) {
+        self.push_inbound_protocol_lines_at([line.into()], received_at_seconds);
     }
 
     pub(in crate::app) fn push_inbound_protocol_lines<I>(&self, lines: I)
     where
         I: IntoIterator<Item = String>,
     {
+        self.push_inbound_protocol_lines_at(lines, system_time_seconds());
+    }
+
+    pub(in crate::app) fn push_inbound_protocol_lines_at<I>(
+        &self,
+        lines: I,
+        received_at_seconds: f64,
+    ) where
+        I: IntoIterator<Item = String>,
+    {
         let mut queue = self
             .queued_inbound_protocol_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.extend(lines);
+        queue.extend(lines.into_iter().map(|line| GuiInboundProtocolLine {
+            line,
+            received_at_seconds,
+        }));
     }
 
-    pub(in crate::app) fn drain_inbound_protocol_lines(&self) -> Vec<String> {
+    pub(in crate::app) fn drain_inbound_protocol_lines(&self) -> Vec<GuiInboundProtocolLine> {
         let mut queue = self
             .queued_inbound_protocol_lines
             .lock()

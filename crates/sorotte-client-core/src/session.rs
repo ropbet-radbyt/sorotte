@@ -13,6 +13,14 @@ pub struct ClientSession {
     playback_barrier: playback_barrier::ClientPlaybackBarrierState,
 }
 
+/// Opaque rollback state for a playback-rate command emitted by desync correction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DesyncCorrectionDispatchSnapshot {
+    speed_changed: bool,
+    speed_correction_rate: Option<f64>,
+    local_playback_rate: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ClientSessionLocalActionSnapshot {
     user_views: BTreeMap<String, ClientUserView>,
@@ -20,6 +28,8 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     local_position: Option<f64>,
     local_paused: Option<bool>,
     local_playback_rate: Option<f64>,
+    speed_changed: bool,
+    speed_correction_rate: Option<f64>,
     local_paused_for_cache: Option<bool>,
     local_cache_buffering_percent: Option<f64>,
     pending_cache_room_playstate_resync: bool,

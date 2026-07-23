@@ -67,9 +67,24 @@ where
         dont_slow_down_with_me: bool,
         received_at_seconds: f64,
     ) -> bool {
+        self.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+            inbound_state,
+            dont_slow_down_with_me,
+            received_at_seconds,
+            received_at_seconds,
+        )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        &mut self,
+        inbound_state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+        ping_received_at_seconds: f64,
+    ) -> bool {
         let inbound_state = normalize_client_state_payload(inbound_state);
         self.ping_metrics_legacy_compatible
-            .observe_normalized_inbound_state(&inbound_state);
+            .observe_normalized_inbound_state_at(&inbound_state, ping_received_at_seconds);
         let local_state_change_global_playstate = self
             .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
                 &inbound_state,

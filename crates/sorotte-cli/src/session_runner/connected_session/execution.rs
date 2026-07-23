@@ -184,9 +184,14 @@ fn apply_connected_session_inbound_message_legacy_compatible<P>(
 where
     P: sorotte_player_api::PlayerAdapter,
 {
-    let outcome = application.apply_protocol_line_prefix(
+    let ping_received_at_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0);
+    let outcome = application.apply_protocol_line_prefix_at_clocks(
         line,
         now_seconds,
+        ping_received_at_seconds,
         plan.reconcile_inbound_state,
         dont_slow_down_with_me,
         plan.apply_message_json_at,

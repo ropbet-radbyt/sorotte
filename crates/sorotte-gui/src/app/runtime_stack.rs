@@ -28,10 +28,11 @@ use sorotte_client_app::app_boundary::state::{
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
     ClientRuntimeAction, ClientSession, CoordinatorCommandId, CoordinatorPlayerCommand,
-    LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
-    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
-    PlayerCommandCause, PrivacyMode, ProtocolLineLease, RoomPlaylistView, RoomPlaystateView,
-    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
+    DesyncCorrectionDispatchSnapshot, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
+    MediaTransportKind, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+    PlaybackCoordinatorAction, PlayerCommandCause, PrivacyMode, ProtocolLineLease,
+    RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{

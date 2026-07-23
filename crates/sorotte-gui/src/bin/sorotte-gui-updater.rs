@@ -134,6 +134,81 @@ enum ApplyProgress {
     BeforeReplace(usize),
 }
 
+#[cfg(windows)]
+struct TargetUpdateLock {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl TargetUpdateLock {
+    fn acquire(target_dir: &Path) -> Result<Self, String> {
+        use windows_sys::Win32::{
+            Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
+            System::Threading::{CreateMutexW, INFINITE, WaitForSingleObject},
+        };
+
+        let canonical_target = fs::canonicalize(target_dir).map_err(|error| {
+            format!(
+                "failed canonicalizing updater target directory for transaction locking {}: {error}",
+                target_dir.display()
+            )
+        })?;
+        let normalized_target = canonical_target.to_string_lossy().to_lowercase();
+        let digest = Sha256::digest(normalized_target.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("Local\\SorotteUpdater-{digest}");
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: the name is a live, nul-terminated UTF-16 buffer and the returned handle is
+        // checked for null before it is stored in the guard.
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            return Err(format!(
+                "failed creating the Sorotte updater transaction lock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: `handle` is a valid mutex handle and remains owned by this guard.
+        let wait_result = unsafe { WaitForSingleObject(handle, INFINITE) };
+        if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED {
+            // SAFETY: the mutex was not acquired, but the valid handle still needs closing.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            return Err(format!(
+                "failed acquiring the Sorotte updater transaction lock (wait result {wait_result})"
+            ));
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TargetUpdateLock {
+    fn drop(&mut self) {
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
+        // SAFETY: this guard owns the acquired mutex handle and releases/closes it exactly once.
+        unsafe {
+            ReleaseMutex(self.handle);
+            CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct TargetUpdateLock;
+
+#[cfg(not(windows))]
+impl TargetUpdateLock {
+    fn acquire(_target_dir: &Path) -> Result<Self, String> {
+        Ok(Self)
+    }
+}
+
 fn main() -> ExitCode {
     match parse_args(env::args().skip(1)).and_then(run_update) {
         Ok(()) => ExitCode::SUCCESS,
@@ -195,24 +270,29 @@ where
         updater_location_check(&args)?,
         UpdaterExecutionLocation::InstalledBootstrap
     ) {
-        let running = env::current_exe()
-            .map_err(|error| format!("failed resolving updater path for cleanup: {error}"))?;
-        match cleanup_stale_bootstrap_dirs(&args.target_dir, &running) {
-            Ok(removed) if removed > 0 => {
-                let _ = append_log(
-                    &args.log_path,
-                    &format!("removed {removed} stale updater bootstrap directory/directories"),
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                let _ = append_log(
-                    &args.log_path,
-                    &format!("stale updater bootstrap cleanup was incomplete: {error}"),
-                );
-            }
-        }
         return launch_detached_update_helper(&args);
+    }
+
+    // Serialize every install mutation by target. The detached helper retains this guard through
+    // crash recovery, replacement, restart, and final cleanup, so another live updater cannot
+    // interpret this process's journal as abandoned.
+    let _target_update_lock = TargetUpdateLock::acquire(&args.target_dir)?;
+    let running = env::current_exe()
+        .map_err(|error| format!("failed resolving updater path for cleanup: {error}"))?;
+    match cleanup_stale_bootstrap_dirs(&args.target_dir, &running) {
+        Ok(removed) if removed > 0 => {
+            let _ = append_log(
+                &args.log_path,
+                &format!("removed {removed} stale updater bootstrap directory/directories"),
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            let _ = append_log(
+                &args.log_path,
+                &format!("stale updater bootstrap cleanup was incomplete: {error}"),
+            );
+        }
     }
     append_log(&args.log_path, "waiting for Sorotte GUI to exit")?;
     wait_for_process_exit(args.pid)?;
@@ -1966,6 +2046,39 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn target_update_lock_serializes_live_updaters_for_the_same_install() {
+        let target_dir = test_root("target-lock").join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let first = TargetUpdateLock::acquire(&target_dir).expect("first lock should acquire");
+        let worker_target = target_dir.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let second =
+                TargetUpdateLock::acquire(&worker_target).expect("second lock should acquire");
+            acquired_tx.send(()).unwrap();
+            drop(second);
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second updater should begin waiting");
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "a second live updater must not overlap the first transaction"
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second updater should acquire after the first releases");
+        worker.join().expect("lock test worker should join");
     }
 
     fn write_relative(root: &Path, relative: &str, bytes: &[u8]) -> PathBuf {

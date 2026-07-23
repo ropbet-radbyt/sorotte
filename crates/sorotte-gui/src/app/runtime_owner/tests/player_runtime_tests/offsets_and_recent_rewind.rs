@@ -459,6 +459,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
+        last_attached_player_position_observation: None,
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
         player_paused_for_cache: None,

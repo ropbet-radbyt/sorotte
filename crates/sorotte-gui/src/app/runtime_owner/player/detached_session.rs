@@ -53,6 +53,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 } => target_paused,
                 GuiAttachedPlayerRuntimeAction::Position(_)
                 | GuiAttachedPlayerRuntimeAction::PlaybackRate(_)
+                | GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate { .. }
                 | GuiAttachedPlayerRuntimeAction::Coordinator { .. } => true,
             })
             .collect();

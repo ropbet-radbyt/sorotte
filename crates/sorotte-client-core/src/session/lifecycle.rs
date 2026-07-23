@@ -5,6 +5,23 @@ use sorotte_player_api::PlayerCommand;
 const CACHE_RECOVERY_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
 
 impl ClientSession {
+    pub(crate) fn desync_correction_dispatch_snapshot(&self) -> DesyncCorrectionDispatchSnapshot {
+        DesyncCorrectionDispatchSnapshot {
+            speed_changed: self.model.playback.speed_changed,
+            speed_correction_rate: self.model.playback.speed_correction_rate,
+            local_playback_rate: self.model.playback.local_playback_rate,
+        }
+    }
+
+    pub(crate) fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) {
+        self.model.playback.speed_changed = snapshot.speed_changed;
+        self.model.playback.speed_correction_rate = snapshot.speed_correction_rate;
+        self.model.playback.local_playback_rate = snapshot.local_playback_rate;
+    }
+
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
         ClientSessionLocalActionSnapshot {
             user_views: self.model.room.users.clone(),
@@ -12,6 +29,8 @@ impl ClientSession {
             local_position: self.model.playback.local_position,
             local_paused: self.model.playback.local_paused,
             local_playback_rate: self.model.playback.local_playback_rate,
+            speed_changed: self.model.playback.speed_changed,
+            speed_correction_rate: self.model.playback.speed_correction_rate,
             local_paused_for_cache: self.model.playback.local_paused_for_cache,
             local_cache_buffering_percent: self.model.playback.local_cache_buffering_percent,
             pending_cache_room_playstate_resync: self
@@ -46,6 +65,8 @@ impl ClientSession {
         self.model.playback.local_position = snapshot.local_position;
         self.model.playback.local_paused = snapshot.local_paused;
         self.model.playback.local_playback_rate = snapshot.local_playback_rate;
+        self.model.playback.speed_changed = snapshot.speed_changed;
+        self.model.playback.speed_correction_rate = snapshot.speed_correction_rate;
         self.model.playback.local_paused_for_cache = snapshot.local_paused_for_cache;
         self.model.playback.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
         self.model.playback.pending_cache_room_playstate_resync =

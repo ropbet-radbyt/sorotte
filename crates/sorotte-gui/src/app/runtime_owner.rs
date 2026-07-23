@@ -387,6 +387,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<GuiPendingAttachedRoomUnpauseObservation>,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
+    pub(super) last_attached_player_position_observation:
+        Option<GuiAttachedPlayerPositionObservation>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -439,6 +441,13 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
     pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GuiAttachedPlayerPositionObservation {
+    pub(super) media_generation: u64,
+    pub(super) observed_at_seconds: f64,
+    pub(super) position_seconds: f64,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

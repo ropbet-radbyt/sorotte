@@ -90,6 +90,13 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         .expect("configure command should contain JSON"),
                 )
                 .expect("configure payload should be valid");
+                let current_load_sequence = if self.active_apply_count == 0 {
+                    0
+                } else if matches!(self.target, HookSupersessionTarget::StableNetwork) {
+                    1
+                } else {
+                    2
+                };
                 self.push(Self::client_message(
                     "sorotte-network-options-configured",
                     json!({
@@ -98,7 +105,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         "attachmentId": payload["attachmentId"],
                         "configurationGeneration": payload["configurationGeneration"],
                         "hookInstanceId": "scenario-hook-instance",
-                        "currentLoadSequence": 0,
+                        "currentLoadSequence": current_load_sequence,
                         "status": "configured",
                     }),
                 ));
@@ -3973,7 +3980,7 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
 }
 
 #[test]
-fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
+fn accepted_but_unacknowledged_heartbeat_recovers_without_explicit_retry() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let transport = NetworkOptionsHookScenarioTransport {
         writes,
@@ -4001,6 +4008,14 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         "accepted heartbeat should remain pending until a positive acknowledgement"
     );
     adapter.force_test_network_media_options_hook_heartbeat_ack_timeout();
+    adapter.maintain_runtime_integrations();
+    assert_eq!(
+        adapter
+            .network_options_runtime_health_snapshot()
+            .hook_health,
+        crate::MpvNetworkOptionsHookHealth::Ready,
+        "missed heartbeat recovery should finish before the GUI consumes health transitions"
+    );
     let outcome = adapter.take_network_media_options_transition_outcome();
     let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) = outcome else {
         panic!(
@@ -4016,6 +4031,12 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         adapter.is_connected(),
         "hook degradation must remain scoped"
     );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "full maintenance should reconfigure after a missed heartbeat acknowledgement"
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
 }
 
 #[test]

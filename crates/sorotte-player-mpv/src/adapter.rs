@@ -298,17 +298,26 @@ impl NetworkCacheProgressSample {
 
     fn made_progress_since(self, previous: Self) -> bool {
         fn f64_increased(current: Option<f64>, previous: Option<f64>) -> bool {
-            current.zip(previous).is_some_and(|(current, previous)| {
-                current > previous + PLAYBACK_ADVANCEMENT_EPSILON_SECONDS
-            })
+            match (current, previous) {
+                (Some(current), Some(previous)) => {
+                    current > previous + PLAYBACK_ADVANCEMENT_EPSILON_SECONDS
+                }
+                (Some(current), None) => current > PLAYBACK_ADVANCEMENT_EPSILON_SECONDS,
+                _ => false,
+            }
+        }
+
+        fn u64_increased(current: Option<u64>, previous: Option<u64>) -> bool {
+            match (current, previous) {
+                (Some(current), Some(previous)) => current > previous,
+                (Some(current), None) => current > 0,
+                _ => false,
+            }
         }
 
         f64_increased(self.position_seconds, previous.position_seconds)
             || f64_increased(self.buffered_ahead_seconds, previous.buffered_ahead_seconds)
-            || self
-                .buffered_ahead_bytes
-                .zip(previous.buffered_ahead_bytes)
-                .is_some_and(|(current, previous)| current > previous)
+            || u64_increased(self.buffered_ahead_bytes, previous.buffered_ahead_bytes)
             || f64_increased(
                 self.cache_reader_position_seconds,
                 previous.cache_reader_position_seconds,
@@ -1470,6 +1479,7 @@ impl MpvAdapter {
         reason.contains("network-options hook lease expired")
             || reason.contains("network-options hook ownership was replaced")
             || reason.contains("network-options hook ownership was lost")
+            || reason.contains("network-options hook did not acknowledge heartbeat nonce")
     }
 
     fn recover_network_media_options_hook_ownership_if_needed(&mut self) {
@@ -2717,6 +2727,16 @@ impl MpvAdapter {
             consecutive_attempts,
             total_attempts,
         });
+
+        let command =
+            self.interrupted_network_stream_recovery_load_command(&path, position_seconds);
+        if self
+            .send_ipc_command_if_attached_without_draining_events(command)
+            .is_err()
+        {
+            return false;
+        }
+
         self.pending_load_request = Some(path.clone());
         self.pending_load_generation = Some(generation);
         self.network_media_options_embedded_load =
@@ -2741,27 +2761,8 @@ impl MpvAdapter {
             .with_position_seconds(position_seconds);
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update(update);
-
-        let command =
-            self.interrupted_network_stream_recovery_load_command(&path, position_seconds);
-        if self.send_ipc_command_if_attached(command).is_ok() {
-            return true;
-        }
-
-        if self.pending_load_generation == Some(generation) {
-            self.pending_load_request = None;
-            self.pending_load_generation = None;
-        }
-        if self
-            .network_media_options_embedded_load
-            .as_ref()
-            .is_some_and(|embedded| embedded.media_generation == generation)
-        {
-            self.network_media_options_embedded_load = None;
-        }
-        self.interrupted_network_stream_recovery = None;
-        self.active_file_loaded = true;
-        false
+        self.drain_ipc_events_if_attached();
+        true
     }
 
     fn observe_network_cache_pause_for_recovery(&mut self, paused_for_cache: bool) {
@@ -6412,6 +6413,15 @@ impl MpvAdapter {
     }
 
     fn send_ipc_command_if_attached(&mut self, command: Value) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached_without_draining_events(command)?;
+        self.drain_ipc_events_if_attached();
+        Ok(())
+    }
+
+    fn send_ipc_command_if_attached_without_draining_events(
+        &mut self,
+        command: Value,
+    ) -> Result<(), PlayerError> {
         if let Some(ipc_client) = self.ipc_client.as_mut() {
             ipc_client
                 .send_command_expect_success(command)
@@ -6419,7 +6429,6 @@ impl MpvAdapter {
         } else if !self.simulation_mode {
             return Err(PlayerError::NotConnected);
         }
-        self.drain_ipc_events_if_attached();
         Ok(())
     }
 
@@ -6906,8 +6915,42 @@ impl MpvAdapter {
 #[cfg(test)]
 mod interrupted_network_stream_recovery_tests {
     use super::*;
+    use std::io;
 
     const NETWORK_PATH: &str = "https://www.youtube.com/watch?v=premature-eof";
+
+    #[derive(Debug, Default)]
+    struct RejectingRecoveryTransport {
+        response: Option<String>,
+    }
+
+    impl MpvJsonIpcTransport for RejectingRecoveryTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+            let request_id = request["request_id"]
+                .as_u64()
+                .ok_or_else(|| io::Error::other("missing request id"))?;
+            self.response = Some(
+                json!({
+                    "request_id": request_id,
+                    "error": "recovery load rejected",
+                })
+                .to_string()
+                    + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self
+                .response
+                .take()
+                .ok_or_else(|| io::Error::other("missing recovery response"))?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
 
     fn loaded_network_vod(position_seconds: f64, duration_seconds: f64) -> MpvAdapter {
         let generation = PlayerMediaGeneration::new(7);
@@ -7010,6 +7053,58 @@ mod interrupted_network_stream_recovery_tests {
         );
         assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
         assert_eq!(adapter.pending_cache_telemetry_updates[0].eof, None);
+    }
+
+    #[test]
+    fn rejected_recovery_load_preserves_published_state_and_charges_attempt_budget() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.simulation_mode = false;
+        adapter.ipc_client = Some(MpvJsonIpcClient::new(Box::new(
+            RejectingRecoveryTransport::default(),
+        )));
+        let generation = adapter
+            .active_media_generation
+            .expect("fixture should have a generation");
+        adapter.observed_state.eof_reached = Some(true);
+        let ended = adapter
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Ended);
+        adapter.queue_transport_telemetry_update(ended);
+        adapter.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
+            media_generation: Some(generation),
+            eof: Some(true),
+            ..PlayerCacheTelemetryUpdate::default()
+        });
+
+        for attempt in 1..=MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS {
+            assert!(!adapter.try_recover_interrupted_network_stream(generation));
+            assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+            assert_eq!(adapter.observed_state.eof_reached, Some(true));
+            assert_eq!(adapter.pending_load_request, None);
+            assert_eq!(adapter.pending_load_generation, None);
+            assert_eq!(adapter.pending_transport_telemetry_updates.len(), 1);
+            assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
+            assert_eq!(
+                adapter
+                    .interrupted_network_stream_recovery
+                    .map(|recovery| recovery.total_attempts),
+                Some(attempt)
+            );
+
+            if attempt < MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS {
+                let advanced_position = 257.25 + attempt as f64 * 3.0;
+                adapter.observe_interrupted_network_stream_recovery_progress(advanced_position);
+                adapter.observed_state.position_seconds = Some(advanced_position);
+            }
+        }
+
+        assert!(!adapter.try_recover_interrupted_network_stream(generation));
+        assert_eq!(
+            adapter
+                .interrupted_network_stream_recovery
+                .map(|recovery| recovery.total_attempts),
+            Some(MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS)
+        );
     }
 
     #[test]
@@ -7173,6 +7268,30 @@ mod interrupted_network_stream_recovery_tests {
         let stall = adapter
             .network_cache_stall
             .expect("forward cache growth should keep the watchdog armed");
+        assert!(stall.last_progress_at > old_progress);
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.network_stream_recovery_attempt_count(), 0);
+    }
+
+    #[test]
+    fn first_usable_cache_sample_restarts_watchdog_instead_of_reloading() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.observed_state.paused_for_cache = Some(true);
+        adapter.observe_network_cache_pause_for_recovery(true);
+        let old_progress = Instant::now() - NETWORK_CACHE_STALL_RECOVERY_DELAY;
+        adapter
+            .network_cache_stall
+            .as_mut()
+            .expect("rebuffering network VOD should arm recovery")
+            .last_progress_at = old_progress;
+
+        adapter.observed_state.buffered_ahead_bytes = Some(1_000);
+        adapter.observed_state.cache_end_seconds = Some(258.0);
+        adapter.maintain_network_cache_stall_recovery();
+
+        let stall = adapter
+            .network_cache_stall
+            .expect("the first positive cache sample should refresh the watchdog");
         assert!(stall.last_progress_at > old_progress);
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
         assert_eq!(adapter.network_stream_recovery_attempt_count(), 0);

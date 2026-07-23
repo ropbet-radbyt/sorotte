@@ -249,7 +249,9 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
         thread::sleep(Duration::from_millis(10));
     };
 
-    assert_eq!(inbound_lines, vec![expected_line]);
+    assert_eq!(inbound_lines.len(), 1);
+    assert_eq!(inbound_lines[0].line, expected_line);
+    assert!(inbound_lines[0].received_at_seconds > 0.0);
     let _ = line_observed_tx.send(());
 
     server_thread
@@ -308,7 +310,9 @@ fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
         thread::sleep(Duration::from_millis(10));
     };
 
-    assert_eq!(inbound_lines, vec![expected_line]);
+    assert_eq!(inbound_lines.len(), 1);
+    assert_eq!(inbound_lines[0].line, expected_line);
+    assert!(inbound_lines[0].received_at_seconds > 0.0);
     let _ = line_observed_tx.send(());
 
     server_thread
