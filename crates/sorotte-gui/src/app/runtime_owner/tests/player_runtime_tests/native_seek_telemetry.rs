@@ -12,6 +12,9 @@ struct PositionSessionState {
     manual_seek_attempts: Vec<f64>,
     manual_seek_failures_remaining: usize,
     eof_observations: usize,
+    transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+    playback_coordination_snapshot: Option<sorotte_client_core::PlaybackCoordinationSnapshot>,
+    keep_waiting_calls: usize,
 }
 
 struct PositionSession {
@@ -94,6 +97,40 @@ impl GuiSessionRuntimeAdapter for PositionSession {
             .eof_observations += 1;
         Ok(())
     }
+
+    fn sync_attached_player_transport_telemetry(
+        &mut self,
+        update: sorotte_player_api::PlayerTransportTelemetryUpdate,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .transport_updates
+            .push(update);
+        Ok(Vec::new())
+    }
+
+    fn playback_coordination_snapshot(
+        &self,
+    ) -> Option<sorotte_client_core::PlaybackCoordinationSnapshot> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .playback_coordination_snapshot
+            .clone()
+    }
+
+    fn keep_waiting_for_seek_preparation(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keep_waiting_calls += 1;
+        Ok(Vec::new())
+    }
 }
 
 struct AlternateRoomPositionSession;
@@ -135,6 +172,10 @@ struct PositionTelemetryPlayer {
     updates: std::collections::VecDeque<sorotte_player_api::PlayerTransportTelemetryUpdate>,
     playback_updates: std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
     command_progress_updates: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
+    local_file_observations:
+        std::collections::VecDeque<sorotte_player_api::PlayerLocalFileObservation>,
+    media_load_observations:
+        std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadObservation>,
     set_position_calls: usize,
     fail_set_position_call: Option<usize>,
     next_command_id: u64,
@@ -188,6 +229,18 @@ impl PlayerAdapter for PositionTelemetryPlayer {
 
     fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
         self.command_progress_updates.pop_front()
+    }
+
+    fn take_local_file_observation(
+        &mut self,
+    ) -> Option<sorotte_player_api::PlayerLocalFileObservation> {
+        self.local_file_observations.pop_front()
+    }
+
+    fn take_media_load_observation(
+        &mut self,
+    ) -> Option<sorotte_player_api::PlayerMediaLoadObservation> {
+        self.media_load_observations.pop_front()
     }
 }
 
@@ -262,6 +315,50 @@ fn seek_transition(
     completed.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
     completed.seeking = Some(false);
     [seeking, completed]
+}
+
+fn active_seek_preparation_snapshot(
+    media_generation: u64,
+    target_seconds: f64,
+) -> sorotte_client_core::PlaybackCoordinationSnapshot {
+    sorotte_client_core::PlaybackCoordinationSnapshot {
+        media_generation: Some(media_generation),
+        pending_local_pause_intent: None,
+        pending_local_pause_intent_dormant: false,
+        last_local_pause_intent_stage_accepted: None,
+        diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
+        recovery_episode: None,
+        seek_preparation: Some(sorotte_client_core::SeekPreparationSnapshot {
+            id: 1,
+            media_generation,
+            load_attempt: 1,
+            room_revision: 1,
+            latest_room_revision: 1,
+            requested_target_seconds: target_seconds,
+            frozen_target_seconds: target_seconds,
+            frozen_room_anchor_position_seconds: target_seconds,
+            frozen_room_anchor_observed_at_seconds: 0.0,
+            latest_room_position_seconds: target_seconds,
+            availability: sorotte_client_core::SeekTargetAvailability::FetchRequired,
+            phase: sorotte_client_core::SeekPreparationPhase::Fetching,
+            cache_buffering_percent: None,
+            buffered_ahead_seconds: None,
+            nearest_safe_buffered_position_seconds: None,
+            started_at_seconds: 0.0,
+            terminal_outcome: None,
+            can_keep_waiting: true,
+            can_cancel_and_remain: false,
+            can_join_nearest_buffered: false,
+        }),
+        last_seek_preparation_terminal_outcome: None,
+        last_seek_preparation_terminal: None,
+        metrics: Default::default(),
+        transport_telemetry_observed: true,
+        ordinary_correction_blocked: true,
+        last_applied_revision: None,
+        last_started_revision: None,
+        last_degraded_reason: None,
+    }
 }
 
 #[test]
@@ -722,6 +819,7 @@ fn adapter_timeout_retains_seek_ownership_through_late_preparation_completion() 
         sorotte_client_core::CoordinatorCommandId::new(1),
         Some(adapter_command_id),
         40.0,
+        40.0,
     );
 
     owner.reconcile_attached_system_seek_command_progress(
@@ -817,7 +915,10 @@ fn direct_position_joins_system_ownership_and_session_lifecycle_retires_it() {
     owner.clear_session_attached_player_sync_state();
     assert!(owner.attached_system_seek_ownership.is_empty());
     assert_eq!(owner.attached_native_seek_tracker.media_generation, None);
-    assert!(!owner.attached_transport_telemetry_available);
+    assert_eq!(
+        owner.attached_transport_telemetry_authority,
+        Default::default()
+    );
 }
 
 #[test]
@@ -878,7 +979,7 @@ fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
 }
 
 #[test]
-fn stale_rich_update_cannot_mutate_position_pause_cache_eof_or_unpause_state() {
+fn stale_rich_update_drops_position_but_preserves_cache_lifecycle_fields() {
     let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
     let mut player = PositionTelemetryPlayer::default();
     player.playback_updates.push_back(
@@ -912,8 +1013,8 @@ fn stale_rich_update_cannot_mutate_position_pause_cache_eof_or_unpause_state() {
 
     assert_eq!(owner.player_position_seconds, Some(99.0));
     assert_eq!(owner.player_paused, Some(false));
-    assert_eq!(owner.player_paused_for_cache, Some(false));
-    assert_eq!(owner.player_cache_buffering_percent, Some(25.0));
+    assert_eq!(owner.player_paused_for_cache, Some(true));
+    assert_eq!(owner.player_cache_buffering_percent, Some(100.0));
     assert_eq!(
         owner.pending_attached_room_unpause_observation,
         Some(
@@ -948,10 +1049,7 @@ fn rejected_rich_update_does_not_disable_the_legacy_fallback_channel() {
 
     owner.refresh_player_state_impl();
 
-    assert!(
-        !owner.attached_transport_telemetry_available,
-        "a rejected rich observation must not disable generationless fallback telemetry"
-    );
+    assert!(!owner.attached_transport_telemetry_authority.position);
     assert_eq!(owner.player_position_seconds, Some(12.0));
     assert_eq!(owner.player_paused, Some(false));
     assert_eq!(owner.player_paused_for_cache, Some(false));
@@ -1479,4 +1577,483 @@ fn never_known_playback_rate_does_not_infer_a_seek() {
             .recorded_manual_seeks
             .is_empty()
     );
+}
+
+#[test]
+fn same_pump_completion_reanchors_before_the_following_stable_position() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        PositionTelemetryPlayer::default(),
+    )));
+    owner.apply_attached_player_runtime_actions_impl(
+        vec![GuiAttachedPlayerRuntimeAction::Coordinator {
+            command_id: sorotte_client_core::CoordinatorCommandId::new(1),
+            command: sorotte_client_core::CoordinatorPlayerCommand::SetPosition(40.0),
+        }],
+        "same-pump completion ordering regression",
+    );
+    let adapter_command_id = owner.attached_system_seek_ownership[0]
+        .adapter_player_command_id
+        .expect("tracked seek command");
+
+    let mut while_seeking = sparse_position_update(0.2, 40.0);
+    while_seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
+    while_seeking.seeking = Some(true);
+    let mut seek_finished = sparse_update(0.3);
+    seek_finished.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+    seek_finished.seeking = Some(false);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([
+        while_seeking,
+        seek_finished,
+        sparse_position_update(0.4, 41.0),
+    ]);
+    player
+        .command_progress_updates
+        .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+            adapter_command_id,
+            Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
+            Some(
+                sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                    std::time::Duration::from_secs_f64(0.3),
+                ),
+            ),
+            Some(40.0),
+            sorotte_player_api::PlayerCommandResult::Completed,
+        ));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.manual_seek_attempts.is_empty());
+    assert_eq!(state.local_position_seconds, Some(41.0));
+    assert!(owner.attached_system_seek_ownership.is_empty());
+}
+
+#[test]
+fn repeated_keep_waiting_renews_matching_seek_ownership_past_the_old_deadline() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState {
+        playback_coordination_snapshot: Some(active_seek_preparation_snapshot(1, 40.0)),
+        ..PositionSessionState::default()
+    }));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+    owner.note_attached_coordinator_seek_dispatched(
+        sorotte_client_core::CoordinatorCommandId::new(1),
+        Some(sorotte_player_api::PlayerCommandId::new(7)),
+        40.0,
+        40.0,
+    );
+    let old_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    owner.attached_system_seek_ownership[0].retire_after = old_deadline;
+
+    for renewal_offset in [0, 30] {
+        owner
+            .session
+            .as_mut()
+            .expect("session")
+            .keep_waiting_for_seek_preparation(55.0 + renewal_offset as f64)
+            .expect("Keep waiting succeeds");
+        owner.extend_attached_system_seek_ownership_after_keep_waiting(
+            std::time::Instant::now() + std::time::Duration::from_secs(renewal_offset as u64),
+        );
+    }
+    owner.prune_attached_system_seek_ownership(old_deadline + std::time::Duration::from_millis(1));
+    assert_eq!(owner.attached_system_seek_ownership.len(), 1);
+    assert_eq!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keep_waiting_calls,
+        2
+    );
+
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend(seek_transition(90.0, 90.1, 40.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.refresh_player_state_impl();
+
+    assert!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .manual_seek_attempts
+            .is_empty()
+    );
+    assert!(owner.attached_system_seek_ownership.is_empty());
+}
+
+#[test]
+fn delayed_lifecycle_fields_survive_queue_dwell_while_stale_position_is_dropped() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let delayed_timestamp = |observed_at_seconds| {
+        sorotte_player_api::PlayerObservationTimestamp::from_adapter_observation(
+            std::time::Duration::from_secs_f64(observed_at_seconds),
+            std::time::Duration::from_secs_f64(10.0),
+        )
+    };
+    let mut paused = sparse_update(1.0).with_position_seconds(100.0);
+    paused.observed_at = Some(delayed_timestamp(1.0));
+    paused.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
+    paused.logical_pause = Some(true);
+    paused.paused_for_cache = Some(true);
+    paused.cache_buffering_percent = Some(12.5);
+    paused.seeking = Some(true);
+    let mut resumed = sparse_update(2.0);
+    resumed.observed_at = Some(delayed_timestamp(2.0));
+    resumed.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+    resumed.logical_pause = Some(false);
+    resumed.paused_for_cache = Some(false);
+    resumed.seeking = Some(false);
+    let mut ended = sparse_update(3.0);
+    ended.observed_at = Some(delayed_timestamp(3.0));
+    ended.phase = Some(sorotte_player_api::PlayerTransportPhase::Ended);
+    ended.eof_reached = Some(true);
+    ended.demuxer_cache_idle = Some(true);
+    ended.buffered_ahead_seconds = Some(0.0);
+    let mut failed = sparse_update(4.0);
+    failed.observed_at = Some(delayed_timestamp(4.0));
+    failed.phase = Some(sorotte_player_api::PlayerTransportPhase::Failed);
+    failed.error_kind = Some(sorotte_player_api::PlayerMediaLoadFailureKind::Network);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([paused, resumed, ended, failed]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_position_seconds = Some(7.0);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(owner.player_position_seconds, Some(7.0));
+    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(owner.player_paused_for_cache, Some(false));
+    assert_eq!(state.transport_updates.len(), 4);
+    assert_eq!(state.transport_updates[0].position_seconds, None);
+    assert_eq!(
+        state
+            .transport_updates
+            .iter()
+            .filter_map(|update| update.phase)
+            .collect::<Vec<_>>(),
+        vec![
+            sorotte_player_api::PlayerTransportPhase::ReadyPaused,
+            sorotte_player_api::PlayerTransportPhase::Playing,
+            sorotte_player_api::PlayerTransportPhase::Ended,
+            sorotte_player_api::PlayerTransportPhase::Failed,
+        ]
+    );
+    assert_eq!(state.transport_updates[1].seeking, Some(false));
+    assert_eq!(state.transport_updates[2].eof_reached, Some(true));
+    assert_eq!(
+        state.transport_updates[3].error_kind,
+        Some(sorotte_player_api::PlayerMediaLoadFailureKind::Network)
+    );
+}
+
+#[test]
+fn old_generation_transport_is_processed_before_the_new_local_file_boundary() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("old.mkv"));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+    owner.note_attached_runtime_position_dispatched(None, 40.0, 40.0);
+
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend(seek_transition(1.0, 1.1, 40.0));
+    player
+        .local_file_observations
+        .push_back(sorotte_player_api::PlayerLocalFileObservation::new(
+            sorotte_player_api::LocalFileUpdate::new("new.mkv"),
+            Some(sorotte_player_api::PlayerMediaGeneration::new(2)),
+            Some(
+                sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                    std::time::Duration::from_secs_f64(2.0),
+                ),
+            ),
+        ));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .manual_seek_attempts
+            .is_empty()
+    );
+    assert_eq!(owner.player_position_seconds, Some(0.0));
+    assert_eq!(owner.attached_native_seek_tracker.media_generation, Some(2));
+    assert!(owner.attached_system_seek_ownership.is_empty());
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("new.mkv")
+    );
+}
+
+#[test]
+fn seek_ownership_matches_raw_player_targets_across_offset_changes_and_zero_clamping() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+    owner.note_attached_runtime_position_dispatched(None, 40.0, 40.0);
+    owner.user_offset_seconds = 5.0;
+    owner.note_attached_runtime_position_dispatched(None, 40.0, 45.0);
+    assert_eq!(
+        owner.attached_system_seek_ownership[0].dispatch_offset_seconds,
+        0.0
+    );
+    assert_eq!(
+        owner.attached_system_seek_ownership[1].dispatch_offset_seconds,
+        5.0
+    );
+
+    let mut late_first_seek = PositionTelemetryPlayer::default();
+    late_first_seek
+        .updates
+        .extend(seek_transition(1.0, 1.1, 40.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(late_first_seek)));
+    owner.refresh_player_state_impl();
+    assert_eq!(owner.attached_system_seek_ownership.len(), 1);
+    assert!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .manual_seek_attempts
+            .is_empty()
+    );
+
+    owner.attached_system_seek_ownership.clear();
+    owner.user_offset_seconds = -5.0;
+    owner.note_attached_runtime_position_dispatched(None, 2.0, 0.0);
+    let mut clamped_seek = PositionTelemetryPlayer::default();
+    clamped_seek.updates.extend(seek_transition(2.0, 2.1, 0.0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(clamped_seek)));
+    owner.refresh_player_state_impl();
+    assert!(owner.attached_system_seek_ownership.is_empty());
+    assert_eq!(owner.player_position_seconds, Some(5.0));
+    assert!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .manual_seek_attempts
+            .is_empty()
+    );
+}
+
+#[test]
+fn sparse_rich_update_preserves_legacy_authority_for_missing_fields() {
+    let mut rich = sparse_update(1.0);
+    rich.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+    rich.cache_buffering_percent = Some(20.0);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.push_back(rich);
+    player.playback_updates.push_back(
+        sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(12.0)
+            .with_paused(true)
+            .with_paused_for_cache(false)
+            .with_cache_buffering_percent(99.0),
+    );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_position_seconds, Some(12.0));
+    assert_eq!(owner.player_paused, Some(true));
+    assert_eq!(owner.player_paused_for_cache, Some(false));
+    assert_eq!(owner.player_cache_buffering_percent, Some(20.0));
+    assert!(!owner.attached_transport_telemetry_authority.position);
+    assert!(!owner.attached_transport_telemetry_authority.logical_pause);
+    assert!(
+        owner
+            .attached_transport_telemetry_authority
+            .cache_buffering_percent
+    );
+}
+
+#[test]
+fn rich_authority_is_recomputed_each_pump_after_queue_pressure() {
+    let mut first_player = PositionTelemetryPlayer::default();
+    first_player.updates.push_back(position_update(1.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(first_player)));
+
+    owner.refresh_player_state_impl();
+
+    assert!(owner.attached_transport_telemetry_authority.position);
+    assert!(owner.attached_transport_telemetry_authority.logical_pause);
+
+    let mut sparse_rich = sparse_update(2.0);
+    sparse_rich.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
+    let mut second_player = PositionTelemetryPlayer::default();
+    second_player.updates.push_back(sparse_rich);
+    second_player.playback_updates.push_back(
+        sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(12.0)
+            .with_paused(true),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(second_player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_position_seconds, Some(12.0));
+    assert_eq!(owner.player_paused, Some(true));
+    assert!(!owner.attached_transport_telemetry_authority.position);
+    assert!(!owner.attached_transport_telemetry_authority.logical_pause);
+}
+
+#[test]
+fn media_load_failure_is_ordered_after_earlier_transport_from_the_same_drain() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("episode.mkv"));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+
+    let generation = sorotte_player_api::PlayerMediaGeneration::new(1);
+    let timestamp = |seconds| {
+        sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+            std::time::Duration::from_secs_f64(seconds),
+        )
+    };
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.push_back(position_update(1.0, 11.0));
+    player
+        .media_load_observations
+        .push_back(sorotte_player_api::PlayerMediaLoadObservation::new(
+            sorotte_player_api::PlayerMediaLoadOutcome::failure(
+                "episode.mkv",
+                Some("episode.mkv".to_owned()),
+                sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+                "test failure",
+            ),
+            Some(generation),
+            Some(timestamp(2.0)),
+        ));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, None);
+    assert_eq!(owner.player_position_seconds, None);
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state
+            .transport_updates
+            .last()
+            .and_then(|update| update.position_seconds),
+        Some(11.0)
+    );
+}
+
+#[test]
+fn unsequenced_local_file_boundary_drops_same_drain_transport_fail_closed() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player
+        .updates
+        .push_back(position_update(0.0, 10.0));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("old.mkv"));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+    owner.refresh_player_state_impl();
+    session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .transport_updates
+        .clear();
+    owner.note_attached_runtime_position_dispatched(None, 40.0, 40.0);
+
+    let mut player = PositionTelemetryPlayer::default();
+    player.local_file_observations.push_back(
+        sorotte_player_api::PlayerLocalFileObservation::unsequenced(
+            sorotte_player_api::LocalFileUpdate::new("new.mkv"),
+        ),
+    );
+    player.updates.push_back(position_update(1.0, 40.0));
+    player.playback_updates.push_back(
+        sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(40.0)
+            .with_paused(true),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("new.mkv")
+    );
+    assert_eq!(owner.player_position_seconds, Some(0.0));
+    assert_eq!(owner.player_paused, Some(false));
+    assert_eq!(owner.attached_native_seek_tracker.media_generation, None);
+    assert!(owner.attached_system_seek_ownership.is_empty());
+    let state = session_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.transport_updates.is_empty());
+    assert!(state.manual_seek_attempts.is_empty());
 }

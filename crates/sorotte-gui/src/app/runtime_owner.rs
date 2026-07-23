@@ -390,7 +390,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
     pub(super) attached_system_seek_ownership: VecDeque<GuiAttachedSystemSeekOwnership>,
     pub(super) attached_system_seek_fail_closed: Option<GuiAttachedSystemSeekFailClosedGuard>,
-    pub(super) attached_transport_telemetry_available: bool,
+    pub(super) attached_transport_telemetry_authority: GuiAttachedTransportTelemetryAuthority,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -495,6 +495,10 @@ pub(super) struct GuiAttachedSystemSeekOwnership {
     pub(super) room_name: Option<String>,
     pub(super) media_generation: Option<u64>,
     pub(super) issued_after_observed_at_seconds: Option<f64>,
+    pub(super) requested_target_position_seconds: f64,
+    pub(super) player_target_position_seconds: f64,
+    pub(super) dispatch_offset_seconds: f64,
+    /// Effective room/global target after player-side zero clamping.
     pub(super) target_position_seconds: f64,
     pub(super) tolerance_seconds: f64,
     pub(super) retire_after: Instant,
@@ -508,6 +512,14 @@ pub(super) struct GuiAttachedSystemSeekFailClosedGuard {
     pub(super) room_name: Option<String>,
     pub(super) media_generation: Option<u64>,
     pub(super) retire_after: Instant,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct GuiAttachedTransportTelemetryAuthority {
+    pub(super) position: bool,
+    pub(super) logical_pause: bool,
+    pub(super) paused_for_cache: bool,
+    pub(super) cache_buffering_percent: bool,
 }
 
 impl GuiPersistedConfigRuntimeOwner {

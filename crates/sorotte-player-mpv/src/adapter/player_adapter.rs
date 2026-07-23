@@ -631,6 +631,8 @@ impl PlayerAdapter for MpvAdapter {
             if self.pending_load_generation == Some(generation) {
                 self.current_path = Some(path.to_owned());
                 self.pending_local_file_update = None;
+                self.pending_local_file_generation = None;
+                self.pending_local_file_observed_at = None;
                 self.observed_state.path = None;
                 self.observed_state.duration_seconds = None;
                 self.observed_state.size_bytes = None;
@@ -646,9 +648,11 @@ impl PlayerAdapter for MpvAdapter {
             self.active_file_loaded = true;
             self.active_generation_has_restarted = !self.paused;
             self.current_path = Some(path.to_owned());
-            self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
-            self.pending_media_load_outcomes
-                .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
+            self.queue_local_file_update(Self::local_file_update_for_path(path));
+            self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
+                path,
+                Some(path.to_owned()),
+            ));
             let phase = if self.paused {
                 PlayerTransportPhase::ReadyPaused
             } else {
@@ -889,9 +893,29 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+        self.take_local_file_observation()
+            .map(|observation| observation.update)
+    }
+
+    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
         self.maintain_runtime_integrations();
         self.poll_ipc_local_file_update_if_attached();
-        self.pending_local_file_update.take()
+        let update = self.pending_local_file_update.take()?;
+        let media_generation = self.pending_local_file_generation.take();
+        let observed_at = self
+            .pending_local_file_observed_at
+            .take()
+            .map(|observed_at| {
+                PlayerObservationTimestamp::from_adapter_observation(
+                    observed_at.elapsed_since_adapter_start(),
+                    self.observation_clock_origin.elapsed(),
+                )
+            });
+        Some(PlayerLocalFileObservation::new(
+            update,
+            media_generation,
+            observed_at,
+        ))
     }
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
@@ -953,10 +977,22 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        self.take_media_load_observation()
+            .map(|observation| observation.outcome)
+    }
+
+    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
         self.maintain_runtime_integrations();
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
-        self.pending_media_load_outcomes.pop_front()
+        let mut observation = self.pending_media_load_outcomes.pop_front()?;
+        observation.observed_at = observation.observed_at.map(|observed_at| {
+            PlayerObservationTimestamp::from_adapter_observation(
+                observed_at.elapsed_since_adapter_start(),
+                self.observation_clock_origin.elapsed(),
+            )
+        });
+        Some(observation)
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {

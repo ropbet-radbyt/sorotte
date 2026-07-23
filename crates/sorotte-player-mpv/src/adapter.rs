@@ -19,9 +19,10 @@ use serde_json::{Value, json};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
     PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError,
-    PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-    PlayerObservationTimestamp, PlayerPlayIntent, PlayerPlaybackTelemetryUpdate,
-    PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerLocalFileObservation, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
+    PlayerPlayIntent, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_secret::SecretValue;
 
@@ -662,12 +663,14 @@ pub struct MpvAdapter {
     pending_network_media_policy_outcomes:
         VecDeque<SequencedNetworkOptionsEvent<MpvNetworkMediaPolicyOutcome>>,
     pending_local_file_update: Option<LocalFileUpdate>,
+    pending_local_file_generation: Option<PlayerMediaGeneration>,
+    pending_local_file_observed_at: Option<PlayerObservationTimestamp>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
     pending_cache_telemetry_updates: VecDeque<PlayerCacheTelemetryUpdate>,
     pending_tracked_commands: VecDeque<PendingTrackedCommand>,
     pending_command_progress_updates: VecDeque<PlayerCommandProgress>,
-    pending_media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
+    pending_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
@@ -2974,7 +2977,18 @@ impl MpvAdapter {
     }
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
+        self.pending_local_file_generation = self.observation_media_generation();
+        self.pending_local_file_observed_at = Some(self.observation_timestamp());
         self.pending_local_file_update = Some(update);
+    }
+
+    fn queue_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
+        self.pending_media_load_outcomes
+            .push_back(PlayerMediaLoadObservation::new(
+                outcome,
+                self.observation_media_generation(),
+                Some(self.observation_timestamp()),
+            ));
     }
 
     pub fn legacy_syncplay_ui_settings(&self) -> &LegacySyncplayUiSettings {
@@ -4128,7 +4142,7 @@ impl MpvAdapter {
     fn record_local_file_update_if_changed(&mut self, update: LocalFileUpdate) {
         if self.last_polled_local_file_update.as_ref() != Some(&update) {
             self.last_polled_local_file_update = Some(update.clone());
-            self.pending_local_file_update = Some(update);
+            self.queue_local_file_update(update);
         }
     }
 
@@ -4162,11 +4176,10 @@ impl MpvAdapter {
         self.duration_metadata_generation = Some(generation);
         self.refresh_timeline_kind_from_metadata();
         self.record_local_file_update_if_changed(polled_update.clone());
-        self.pending_media_load_outcomes
-            .push_back(PlayerMediaLoadOutcome::success(
-                requested_target,
-                polled_update.path,
-            ));
+        self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
+            requested_target,
+            polled_update.path,
+        ));
         self.refresh_inferred_transport_phase();
         true
     }
@@ -5528,11 +5541,10 @@ impl MpvAdapter {
         if Self::local_file_update_ready_for_sync(&loaded_update) {
             self.record_local_file_update_if_changed(loaded_update.clone());
         }
-        self.pending_media_load_outcomes
-            .push_back(PlayerMediaLoadOutcome::success(
-                requested_target,
-                loaded_update.path.clone(),
-            ));
+        self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
+            requested_target,
+            loaded_update.path.clone(),
+        ));
     }
 
     fn handle_end_file_event(&mut self, event: &Value) {
@@ -5656,18 +5668,19 @@ impl MpvAdapter {
         let message = message.expect("error end-file events should have a fallback message");
         self.current_path = None;
         self.pending_local_file_update = None;
+        self.pending_local_file_generation = None;
+        self.pending_local_file_observed_at = None;
         self.last_polled_local_file_update = None;
         self.observed_state.path = None;
         self.observed_state.duration_seconds = None;
         self.observed_state.size_bytes = None;
         self.reset_timeline_metadata();
-        self.pending_media_load_outcomes
-            .push_back(PlayerMediaLoadOutcome::failure(
-                requested_target,
-                None,
-                error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
-                message,
-            ));
+        self.queue_media_load_outcome(PlayerMediaLoadOutcome::failure(
+            requested_target,
+            None,
+            error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
+            message,
+        ));
     }
 
     fn handle_client_message_event(&mut self, event: &Value) {
@@ -7814,5 +7827,54 @@ mod timeline_kind_tests {
         assert_eq!(reset.demuxer_cache_idle, None);
         assert_eq!(reset.paused_for_cache, None);
         assert_eq!(reset.observed_at, None);
+    }
+}
+
+#[cfg(test)]
+mod transport_queue_pressure_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_snapshot_survives_eviction_of_rich_position_and_pause_fields() {
+        let generation = PlayerMediaGeneration::new(1);
+        let mut adapter = MpvAdapter {
+            active_media_generation: Some(generation),
+            ..MpvAdapter::default()
+        };
+        adapter.queue_playback_telemetry_update(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.0)
+                .with_paused(true),
+        );
+        adapter.queue_transport_telemetry_update(
+            PlayerTransportTelemetryUpdate::default()
+                .with_position_seconds(12.0)
+                .with_logical_pause(true),
+        );
+
+        for index in 0..=MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES {
+            let phase = if index % 2 == 0 {
+                PlayerTransportPhase::Playing
+            } else {
+                PlayerTransportPhase::ReadyPaused
+            };
+            adapter.queue_transport_telemetry_update(
+                PlayerTransportTelemetryUpdate::default().with_phase(phase),
+            );
+        }
+
+        let mut rich_position_seen = false;
+        let mut rich_pause_seen = false;
+        while let Some(update) = adapter.take_transport_telemetry_update() {
+            rich_position_seen |= update.position_seconds.is_some();
+            rich_pause_seen |= update.logical_pause.is_some();
+        }
+        assert!(!rich_position_seen);
+        assert!(!rich_pause_seen);
+        let legacy = adapter
+            .take_playback_telemetry_update()
+            .expect("coalesced legacy telemetry remains available after rich queue pressure");
+        assert_eq!(legacy.position_seconds, Some(12.0));
+        assert_eq!(legacy.paused, Some(true));
     }
 }

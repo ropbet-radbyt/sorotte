@@ -67,6 +67,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         self.note_attached_runtime_position_dispatched(
                             adapter_player_command_id,
                             position_seconds,
+                            player_target_position_seconds,
                         );
                     }
                     self.player_position_seconds = Some(position_seconds);
@@ -187,7 +188,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut state_changed = false;
         match position_result {
             Ok(adapter_player_command_id) => {
-                self.note_attached_runtime_position_dispatched(adapter_player_command_id, 0.0);
+                self.note_attached_runtime_position_dispatched(
+                    adapter_player_command_id,
+                    0.0,
+                    reset_target_position_seconds,
+                );
                 self.player_position_seconds = Some(0.0);
                 state_changed = true;
             }

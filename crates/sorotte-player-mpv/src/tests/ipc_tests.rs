@@ -4821,13 +4821,20 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         .open_file("movie.mkv")
         .expect("attached mpv transport should accept loadfile");
 
-    let outcome = adapter
-        .take_media_load_outcome()
-        .expect("file-loaded should emit a success outcome");
+    let observation = adapter
+        .take_media_load_observation()
+        .expect("file-loaded should emit a sequenced success outcome");
     assert_eq!(
-        outcome,
+        observation.outcome,
         PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
     );
+    assert_eq!(
+        observation
+            .media_generation
+            .map(sorotte_player_api::PlayerMediaGeneration::get),
+        Some(1)
+    );
+    assert!(observation.observed_at.is_some());
     let update = adapter
         .take_local_file_update()
         .expect("file-loaded should emit a local file update");

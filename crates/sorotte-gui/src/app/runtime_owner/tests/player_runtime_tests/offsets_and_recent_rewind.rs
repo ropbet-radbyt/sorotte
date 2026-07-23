@@ -462,7 +462,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_available: false,
+        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
         player_paused_for_cache: None,

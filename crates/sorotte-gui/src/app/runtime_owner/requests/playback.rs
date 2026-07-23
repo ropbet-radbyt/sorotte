@@ -87,6 +87,11 @@ impl GuiPersistedConfigRuntimeOwner {
             || Err("No active stream seek preparation is available.".to_owned()),
             |session| session.keep_waiting_for_seek_preparation(system_time_seconds()),
         );
+        if result.is_ok() {
+            self.extend_attached_system_seek_ownership_after_keep_waiting(
+                std::time::Instant::now(),
+            );
+        }
         self.finish_seek_preparation_control_request(handle, result, "keep waiting")
     }
 
@@ -328,6 +333,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         self.note_attached_runtime_position_dispatched(
                             adapter_player_command_id,
                             target_position_seconds,
+                            player_target_position_seconds,
                         );
                         let commit_result = self.commit_undo_seek_into_detached_session(
                             projected_state,
@@ -409,6 +415,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.note_attached_runtime_position_dispatched(
                         adapter_player_command_id,
                         previous_position_seconds,
+                        target_player_position_seconds,
                     );
                     self.refresh_player_state();
                     Self::push_player_success(
@@ -527,6 +534,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.note_attached_runtime_position_dispatched(
                         adapter_player_command_id,
                         target_position_seconds,
+                        player_target_position_seconds,
                     );
                     self.player_position_seconds = Some(target_position_seconds);
                     self.refresh_player_state();
@@ -607,6 +615,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.note_attached_runtime_position_dispatched(
                         adapter_player_command_id,
                         target_position_seconds,
+                        player_target_position_seconds,
                     );
                     self.player_position_seconds = Some(target_position_seconds);
                     self.refresh_player_state();

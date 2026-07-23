@@ -4,8 +4,9 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerMediaGeneration, PlayerMediaLoadOutcome,
-    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+    PlayerCommandProgress, PlayerError, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
@@ -268,6 +269,24 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.take_local_file_update(),
             #[cfg(test)]
             Self::Custom(player) => player.take_local_file_update(),
+        }
+    }
+
+    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
+        match self {
+            Self::Test(player) => player.take_local_file_observation(),
+            Self::Mpv(player) => player.take_local_file_observation(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_local_file_observation(),
+        }
+    }
+
+    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
+        match self {
+            Self::Test(player) => player.take_media_load_observation(),
+            Self::Mpv(player) => player.take_media_load_observation(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_media_load_observation(),
         }
     }
 

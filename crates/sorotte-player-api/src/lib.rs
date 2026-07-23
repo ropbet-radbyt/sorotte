@@ -284,6 +284,37 @@ impl LocalFileUpdate {
     }
 }
 
+/// One local-file identity observation tied to the adapter event stream.
+///
+/// The legacy [`LocalFileUpdate`] channel remains available for source
+/// compatibility. Adapters that can identify their media generation and
+/// observation time should expose this richer additive form so consumers can
+/// order the media boundary against transport and command observations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerLocalFileObservation {
+    pub update: LocalFileUpdate,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+}
+
+impl PlayerLocalFileObservation {
+    pub const fn new(
+        update: LocalFileUpdate,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Self {
+        Self {
+            update,
+            media_generation,
+            observed_at,
+        }
+    }
+
+    pub const fn unsequenced(update: LocalFileUpdate) -> Self {
+        Self::new(update, None, None)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerPlaybackTelemetryUpdate {
     pub paused: Option<bool>,
@@ -783,6 +814,31 @@ impl PlayerMediaLoadOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerMediaLoadObservation {
+    pub outcome: PlayerMediaLoadOutcome,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+}
+
+impl PlayerMediaLoadObservation {
+    pub const fn new(
+        outcome: PlayerMediaLoadOutcome,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Self {
+        Self {
+            outcome,
+            media_generation,
+            observed_at,
+        }
+    }
+
+    pub const fn unsequenced(outcome: PlayerMediaLoadOutcome) -> Self {
+        Self::new(outcome, None, None)
+    }
+}
+
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
     /// Performs strictly nonblocking lease renewal and event servicing.
@@ -915,6 +971,15 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
         None
     }
+    /// Returns a generation-aware local-file identity observation when the
+    /// adapter can preserve its media boundary.
+    ///
+    /// The default consumes the legacy update and marks it unsequenced, which
+    /// keeps existing external adapters source-compatible.
+    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
+        self.take_local_file_update()
+            .map(PlayerLocalFileObservation::unsequenced)
+    }
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         None
     }
@@ -933,6 +998,15 @@ pub trait PlayerAdapter: Send + Sync {
     }
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
         None
+    }
+    /// Returns a generation-aware media-load result when the adapter can
+    /// preserve its position in the player event stream.
+    ///
+    /// The default keeps legacy adapters source-compatible and marks their
+    /// result unsequenced.
+    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
+        self.take_media_load_outcome()
+            .map(PlayerMediaLoadObservation::unsequenced)
     }
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
@@ -972,6 +1046,30 @@ mod tests {
     impl PlayerAdapter for DummyPlayer {
         fn name(&self) -> &'static str {
             "dummy"
+        }
+    }
+
+    struct LegacyLocalFilePlayer(Option<LocalFileUpdate>);
+
+    impl PlayerAdapter for LegacyLocalFilePlayer {
+        fn name(&self) -> &'static str {
+            "legacy-local-file"
+        }
+
+        fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+            self.0.take()
+        }
+    }
+
+    struct LegacyMediaLoadPlayer(Option<PlayerMediaLoadOutcome>);
+
+    impl PlayerAdapter for LegacyMediaLoadPlayer {
+        fn name(&self) -> &'static str {
+            "legacy-media-load"
+        }
+
+        fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+            self.0.take()
         }
     }
 
@@ -1072,9 +1170,11 @@ mod tests {
         );
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
+        assert_eq!(player.take_local_file_observation(), None);
         assert_eq!(player.take_playback_telemetry_update(), None);
         assert_eq!(player.take_command_progress(), None);
         assert_eq!(player.take_media_load_outcome(), None);
+        assert_eq!(player.take_media_load_observation(), None);
         assert_eq!(player.take_pending_chat_request(), None);
         assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
         assert_eq!(
@@ -1085,6 +1185,37 @@ mod tests {
             player.execute_tracked(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("execute_tracked"))
         );
+    }
+
+    #[test]
+    fn local_file_observation_wraps_legacy_unsequenced_adapters() {
+        let mut player =
+            LegacyLocalFilePlayer(Some(LocalFileUpdate::new("movie.mkv").with_size_bytes(123)));
+
+        let observation = player
+            .take_local_file_observation()
+            .expect("legacy local-file update");
+
+        assert_eq!(observation.update.name, "movie.mkv");
+        assert_eq!(observation.update.size_bytes, Some(123));
+        assert_eq!(observation.media_generation, None);
+        assert_eq!(observation.observed_at, None);
+        assert_eq!(player.take_local_file_observation(), None);
+    }
+
+    #[test]
+    fn media_load_observation_wraps_legacy_unsequenced_adapters() {
+        let outcome = PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()));
+        let mut player = LegacyMediaLoadPlayer(Some(outcome.clone()));
+
+        let observation = player
+            .take_media_load_observation()
+            .expect("legacy media-load outcome");
+
+        assert_eq!(observation.outcome, outcome);
+        assert_eq!(observation.media_generation, None);
+        assert_eq!(observation.observed_at, None);
+        assert_eq!(player.take_media_load_observation(), None);
     }
 
     #[test]

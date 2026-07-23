@@ -232,6 +232,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             self.note_attached_runtime_position_dispatched(
                                 adapter_player_command_id,
                                 position_seconds,
+                                sync_position_seconds,
                             );
                             self.player_position_seconds = Some(position_seconds);
                             state_changed = true;
@@ -307,14 +308,19 @@ impl GuiPersistedConfigRuntimeOwner {
                         return state_changed;
                     };
                     let mut adapter_player_command_id = None;
+                    let mut coordinator_player_seek_target = None;
                     let result = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => player.set_paused(paused),
                         CoordinatorPlayerCommand::Play(_) => player.set_paused(false),
-                        CoordinatorPlayerCommand::SetPosition(position_seconds) => player
-                            .set_position_tracked((position_seconds + user_offset_seconds).max(0.0))
-                            .map(|command_id| {
-                                adapter_player_command_id = command_id;
-                            }),
+                        CoordinatorPlayerCommand::SetPosition(position_seconds) => {
+                            let player_target = (position_seconds + user_offset_seconds).max(0.0);
+                            coordinator_player_seek_target = Some(player_target);
+                            player
+                                .set_position_tracked(player_target)
+                                .map(|command_id| {
+                                    adapter_player_command_id = command_id;
+                                })
+                        }
                         CoordinatorPlayerCommand::SetPlaybackRate(rate) => {
                             player.set_playback_rate(rate)
                         }
@@ -325,6 +331,8 @@ impl GuiPersistedConfigRuntimeOwner {
                             command_id,
                             adapter_player_command_id,
                             target_position_seconds,
+                            coordinator_player_seek_target
+                                .expect("accepted coordinator seek has a player target"),
                         );
                     }
                     if accepted && let Some(paused) = pause_target {
@@ -555,6 +563,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         self.note_attached_runtime_position_dispatched(
                             adapter_player_command_id,
                             position_seconds,
+                            sync_position_seconds,
                         );
                         self.player_position_seconds = Some(position_seconds);
                         state_changed = true;

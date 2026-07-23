@@ -147,7 +147,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_available: false,
+        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,

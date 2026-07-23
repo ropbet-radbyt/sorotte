@@ -178,7 +178,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_available: false,
+        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,

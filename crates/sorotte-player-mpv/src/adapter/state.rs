@@ -247,6 +247,8 @@ impl Default for MpvAdapter {
             pending_network_options_hook_health_transitions: VecDeque::new(),
             pending_network_media_policy_outcomes: VecDeque::new(),
             pending_local_file_update: None,
+            pending_local_file_generation: None,
+            pending_local_file_observed_at: None,
             pending_playback_telemetry_update: None,
             pending_transport_telemetry_updates: VecDeque::new(),
             pending_cache_telemetry_updates: VecDeque::new(),

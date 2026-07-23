@@ -8,11 +8,17 @@ fn stores_opened_file_path() {
         .expect("mpv stub should accept file");
     assert_eq!(adapter.test_adapter().current_path(), Some("movie.mkv"));
 
-    let file_update = adapter
-        .take_local_file_update()
-        .expect("open file should produce local file update");
+    let observation = adapter
+        .take_local_file_observation()
+        .expect("open file should produce a sequenced local file observation");
+    let file_update = observation.update;
     assert_eq!(file_update.name, "movie.mkv");
     assert_eq!(file_update.path.as_deref(), Some("movie.mkv"));
+    assert_eq!(
+        observation.media_generation,
+        Some(sorotte_player_api::PlayerMediaGeneration::new(1))
+    );
+    assert!(observation.observed_at.is_some());
 }
 
 #[test]
@@ -77,13 +83,16 @@ fn queue_local_file_update_is_drained_once() {
             .with_size_bytes(123),
     );
 
-    let first = adapter
-        .take_local_file_update()
-        .expect("queued local file update should be returned");
+    let observation = adapter
+        .take_local_file_observation()
+        .expect("queued local file observation should be returned");
+    let first = observation.update;
     assert_eq!(first.name, "movie.mkv");
     assert_eq!(first.duration_seconds, Some(95.5));
     assert_eq!(first.size_bytes, Some(123));
-    assert_eq!(adapter.take_local_file_update(), None);
+    assert_eq!(observation.media_generation, None);
+    assert!(observation.observed_at.is_some());
+    assert_eq!(adapter.take_local_file_observation(), None);
 }
 
 #[test]
