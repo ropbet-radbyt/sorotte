@@ -547,6 +547,7 @@ struct LoadAttempt {
     command_id: Option<PlayerCommandId>,
     requested_target: String,
     replaced_attempt: Option<LoadAttemptId>,
+    replaced_attempt_state: Option<LoadAttemptState>,
     playlist_entry_id: Option<u64>,
     state: LoadAttemptState,
     superseded_by: Option<LoadAttemptId>,
@@ -4734,6 +4735,7 @@ impl MpvAdapter {
             command_id: self.tracked_load_command_id_for_generation(generation),
             requested_target,
             replaced_attempt,
+            replaced_attempt_state: None,
             playlist_entry_id: None,
             state: LoadAttemptState::Submitting,
             superseded_by: None,
@@ -4751,6 +4753,14 @@ impl MpvAdapter {
         playlist_entry_id: Option<u64>,
     ) -> LoadAttemptId {
         let attempt_id = self.allocate_load_attempt_id();
+        let replaced_attempt = self.active_load_attempt.filter(|attempt_id| {
+            self.load_attempts.get(attempt_id).is_some_and(|attempt| {
+                attempt.attachment_id == self.attachment_id && attempt.superseded_by.is_none()
+            })
+        });
+        let replaced_attempt_state = replaced_attempt
+            .and_then(|attempt_id| self.load_attempts.get(&attempt_id))
+            .map(|attempt| attempt.state);
         self.load_attempts.insert(
             attempt_id,
             LoadAttempt {
@@ -4759,7 +4769,8 @@ impl MpvAdapter {
                 logical_generation: generation,
                 command_id: None,
                 requested_target: String::new(),
-                replaced_attempt: self.active_load_attempt,
+                replaced_attempt,
+                replaced_attempt_state,
                 playlist_entry_id,
                 state: LoadAttemptState::StartObserved,
                 superseded_by: None,
@@ -4771,6 +4782,12 @@ impl MpvAdapter {
         if let Some(playlist_entry_id) = playlist_entry_id {
             self.playlist_entry_attempts
                 .insert(playlist_entry_id, attempt_id);
+        }
+        if let Some(replaced_attempt) = replaced_attempt
+            && let Some(predecessor) = self.load_attempts.get_mut(&replaced_attempt)
+        {
+            predecessor.state = LoadAttemptState::SupersededMayTerminate;
+            predecessor.superseded_by = Some(attempt_id);
         }
         attempt_id
     }
@@ -4843,17 +4860,110 @@ impl MpvAdapter {
         Self::local_file_update_matches_request(&update, &attempt.requested_target)
     }
 
+    fn remove_load_attempt_from_registry(
+        &mut self,
+        attempt_id: LoadAttemptId,
+    ) -> Option<LoadAttempt> {
+        let attempt = self.load_attempts.remove(&attempt_id)?;
+        if let Some(entry_id) = attempt.playlist_entry_id
+            && self.playlist_entry_attempts.get(&entry_id) == Some(&attempt_id)
+        {
+            self.playlist_entry_attempts.remove(&entry_id);
+        }
+        Some(attempt)
+    }
+
+    fn restore_replaced_load_attempt(&mut self, attempt_id: LoadAttemptId) -> Option<LoadAttempt> {
+        let attempt = self.remove_load_attempt_from_registry(attempt_id)?;
+        let restored_predecessor = attempt.replaced_attempt.and_then(|predecessor_id| {
+            let predecessor = self.load_attempts.get_mut(&predecessor_id)?;
+            if predecessor.superseded_by != Some(attempt_id) {
+                return None;
+            }
+            predecessor.superseded_by = None;
+            if predecessor.state == LoadAttemptState::SupersededMayTerminate {
+                predecessor.state = attempt.replaced_attempt_state.unwrap_or_else(|| {
+                    if predecessor.command_accepted_at.is_some() {
+                        LoadAttemptState::Accepted
+                    } else if predecessor.playlist_entry_id.is_some() {
+                        LoadAttemptState::StartObserved
+                    } else {
+                        LoadAttemptState::Submitting
+                    }
+                });
+            }
+            Some((
+                predecessor_id,
+                predecessor.logical_generation,
+                predecessor.playlist_entry_id,
+                predecessor.state,
+            ))
+        });
+        if self.active_load_attempt == Some(attempt_id) {
+            self.active_load_attempt =
+                restored_predecessor.map(|(predecessor_id, _, _, _)| predecessor_id);
+            self.active_media_generation =
+                restored_predecessor.map(|(_, generation, _, _)| generation);
+            self.active_playlist_entry_id =
+                restored_predecessor.and_then(|(_, _, playlist_entry_id, _)| playlist_entry_id);
+            self.active_file_loaded = restored_predecessor
+                .is_some_and(|(_, _, _, state)| state == LoadAttemptState::Loaded);
+        }
+        Some(attempt)
+    }
+
+    fn remove_superseded_load_attempt(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        successor_id: LoadAttemptId,
+    ) -> Option<LoadAttempt> {
+        let attempt = self.remove_load_attempt_from_registry(attempt_id)?;
+        let successor_can_restore_predecessor = self
+            .load_attempts
+            .get(&successor_id)
+            .and_then(|successor| successor.replaced_attempt_state)
+            .is_some_and(|state| {
+                matches!(
+                    state,
+                    LoadAttemptState::Submitting | LoadAttemptState::Accepted
+                )
+            });
+        let predecessor = attempt.replaced_attempt.filter(|predecessor_id| {
+            let Some(predecessor) = self.load_attempts.get_mut(predecessor_id) else {
+                return false;
+            };
+            if predecessor.superseded_by != Some(attempt_id) {
+                return false;
+            }
+            predecessor.superseded_by = Some(successor_id);
+            true
+        });
+        if let Some(successor) = self.load_attempts.get_mut(&successor_id)
+            && successor.replaced_attempt == Some(attempt_id)
+        {
+            // A terminal for a physical episode that reached start-file severs rollback to every
+            // older episode. If the removed attempt never started, its predecessor may still be
+            // the current physical file and remains a valid rollback owner for the successor.
+            successor.replaced_attempt = if successor_can_restore_predecessor {
+                predecessor
+            } else {
+                None
+            };
+            successor.replaced_attempt_state = successor
+                .replaced_attempt
+                .and(attempt.replaced_attempt_state);
+        }
+        Some(attempt)
+    }
+
     fn retire_reconciled_load_attempt(
         &mut self,
         attempt_id: LoadAttemptId,
         result: PlayerCommandResult,
     ) {
-        let command_id = self.load_attempts.remove(&attempt_id).and_then(|attempt| {
-            if let Some(entry_id) = attempt.playlist_entry_id {
-                self.playlist_entry_attempts.remove(&entry_id);
-            }
-            attempt.command_id
-        });
+        let command_id = self
+            .restore_replaced_load_attempt(attempt_id)
+            .and_then(|attempt| attempt.command_id);
         if let Some(command_id) = command_id
             && self
                 .pending_tracked_commands
@@ -4861,6 +4971,32 @@ impl MpvAdapter {
                 .any(|command| command.id == command_id)
         {
             self.finish_tracked_command(command_id, result);
+        }
+    }
+
+    fn expire_unobserved_accepted_load_attempts(&mut self, present_ids: &HashSet<u64>) {
+        let now = Instant::now();
+        while let Some(attempt_id) = self
+            .load_attempts
+            .values()
+            .rev()
+            .find(|attempt| {
+                attempt.attachment_id == self.attachment_id
+                    && attempt.superseded_by.is_none()
+                    && attempt.state == LoadAttemptState::Accepted
+                    && attempt.command_accepted_at.is_some_and(|accepted_at| {
+                        now.saturating_duration_since(accepted_at) >= PLAYER_LOAD_COMMAND_TIMEOUT
+                    })
+                    && attempt
+                        .playlist_entry_id
+                        .is_none_or(|entry_id| !present_ids.contains(&entry_id))
+            })
+            .map(|attempt| attempt.attempt_id)
+        {
+            self.retire_reconciled_load_attempt(
+                attempt_id,
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+            );
         }
     }
 
@@ -4926,47 +5062,25 @@ impl MpvAdapter {
         current_path: Option<&str>,
     ) -> LoadLifecycleReconciliation {
         let entries = Self::authoritative_playlist_entries(playlist);
+        let present_ids = entries.iter().map(|entry| entry.id).collect::<HashSet<_>>();
+        self.expire_unobserved_accepted_load_attempts(&present_ids);
         if entries.is_empty() {
             if current_path.is_some() {
                 return LoadLifecycleReconciliation::IncompleteSnapshot;
             }
-            let now = Instant::now();
-            let accepted_attempts = self
-                .load_attempts
-                .values()
-                .filter(|attempt| {
-                    attempt.attachment_id == self.attachment_id
-                        && attempt.superseded_by.is_none()
-                        && matches!(
-                            attempt.state,
-                            LoadAttemptState::Submitting | LoadAttemptState::Accepted
-                        )
-                })
-                .map(|attempt| {
-                    (
-                        attempt.attempt_id,
-                        attempt.command_accepted_at,
-                        attempt.command_id,
+            if self.load_attempts.values().any(|attempt| {
+                attempt.attachment_id == self.attachment_id
+                    && attempt.superseded_by.is_none()
+                    && matches!(
+                        attempt.state,
+                        LoadAttemptState::Submitting | LoadAttemptState::Accepted
                     )
-                })
-                .collect::<Vec<_>>();
-            if accepted_attempts.iter().any(|(_, accepted_at, _)| {
-                accepted_at.is_none_or(|accepted_at| {
-                    now.saturating_duration_since(accepted_at) < PLAYER_LOAD_COMMAND_TIMEOUT
-                })
             }) {
                 return LoadLifecycleReconciliation::AwaitingAcceptedAttempt;
-            }
-            for (attempt_id, _, _) in accepted_attempts {
-                self.retire_reconciled_load_attempt(
-                    attempt_id,
-                    PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
-                );
             }
             self.enter_authoritative_idle_state();
             return LoadLifecycleReconciliation::AuthoritativeIdle;
         }
-        let present_ids = entries.iter().map(|entry| entry.id).collect::<HashSet<_>>();
         let current_entry = entries.iter().find(|entry| entry.current).cloned();
 
         let attempt_ids = self
@@ -4986,7 +5100,14 @@ impl MpvAdapter {
             let current_attempt =
                 if let Some(attempt_id) = self.playlist_entry_attempts.get(&current_entry.id) {
                     *attempt_id
-                } else if self.load_attempts.is_empty() {
+                } else if self.load_attempts.values().all(|attempt| {
+                    attempt.attachment_id != self.attachment_id
+                        || attempt.superseded_by.is_some()
+                        || !Self::load_attempt_needs_lifecycle_reconciliation(attempt)
+                        || attempt
+                            .playlist_entry_id
+                            .is_some_and(|entry_id| entry_id != current_entry.id)
+                }) {
                     let generation = self.allocate_media_generation();
                     self.insert_observed_load_attempt(generation, Some(current_entry.id))
                 } else {
@@ -5109,13 +5230,23 @@ impl MpvAdapter {
             .load_attempts
             .get(&attempt_id)
             .and_then(|attempt| attempt.replaced_attempt);
-        if let Some(attempt) = self.load_attempts.get_mut(&attempt_id)
-            && attempt.state == LoadAttemptState::Submitting
-        {
-            attempt.state = LoadAttemptState::Accepted;
-            attempt.command_accepted_at = Some(now);
-        }
-        if let Some(replaced_attempt) = replaced_attempt
+        let replaced_attempt_state = replaced_attempt
+            .and_then(|attempt_id| self.load_attempts.get(&attempt_id))
+            .map(|attempt| attempt.state);
+        let accepted_now = self
+            .load_attempts
+            .get_mut(&attempt_id)
+            .is_some_and(|attempt| {
+                if attempt.state != LoadAttemptState::Submitting {
+                    return false;
+                }
+                attempt.state = LoadAttemptState::Accepted;
+                attempt.command_accepted_at = Some(now);
+                attempt.replaced_attempt_state = replaced_attempt_state;
+                true
+            });
+        if accepted_now
+            && let Some(replaced_attempt) = replaced_attempt
             && let Some(predecessor) = self.load_attempts.get_mut(&replaced_attempt)
         {
             predecessor.state = LoadAttemptState::SupersededMayTerminate;
@@ -6763,7 +6894,11 @@ impl MpvAdapter {
                 .load_attempts
                 .get(&terminal_attempt)
                 .and_then(|attempt| attempt.superseded_by);
-            self.load_attempts.remove(&terminal_attempt);
+            if let Some(successor) = successor {
+                self.remove_superseded_load_attempt(terminal_attempt, successor);
+            } else {
+                self.remove_load_attempt_from_registry(terminal_attempt);
+            }
             if self.active_load_attempt == Some(terminal_attempt) {
                 self.active_load_attempt = successor;
                 self.active_playlist_entry_id = successor.and_then(|attempt_id| {
@@ -6776,14 +6911,15 @@ impl MpvAdapter {
         }
 
         if successor_is_accepted {
-            self.load_attempts.remove(&terminal_attempt);
+            let successor =
+                successor.expect("an accepted successor must identify its load attempt");
+            self.remove_superseded_load_attempt(terminal_attempt, successor);
             if self.active_load_attempt == Some(terminal_attempt) {
-                self.active_load_attempt = successor;
-                self.active_playlist_entry_id = successor.and_then(|attempt_id| {
-                    self.load_attempts
-                        .get(&attempt_id)
-                        .and_then(|attempt| attempt.playlist_entry_id)
-                });
+                self.active_load_attempt = Some(successor);
+                self.active_playlist_entry_id = self
+                    .load_attempts
+                    .get(&successor)
+                    .and_then(|attempt| attempt.playlist_entry_id);
             }
             return;
         }
@@ -6859,7 +6995,11 @@ impl MpvAdapter {
             };
         }
         if reason != MPV_END_FILE_REASON_ERROR {
-            self.load_attempts.remove(&terminal_attempt);
+            self.remove_load_attempt_from_registry(terminal_attempt);
+            return;
+        }
+        if !affects_logical_generation {
+            self.remove_load_attempt_from_registry(terminal_attempt);
             return;
         }
 
@@ -8357,6 +8497,37 @@ mod load_transition_ownership_tests {
     }
 
     #[test]
+    fn terminal_predecessor_is_not_restored_when_unobserved_successor_times_out() {
+        let (mut adapter, _, old_attempt, replacement) = same_generation_replacement_fixture();
+        adapter.handle_end_file_event(&json!({
+            "playlist_entry_id": 10,
+            "reason": "stop",
+        }));
+        assert!(!adapter.load_attempts.contains_key(&old_attempt));
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&replacement)
+                .and_then(|attempt| attempt.replaced_attempt),
+            None
+        );
+        adapter
+            .load_attempts
+            .get_mut(&replacement)
+            .expect("accepted replacement")
+            .command_accepted_at =
+            Some(Instant::now() - PLAYER_LOAD_COMMAND_TIMEOUT - Duration::from_millis(1));
+
+        assert_eq!(
+            adapter.reconcile_load_lifecycle_from_authority(&json!([]), None),
+            LoadLifecycleReconciliation::AuthoritativeIdle
+        );
+        assert!(!adapter.load_attempts.contains_key(&replacement));
+        assert!(adapter.active_load_attempt.is_none());
+        assert!(adapter.active_media_generation.is_none());
+    }
+
+    #[test]
     fn old_same_generation_terminal_after_replacement_start_never_ends_logical_media() {
         for reason in ["stop", MPV_END_FILE_REASON_ERROR] {
             let (mut adapter, generation, old_attempt, replacement) =
@@ -8455,6 +8626,201 @@ mod load_transition_ownership_tests {
             LoadLifecycleReconciliation::Resolved
         );
         assert_eq!(adapter.playlist_entry_attempts.get(&100), Some(&attempt));
+    }
+
+    #[test]
+    fn expired_accepted_load_yields_to_unrelated_current_file() {
+        let (mut adapter, old_generation) = adapter_with_active_media();
+        let old_attempt = adapter
+            .active_load_attempt
+            .expect("fixture should have an active physical attempt");
+        let requested_generation = adapter.allocate_media_generation();
+        let command_id = adapter.register_tracked_command(
+            Some(requested_generation),
+            TrackedCommandKind::Load {
+                file_loaded: false,
+                ready: false,
+            },
+        );
+        let requested_attempt = adapter.insert_load_transition(
+            requested_generation,
+            "https://media.invalid/requested-c".to_owned(),
+        );
+        adapter.mark_load_transition_accepted(requested_attempt);
+        adapter.accept_tracked_command(command_id);
+        adapter
+            .load_attempts
+            .get_mut(&requested_attempt)
+            .expect("accepted attempt")
+            .command_accepted_at =
+            Some(Instant::now() - PLAYER_LOAD_COMMAND_TIMEOUT - Duration::from_millis(1));
+
+        let unrelated = json!([{
+            "id": 99,
+            "filename": "C:/media/manual-x.mkv",
+            "current": true,
+        }]);
+        assert_eq!(
+            adapter
+                .reconcile_load_lifecycle_from_authority(&unrelated, Some("C:/media/manual-x.mkv")),
+            LoadLifecycleReconciliation::Resolved
+        );
+        assert!(!adapter.load_attempts.contains_key(&requested_attempt));
+        assert_eq!(adapter.active_playlist_entry_id, Some(99));
+        assert_eq!(
+            adapter.current_path.as_deref(),
+            Some("C:/media/manual-x.mkv")
+        );
+        let external_attempt = adapter
+            .active_load_attempt
+            .expect("the unrelated current entry should gain observed ownership");
+        let external_generation = adapter
+            .active_media_generation
+            .expect("the unrelated current entry should gain a generation");
+        assert_ne!(external_generation, old_generation);
+        assert_ne!(external_generation, requested_generation);
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&old_attempt)
+                .and_then(|attempt| attempt.superseded_by),
+            Some(external_attempt)
+        );
+        assert!(
+            adapter
+                .pending_command_progress_updates
+                .iter()
+                .any(|progress| {
+                    progress.command_id == command_id
+                        && progress.state
+                            == PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
+                                PlayerCommandFailureKind::TimedOut,
+                            ))
+                })
+        );
+
+        adapter.pending_transport_telemetry_updates.clear();
+        adapter.pending_cache_telemetry_updates.clear();
+        adapter.pending_media_load_outcomes.clear();
+        adapter.handle_end_file_event(&json!({
+            "playlist_entry_id": 10,
+            "reason": MPV_END_FILE_REASON_ERROR,
+            "file_error": "old physical episode ended after the manual load",
+        }));
+        assert!(!adapter.load_attempts.contains_key(&old_attempt));
+        assert_eq!(adapter.active_load_attempt, Some(external_attempt));
+        assert_eq!(adapter.active_media_generation, Some(external_generation));
+        assert!(adapter.pending_transport_telemetry_updates.is_empty());
+        assert!(adapter.pending_cache_telemetry_updates.is_empty());
+        assert!(adapter.pending_media_load_outcomes.is_empty());
+    }
+
+    #[test]
+    fn timed_out_successor_restores_and_splices_the_physical_attempt_chain() {
+        let (mut adapter, active_generation) = adapter_with_active_media();
+        let original = adapter
+            .active_load_attempt
+            .expect("fixture should have an active physical attempt");
+        let generation_c = adapter.allocate_media_generation();
+        let attempt_c =
+            adapter.insert_load_transition(generation_c, "https://media.invalid/c".to_owned());
+        adapter.mark_load_transition_accepted(attempt_c);
+        assert!(adapter.bind_load_transition_playlist_entry(attempt_c, 20));
+
+        let generation_d = adapter.allocate_media_generation();
+        let attempt_d =
+            adapter.insert_load_transition(generation_d, "https://media.invalid/d".to_owned());
+        adapter.mark_load_transition_accepted(attempt_d);
+        adapter
+            .load_attempts
+            .get_mut(&attempt_d)
+            .expect("newest accepted attempt")
+            .command_accepted_at =
+            Some(Instant::now() - PLAYER_LOAD_COMMAND_TIMEOUT - Duration::from_millis(1));
+
+        let original_snapshot = json!([{
+            "id": 10,
+            "filename": "C:/media/original.mkv",
+            "current": true,
+        }]);
+        assert_eq!(
+            adapter.reconcile_load_lifecycle_from_authority(
+                &original_snapshot,
+                Some("C:/media/original.mkv"),
+            ),
+            LoadLifecycleReconciliation::AwaitingAcceptedAttempt
+        );
+        assert!(!adapter.load_attempts.contains_key(&attempt_d));
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&attempt_c)
+                .map(|attempt| (attempt.state, attempt.superseded_by)),
+            Some((LoadAttemptState::Accepted, None))
+        );
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&original)
+                .and_then(|attempt| attempt.superseded_by),
+            Some(attempt_c)
+        );
+
+        let generation_e = adapter.allocate_media_generation();
+        let attempt_e =
+            adapter.insert_load_transition(generation_e, "https://media.invalid/e".to_owned());
+        adapter.mark_load_transition_accepted(attempt_e);
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&attempt_c)
+                .and_then(|attempt| attempt.superseded_by),
+            Some(attempt_e)
+        );
+        adapter.handle_end_file_event(&json!({
+            "playlist_entry_id": 20,
+            "reason": MPV_END_FILE_REASON_ERROR,
+            "file_error": "middle attempt ended after its successor was accepted",
+        }));
+        assert!(!adapter.load_attempts.contains_key(&attempt_c));
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&original)
+                .and_then(|attempt| attempt.superseded_by),
+            Some(attempt_e)
+        );
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&attempt_e)
+                .map(|attempt| (attempt.replaced_attempt, attempt.replaced_attempt_state)),
+            Some((Some(original), Some(LoadAttemptState::StartObserved)))
+        );
+
+        adapter
+            .load_attempts
+            .get_mut(&attempt_e)
+            .expect("latest accepted attempt")
+            .command_accepted_at =
+            Some(Instant::now() - PLAYER_LOAD_COMMAND_TIMEOUT - Duration::from_millis(1));
+        assert_eq!(
+            adapter.reconcile_load_lifecycle_from_authority(
+                &original_snapshot,
+                Some("C:/media/original.mkv"),
+            ),
+            LoadLifecycleReconciliation::Resolved
+        );
+        assert!(!adapter.load_attempts.contains_key(&attempt_e));
+        assert_eq!(adapter.active_load_attempt, Some(original));
+        assert_eq!(adapter.active_media_generation, Some(active_generation));
+        assert_eq!(
+            adapter
+                .load_attempts
+                .get(&original)
+                .map(|attempt| (attempt.state, attempt.superseded_by)),
+            Some((LoadAttemptState::StartObserved, None))
+        );
     }
 
     #[test]

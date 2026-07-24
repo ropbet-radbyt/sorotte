@@ -445,6 +445,7 @@ fn media_index_pre_activation_failure_matrix_preserves_live_and_removes_artifact
         MediaIndexCommitFailurePoint::BeforeGenerationCreation,
         MediaIndexCommitFailurePoint::DuringGenerationCopy,
         MediaIndexCommitFailurePoint::DuringReplacementValidation,
+        MediaIndexCommitFailurePoint::DuringGenerationParentSync,
         MediaIndexCommitFailurePoint::DuringManifestReplacement,
     ] {
         let label = format!("commit-failure-{failure_point:?}");

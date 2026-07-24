@@ -51,6 +51,7 @@ pub(crate) enum MediaIndexCommitFailurePoint {
     BeforeGenerationCreation,
     DuringGenerationCopy,
     DuringReplacementValidation,
+    DuringGenerationParentSync,
     DuringManifestReplacement,
     AfterManifestReplacementBeforeDirectorySync,
     DuringStagingCleanup,
@@ -305,10 +306,8 @@ impl MediaIndexBuildTransaction {
         let generation = format!("generation-{unique}");
         #[cfg(test)]
         self.inject_test_failure(MediaIndexCommitFailurePoint::BeforeGenerationCreation)?;
-        let generation_root = self
-            .live_root
-            .join(MEDIA_INDEX_GENERATIONS_DIR)
-            .join(&generation);
+        let generations_root = self.live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let generation_root = generations_root.join(&generation);
         fs::create_dir_all(&generation_root).map_err(|error| {
             format!(
                 "failed creating media-match generation directory '{}': {error}",
@@ -335,6 +334,13 @@ impl MediaIndexBuildTransaction {
                 )
             })?;
         sync_directory(&generation_root)?;
+        #[cfg(test)]
+        self.inject_test_failure(MediaIndexCommitFailurePoint::DuringGenerationParentSync)?;
+        // The database and its own directory must become durable before either manifest can name
+        // the generation. Synchronize both directory entries in order: first generation-X inside
+        // generations/, then generations/ inside the live index root.
+        sync_directory(&generations_root)?;
+        sync_directory(&self.live_root)?;
         let previous = self.base_generation.clone();
         let next_epoch = self.base_epoch.checked_add(1).ok_or_else(|| {
             MediaIndexCommitError::NotActivated(
