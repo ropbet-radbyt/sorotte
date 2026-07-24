@@ -215,6 +215,45 @@ pub fn open_media_match_v3_index(root: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
+pub(crate) fn open_existing_media_match_v3_index(root: &Path) -> Result<Connection, String> {
+    let path = media_match_v3_index_path(root);
+    if !path.is_file() {
+        return Err(format!(
+            "activated media-match V3 index '{}' is missing",
+            path.display()
+        ));
+    }
+    let connection = Connection::open(&path).map_err(|error| {
+        format!(
+            "failed opening activated media-match V3 index '{}': {error}",
+            path.display()
+        )
+    })?;
+    connection
+        .execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA foreign_keys = ON;
+            PRAGMA temp_store = MEMORY;
+            ",
+        )
+        .map_err(|error| {
+            format!(
+                "failed configuring activated media-match V3 index '{}': {error}",
+                path.display()
+            )
+        })?;
+    let version = sqlite_schema_version(&connection)?;
+    if version != MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION {
+        return Err(format!(
+            "activated media-match V3 index '{}' has schema version {version}, expected {MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION}",
+            path.display()
+        ));
+    }
+    Ok(connection)
+}
+
 pub fn initialize_media_match_v3_index(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(

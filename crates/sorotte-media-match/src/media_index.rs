@@ -10,6 +10,7 @@ use std::{
 use std::os::windows::ffi::OsStrExt;
 
 use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchCache,
@@ -19,15 +20,59 @@ use crate::{
         anchor_stats_v3_dirty, delete_media_match_v3_file_and_fingerprints,
         delete_media_match_v3_fingerprints_and_anchors, load_media_match_v3_cache_for_settings,
         load_media_match_v3_record_for_path, media_match_v3_anchor_candidate_paths_with_stats,
-        media_match_v3_index_path, media_match_v3_sqlite_size_report, open_media_match_v3_index,
-        refresh_all_anchor_stats_v3, refresh_anchor_stats_v3, save_media_match_v3_record,
-        save_media_match_v3_record_with_stats,
+        media_match_v3_index_path, media_match_v3_sqlite_size_report,
+        open_existing_media_match_v3_index, open_media_match_v3_index, refresh_all_anchor_stats_v3,
+        refresh_anchor_stats_v3, save_media_match_v3_record, save_media_match_v3_record_with_stats,
     },
 };
 
 const MEDIA_INDEX_MANIFEST_FILE: &str = "current.json";
 const MEDIA_INDEX_GENERATIONS_DIR: &str = "generations";
-const MEDIA_INDEX_MANIFEST_VERSION: u32 = 1;
+const MEDIA_INDEX_MANIFEST_VERSION: u32 = 2;
+const MEDIA_INDEX_BUILD_PREFIX: &str = ".media-match-build-";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaIndexCommitOutcome {
+    Activated { cleanup_warning: Option<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaIndexCommitError {
+    NotActivated(String),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaIndexCommitFailurePoint {
+    BeforeGenerationCreation,
+    DuringGenerationCopy,
+    DuringReplacementValidation,
+    DuringManifestReplacement,
+    DuringStagingCleanup,
+}
+
+impl std::fmt::Display for MediaIndexCommitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotActivated(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for MediaIndexCommitError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct MediaIndexManifest {
+    version: u32,
+    current: String,
+    previous: Option<String>,
+}
+
+#[derive(Debug)]
+enum ResolvedMediaIndexRoot {
+    ExistingGeneration(PathBuf),
+    LegacyOrNew(PathBuf),
+}
 
 /// Filesystem metadata used to update one row of the media inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,15 +125,33 @@ impl MediaIndexService {
     }
 
     pub fn index_path(&self) -> PathBuf {
-        media_match_v3_index_path(&active_media_index_root(&self.root))
+        let active_root = resolve_media_index_root(&self.root)
+            .map(|resolved| match resolved {
+                ResolvedMediaIndexRoot::ExistingGeneration(root)
+                | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
+            })
+            .unwrap_or_else(|_| self.root.clone());
+        media_match_v3_index_path(&active_root)
     }
 
     pub fn open(&self) -> Result<MediaIndexSession, String> {
-        let active_root = active_media_index_root(&self.root);
-        open_media_match_v3_index(&active_root).map(|connection| MediaIndexSession {
-            root: active_root,
-            connection,
-        })
+        cleanup_abandoned_media_index_builds(&self.root);
+        match resolve_media_index_root(&self.root)? {
+            ResolvedMediaIndexRoot::ExistingGeneration(active_root) => {
+                open_existing_media_match_v3_index(&active_root).map(|connection| {
+                    MediaIndexSession {
+                        root: active_root,
+                        connection,
+                    }
+                })
+            }
+            ResolvedMediaIndexRoot::LegacyOrNew(active_root) => {
+                open_media_match_v3_index(&active_root).map(|connection| MediaIndexSession {
+                    root: active_root,
+                    connection,
+                })
+            }
+        }
     }
 }
 
@@ -99,6 +162,10 @@ pub struct MediaIndexBuildTransaction {
     staging_root: PathBuf,
     had_live_index: bool,
     finished: bool,
+    activated: bool,
+    created_generation_root: Option<PathBuf>,
+    #[cfg(test)]
+    test_failure_point: Option<MediaIndexCommitFailurePoint>,
 }
 
 impl MediaIndexBuildTransaction {
@@ -114,6 +181,7 @@ impl MediaIndexBuildTransaction {
                 staging_root.display()
             ));
         }
+        cleanup_abandoned_media_index_builds(&live_root);
         fs::create_dir_all(&staging_root).map_err(|error| {
             format!(
                 "failed creating media-match staging directory '{}': {error}",
@@ -121,7 +189,11 @@ impl MediaIndexBuildTransaction {
             )
         })?;
 
-        let live_path = MediaIndexService::new(&live_root).index_path();
+        let active_root = match resolve_media_index_root(&live_root)? {
+            ResolvedMediaIndexRoot::ExistingGeneration(root)
+            | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
+        };
+        let live_path = media_match_v3_index_path(&active_root);
         let had_live_index = live_path.exists();
         if had_live_index {
             let staging_path = media_match_v3_index_path(&staging_root);
@@ -134,6 +206,10 @@ impl MediaIndexBuildTransaction {
             staging_root,
             had_live_index,
             finished: false,
+            activated: false,
+            created_generation_root: None,
+            #[cfg(test)]
+            test_failure_point: None,
         })
     }
 
@@ -145,12 +221,33 @@ impl MediaIndexBuildTransaction {
         self.had_live_index
     }
 
-    pub fn commit(mut self) -> Result<(), String> {
+    #[cfg(test)]
+    pub(crate) fn set_test_failure_point(&mut self, point: MediaIndexCommitFailurePoint) {
+        self.test_failure_point = Some(point);
+    }
+
+    #[cfg(test)]
+    fn inject_test_failure(&self, point: MediaIndexCommitFailurePoint) -> Result<(), String> {
+        if self.test_failure_point == Some(point) {
+            Err(format!("injected media-index commit failure at {point:?}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn commit(mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
+        self.commit_inner()
+            .map_err(MediaIndexCommitError::NotActivated)
+    }
+
+    fn commit_inner(&mut self) -> Result<MediaIndexCommitOutcome, String> {
         let staging_path = media_match_v3_index_path(&self.staging_root);
         validate_media_index_database(&staging_path)?;
 
         let unique = media_index_transaction_unique();
         let generation = format!("generation-{unique}");
+        #[cfg(test)]
+        self.inject_test_failure(MediaIndexCommitFailurePoint::BeforeGenerationCreation)?;
         let generation_root = self
             .live_root
             .join(MEDIA_INDEX_GENERATIONS_DIR)
@@ -161,8 +258,13 @@ impl MediaIndexBuildTransaction {
                 generation_root.display()
             )
         })?;
+        self.created_generation_root = Some(generation_root.clone());
         let replacement_path = media_match_v3_index_path(&generation_root);
+        #[cfg(test)]
+        self.inject_test_failure(MediaIndexCommitFailurePoint::DuringGenerationCopy)?;
         online_backup_database(&staging_path, &replacement_path)?;
+        #[cfg(test)]
+        self.inject_test_failure(MediaIndexCommitFailurePoint::DuringReplacementValidation)?;
         validate_media_index_database(&replacement_path)?;
         OpenOptions::new()
             .read(true)
@@ -175,10 +277,32 @@ impl MediaIndexBuildTransaction {
                     replacement_path.display()
                 )
             })?;
-        write_media_index_manifest(&self.live_root, &generation)?;
-        remove_directory_if_exists(&self.staging_root)?;
+        sync_directory(&generation_root)?;
+        let previous = current_manifest_generation(&self.live_root);
+        #[cfg(test)]
+        self.inject_test_failure(MediaIndexCommitFailurePoint::DuringManifestReplacement)?;
+        write_media_index_manifest(&self.live_root, &generation, previous.as_deref())?;
+        self.activated = true;
+        self.created_generation_root = None;
         self.finished = true;
-        Ok(())
+        let mut cleanup_warnings = Vec::new();
+        #[cfg(test)]
+        let staging_cleanup = self
+            .inject_test_failure(MediaIndexCommitFailurePoint::DuringStagingCleanup)
+            .and_then(|()| remove_directory_if_exists(&self.staging_root));
+        #[cfg(not(test))]
+        let staging_cleanup = remove_directory_if_exists(&self.staging_root);
+        if let Err(error) = staging_cleanup {
+            cleanup_warnings.push(error);
+        }
+        if let Err(error) =
+            collect_old_media_index_generations(&self.live_root, &generation, previous.as_deref())
+        {
+            cleanup_warnings.push(error);
+        }
+        Ok(MediaIndexCommitOutcome::Activated {
+            cleanup_warning: (!cleanup_warnings.is_empty()).then(|| cleanup_warnings.join("; ")),
+        })
     }
 
     pub fn abort(mut self) -> Result<(), String> {
@@ -190,6 +314,11 @@ impl MediaIndexBuildTransaction {
 
 impl Drop for MediaIndexBuildTransaction {
     fn drop(&mut self) {
+        if !self.activated
+            && let Some(generation_root) = self.created_generation_root.take()
+        {
+            let _ = remove_directory_if_exists(&generation_root);
+        }
         if !self.finished {
             let _ = remove_directory_if_exists(&self.staging_root);
         }
@@ -532,35 +661,294 @@ fn inventory_count(connection: &Connection) -> Result<usize, String> {
         .map_err(|error| format!("failed reading media-match inventory count: {error}"))
 }
 
-fn active_media_index_root(root: &Path) -> PathBuf {
+fn resolve_media_index_root(root: &Path) -> Result<ResolvedMediaIndexRoot, String> {
     let manifest_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
-    let Some(generation) = fs::read(&manifest_path)
-        .ok()
-        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
-        .and_then(|manifest| {
-            (manifest.get("version").and_then(serde_json::Value::as_u64)
-                == Some(u64::from(MEDIA_INDEX_MANIFEST_VERSION)))
-            .then(|| {
-                manifest
-                    .get("generation")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-            })
-            .flatten()
-        })
+    let manifest_present = manifest_path.exists();
+    let manifest = read_media_index_manifest(root).ok().flatten();
+    let generation_names = media_index_generation_names(root);
+    let mut candidates = Vec::new();
+    if let Some(manifest) = manifest.as_ref() {
+        candidates.push(manifest.current.clone());
+        if let Some(previous) = manifest.previous.as_ref() {
+            candidates.push(previous.clone());
+        }
+    }
+    for generation in &generation_names {
+        if !candidates.contains(generation) {
+            candidates.push(generation.clone());
+        }
+    }
+    let valid_candidates = candidates
+        .into_iter()
         .filter(|generation| {
-            !generation.is_empty()
-                && generation
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            validate_media_index_database(&media_match_v3_index_path(
+                &root.join(MEDIA_INDEX_GENERATIONS_DIR).join(generation),
+            ))
+            .is_ok()
         })
-    else {
-        return root.to_path_buf();
-    };
-    root.join(MEDIA_INDEX_GENERATIONS_DIR).join(generation)
+        .collect::<Vec<_>>();
+    if let Some(current) = valid_candidates.first() {
+        let previous = valid_candidates.get(1).map(String::as_str);
+        let manifest_matches = manifest.as_ref().is_some_and(|manifest| {
+            manifest.version == MEDIA_INDEX_MANIFEST_VERSION
+                && manifest.current == *current
+                && manifest.previous.as_deref() == previous
+        });
+        if !manifest_matches {
+            write_media_index_manifest(root, current, previous)?;
+        }
+        let _ = collect_old_media_index_generations(root, current, previous);
+        return Ok(ResolvedMediaIndexRoot::ExistingGeneration(
+            root.join(MEDIA_INDEX_GENERATIONS_DIR).join(current),
+        ));
+    }
+
+    let legacy_path = media_match_v3_index_path(root);
+    if legacy_path.exists() {
+        validate_media_index_database(&legacy_path).map_err(|error| {
+            format!(
+                "media-match generation recovery failed and the legacy index is invalid: {error}"
+            )
+        })?;
+        return Ok(ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()));
+    }
+    if manifest_present || !generation_names.is_empty() {
+        return Err(format!(
+            "media-match manifest or generation data exists under '{}', but no valid activated index can be recovered",
+            root.display()
+        ));
+    }
+    Ok(ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()))
 }
 
-fn write_media_index_manifest(root: &Path, generation: &str) -> Result<(), String> {
+fn valid_generation_name(generation: &str) -> bool {
+    !generation.is_empty()
+        && generation
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn read_media_index_manifest(root: &Path) -> Result<Option<MediaIndexManifest>, String> {
+    let path = root.join(MEDIA_INDEX_MANIFEST_FILE);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let contents = fs::read(&path).map_err(|error| {
+        format!(
+            "failed reading media-match manifest '{}': {error}",
+            path.display()
+        )
+    })?;
+    let value = serde_json::from_slice::<serde_json::Value>(&contents).map_err(|error| {
+        format!(
+            "failed parsing media-match manifest '{}': {error}",
+            path.display()
+        )
+    })?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .ok_or_else(|| {
+            format!(
+                "media-match manifest '{}' has no supported version",
+                path.display()
+            )
+        })?;
+    let manifest = if version == MEDIA_INDEX_MANIFEST_VERSION {
+        serde_json::from_value::<MediaIndexManifest>(value).map_err(|error| {
+            format!(
+                "failed decoding media-match manifest '{}': {error}",
+                path.display()
+            )
+        })?
+    } else if version == 1 {
+        let current = value
+            .get("generation")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "legacy media-match manifest '{}' has no generation",
+                    path.display()
+                )
+            })?
+            .to_owned();
+        MediaIndexManifest {
+            version,
+            current,
+            previous: None,
+        }
+    } else {
+        return Err(format!(
+            "media-match manifest '{}' uses unsupported version {version}",
+            path.display()
+        ));
+    };
+    if !valid_generation_name(&manifest.current)
+        || manifest
+            .previous
+            .as_deref()
+            .is_some_and(|previous| !valid_generation_name(previous))
+    {
+        return Err(format!(
+            "media-match manifest '{}' contains an invalid generation name",
+            path.display()
+        ));
+    }
+    Ok(Some(manifest))
+}
+
+fn media_index_generation_names(root: &Path) -> Vec<String> {
+    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
+    let Ok(entries) = fs::read_dir(&generations_root) else {
+        return Vec::new();
+    };
+    let mut entries = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_str()?.to_owned();
+            if !valid_generation_name(&name) {
+                return None;
+            }
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .unwrap_or(UNIX_EPOCH);
+            Some((modified, name))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.cmp(left));
+    entries.into_iter().map(|(_, name)| name).collect()
+}
+
+fn current_manifest_generation(root: &Path) -> Option<String> {
+    read_media_index_manifest(root)
+        .ok()
+        .flatten()
+        .map(|manifest| manifest.current)
+}
+
+fn cleanup_abandoned_media_index_builds(root: &Path) {
+    let Some(cache_root) = root.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(cache_root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(name) = name
+            .to_str()
+            .filter(|name| name.starts_with(MEDIA_INDEX_BUILD_PREFIX))
+        else {
+            continue;
+        };
+        if media_index_build_owner_is_running(name) {
+            continue;
+        }
+        let _ = remove_directory_if_exists(&entry.path());
+    }
+}
+
+fn media_index_build_owner_pid(name: &str) -> Option<u32> {
+    name.strip_prefix(MEDIA_INDEX_BUILD_PREFIX)?
+        .split_once('-')?
+        .0
+        .parse()
+        .ok()
+}
+
+#[cfg(windows)]
+fn media_index_build_owner_is_running(name: &str) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+
+    let Some(pid) = media_index_build_owner_pid(name) else {
+        return false;
+    };
+    // SAFETY: OpenProcess requests synchronization access only. A non-null handle is waited on
+    // without dereferencing and closed exactly once below.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: handle is valid until CloseHandle and a zero-duration wait does not mutate it.
+    let running = unsafe { WaitForSingleObject(handle, 0) == WAIT_TIMEOUT };
+    // SAFETY: handle was returned by OpenProcess and has not previously been closed.
+    unsafe {
+        CloseHandle(handle);
+    }
+    running
+}
+
+#[cfg(not(windows))]
+fn media_index_build_owner_is_running(name: &str) -> bool {
+    let Some(pid) = media_index_build_owner_pid(name) else {
+        return false;
+    };
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        // Without a portable process-liveness primitive, preserve another process's build.
+        true
+    }
+}
+
+fn collect_old_media_index_generations(
+    root: &Path,
+    current: &str,
+    previous: Option<&str>,
+) -> Result<(), String> {
+    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
+    let Ok(entries) = fs::read_dir(&generations_root) else {
+        return Ok(());
+    };
+    let mut warnings = Vec::new();
+    let legacy_path = media_match_v3_index_path(root);
+    if legacy_path.exists()
+        && let Err(error) = remove_sqlite_file_set(&legacy_path)
+    {
+        warnings.push(error);
+    }
+    for entry in entries.filter_map(Result::ok) {
+        let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if name == current || previous == Some(name.as_str()) {
+            continue;
+        }
+        if let Err(error) = remove_directory_if_exists(&entry.path()) {
+            warnings.push(error);
+        }
+    }
+    if warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "media-match generation cleanup deferred: {}",
+            warnings.join("; ")
+        ))
+    }
+}
+
+fn write_media_index_manifest(
+    root: &Path,
+    generation: &str,
+    previous: Option<&str>,
+) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|error| {
         format!(
             "failed creating media-match manifest directory '{}': {error}",
@@ -572,10 +960,11 @@ fn write_media_index_manifest(root: &Path, generation: &str) -> Result<(), Strin
         "{MEDIA_INDEX_MANIFEST_FILE}.tmp-{}",
         media_index_transaction_unique()
     ));
-    let manifest = serde_json::to_vec(&serde_json::json!({
-        "version": MEDIA_INDEX_MANIFEST_VERSION,
-        "generation": generation,
-    }))
+    let manifest = serde_json::to_vec(&MediaIndexManifest {
+        version: MEDIA_INDEX_MANIFEST_VERSION,
+        current: generation.to_owned(),
+        previous: previous.map(ToOwned::to_owned),
+    })
     .expect("media-index manifest serialization cannot fail");
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -603,6 +992,27 @@ fn write_media_index_manifest(root: &Path, generation: &str) -> Result<(), Strin
             manifest_path.display()
         ));
     }
+    sync_directory(root)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed synchronizing media-match directory '{}': {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), String> {
+    // MoveFileExW with MOVEFILE_WRITE_THROUGH provides the durable replacement boundary.
     Ok(())
 }
 

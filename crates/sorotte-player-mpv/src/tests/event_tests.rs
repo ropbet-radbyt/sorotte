@@ -520,41 +520,41 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     assert_eq!(resumed.phase, Some(PlayerTransportPhase::Playing));
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 19);
+    assert_eq!(writes.len(), 20);
     let seeking_observer: Value =
-        serde_json::from_str(writes[9].trim_end()).expect("valid seeking observer json");
+        serde_json::from_str(writes[10].trim_end()).expect("valid seeking observer json");
     let cache_state_observer: Value =
-        serde_json::from_str(writes[12].trim_end()).expect("valid cache observer json");
+        serde_json::from_str(writes[13].trim_end()).expect("valid cache observer json");
     let ytdl_live_observer: Value =
-        serde_json::from_str(writes[14].trim_end()).expect("valid ytdl live observer json");
+        serde_json::from_str(writes[15].trim_end()).expect("valid ytdl live observer json");
     let metadata_observer: Value =
-        serde_json::from_str(writes[15].trim_end()).expect("valid metadata observer json");
+        serde_json::from_str(writes[16].trim_end()).expect("valid metadata observer json");
     assert_eq!(
         seeking_observer,
         json!({
             "command": ["observe_property", 9, "seeking"],
-            "request_id": 10
+            "request_id": 11
         })
     );
     assert_eq!(
         cache_state_observer,
         json!({
             "command": ["observe_property", 12, "demuxer-cache-state"],
-            "request_id": 13
+            "request_id": 14
         })
     );
     assert_eq!(
         ytdl_live_observer,
         json!({
             "command": ["observe_property", 15, "metadata/by-key/ytdl_is_live"],
-            "request_id": 15
+            "request_id": 16
         })
     );
     assert_eq!(
         metadata_observer,
         json!({
             "command": ["observe_property", 16, "metadata"],
-            "request_id": 16
+            "request_id": 17
         })
     );
 }

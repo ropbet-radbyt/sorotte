@@ -21,12 +21,13 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintError,
-    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexInventoryEntry,
-    MediaIndexService, MediaIndexSession, MediaMatchCache, MediaMatchCandidateDecision,
-    MediaMatchDecision, MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths,
-    MediaMatchV3RetrievalStats, decide_media_match, fingerprint_media_file_cancellable_with_report,
-    media_extraction_settings_hash, media_match_wire_value_from_records, normalize_media_path,
-    rank_media_match_candidates, summarize_record_v3_diagnostics,
+    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexCommitError,
+    MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
+    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
+    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
+    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
+    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
+    summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -410,18 +411,57 @@ impl GuiMediaMatchIndexBuildTransaction {
         &self.staging_app_root
     }
 
-    pub(super) fn commit(mut self) -> Result<(), String> {
-        self.transaction
+    pub(super) fn commit(mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
+        let result = self
+            .transaction
             .take()
             .expect("media-match build transaction should be present")
-            .commit()
+            .commit();
+        let outer_cleanup = if self.staging_app_root.exists() {
+            fs::remove_dir_all(&self.staging_app_root)
+                .err()
+                .map(|error| {
+                    format!(
+                        "failed removing media-match staging directory '{}': {error}",
+                        self.staging_app_root.display()
+                    )
+                })
+        } else {
+            None
+        };
+        match (result, outer_cleanup) {
+            (Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }), outer_cleanup) => {
+                let warnings = [cleanup_warning, outer_cleanup]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                Ok(MediaIndexCommitOutcome::Activated {
+                    cleanup_warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+                })
+            }
+            (Err(MediaIndexCommitError::NotActivated(error)), cleanup) => {
+                Err(MediaIndexCommitError::NotActivated(match cleanup {
+                    Some(cleanup) => format!("{error}; {cleanup}"),
+                    None => error,
+                }))
+            }
+        }
     }
 
     pub(super) fn abort(mut self) -> Result<(), String> {
         self.transaction
             .take()
             .expect("media-match build transaction should be present")
-            .abort()
+            .abort()?;
+        if self.staging_app_root.exists() {
+            fs::remove_dir_all(&self.staging_app_root).map_err(|error| {
+                format!(
+                    "failed removing media-match staging directory '{}': {error}",
+                    self.staging_app_root.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 }
 

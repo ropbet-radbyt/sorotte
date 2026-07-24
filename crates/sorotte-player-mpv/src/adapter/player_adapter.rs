@@ -557,8 +557,20 @@ impl PlayerAdapter for MpvAdapter {
 
         self.accept_tracked_command(command_id);
         match supersession {
-            TrackedCommandSupersession::Load => self
-                .supersede_tracked_commands(Some(command_id), |kind| kind.is_load_seek_or_play()),
+            TrackedCommandSupersession::Load => {
+                debug_assert!(
+                    self.load_transitions
+                        .values()
+                        .any(|transition| transition.command_id == Some(command_id))
+                        || self
+                            .unacknowledged_terminal_command_progress
+                            .contains_key(&command_id),
+                    "an accepted tracked load must retain either its transition or terminal result"
+                );
+                self.supersede_tracked_commands(Some(command_id), |kind| {
+                    kind.is_load_seek_or_play()
+                });
+            }
             TrackedCommandSupersession::Seek => self
                 .supersede_tracked_commands(Some(command_id), |kind| {
                     matches!(kind, TrackedCommandKind::Seek { .. })
@@ -580,9 +592,7 @@ impl PlayerAdapter for MpvAdapter {
         self.network_cache_stall = None;
         let generation = self.allocate_media_generation();
         let previous_phase = self.transport_phase;
-        self.pending_load_request = Some(path.to_owned());
-        self.pending_load_generation = Some(generation);
-        self.rejected_prestart_load = None;
+        self.insert_load_transition(generation, path.to_owned());
         self.network_media_options_embedded_load = None;
         self.transport_phase = PlayerTransportPhase::Loading;
         let loading_update = self
@@ -598,7 +608,7 @@ impl PlayerAdapter for MpvAdapter {
                 });
                 self.send_network_media_loadfile(path)
             } else {
-                self.send_ipc_command_if_attached(json!([
+                self.send_ipc_command_if_attached_without_draining_events(json!([
                     MPV_COMMAND_LOADFILE,
                     path,
                     MPV_LOADFILE_REPLACE
@@ -612,9 +622,12 @@ impl PlayerAdapter for MpvAdapter {
             {
                 self.network_media_options_embedded_load = None;
             }
-            if self.pending_load_generation == Some(generation) {
-                self.pending_load_request = None;
-                self.pending_load_generation = None;
+            let replaced_generation = self
+                .load_transitions
+                .remove(&generation)
+                .and_then(|transition| transition.replaced_generation);
+            if self.pending_load_generation().is_none() && self.active_media_generation.is_none() {
+                self.active_media_generation = replaced_generation;
             }
             self.transport_phase = previous_phase;
             let mut failure_update = self
@@ -625,11 +638,35 @@ impl PlayerAdapter for MpvAdapter {
             return Err(error);
         }
 
+        self.mark_load_transition_accepted(generation);
+        let authoritative_playlist = self
+            .ipc_client
+            .as_mut()
+            .and_then(|client| client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten());
+        if let Some(playlist_entry_id) = authoritative_playlist
+            .as_ref()
+            .and_then(Self::authoritative_playlist_entry_id)
+        {
+            self.bind_load_transition_playlist_entry(generation, playlist_entry_id);
+        }
+        let tracked_load_command = self
+            .load_transitions
+            .get(&generation)
+            .and_then(|transition| transition.command_id);
+        if let Some(command_id) = tracked_load_command {
+            // The loadfile response has been accepted and its authoritative playlist identity is
+            // bound. Publish that acceptance before superseding B, but retire B before reducing
+            // lifecycle events buffered while C's command response was in flight.
+            self.accept_tracked_command(command_id);
+        }
+        self.supersede_tracked_commands(tracked_load_command, |kind| kind.is_load_seek_or_play());
+        self.drain_ipc_events_if_attached();
+
         if self.ipc_client.is_some() {
             // A fast mpv load can deliver start-file/file-loaded before the
             // loadfile command reply. Do not erase those observations after
             // the command returns.
-            if self.pending_load_generation == Some(generation) {
+            if self.pending_load_generation() == Some(generation) {
                 self.current_path = Some(path.to_owned());
                 self.pending_local_file_update = None;
                 self.pending_local_file_generation = None;
@@ -644,8 +681,9 @@ impl PlayerAdapter for MpvAdapter {
             }
         } else {
             self.active_media_generation = Some(generation);
-            self.pending_load_generation = None;
-            self.pending_load_request = None;
+            if let Some(transition) = self.load_transitions.get_mut(&generation) {
+                transition.state = LoadTransitionState::Loaded;
+            }
             self.active_file_loaded = true;
             self.active_generation_has_restarted = !self.paused;
             self.current_path = Some(path.to_owned());
@@ -660,14 +698,6 @@ impl PlayerAdapter for MpvAdapter {
                 PlayerTransportPhase::Playing
             };
             self.set_transport_phase(phase);
-        }
-        let belongs_to_tracked_load = self.pending_tracked_commands.iter().any(|command| {
-            command.accepted_at.is_none()
-                && command.media_generation == Some(generation)
-                && matches!(&command.kind, TrackedCommandKind::Load { .. })
-        });
-        if !belongs_to_tracked_load {
-            self.supersede_tracked_commands(None, |kind| kind.is_load_seek_or_play());
         }
         Ok(())
     }

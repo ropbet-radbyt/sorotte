@@ -521,9 +521,24 @@ struct ProvisionalEofObservation {
     position_seconds: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RejectedPrestartLoad {
-    media_generation: PlayerMediaGeneration,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadTransitionState {
+    Submitting,
+    Accepted,
+    StartObserved,
+    Loaded,
+    Failed,
+    Superseded,
+}
+
+#[derive(Debug)]
+struct LoadTransition {
+    generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    requested_target: String,
+    replaced_generation: Option<PlayerMediaGeneration>,
+    playlist_entry_id: Option<u64>,
+    state: LoadTransitionState,
 }
 
 #[derive(Debug)]
@@ -694,8 +709,7 @@ pub struct MpvAdapter {
     unacknowledged_terminal_command_progress: BTreeMap<PlayerCommandId, PlayerCommandProgress>,
     unacknowledged_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     pending_chat_requests: VecDeque<String>,
-    pending_load_request: Option<String>,
-    rejected_prestart_load: Option<RejectedPrestartLoad>,
+    load_transitions: BTreeMap<PlayerMediaGeneration, LoadTransition>,
     provisional_eof_observation: Option<ProvisionalEofObservation>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
     network_cache_stall: Option<NetworkCacheStall>,
@@ -708,7 +722,6 @@ pub struct MpvAdapter {
     current_ipc_event_observed_at: Option<PlayerObservationTimestamp>,
     next_media_generation: u64,
     active_media_generation: Option<PlayerMediaGeneration>,
-    pending_load_generation: Option<PlayerMediaGeneration>,
     active_playlist_entry_id: Option<u64>,
     playlist_entry_generations: HashMap<u64, PlayerMediaGeneration>,
     transport_phase: PlayerTransportPhase,
@@ -1550,8 +1563,8 @@ impl MpvAdapter {
         };
         let Some(active_path) = active_path else {
             if self.network_media_options_hook_should_run()
-                && (self.pending_load_request.is_some()
-                    || self.pending_load_generation.is_some()
+                && (self.pending_load_request().is_some()
+                    || self.pending_load_generation().is_some()
                     || matches!(
                         self.transport_phase,
                         PlayerTransportPhase::Loading | PlayerTransportPhase::Prebuffering
@@ -1970,8 +1983,8 @@ impl MpvAdapter {
         self.network_media_options_embedded_load
             .as_ref()
             .is_some_and(|embedded| {
-                self.pending_load_generation == Some(embedded.media_generation)
-                    || (self.pending_load_request.is_some()
+                self.pending_load_generation() == Some(embedded.media_generation)
+                    || (self.pending_load_request().is_some()
                         && self.active_media_generation == Some(embedded.media_generation))
             })
     }
@@ -2637,7 +2650,7 @@ impl MpvAdapter {
 
     fn send_network_media_loadfile(&mut self, path: &str) -> Result<(), PlayerError> {
         let options = Value::Object(self.network_media_options_map());
-        self.send_ipc_command_if_attached(json!([
+        self.send_ipc_command_if_attached_without_draining_events(json!([
             MPV_COMMAND_LOADFILE,
             path,
             MPV_LOADFILE_REPLACE,
@@ -2765,9 +2778,18 @@ impl MpvAdapter {
             return false;
         }
 
-        self.pending_load_request = Some(path.clone());
-        self.pending_load_generation = Some(generation);
-        self.rejected_prestart_load = None;
+        self.insert_load_transition(generation, path.clone());
+        self.mark_load_transition_accepted(generation);
+        let authoritative_playlist = self
+            .ipc_client
+            .as_mut()
+            .and_then(|client| client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten());
+        if let Some(playlist_entry_id) = authoritative_playlist
+            .as_ref()
+            .and_then(Self::authoritative_playlist_entry_id)
+        {
+            self.bind_load_transition_playlist_entry(generation, playlist_entry_id);
+        }
         self.network_media_options_embedded_load =
             (!self.network_media_options.is_empty()).then(|| EmbeddedNetworkMediaOptions {
                 media_generation: generation,
@@ -2942,8 +2964,7 @@ impl MpvAdapter {
     }
 
     pub fn media_generation(&self) -> Option<PlayerMediaGeneration> {
-        self.pending_load_generation
-            .or(self.active_media_generation)
+        self.pending_or_active_media_generation()
     }
 
     pub fn transport_phase(&self) -> PlayerTransportPhase {
@@ -4156,7 +4177,7 @@ impl MpvAdapter {
             return;
         };
 
-        if self.pending_load_request.is_some() {
+        if self.pending_load_request().is_some() {
             let authoritative_update = polled_update.clone();
             let authoritative_path = polled_update.path.clone();
             let pending_load_completed =
@@ -4350,22 +4371,20 @@ impl MpvAdapter {
         &mut self,
         polled_update: LocalFileUpdate,
     ) -> bool {
-        let Some(requested_target) = self.pending_load_request.as_deref() else {
+        let Some((generation, requested_target)) = self
+            .pending_load_transition()
+            .map(|transition| (transition.generation, transition.requested_target.clone()))
+        else {
             return false;
         };
-        if !Self::local_file_update_matches_request(&polled_update, requested_target)
+        if !Self::local_file_update_matches_request(&polled_update, &requested_target)
             || !Self::local_file_update_ready_for_sync(&polled_update)
         {
             return false;
         }
-        let requested_target = self
-            .pending_load_request
-            .take()
-            .expect("pending request should still be present");
-        let generation = self
-            .pending_load_generation
-            .take()
-            .unwrap_or_else(|| self.allocate_media_generation());
+        if let Some(transition) = self.load_transitions.get_mut(&generation) {
+            transition.state = LoadTransitionState::Loaded;
+        }
         self.active_media_generation = Some(generation);
         self.active_file_loaded = true;
         self.current_path = polled_update.path.clone();
@@ -4424,6 +4443,149 @@ impl MpvAdapter {
         PlayerMediaGeneration::new(generation)
     }
 
+    fn transition_is_pending(transition: &LoadTransition) -> bool {
+        matches!(
+            transition.state,
+            LoadTransitionState::Submitting
+                | LoadTransitionState::Accepted
+                | LoadTransitionState::StartObserved
+        )
+    }
+
+    fn pending_load_transition(&self) -> Option<&LoadTransition> {
+        self.load_transitions
+            .values()
+            .rev()
+            .find(|transition| Self::transition_is_pending(transition))
+    }
+
+    fn pending_load_generation(&self) -> Option<PlayerMediaGeneration> {
+        self.pending_load_transition()
+            .map(|transition| transition.generation)
+    }
+
+    fn pending_load_request(&self) -> Option<&str> {
+        self.pending_load_transition()
+            .map(|transition| transition.requested_target.as_str())
+    }
+
+    fn pending_load_transition_count(&self) -> usize {
+        self.load_transitions
+            .values()
+            .filter(|transition| Self::transition_is_pending(transition))
+            .count()
+    }
+
+    fn untagged_lifecycle_generation(&self) -> Option<PlayerMediaGeneration> {
+        let mut candidates = self
+            .load_transitions
+            .values()
+            .filter(|transition| Self::transition_is_pending(transition))
+            .map(|transition| transition.generation)
+            .collect::<Vec<_>>();
+        if let Some(active) = self.active_media_generation
+            && !candidates.contains(&active)
+        {
+            candidates.push(active);
+        }
+        (candidates.len() == 1).then(|| candidates[0])
+    }
+
+    fn active_or_pending_media_generation(&self) -> Option<PlayerMediaGeneration> {
+        self.active_media_generation
+            .or_else(|| self.pending_load_generation())
+    }
+
+    fn pending_or_active_media_generation(&self) -> Option<PlayerMediaGeneration> {
+        self.pending_load_generation()
+            .or(self.active_media_generation)
+    }
+
+    fn tracked_load_command_id_for_generation(
+        &self,
+        generation: PlayerMediaGeneration,
+    ) -> Option<PlayerCommandId> {
+        self.pending_tracked_commands
+            .iter()
+            .find(|command| {
+                command.media_generation == Some(generation)
+                    && matches!(command.kind, TrackedCommandKind::Load { .. })
+            })
+            .map(|command| command.id)
+    }
+
+    fn insert_load_transition(
+        &mut self,
+        generation: PlayerMediaGeneration,
+        requested_target: String,
+    ) {
+        let transition = LoadTransition {
+            generation,
+            command_id: self.tracked_load_command_id_for_generation(generation),
+            requested_target,
+            replaced_generation: self.active_or_pending_media_generation(),
+            playlist_entry_id: None,
+            state: LoadTransitionState::Submitting,
+        };
+        self.load_transitions.insert(generation, transition);
+    }
+
+    fn bind_load_transition_playlist_entry(
+        &mut self,
+        generation: PlayerMediaGeneration,
+        playlist_entry_id: u64,
+    ) -> bool {
+        if self
+            .playlist_entry_generations
+            .get(&playlist_entry_id)
+            .is_some_and(|mapped| *mapped != generation)
+        {
+            self.ordered_player_event_reacquisition_required = true;
+            return false;
+        }
+        let Some(transition) = self.load_transitions.get_mut(&generation) else {
+            return false;
+        };
+        if transition
+            .playlist_entry_id
+            .is_some_and(|existing| existing != playlist_entry_id)
+        {
+            self.ordered_player_event_reacquisition_required = true;
+            return false;
+        }
+        transition.playlist_entry_id = Some(playlist_entry_id);
+        self.playlist_entry_generations
+            .insert(playlist_entry_id, generation);
+        true
+    }
+
+    fn authoritative_playlist_entry_id(playlist: &Value) -> Option<u64> {
+        let entries = playlist.as_array()?;
+        let authoritative = entries
+            .iter()
+            .find(|entry| {
+                entry.get("current").and_then(Value::as_bool) == Some(true)
+                    || entry.get("playing").and_then(Value::as_bool) == Some(true)
+            })
+            .or_else(|| (entries.len() == 1).then(|| &entries[0]))?;
+        authoritative.get("id").and_then(|id| {
+            id.as_u64()
+                .or_else(|| id.as_i64().and_then(|value| value.try_into().ok()))
+        })
+    }
+
+    fn mark_load_transition_accepted(&mut self, generation: PlayerMediaGeneration) {
+        if let Some(transition) = self.load_transitions.get_mut(&generation)
+            && transition.state == LoadTransitionState::Submitting
+        {
+            transition.state = LoadTransitionState::Accepted;
+        }
+    }
+
+    fn flag_ambiguous_load_lifecycle(&mut self) {
+        self.ordered_player_event_reacquisition_required = true;
+    }
+
     fn allocate_command_id(&mut self) -> PlayerCommandId {
         let command_id = self.next_command_id.max(1);
         self.next_command_id = command_id.wrapping_add(1).max(1);
@@ -4455,6 +4617,9 @@ impl MpvAdapter {
         else {
             return;
         };
+        if command.accepted_at.is_some() {
+            return;
+        }
         command.accepted_at = Some(Instant::now());
         let media_generation = command.media_generation;
         let deferred_result = command.deferred_result;
@@ -4500,9 +4665,7 @@ impl MpvAdapter {
             .remove(index)
             .expect("tracked command index should remain valid");
         let observed_position_seconds = (command.media_generation
-            == self
-                .active_media_generation
-                .or(self.pending_load_generation))
+            == self.active_or_pending_media_generation())
         .then_some(self.observed_state.position_seconds)
         .flatten();
         self.queue_command_progress(PlayerCommandProgress::finished(
@@ -4729,9 +4892,7 @@ impl MpvAdapter {
 
     fn transport_update(&self) -> PlayerTransportTelemetryUpdate {
         let mut update = PlayerTransportTelemetryUpdate {
-            media_generation: self
-                .active_media_generation
-                .or(self.pending_load_generation),
+            media_generation: self.active_or_pending_media_generation(),
             observed_at: Some(self.observation_timestamp()),
             ..PlayerTransportTelemetryUpdate::default()
         };
@@ -4743,8 +4904,7 @@ impl MpvAdapter {
     }
 
     fn observation_media_generation(&self) -> Option<PlayerMediaGeneration> {
-        self.active_media_generation
-            .or(self.pending_load_generation)
+        self.active_or_pending_media_generation()
     }
 
     fn transport_update_for(
@@ -4764,9 +4924,7 @@ impl MpvAdapter {
 
     fn queue_transport_telemetry_update(&mut self, mut update: PlayerTransportTelemetryUpdate) {
         if update.media_generation.is_none() {
-            update.media_generation = self
-                .active_media_generation
-                .or(self.pending_load_generation);
+            update.media_generation = self.active_or_pending_media_generation();
         }
         if update.observed_at.is_none() {
             update.observed_at = Some(self.observation_timestamp());
@@ -4916,7 +5074,7 @@ impl MpvAdapter {
     }
 
     fn inferred_transport_phase(&self) -> PlayerTransportPhase {
-        if self.active_media_generation.is_none() && self.pending_load_generation.is_none() {
+        if self.active_media_generation.is_none() && self.pending_load_generation().is_none() {
             return PlayerTransportPhase::Empty;
         }
         if self.observed_state.eof_reached == Some(true) {
@@ -5264,7 +5422,7 @@ impl MpvAdapter {
                     | PlayerTransportPhase::Ended
                     | PlayerTransportPhase::Failed
             )
-            || (!self.active_file_loaded && self.pending_load_generation.is_none())
+            || (!self.active_file_loaded && self.pending_load_generation().is_none())
         {
             return;
         }
@@ -5323,9 +5481,10 @@ impl MpvAdapter {
         let file_metadata_changed = match property_name {
             MPV_PROPERTY_PATH => {
                 let next_path = data.and_then(Value::as_str).map(ToOwned::to_owned);
-                if self.rejected_prestart_load.is_some_and(|rejected| {
-                    Some(rejected.media_generation) != self.active_media_generation
-                }) && self.pending_load_generation.is_none()
+                if self.load_transitions.values().any(|transition| {
+                    transition.state == LoadTransitionState::Failed
+                        && Some(transition.generation) != self.active_media_generation
+                }) && self.pending_load_generation().is_none()
                     && self.active_file_loaded
                     && next_path.as_deref() != self.current_path.as_deref()
                 {
@@ -5334,7 +5493,7 @@ impl MpvAdapter {
                 authoritative_path_observed = true;
                 if next_path.is_some() && self.active_media_generation.is_none() {
                     let generation = self
-                        .pending_load_generation
+                        .pending_load_generation()
                         .unwrap_or_else(|| self.allocate_media_generation());
                     self.active_media_generation = Some(generation);
                     self.active_file_loaded = true;
@@ -5621,7 +5780,6 @@ impl MpvAdapter {
 
     fn handle_start_file_event(&mut self, event: &Value) {
         self.provisional_eof_observation = None;
-        self.rejected_prestart_load = None;
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
         // change when an already-paused player begins a new file, so retain
@@ -5631,10 +5789,41 @@ impl MpvAdapter {
         let retained_playback_rate = self.observed_state.playback_rate;
         let retained_core_idle = self.observed_state.core_idle;
         let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
-        let generation = playlist_entry_id
-            .and_then(|entry_id| self.playlist_entry_generations.get(&entry_id).copied())
-            .or(self.pending_load_generation)
-            .unwrap_or_else(|| self.allocate_media_generation());
+        let generation = match playlist_entry_id {
+            Some(entry_id) => {
+                if let Some(generation) = self.playlist_entry_generations.get(&entry_id).copied() {
+                    generation
+                } else if self.pending_load_transition_count() > 0 {
+                    // A non-null playlist ID belongs to one concrete mpv file episode. If the
+                    // post-loadfile playlist query did not bind it, guessing at the newest
+                    // logical request can turn B's delayed lifecycle into C's failure.
+                    self.flag_ambiguous_load_lifecycle();
+                    return;
+                } else {
+                    let generation = self.allocate_media_generation();
+                    self.playlist_entry_generations.insert(entry_id, generation);
+                    generation
+                }
+            }
+            None => match self.untagged_lifecycle_generation() {
+                Some(generation) => generation,
+                None if self.pending_load_transition_count() == 0
+                    && self.active_media_generation.is_none() =>
+                {
+                    self.allocate_media_generation()
+                }
+                None => {
+                    self.flag_ambiguous_load_lifecycle();
+                    return;
+                }
+            },
+        };
+        self.load_transitions.retain(|candidate, transition| {
+            *candidate == generation || transition.state != LoadTransitionState::Failed
+        });
+        if let Some(transition) = self.load_transitions.get_mut(&generation) {
+            transition.state = LoadTransitionState::StartObserved;
+        }
         if self
             .interrupted_network_stream_recovery
             .is_some_and(|recovery| recovery.media_generation != generation)
@@ -5665,8 +5854,14 @@ impl MpvAdapter {
         self.reset_network_media_policy_diagnostics();
 
         if let Some(playlist_entry_id) = playlist_entry_id {
-            self.playlist_entry_generations
-                .insert(playlist_entry_id, generation);
+            if self.load_transitions.contains_key(&generation) {
+                if !self.bind_load_transition_playlist_entry(generation, playlist_entry_id) {
+                    return;
+                }
+            } else {
+                self.playlist_entry_generations
+                    .insert(playlist_entry_id, generation);
+            }
         }
         self.active_playlist_entry_id = playlist_entry_id;
         self.active_media_generation = Some(generation);
@@ -5739,9 +5934,14 @@ impl MpvAdapter {
     fn handle_playback_restart_event(&mut self) {
         self.cancel_provisional_eof_for_current_generation();
         if self.active_media_generation.is_none() {
-            self.active_media_generation = self
-                .pending_load_generation
-                .or_else(|| Some(self.allocate_media_generation()));
+            self.active_media_generation = self.untagged_lifecycle_generation().or_else(|| {
+                (self.pending_load_transition_count() == 0)
+                    .then(|| self.allocate_media_generation())
+            });
+            if self.active_media_generation.is_none() {
+                self.flag_ambiguous_load_lifecycle();
+                return;
+            }
         }
         self.active_file_loaded = true;
         self.active_generation_has_restarted = true;
@@ -5767,10 +5967,18 @@ impl MpvAdapter {
 
     fn handle_file_loaded_event(&mut self) {
         if self.active_media_generation.is_none() {
-            self.active_media_generation = self
-                .pending_load_generation
-                .or_else(|| Some(self.allocate_media_generation()));
+            self.active_media_generation = self.untagged_lifecycle_generation().or_else(|| {
+                (self.pending_load_transition_count() == 0)
+                    .then(|| self.allocate_media_generation())
+            });
+            if self.active_media_generation.is_none() {
+                self.flag_ambiguous_load_lifecycle();
+                return;
+            }
         }
+        let generation = self
+            .active_media_generation
+            .expect("file-loaded should have an unambiguous active generation");
         self.active_file_loaded = true;
         if self.refresh_timeline_kind_from_metadata() {
             let update = self.transport_update();
@@ -5784,10 +5992,17 @@ impl MpvAdapter {
         self.observe_tracked_commands(media_generation, TrackedCommandObservation::FileLoaded);
         self.observe_tracked_commands(media_generation, TrackedCommandObservation::Phase(phase));
 
-        let Some(requested_target) = self.pending_load_request.take() else {
+        let Some(requested_target) = self
+            .load_transitions
+            .get(&generation)
+            .filter(|transition| Self::transition_is_pending(transition))
+            .map(|transition| transition.requested_target.clone())
+        else {
             return;
         };
-        self.pending_load_generation = None;
+        if let Some(transition) = self.load_transitions.get_mut(&generation) {
+            transition.state = LoadTransitionState::Loaded;
+        }
 
         let polled_update = self
             .poll_local_file_update_from_mpv_coherent()
@@ -5817,10 +6032,10 @@ impl MpvAdapter {
         if Self::local_file_update_ready_for_sync(&loaded_update) {
             self.record_local_file_update_if_changed(loaded_update.clone());
         }
-        self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
-            requested_target,
-            loaded_update.path.clone(),
-        ));
+        self.queue_media_load_outcome_for_generation(
+            PlayerMediaLoadOutcome::success(requested_target, loaded_update.path.clone()),
+            Some(generation),
+        );
     }
 
     fn handle_end_file_event(&mut self, event: &Value) {
@@ -5829,22 +6044,24 @@ impl MpvAdapter {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
-        let generation = playlist_entry_id
-            .and_then(|entry_id| self.playlist_entry_generations.remove(&entry_id))
-            .or_else(|| {
-                (playlist_entry_id.is_none()
-                    && reason == MPV_END_FILE_REASON_ERROR
-                    && self.pending_load_generation.is_some()
-                    && self.pending_load_generation != self.active_media_generation)
-                    .then_some(self.pending_load_generation)
-                    .flatten()
-            })
-            .or_else(|| {
-                (playlist_entry_id.is_none() || self.active_playlist_entry_id == playlist_entry_id)
-                    .then_some(self.active_media_generation)
-                    .flatten()
-            })
-            .or(self.pending_load_generation);
+        let pending_generation_before_terminal = self.pending_load_generation();
+        let terminal_generation = match playlist_entry_id {
+            Some(entry_id) => {
+                let Some(generation) = self.playlist_entry_generations.remove(&entry_id) else {
+                    self.flag_ambiguous_load_lifecycle();
+                    return;
+                };
+                generation
+            }
+            None => {
+                let Some(generation) = self.untagged_lifecycle_generation() else {
+                    self.flag_ambiguous_load_lifecycle();
+                    return;
+                };
+                generation
+            }
+        };
+        let generation = Some(terminal_generation);
         if self
             .provisional_eof_observation
             .is_some_and(|candidate| Some(candidate.media_generation) == generation)
@@ -5872,11 +6089,11 @@ impl MpvAdapter {
             .as_deref()
             .map(Self::media_load_failure_kind_from_message);
         let affects_pending_generation =
-            generation.is_some() && generation == self.pending_load_generation;
+            generation.is_some() && generation == pending_generation_before_terminal;
         let affects_active_generation =
             generation.is_some() && generation == self.active_media_generation;
         let affects_active_state = affects_active_generation
-            && (self.pending_load_generation.is_none() || affects_pending_generation);
+            && (pending_generation_before_terminal.is_none() || affects_pending_generation);
         if reason == "eof"
             && affects_active_state
             && generation
@@ -5944,27 +6161,42 @@ impl MpvAdapter {
             );
         }
 
-        if reason != MPV_END_FILE_REASON_ERROR || !affects_pending_generation {
+        let generation = terminal_generation;
+        let failed_request = (reason == MPV_END_FILE_REASON_ERROR)
+            .then(|| {
+                self.load_transitions
+                    .get(&generation)
+                    .filter(|transition| Self::transition_is_pending(transition))
+                    .map(|transition| transition.requested_target.clone())
+            })
+            .flatten();
+        if let Some(transition) = self.load_transitions.get_mut(&generation) {
+            transition.state = if reason == MPV_END_FILE_REASON_ERROR {
+                LoadTransitionState::Failed
+            } else {
+                LoadTransitionState::Superseded
+            };
+        }
+        if reason != MPV_END_FILE_REASON_ERROR {
+            self.load_transitions.remove(&generation);
             return;
         }
 
-        let Some(requested_target) = self.pending_load_request.take() else {
-            return;
-        };
-        self.pending_load_generation = None;
-        let message = message.expect("error end-file events should have a fallback message");
-        self.queue_media_load_outcome_for_generation(
-            PlayerMediaLoadOutcome::failure(
-                requested_target,
-                None,
-                error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
-                message,
-            ),
-            generation,
-        );
-        if !affects_active_generation {
-            self.rejected_prestart_load =
-                generation.map(|media_generation| RejectedPrestartLoad { media_generation });
+        if let Some(requested_target) = failed_request {
+            let message = message
+                .clone()
+                .expect("error end-file events should have a fallback message");
+            self.queue_media_load_outcome_for_generation(
+                PlayerMediaLoadOutcome::failure(
+                    requested_target,
+                    None,
+                    error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
+                    message,
+                ),
+                Some(generation),
+            );
+        }
+        if affects_pending_generation && !affects_active_generation {
             if let Some(active_generation) = self.active_media_generation {
                 let restored_phase = self.inferred_transport_phase();
                 self.transport_phase = restored_phase;
@@ -5983,18 +6215,18 @@ impl MpvAdapter {
                 // generation's terminal state alongside its command and media-load outcomes.
                 self.transport_phase = phase;
             }
-            return;
         }
-
-        self.current_path = None;
-        self.pending_local_file_update = None;
-        self.pending_local_file_generation = None;
-        self.pending_local_file_observed_at = None;
-        self.last_polled_local_file_update = None;
-        self.observed_state.path = None;
-        self.observed_state.duration_seconds = None;
-        self.observed_state.size_bytes = None;
-        self.reset_timeline_metadata();
+        if affects_active_generation {
+            self.current_path = None;
+            self.pending_local_file_update = None;
+            self.pending_local_file_generation = None;
+            self.pending_local_file_observed_at = None;
+            self.last_polled_local_file_update = None;
+            self.observed_state.path = None;
+            self.observed_state.duration_seconds = None;
+            self.observed_state.size_bytes = None;
+            self.reset_timeline_metadata();
+        }
     }
 
     fn handle_client_message_event(&mut self, event: &Value) {
@@ -6743,7 +6975,7 @@ impl MpvAdapter {
     }
 
     fn maybe_emit_local_file_update_from_observed_state(&mut self) {
-        if self.pending_load_request.is_some() {
+        if self.pending_load_request().is_some() {
             return;
         }
         let Some(path) = self.observed_state.path.as_deref() else {
@@ -7263,6 +7495,193 @@ impl MpvAdapter {
 }
 
 #[cfg(test)]
+mod load_transition_ownership_tests {
+    use super::*;
+    use sorotte_player_api::PlayerCommandProgressState;
+
+    fn adapter_with_active_media() -> (MpvAdapter, PlayerMediaGeneration) {
+        let mut adapter = MpvAdapter::default();
+        let active = adapter.allocate_media_generation();
+        adapter.active_media_generation = Some(active);
+        adapter.active_playlist_entry_id = Some(10);
+        adapter.playlist_entry_generations.insert(10, active);
+        adapter.active_file_loaded = true;
+        adapter.active_generation_has_restarted = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter.observed_state.eof_reached = Some(false);
+        adapter.observed_state.core_idle = Some(false);
+        (adapter, active)
+    }
+
+    fn register_accepted_load(
+        adapter: &mut MpvAdapter,
+        target: &str,
+        playlist_entry_id: Option<u64>,
+    ) -> (PlayerMediaGeneration, PlayerCommandId) {
+        let generation = adapter.allocate_media_generation();
+        let command_id = adapter.register_tracked_command(
+            Some(generation),
+            TrackedCommandKind::Load {
+                file_loaded: false,
+                ready: false,
+            },
+        );
+        adapter.insert_load_transition(generation, target.to_owned());
+        adapter.mark_load_transition_accepted(generation);
+        if let Some(playlist_entry_id) = playlist_entry_id {
+            assert!(adapter.bind_load_transition_playlist_entry(generation, playlist_entry_id));
+        }
+        adapter.accept_tracked_command(command_id);
+        (generation, command_id)
+    }
+
+    fn exercise_delayed_b_terminal(reason: &str) {
+        let (mut adapter, _) = adapter_with_active_media();
+        let (generation_b, command_b) =
+            register_accepted_load(&mut adapter, "https://media.invalid/b", Some(20));
+        let (generation_c, command_c) =
+            register_accepted_load(&mut adapter, "https://media.invalid/c", Some(30));
+        adapter.supersede_tracked_commands(Some(command_c), |kind| kind.is_load_seek_or_play());
+        adapter.transport_phase = PlayerTransportPhase::Loading;
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 20 }));
+        let mut terminal = json!({
+            "playlist_entry_id": 20,
+            "reason": reason,
+        });
+        if reason == MPV_END_FILE_REASON_ERROR {
+            terminal["file_error"] = json!("B failed after C was accepted");
+        }
+        adapter.handle_end_file_event(&terminal);
+
+        assert_eq!(adapter.pending_load_generation(), Some(generation_c));
+        assert!(adapter.pending_tracked_commands.iter().all(|pending| {
+            pending.id != command_b || pending.media_generation != Some(generation_b)
+        }));
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .all(|update| {
+                    !(update.media_generation == Some(generation_c)
+                        && matches!(
+                            update.phase,
+                            Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                        ))
+                })
+        );
+        let b_terminal = adapter
+            .pending_command_progress_updates
+            .iter()
+            .find(|progress| {
+                progress.command_id == command_b
+                    && matches!(progress.state, PlayerCommandProgressState::Finished(_))
+            })
+            .expect("B should have one terminal command result");
+        assert_eq!(
+            b_terminal.state,
+            PlayerCommandProgressState::Finished(PlayerCommandResult::Superseded)
+        );
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 30 }));
+        adapter.handle_file_loaded_event();
+        adapter.handle_playback_restart_event();
+
+        assert_eq!(adapter.active_media_generation, Some(generation_c));
+        assert!(
+            adapter
+                .pending_command_progress_updates
+                .iter()
+                .any(|progress| {
+                    progress.command_id == command_c
+                        && progress.state
+                            == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+                })
+        );
+        let b_terminal_count = adapter
+            .pending_command_progress_updates
+            .iter()
+            .filter(|progress| {
+                progress.command_id == command_b
+                    && matches!(progress.state, PlayerCommandProgressState::Finished(_))
+            })
+            .count();
+        assert_eq!(b_terminal_count, 1);
+    }
+
+    #[test]
+    fn delayed_b_error_after_c_submission_never_fails_c() {
+        exercise_delayed_b_terminal(MPV_END_FILE_REASON_ERROR);
+    }
+
+    #[test]
+    fn delayed_b_stop_after_c_submission_never_ends_c() {
+        exercise_delayed_b_terminal("stop");
+    }
+
+    #[test]
+    fn unknown_playlist_id_with_two_transitions_requests_reacquisition_without_assignment() {
+        let (mut adapter, active) = adapter_with_active_media();
+        let (generation_b, _) =
+            register_accepted_load(&mut adapter, "https://media.invalid/b", None);
+        let (generation_c, _) =
+            register_accepted_load(&mut adapter, "https://media.invalid/c", None);
+
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 999 }));
+
+        assert!(adapter.ordered_player_event_reacquisition_required);
+        assert_eq!(adapter.active_media_generation, Some(active));
+        assert!(!adapter.playlist_entry_generations.contains_key(&999));
+        assert_eq!(
+            adapter
+                .load_transitions
+                .get(&generation_b)
+                .map(|transition| transition.state),
+            Some(LoadTransitionState::Accepted)
+        );
+        assert_eq!(
+            adapter
+                .load_transitions
+                .get(&generation_c)
+                .map(|transition| transition.state),
+            Some(LoadTransitionState::Accepted)
+        );
+    }
+
+    #[test]
+    fn untagged_error_with_two_transitions_requests_reacquisition_without_failure() {
+        let (mut adapter, active) = adapter_with_active_media();
+        let (generation_b, _) =
+            register_accepted_load(&mut adapter, "https://media.invalid/b", None);
+        let (generation_c, _) =
+            register_accepted_load(&mut adapter, "https://media.invalid/c", None);
+
+        adapter.handle_end_file_event(&json!({
+            "reason": MPV_END_FILE_REASON_ERROR,
+            "file_error": "ambiguous"
+        }));
+
+        assert!(adapter.ordered_player_event_reacquisition_required);
+        assert_eq!(adapter.active_media_generation, Some(active));
+        assert!(adapter.pending_media_load_outcomes.is_empty());
+        assert_eq!(
+            adapter
+                .load_transitions
+                .get(&generation_b)
+                .map(|transition| transition.state),
+            Some(LoadTransitionState::Accepted)
+        );
+        assert_eq!(
+            adapter
+                .load_transitions
+                .get(&generation_c)
+                .map(|transition| transition.state),
+            Some(LoadTransitionState::Accepted)
+        );
+    }
+}
+
+#[cfg(test)]
 mod interrupted_network_stream_recovery_tests {
     use super::*;
     use std::io;
@@ -7328,8 +7747,7 @@ mod interrupted_network_stream_recovery_tests {
     }
 
     fn restore_false_eof_fixture(adapter: &mut MpvAdapter, position_seconds: f64) {
-        adapter.pending_load_request = None;
-        adapter.pending_load_generation = None;
+        adapter.load_transitions.clear();
         adapter.current_path = Some(NETWORK_PATH.to_owned());
         adapter.active_file_loaded = true;
         adapter.transport_phase = PlayerTransportPhase::Playing;
@@ -7367,7 +7785,7 @@ mod interrupted_network_stream_recovery_tests {
         adapter.handle_end_file_event(&json!({ "reason": "eof" }));
 
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
-        assert_eq!(adapter.pending_load_generation, generation);
+        assert_eq!(adapter.pending_load_generation(), generation);
         assert_eq!(adapter.active_media_generation, generation);
         assert_eq!(
             adapter.interrupted_network_stream_recovery,
@@ -7564,12 +7982,14 @@ mod interrupted_network_stream_recovery_tests {
             .expect("fixture should have an active generation");
         let replacement_generation = PlayerMediaGeneration::new(8);
         let replacement_target = "https://media.invalid/replacement";
-        adapter.pending_load_request = Some(replacement_target.to_owned());
-        adapter.pending_load_generation = Some(replacement_generation);
+        adapter.insert_load_transition(replacement_generation, replacement_target.to_owned());
+        adapter.mark_load_transition_accepted(replacement_generation);
+        adapter.bind_load_transition_playlist_entry(replacement_generation, 808);
         adapter.transport_phase = PlayerTransportPhase::Loading;
 
         adapter.handle_end_file_event(&json!({
             "event": MPV_EVENT_END_FILE,
+            "playlist_entry_id": 808,
             "reason": MPV_END_FILE_REASON_ERROR,
             "file_error": "network connection failed"
         }));
@@ -7580,8 +8000,8 @@ mod interrupted_network_stream_recovery_tests {
         assert_eq!(adapter.observed_state.path.as_deref(), Some(NETWORK_PATH));
         assert_eq!(adapter.observed_state.eof_reached, Some(false));
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
-        assert_eq!(adapter.pending_load_request, None);
-        assert_eq!(adapter.pending_load_generation, None);
+        assert_eq!(adapter.pending_load_request(), None);
+        assert_eq!(adapter.pending_load_generation(), None);
 
         let outcome = adapter
             .pending_media_load_outcomes
@@ -7660,8 +8080,8 @@ mod interrupted_network_stream_recovery_tests {
             assert!(!adapter.try_recover_interrupted_network_stream(generation));
             assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
             assert_eq!(adapter.observed_state.eof_reached, Some(true));
-            assert_eq!(adapter.pending_load_request, None);
-            assert_eq!(adapter.pending_load_generation, None);
+            assert_eq!(adapter.pending_load_request(), None);
+            assert_eq!(adapter.pending_load_generation(), None);
             assert_eq!(adapter.pending_transport_telemetry_updates.len(), 1);
             assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
             assert_eq!(
@@ -7789,7 +8209,7 @@ mod interrupted_network_stream_recovery_tests {
         adapter.maintain_runtime_integrations();
 
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
-        assert_eq!(adapter.pending_load_generation, Some(generation));
+        assert_eq!(adapter.pending_load_generation(), Some(generation));
         assert_eq!(adapter.active_media_generation, Some(generation));
         assert!(adapter.network_cache_stall.is_none());
         assert_eq!(
@@ -7812,7 +8232,7 @@ mod interrupted_network_stream_recovery_tests {
         adapter.maintain_network_cache_stall_recovery();
 
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
-        assert!(adapter.pending_load_generation.is_none());
+        assert!(adapter.pending_load_generation().is_none());
         assert!(adapter.network_cache_stall.is_some());
 
         adapter.observed_state.paused_for_cache = Some(false);

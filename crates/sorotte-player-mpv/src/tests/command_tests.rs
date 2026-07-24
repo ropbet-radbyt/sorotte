@@ -620,6 +620,189 @@ fn replacement_load_supersedes_obsolete_tracked_load() {
     );
 }
 
+fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"event":"start-file","playlist_entry_id":10}"#,
+        r#"{"request_id":2,"error":"success","data":"a.mkv"}"#,
+        r#"{"request_id":3,"error":"success","data":1200.0}"#,
+        r#"{"request_id":4,"error":"success","data":4096}"#,
+        r#"{"request_id":5,"error":"success","data":"a.mkv"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter
+        .open_file("a.mkv")
+        .expect("A should become active before replacements");
+    while adapter.take_transport_telemetry_update().is_some() {}
+    while adapter.take_media_load_observation().is_some() {}
+    while adapter.take_local_file_observation().is_some() {}
+
+    let next_request_id = |state: &FakeTransportStateHandle| {
+        state
+            .writes()
+            .iter()
+            .filter_map(|write| {
+                serde_json::from_str::<Value>(write)
+                    .ok()?
+                    .get("request_id")?
+                    .as_u64()
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    };
+    let b_request_id = next_request_id(&state);
+    let b_response = format!(r#"{{"request_id":{b_request_id},"error":"success"}}"#);
+    state.queue_reads(&[&b_response]);
+    let command_b = adapter
+        .execute_tracked(PlayerCommand::OpenFile("b.mkv".to_owned()))
+        .unwrap_or_else(|error| {
+            panic!(
+                "B should be accepted: {error:?}; writes: {:?}",
+                state.writes()
+            )
+        });
+    assert_accepted(
+        adapter
+            .take_command_progress()
+            .expect("B acceptance should be reported"),
+        command_b,
+    );
+    let generation_b = adapter
+        .media_generation()
+        .expect("B should retain its pending generation");
+
+    let terminal = if reason == "error" {
+        r#"{"event":"end-file","playlist_entry_id":11,"reason":"error","file_error":"B failed after C was accepted"}"#
+    } else {
+        r#"{"event":"end-file","playlist_entry_id":11,"reason":"stop"}"#
+    };
+    let c_request_id = next_request_id(&state);
+    let c_response = format!(r#"{{"request_id":{c_request_id},"error":"success"}}"#);
+    state.queue_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":11}"#,
+        terminal,
+        &c_response,
+    ]);
+    let command_c = adapter
+        .execute_tracked(PlayerCommand::OpenFile("c.mkv".to_owned()))
+        .expect("C should be accepted after binding its authoritative playlist entry");
+    let generation_c = adapter
+        .media_generation()
+        .expect("C should remain the pending generation");
+    assert_ne!(generation_b, generation_c);
+
+    let mut replacement_progress = Vec::new();
+    while let Some(progress) = adapter.take_command_progress() {
+        replacement_progress.push(progress);
+    }
+    assert!(replacement_progress.iter().any(|progress| {
+        progress.command_id == command_b
+            && progress.state
+                == PlayerCommandProgressState::Finished(PlayerCommandResult::Superseded)
+    }));
+    assert!(replacement_progress.iter().all(|progress| {
+        progress.command_id != command_b
+            || !matches!(
+                progress.state,
+                PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(_))
+            )
+    }));
+    assert!(replacement_progress.iter().any(|progress| {
+        progress.command_id == command_c && progress.state == PlayerCommandProgressState::Accepted
+    }));
+    let terminal_updates =
+        std::iter::from_fn(|| adapter.take_transport_telemetry_update()).collect::<Vec<_>>();
+    assert!(terminal_updates.iter().all(|update| {
+        update.media_generation != Some(generation_c)
+            || !matches!(
+                update.phase,
+                Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+            )
+    }));
+    if reason == "error" {
+        let b_failure = adapter
+            .take_media_load_observation()
+            .expect("B's physical failure should retain its own media-load result");
+        assert_eq!(b_failure.media_generation, Some(generation_b));
+        assert!(b_failure.outcome.failure.is_some());
+    }
+
+    let lifecycle_request_id = next_request_id(&state);
+    let mut lifecycle_reads = vec![
+        r#"{"event":"start-file","playlist_entry_id":12}"#.to_owned(),
+        r#"{"event":"file-loaded"}"#.to_owned(),
+        r#"{"event":"playback-restart"}"#.to_owned(),
+        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success"}}"#),
+    ];
+    lifecycle_reads.extend(
+        (lifecycle_request_id.saturating_add(1)..=lifecycle_request_id.saturating_add(16)).map(
+            |request_id| format!(r#"{{"request_id":{request_id},"error":"success","data":null}}"#),
+        ),
+    );
+    state.queue_reads(
+        &lifecycle_reads
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("C lifecycle should be reduced");
+    let completion_progress =
+        std::iter::from_fn(|| adapter.take_command_progress()).collect::<Vec<_>>();
+    assert!(completion_progress.iter().any(|progress| {
+        progress.command_id == command_c
+            && progress.state
+                == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+    }));
+    assert!(
+        completion_progress
+            .iter()
+            .all(|progress| progress.command_id != command_b)
+    );
+}
+
+#[test]
+fn buffered_b_error_after_c_submission_never_rewrites_c_or_b_command_ownership() {
+    exercise_buffered_b_terminal_after_c_submission("error");
+}
+
+#[test]
+fn buffered_b_stop_after_c_submission_never_publishes_a_c_terminal() {
+    exercise_buffered_b_terminal_after_c_submission("stop");
+}
+
+#[test]
+fn rejected_replacement_restores_the_previous_accepted_load_transition() {
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"invalid parameter"}"#,
+    ]);
+    let first = adapter
+        .execute_tracked(PlayerCommand::OpenFile("first.mkv".to_owned()))
+        .expect("first load should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("first acceptance"),
+        first,
+    );
+    let first_generation = adapter
+        .media_generation()
+        .expect("the first accepted load should remain pending");
+
+    let error = adapter
+        .execute_tracked(PlayerCommand::OpenFile("rejected.mkv".to_owned()))
+        .expect_err("the replacement loadfile command should be rejected");
+
+    assert!(matches!(error, PlayerError::OperationFailed { .. }));
+    assert_eq!(adapter.media_generation(), Some(first_generation));
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "rejecting C must neither fail nor supersede accepted B"
+    );
+}
+
 #[test]
 fn observed_media_failure_finishes_an_accepted_tracked_load() {
     let mut adapter = adapter_with_registered_observers(&[

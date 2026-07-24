@@ -102,11 +102,12 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("pending_chat_requests", &self.pending_chat_requests)
             .field(
-                "pending_load_request",
+                "load_transition_targets",
                 &self
-                    .pending_load_request
-                    .as_ref()
-                    .map(|_| sorotte_secret::REDACTED_SECRET),
+                    .load_transitions
+                    .values()
+                    .map(|_| sorotte_secret::REDACTED_SECRET)
+                    .collect::<Vec<_>>(),
             )
             .field(
                 "interrupted_network_stream_recovery",
@@ -133,7 +134,7 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("next_media_generation", &self.next_media_generation)
             .field("active_media_generation", &self.active_media_generation)
-            .field("pending_load_generation", &self.pending_load_generation)
+            .field("pending_load_generation", &self.pending_load_generation())
             .field("active_playlist_entry_id", &self.active_playlist_entry_id)
             .field("transport_phase", &self.transport_phase)
             .field("active_file_loaded", &self.active_file_loaded)
@@ -284,8 +285,7 @@ impl Default for MpvAdapter {
             unacknowledged_terminal_command_progress: BTreeMap::new(),
             unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
-            pending_load_request: None,
-            rejected_prestart_load: None,
+            load_transitions: BTreeMap::new(),
             provisional_eof_observation: None,
             interrupted_network_stream_recovery: None,
             network_cache_stall: None,
@@ -298,7 +298,6 @@ impl Default for MpvAdapter {
             current_ipc_event_observed_at: None,
             next_media_generation: 1,
             active_media_generation: None,
-            pending_load_generation: None,
             active_playlist_entry_id: None,
             playlist_entry_generations: HashMap::new(),
             transport_phase: PlayerTransportPhase::Empty,
@@ -437,9 +436,10 @@ mod credential_debug_tests {
         let target = format!("https://plex.invalid/video?X-Plex-Token={secret}");
         let mut adapter = MpvAdapter {
             current_path: Some(target.clone()),
-            pending_load_request: Some(target.clone()),
             ..MpvAdapter::default()
         };
+        let generation = adapter.allocate_media_generation();
+        adapter.insert_load_transition(generation, target.clone());
         adapter.pending_local_file_update =
             Some(sorotte_player_api::LocalFileUpdate::new(target.clone()).with_path(target));
 

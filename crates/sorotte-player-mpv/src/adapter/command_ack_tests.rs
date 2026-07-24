@@ -183,8 +183,6 @@ fn consumer_reacquisition_replays_the_exact_terminal_from_the_rejected_batch() {
 fn early_tracked_load_failure_survives_reacquisition_without_an_active_generation() {
     let generation = PlayerMediaGeneration::new(1);
     let mut adapter = MpvAdapter {
-        pending_load_generation: Some(generation),
-        pending_load_request: Some("https://media.invalid/fail".to_owned()),
         transport_phase: PlayerTransportPhase::Loading,
         ..MpvAdapter::default()
     };
@@ -196,13 +194,15 @@ fn early_tracked_load_failure_survives_reacquisition_without_an_active_generatio
         },
     );
     adapter.accept_tracked_command(command_id);
+    adapter.insert_load_transition(generation, "https://media.invalid/fail".to_owned());
+    adapter.mark_load_transition_accepted(generation);
 
     adapter.handle_end_file_event(&serde_json::json!({
         "reason": "error",
         "file_error": "network failed before start-file"
     }));
     assert_eq!(adapter.active_media_generation, None);
-    assert_eq!(adapter.pending_load_generation, None);
+    assert_eq!(adapter.pending_load_generation(), None);
     adapter.ordered_player_event_reacquisition_required = true;
 
     let batch = adapter
