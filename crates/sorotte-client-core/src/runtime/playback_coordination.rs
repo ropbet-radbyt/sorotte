@@ -1180,14 +1180,10 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
     ) -> Option<u64> {
         let adapter_generation = adapter_generation.get();
-        if let Some(binding) = self.adapter_generation_bindings.get(&adapter_generation) {
-            let current_identity = self
-                .coordinator
-                .current_media_generation()
-                .zip(self.coordinator.current_load_attempt());
-            return (current_identity == Some((binding.logical_generation, binding.load_attempt))
-                && binding.adapter_generation == adapter_generation)
-                .then_some(binding.logical_generation);
+        if let Some(logical_generation) =
+            self.logical_generation_for_adapter_generation(adapter_generation)
+        {
+            return Some(logical_generation);
         }
 
         let (logical_generation, load_attempt) = match self.pending_media_identity {
@@ -1240,6 +1236,17 @@ impl RuntimePlaybackCoordination {
                 }),
         );
         Some(logical_generation)
+    }
+
+    fn logical_generation_for_adapter_generation(&self, adapter_generation: u64) -> Option<u64> {
+        let binding = self.adapter_generation_bindings.get(&adapter_generation)?;
+        let current_identity = self
+            .coordinator
+            .current_media_generation()
+            .zip(self.coordinator.current_load_attempt());
+        (current_identity == Some((binding.logical_generation, binding.load_attempt))
+            && binding.adapter_generation == adapter_generation)
+            .then_some(binding.logical_generation)
     }
 
     fn map_observation_time(
@@ -3259,6 +3266,14 @@ where
 
     pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
         self.playback_coordination.snapshot()
+    }
+
+    pub fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.playback_coordination
+            .logical_generation_for_adapter_generation(adapter_generation.get())
     }
 
     /// Whether the exact currently tracked media is held paused by a
@@ -6130,8 +6145,17 @@ mod tests {
         let initial =
             runtime.prepare_media(logical_id.clone(), MediaTransportKind::NetworkVod, 0.0);
         runtime.observe_transport(transport(10, 1.0, PlayerTransportPhase::Playing, 1.0), 1.0);
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(10),
+            Some(initial.media_generation)
+        );
 
         let refreshed = runtime.prepare_media(logical_id, MediaTransportKind::NetworkVod, 2.0);
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(10),
+            None,
+            "a mapping from the previous load attempt must not identify the refreshed transport"
+        );
         runtime.observe_transport(
             transport(11, 3.0, PlayerTransportPhase::ReadyPaused, 1.0),
             3.0,
@@ -6142,6 +6166,10 @@ mod tests {
         assert!(runtime.snapshot().transport_telemetry_observed);
         assert_eq!(
             runtime.snapshot().media_generation,
+            Some(initial.media_generation)
+        );
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(11),
             Some(initial.media_generation)
         );
         assert_eq!(

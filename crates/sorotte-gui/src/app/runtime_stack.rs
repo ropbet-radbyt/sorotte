@@ -36,7 +36,8 @@ use sorotte_client_core::{
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
-    PlayerCommandId, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+    PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
     HelloPayload, ListPayload, ProtocolMessage, SOROTTE_READINESS_RECONNECT_TOKEN,

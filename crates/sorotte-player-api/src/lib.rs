@@ -839,6 +839,51 @@ impl PlayerMediaLoadObservation {
     }
 }
 
+/// Monotonic adapter-local order assigned when a player event enters the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerEventSequence(u64);
+
+impl PlayerEventSequence {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One event from an adapter's causally ordered player stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerOrderedEventKind {
+    CommandProgress(PlayerCommandProgress),
+    LocalFile(PlayerLocalFileObservation),
+    MediaLoad(PlayerMediaLoadObservation),
+    Transport(PlayerTransportTelemetryUpdate),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerOrderedEvent {
+    pub sequence: PlayerEventSequence,
+    pub kind: PlayerOrderedEventKind,
+}
+
+impl PlayerOrderedEvent {
+    pub const fn new(sequence: PlayerEventSequence, kind: PlayerOrderedEventKind) -> Self {
+        Self { sequence, kind }
+    }
+}
+
+/// Atomic adapter snapshot used by owners that consume the ordered event stream.
+///
+/// Legacy playback telemetry remains available in the same batch for field-level fallback, so
+/// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerEventBatch {
+    pub ordered_events: Vec<PlayerOrderedEvent>,
+    pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
+}
+
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
     /// Performs strictly nonblocking lease renewal and event servicing.
@@ -1008,6 +1053,13 @@ pub trait PlayerAdapter: Send + Sync {
         self.take_media_load_outcome()
             .map(PlayerMediaLoadObservation::unsequenced)
     }
+    /// Takes one atomic, causally ordered player-event snapshot.
+    ///
+    /// Returning `None` advertises legacy independent getter semantics. Adapters that return a
+    /// batch must perform maintenance and event polling exactly once before draining the batch.
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        None
+    }
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
     }
@@ -1036,8 +1088,9 @@ mod tests {
         DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate,
         PlayerCapabilities, PlayerCapability, PlayerCommand, PlayerCommandFailureKind,
         PlayerCommandId, PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult,
-        PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-        PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
+        PlayerError, PlayerEventSequence, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+        PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerOrderedEvent,
+        PlayerOrderedEventKind, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
         PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
 
@@ -1076,6 +1129,7 @@ mod tests {
     #[test]
     fn unsupported_methods_error_by_default() {
         let mut player = DummyPlayer;
+        assert_eq!(player.take_ordered_event_batch(), None);
         assert_eq!(
             player.open_file("movie.mkv"),
             Err(PlayerError::Unsupported("open_file"))
@@ -1185,6 +1239,24 @@ mod tests {
             player.execute_tracked(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("execute_tracked"))
         );
+    }
+
+    #[test]
+    fn ordered_event_sequence_preserves_adapter_assigned_identity() {
+        let event = PlayerOrderedEvent::new(
+            PlayerEventSequence::new(42),
+            PlayerOrderedEventKind::CommandProgress(PlayerCommandProgress::accepted(
+                PlayerCommandId::new(9),
+                Some(PlayerMediaGeneration::new(3)),
+                None,
+            )),
+        );
+        assert_eq!(event.sequence.get(), 42);
+        assert!(matches!(
+            event.kind,
+            PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.command_id == PlayerCommandId::new(9)
+        ));
     }
 
     #[test]

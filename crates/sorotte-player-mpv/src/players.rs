@@ -2,9 +2,9 @@ use std::path::Path;
 
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapabilities, PlayerCommand,
-    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerLocalFileObservation,
-    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
-    PlayerTransportTelemetryUpdate,
+    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerEventBatch,
+    PlayerLocalFileObservation, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 
 use crate::MpvAdapter;
@@ -124,6 +124,10 @@ macro_rules! impl_player_wrapper {
 
             fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
                 self.0.take_media_load_observation()
+            }
+
+            fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+                self.0.take_ordered_event_batch()
             }
 
             fn take_pending_chat_request(&mut self) -> Option<String> {

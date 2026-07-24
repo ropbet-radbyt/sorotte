@@ -464,6 +464,71 @@ fn tracked_load_retains_buffered_ready_evidence_until_command_acceptance() {
 }
 
 #[test]
+fn ordered_batch_includes_events_generated_by_final_local_file_poll() {
+    let target = "https://media.invalid/video";
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"event":"start-file","playlist_entry_id":5}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"event":"property-change","name":"seeking","data":true}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.invalid/video"}"#,
+        r#"{"request_id":3,"error":"success","data":null}"#,
+        r#"{"request_id":4,"error":"success","data":null}"#,
+    ]);
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::OpenFile(target.to_owned()))
+        .expect("tracked load should be accepted");
+
+    let batch = adapter
+        .take_ordered_event_batch()
+        .expect("mpv supports atomic ordered batches");
+
+    assert!(
+        batch
+            .ordered_events
+            .windows(2)
+            .all(|events| events[0].sequence < events[1].sequence)
+    );
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        event.kind,
+        sorotte_player_api::PlayerOrderedEventKind::LocalFile(_)
+    )));
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        event.kind,
+        sorotte_player_api::PlayerOrderedEventKind::MediaLoad(_)
+    )));
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        event.kind,
+        sorotte_player_api::PlayerOrderedEventKind::Transport(_)
+    )));
+    let command_progress: Vec<_> = batch
+        .ordered_events
+        .iter()
+        .filter_map(|event| match event.kind {
+            sorotte_player_api::PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.command_id == command_id =>
+            {
+                Some(progress.state)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(command_progress.contains(&PlayerCommandProgressState::Accepted));
+    assert!(
+        command_progress
+            .iter()
+            .any(|state| matches!(state, PlayerCommandProgressState::Finished(_)))
+    );
+    assert_eq!(adapter.take_command_progress(), None);
+    assert_eq!(adapter.take_transport_telemetry_update(), None);
+    assert_eq!(adapter.take_media_load_observation(), None);
+    assert_eq!(adapter.take_local_file_observation(), None);
+}
+
+#[test]
 fn replacement_load_supersedes_obsolete_tracked_load() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"request_id":1,"error":"success"}"#,

@@ -255,6 +255,8 @@ impl Default for MpvAdapter {
             pending_tracked_commands: VecDeque::new(),
             pending_command_progress_updates: VecDeque::new(),
             pending_media_load_outcomes: VecDeque::new(),
+            next_ordered_player_event_sequence: 1,
+            pending_ordered_player_events: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
             interrupted_network_stream_recovery: None,

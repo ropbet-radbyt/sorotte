@@ -14,6 +14,7 @@ struct PositionSessionState {
     eof_observations: usize,
     transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
     playback_coordination_snapshot: Option<sorotte_client_core::PlaybackCoordinationSnapshot>,
+    adapter_logical_generations: std::collections::BTreeMap<u64, u64>,
     keep_waiting_calls: usize,
 }
 
@@ -119,6 +120,18 @@ impl GuiSessionRuntimeAdapter for PositionSession {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .playback_coordination_snapshot
             .clone()
+    }
+
+    fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: sorotte_player_api::PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .adapter_logical_generations
+            .get(&adapter_generation.get())
+            .copied()
     }
 
     fn keep_waiting_for_seek_preparation(
@@ -1647,7 +1660,8 @@ fn same_pump_completion_reanchors_before_the_following_stable_position() {
 #[test]
 fn repeated_keep_waiting_renews_matching_seek_ownership_past_the_old_deadline() {
     let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState {
-        playback_coordination_snapshot: Some(active_seek_preparation_snapshot(1, 40.0)),
+        playback_coordination_snapshot: Some(active_seek_preparation_snapshot(17, 40.0)),
+        adapter_logical_generations: [(1, 17)].into(),
         ..PositionSessionState::default()
     }));
     let mut baseline_player = PositionTelemetryPlayer::default();
@@ -1665,6 +1679,14 @@ fn repeated_keep_waiting_renews_matching_seek_ownership_past_the_old_deadline() 
         Some(sorotte_player_api::PlayerCommandId::new(7)),
         40.0,
         40.0,
+    );
+    assert_eq!(
+        owner.attached_system_seek_ownership[0].media_generation,
+        Some(1)
+    );
+    assert_eq!(
+        owner.attached_system_seek_ownership[0].logical_media_generation,
+        Some(17)
     );
     let old_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     owner.attached_system_seek_ownership[0].retire_after = old_deadline;
@@ -2056,4 +2078,96 @@ fn unsequenced_local_file_boundary_drops_same_drain_transport_fail_closed() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(state.transport_updates.is_empty());
     assert!(state.manual_seek_attempts.is_empty());
+}
+
+#[test]
+fn sequenced_media_boundary_discards_generationless_playback_fallback() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("old.mkv"));
+    owner.player_position_seconds = Some(5.0);
+    owner.player_paused = Some(false);
+    let mut player = PositionTelemetryPlayer::default();
+    player
+        .local_file_observations
+        .push_back(sorotte_player_api::PlayerLocalFileObservation::new(
+            sorotte_player_api::LocalFileUpdate::new("new.mkv"),
+            Some(sorotte_player_api::PlayerMediaGeneration::new(2)),
+            Some(
+                sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                    std::time::Duration::from_secs(2),
+                ),
+            ),
+        ));
+    player.playback_updates.push_back(
+        sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(88.0)
+            .with_paused(true),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("new.mkv")
+    );
+    assert_eq!(owner.player_position_seconds, Some(0.0));
+    assert_eq!(owner.player_paused, Some(false));
+}
+
+#[test]
+fn lower_generation_local_file_and_media_load_observations_are_rejected() {
+    let mut current = position_update(2.0, 10.0);
+    current.media_generation = Some(sorotte_player_api::PlayerMediaGeneration::new(2));
+    let mut baseline_player = PositionTelemetryPlayer::default();
+    baseline_player.updates.push_back(current);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("current.mkv"));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
+    owner.refresh_player_state_impl();
+
+    let timestamp = |seconds| {
+        Some(
+            sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                std::time::Duration::from_secs(seconds),
+            ),
+        )
+    };
+    let stale_generation = Some(sorotte_player_api::PlayerMediaGeneration::new(1));
+    let mut player = PositionTelemetryPlayer::default();
+    player
+        .local_file_observations
+        .push_back(sorotte_player_api::PlayerLocalFileObservation::new(
+            sorotte_player_api::LocalFileUpdate::new("stale.mkv"),
+            stale_generation,
+            timestamp(3),
+        ));
+    player
+        .media_load_observations
+        .push_back(sorotte_player_api::PlayerMediaLoadObservation::new(
+            sorotte_player_api::PlayerMediaLoadOutcome::failure(
+                "current.mkv",
+                None,
+                sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+                "stale failure",
+            ),
+            stale_generation,
+            timestamp(4),
+        ));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("current.mkv")
+    );
+    assert_eq!(owner.player_position_seconds, Some(10.0));
+    assert_eq!(owner.attached_native_seek_tracker.media_generation, Some(2));
 }

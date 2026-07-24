@@ -144,6 +144,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
+        attached_media_observation_cursor: Default::default(),
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,

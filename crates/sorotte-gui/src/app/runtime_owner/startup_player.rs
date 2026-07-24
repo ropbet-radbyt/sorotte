@@ -66,6 +66,7 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_attached_room_unpause_observation: None,
             pending_attached_player_pause_confirmation_pump: None,
             pending_attached_player_pause_command: None,
+            attached_media_observation_cursor: Default::default(),
             attached_native_seek_tracker: GuiAttachedNativeSeekTracker::default(),
             attached_system_seek_ownership: VecDeque::new(),
             attached_system_seek_fail_closed: None,
@@ -219,6 +220,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
+        self.attached_media_observation_cursor = Default::default();
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
@@ -280,6 +282,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
+        self.attached_media_observation_cursor = Default::default();
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;

@@ -12,8 +12,8 @@ use sorotte_client_core::{
     ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
 };
 use sorotte_player_api::{
-    PlayerAdapter, PlayerCommandId, PlayerError, PlayerPlaybackTelemetryUpdate,
-    PlayerTransportTelemetryUpdate,
+    PlayerAdapter, PlayerCommandId, PlayerError, PlayerMediaGeneration,
+    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 pub use sorotte_plex::PlexClientConfig;
 use sorotte_plex::{
@@ -1636,6 +1636,14 @@ where
 
     pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
         self.runtime.playback_coordination_snapshot()
+    }
+
+    pub fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.runtime
+            .logical_generation_for_adapter_generation(adapter_generation)
     }
 
     pub fn streaming_quality_downgrade_suggestion(

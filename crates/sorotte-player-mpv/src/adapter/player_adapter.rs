@@ -995,6 +995,64 @@ impl PlayerAdapter for MpvAdapter {
         Some(observation)
     }
 
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        self.maintain_runtime_integrations();
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
+        if self
+            .ipc_client
+            .as_ref()
+            .is_some_and(|ipc_client| !ipc_client.is_healthy())
+        {
+            self.fail_all_accepted_tracked_commands(
+                sorotte_player_api::PlayerCommandFailureKind::TransportDisconnected,
+            );
+        }
+        self.expire_tracked_commands();
+        if self.pending_playback_telemetry_update.is_none() {
+            self.poll_paused_position_telemetry_if_attached();
+        }
+        self.poll_ipc_local_file_update_if_attached();
+
+        let delivery_reference = self.observation_clock_origin.elapsed();
+        let mut ordered_events: Vec<_> = self.pending_ordered_player_events.drain(..).collect();
+        for event in &mut ordered_events {
+            let retag = |observed_at: PlayerObservationTimestamp| {
+                PlayerObservationTimestamp::from_adapter_observation(
+                    observed_at.elapsed_since_adapter_start(),
+                    delivery_reference,
+                )
+            };
+            match &mut event.kind {
+                PlayerOrderedEventKind::CommandProgress(progress) => {
+                    progress.observed_at = progress.observed_at.map(retag);
+                }
+                PlayerOrderedEventKind::LocalFile(observation) => {
+                    observation.observed_at = observation.observed_at.map(retag);
+                }
+                PlayerOrderedEventKind::MediaLoad(observation) => {
+                    observation.observed_at = observation.observed_at.map(retag);
+                }
+                PlayerOrderedEventKind::Transport(update) => {
+                    update.observed_at = update.observed_at.map(retag);
+                }
+            }
+        }
+
+        self.pending_command_progress_updates.clear();
+        self.pending_transport_telemetry_updates.clear();
+        self.pending_media_load_outcomes.clear();
+        self.pending_local_file_update = None;
+        self.pending_local_file_generation = None;
+        self.pending_local_file_observed_at = None;
+
+        Some(PlayerEventBatch {
+            ordered_events,
+            legacy_playback_telemetry: self.pending_playback_telemetry_update.take(),
+        })
+    }
+
     fn take_pending_chat_request(&mut self) -> Option<String> {
         self.maintain_runtime_integrations();
         self.try_send_legacy_syncplayintf_options_if_pending();
@@ -1051,6 +1109,61 @@ mod nonblocking_maintenance_tests {
         network_heartbeats: Arc<AtomicUsize>,
         legacy_heartbeats: Arc<AtomicUsize>,
         ordinary_sequence: usize,
+    }
+
+    #[test]
+    fn ordered_event_batch_is_atomic_and_preserves_adapter_ingress_order() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(4);
+        adapter.active_media_generation = Some(generation);
+        adapter.queue_local_file_update(LocalFileUpdate::new("ordered.mkv"));
+        let transport = adapter
+            .transport_update_for(generation)
+            .with_position_seconds(12.0);
+        adapter.queue_transport_telemetry_update(transport);
+        adapter.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
+            "ordered.mkv",
+            Some("ordered.mkv".to_owned()),
+        ));
+        let observed_at = Some(adapter.observation_timestamp());
+        adapter.queue_command_progress(PlayerCommandProgress::finished(
+            PlayerCommandId::new(11),
+            Some(generation),
+            observed_at,
+            Some(12.0),
+            PlayerCommandResult::Completed,
+        ));
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert_eq!(batch.ordered_events.len(), 4);
+        assert!(
+            batch
+                .ordered_events
+                .windows(2)
+                .all(|events| events[0].sequence < events[1].sequence)
+        );
+        assert!(matches!(
+            batch.ordered_events[0].kind,
+            PlayerOrderedEventKind::LocalFile(_)
+        ));
+        assert!(matches!(
+            batch.ordered_events[1].kind,
+            PlayerOrderedEventKind::Transport(_)
+        ));
+        assert!(matches!(
+            batch.ordered_events[2].kind,
+            PlayerOrderedEventKind::MediaLoad(_)
+        ));
+        assert!(matches!(
+            batch.ordered_events[3].kind,
+            PlayerOrderedEventKind::CommandProgress(_)
+        ));
+        assert!(adapter.pending_command_progress_updates.is_empty());
+        assert!(adapter.pending_transport_telemetry_updates.is_empty());
+        assert!(adapter.pending_media_load_outcomes.is_empty());
+        assert!(adapter.pending_local_file_update.is_none());
     }
 
     impl RuntimeLeaseControlLaneTransport {

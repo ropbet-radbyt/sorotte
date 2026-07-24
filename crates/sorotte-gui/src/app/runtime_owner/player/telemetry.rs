@@ -7,7 +7,8 @@ use crate::app::runtime_owner::{
 };
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerLocalFileObservation, PlayerMediaLoadObservation,
-    PlayerObservationTimestamp, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerObservationTimestamp, PlayerOrderedEventKind, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{
     MPV_SEEK_COMPLETION_TOLERANCE_SECONDS, MpvNetworkMediaPolicyOutcome,
@@ -39,20 +40,18 @@ enum GuiAttachedOrderedPlayerEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GuiUnsequencedMediaBoundary {
+struct GuiMediaBoundary {
     previous_media_generation: Option<u64>,
+    unsequenced: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiAcceptedMediaObservation {
+    previous_media_generation: Option<u64>,
+    generation_advanced: bool,
 }
 
 impl GuiAttachedOrderedPlayerEvent {
-    fn media_generation(&self) -> Option<PlayerMediaGeneration> {
-        match self {
-            Self::CommandProgress(progress) => progress.media_generation,
-            Self::LocalFile(observation) => observation.media_generation,
-            Self::MediaLoad(observation) => observation.media_generation,
-            Self::Transport(update) => update.media_generation,
-        }
-    }
-
     fn observed_at(&self) -> Option<PlayerObservationTimestamp> {
         match self {
             Self::CommandProgress(progress) => progress.observed_at,
@@ -77,43 +76,15 @@ fn compare_attached_ordered_player_events(
     left: &GuiAttachedOrderedPlayerEvent,
     right: &GuiAttachedOrderedPlayerEvent,
 ) -> std::cmp::Ordering {
-    match (left, right) {
+    let key = |event: &GuiAttachedOrderedPlayerEvent| {
         (
-            GuiAttachedOrderedPlayerEvent::LocalFile(observation),
-            GuiAttachedOrderedPlayerEvent::Transport(_),
-        ) if observation.observed_at.is_none() => return std::cmp::Ordering::Less,
-        (
-            GuiAttachedOrderedPlayerEvent::Transport(_),
-            GuiAttachedOrderedPlayerEvent::LocalFile(observation),
-        ) if observation.observed_at.is_none() => return std::cmp::Ordering::Greater,
-        _ => {}
-    }
-    if matches!(
-        (left, right),
-        (
-            GuiAttachedOrderedPlayerEvent::LocalFile(_),
-            GuiAttachedOrderedPlayerEvent::Transport(_)
-        ) | (
-            GuiAttachedOrderedPlayerEvent::Transport(_),
-            GuiAttachedOrderedPlayerEvent::LocalFile(_)
+            event
+                .observed_at()
+                .map(|timestamp| timestamp.elapsed_since_adapter_start()),
+            event.same_instant_rank(),
         )
-    ) && let (Some(left_generation), Some(right_generation)) =
-        (left.media_generation(), right.media_generation())
-        && left_generation != right_generation
-    {
-        return left_generation.cmp(&right_generation);
-    }
-    match (left.observed_at(), right.observed_at()) {
-        (Some(left_timestamp), Some(right_timestamp))
-            if left_timestamp.elapsed_since_adapter_start()
-                != right_timestamp.elapsed_since_adapter_start() =>
-        {
-            left_timestamp
-                .elapsed_since_adapter_start()
-                .cmp(&right_timestamp.elapsed_since_adapter_start())
-        }
-        _ => left.same_instant_rank().cmp(&right.same_instant_rank()),
-    }
+    };
+    key(left).cmp(&key(right))
 }
 
 #[cfg(test)]
@@ -149,6 +120,69 @@ mod ordered_event_tests {
             compare_attached_ordered_player_events(&transport, &local_file),
             std::cmp::Ordering::Greater
         );
+    }
+
+    #[test]
+    fn legacy_event_comparator_is_antisymmetric_and_transitive() {
+        let timestamp = |seconds| {
+            Some(PlayerObservationTimestamp::from_adapter_start(
+                Duration::from_secs(seconds),
+            ))
+        };
+        let generation = Some(PlayerMediaGeneration::new(7));
+        let events = vec![
+            GuiAttachedOrderedPlayerEvent::CommandProgress(PlayerCommandProgress::accepted(
+                PlayerCommandId::new(1),
+                generation,
+                None,
+            )),
+            GuiAttachedOrderedPlayerEvent::CommandProgress(PlayerCommandProgress::finished(
+                PlayerCommandId::new(1),
+                generation,
+                timestamp(3),
+                None,
+                sorotte_player_api::PlayerCommandResult::Completed,
+            )),
+            GuiAttachedOrderedPlayerEvent::LocalFile(PlayerLocalFileObservation::new(
+                LocalFileUpdate::new("ordered.mkv"),
+                generation,
+                timestamp(1),
+            )),
+            GuiAttachedOrderedPlayerEvent::MediaLoad(PlayerMediaLoadObservation::new(
+                sorotte_player_api::PlayerMediaLoadOutcome::success("ordered.mkv", None),
+                generation,
+                timestamp(2),
+            )),
+            GuiAttachedOrderedPlayerEvent::Transport(PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(7),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+            )),
+        ];
+
+        for left in &events {
+            for right in &events {
+                assert_eq!(
+                    compare_attached_ordered_player_events(left, right),
+                    compare_attached_ordered_player_events(right, left).reverse()
+                );
+            }
+        }
+        for left in &events {
+            for middle in &events {
+                for right in &events {
+                    let left_before_middle = compare_attached_ordered_player_events(left, middle)
+                        != std::cmp::Ordering::Greater;
+                    let middle_before_right = compare_attached_ordered_player_events(middle, right)
+                        != std::cmp::Ordering::Greater;
+                    if left_before_middle && middle_before_right {
+                        assert_ne!(
+                            compare_attached_ordered_player_events(left, right),
+                            std::cmp::Ordering::Greater
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -534,12 +568,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 <= ownership.tolerance_seconds
                 || (ownership.target_position_seconds - preparation.frozen_target_seconds).abs()
                     <= ownership.tolerance_seconds;
-            if ownership.media_generation == Some(preparation.media_generation) && target_matches {
+            if ownership.logical_media_generation == Some(preparation.media_generation)
+                && target_matches
+            {
                 ownership.retire_after = ownership.retire_after.max(retire_after);
             }
         }
         if let Some(guard) = self.attached_system_seek_fail_closed.as_mut()
-            && guard.media_generation == Some(preparation.media_generation)
+            && guard.logical_media_generation == Some(preparation.media_generation)
         {
             guard.retire_after = guard.retire_after.max(retire_after);
         }
@@ -567,16 +603,28 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         let retire_after = now + ATTACHED_SYSTEM_SEEK_OWNERSHIP_LIFETIME;
+        let media_generation = self.attached_native_seek_tracker.media_generation;
+        let logical_media_generation = media_generation.and_then(|generation| {
+            self.session.as_ref().and_then(|session| {
+                session.logical_generation_for_adapter_generation(PlayerMediaGeneration::new(
+                    generation,
+                ))
+            })
+        });
         if self.attached_system_seek_ownership.len() >= ATTACHED_SYSTEM_SEEK_OWNERSHIP_LIMIT {
             let guard = GuiAttachedSystemSeekFailClosedGuard {
                 player_attachment_epoch: self.player_attachment_epoch,
                 session_generation: self.session_generation,
                 room_name: self.current_attached_system_seek_room_name(),
-                media_generation: self.attached_native_seek_tracker.media_generation,
+                media_generation,
+                logical_media_generation,
                 retire_after,
             };
             match self.attached_system_seek_fail_closed.as_mut() {
-                Some(existing) if existing.media_generation == guard.media_generation => {
+                Some(existing)
+                    if existing.media_generation == guard.media_generation
+                        && existing.logical_media_generation == guard.logical_media_generation =>
+                {
                     existing.retire_after = existing.retire_after.max(retire_after);
                 }
                 Some(existing) => *existing = guard,
@@ -591,7 +639,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 player_attachment_epoch: self.player_attachment_epoch,
                 session_generation: self.session_generation,
                 room_name: self.current_attached_system_seek_room_name(),
-                media_generation: self.attached_native_seek_tracker.media_generation,
+                media_generation,
+                logical_media_generation,
                 issued_after_observed_at_seconds: self
                     .attached_native_seek_tracker
                     .last_observed_at_seconds,
@@ -928,15 +977,84 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn accept_attached_media_observation(
+        &mut self,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Option<GuiAcceptedMediaObservation> {
+        let previous_media_generation = self
+            .attached_media_observation_cursor
+            .media_generation
+            .max(self.attached_native_seek_tracker.media_generation);
+        let Some(media_generation) = media_generation.map(PlayerMediaGeneration::get) else {
+            return Some(GuiAcceptedMediaObservation {
+                previous_media_generation,
+                generation_advanced: false,
+            });
+        };
+        if previous_media_generation.is_some_and(|current| media_generation < current) {
+            return None;
+        }
+        let observed_at_seconds = observed_at
+            .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64())
+            .filter(|seconds| seconds.is_finite());
+        let latest_observed_at_seconds = match (
+            self.attached_media_observation_cursor
+                .last_observed_at_seconds,
+            self.attached_native_seek_tracker.last_observed_at_seconds,
+        ) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
+        if previous_media_generation == Some(media_generation)
+            && observed_at_seconds.is_some_and(|observed| {
+                latest_observed_at_seconds.is_some_and(|latest| observed < latest)
+            })
+        {
+            return None;
+        }
+        let generation_advanced =
+            previous_media_generation.is_none_or(|current| media_generation > current);
+        if generation_advanced {
+            self.attached_media_observation_cursor =
+                crate::app::runtime_owner::GuiAttachedMediaObservationCursor {
+                    media_generation: Some(media_generation),
+                    last_observed_at_seconds: observed_at_seconds,
+                };
+        } else if let Some(observed_at_seconds) = observed_at_seconds {
+            self.attached_media_observation_cursor
+                .last_observed_at_seconds = Some(observed_at_seconds);
+        }
+        if generation_advanced {
+            self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker {
+                media_generation: Some(media_generation),
+                last_observed_at_seconds: observed_at_seconds,
+                ..GuiAttachedNativeSeekTracker::default()
+            };
+        }
+        Some(GuiAcceptedMediaObservation {
+            previous_media_generation,
+            generation_advanced,
+        })
+    }
+
+    fn reset_attached_media_boundary_state(&mut self) {
+        self.pending_local_attached_pause_override = None;
+        self.attached_system_seek_ownership.clear();
+        self.attached_system_seek_fail_closed = None;
+        self.attached_transport_telemetry_authority = Default::default();
+    }
+
     fn process_attached_local_file_observation(
         &mut self,
         observation: PlayerLocalFileObservation,
-    ) -> Option<GuiUnsequencedMediaBoundary> {
+    ) -> Option<GuiMediaBoundary> {
         let PlayerLocalFileObservation {
             mut update,
             media_generation,
             observed_at,
         } = observation;
+        let accepted = self.accept_attached_media_observation(media_generation, observed_at)?;
         self.handle_untracked_playlist_local_file_observation(&update);
         let tracked_playlist_load_unconfirmed =
             self.tracked_playlist_resolution_load_matches_local_file(&update);
@@ -949,29 +1067,11 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let file_changed =
             Self::local_file_update_replaces_current_file(self.player_local_file.as_ref(), &update);
-        let previous_media_generation = self.attached_native_seek_tracker.media_generation;
-        let observed_generation = media_generation.map(PlayerMediaGeneration::get);
-        let generation_advanced = observed_generation.is_some_and(|generation| {
-            self.attached_native_seek_tracker
-                .media_generation
-                .is_none_or(|current| generation > current)
-        });
-        if file_changed || generation_advanced {
-            self.pending_local_attached_pause_override = None;
-            self.attached_system_seek_ownership.clear();
-            self.attached_system_seek_fail_closed = None;
-            self.attached_transport_telemetry_authority = Default::default();
-        }
-        if generation_advanced {
-            self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker {
-                media_generation: observed_generation,
-                last_observed_at_seconds: observed_at
-                    .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64())
-                    .filter(|seconds| seconds.is_finite()),
-                ..GuiAttachedNativeSeekTracker::default()
-            };
+        if file_changed || accepted.generation_advanced {
+            self.reset_attached_media_boundary_state();
         }
         if file_changed && media_generation.is_none() {
+            self.attached_media_observation_cursor = Default::default();
             self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         }
         if file_changed {
@@ -1001,11 +1101,12 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file = Some(update);
         self.player_local_file_placeholder = tracked_playlist_load_unconfirmed
             || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
-        if file_changed || generation_advanced || self.player_position_seconds.is_none() {
+        if file_changed || accepted.generation_advanced || self.player_position_seconds.is_none() {
             self.player_position_seconds = Some(0.0);
         }
-        (file_changed && media_generation.is_none()).then_some(GuiUnsequencedMediaBoundary {
-            previous_media_generation,
+        (file_changed || accepted.generation_advanced).then_some(GuiMediaBoundary {
+            previous_media_generation: accepted.previous_media_generation,
+            unsequenced: media_generation.is_none(),
         })
     }
 
@@ -1013,7 +1114,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         event: GuiAttachedOrderedPlayerEvent,
         user_offset_seconds: f64,
-    ) -> Option<GuiUnsequencedMediaBoundary> {
+    ) -> Option<GuiMediaBoundary> {
         match event {
             GuiAttachedOrderedPlayerEvent::CommandProgress(progress) => {
                 self.handle_playlist_resolution_command_progress(progress);
@@ -1024,9 +1125,19 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.process_attached_local_file_observation(observation)
             }
             GuiAttachedOrderedPlayerEvent::MediaLoad(observation) => {
+                let accepted = self.accept_attached_media_observation(
+                    observation.media_generation,
+                    observation.observed_at,
+                )?;
+                if accepted.generation_advanced {
+                    self.reset_attached_media_boundary_state();
+                }
                 self.handle_playlist_media_load_outcome(&observation.outcome);
                 self.handle_player_media_load_outcome(observation.outcome);
-                None
+                accepted.generation_advanced.then_some(GuiMediaBoundary {
+                    previous_media_generation: accepted.previous_media_generation,
+                    unsequenced: false,
+                })
             }
             GuiAttachedOrderedPlayerEvent::Transport(update) => {
                 let player_position_seconds = update.position_seconds;
@@ -1127,20 +1238,47 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut command_progress_updates = VecDeque::new();
         let mut media_load_observations = VecDeque::new();
         let mut local_file_observations = VecDeque::new();
-        while let Some(progress) = player.take_command_progress() {
-            command_progress_updates.push_back(progress);
-        }
-        while let Some(update) = player.take_playback_telemetry_update() {
-            playback_updates.push(update);
-        }
-        while let Some(update) = player.take_transport_telemetry_update() {
-            transport_updates.push_back(update);
-        }
-        while let Some(observation) = player.take_media_load_observation() {
-            media_load_observations.push_back(observation);
-        }
-        while let Some(observation) = player.take_local_file_observation() {
-            local_file_observations.push_back(observation);
+        let mut ordered_events = Vec::new();
+        if let Some(mut batch) = player.take_ordered_event_batch() {
+            batch.ordered_events.sort_by_key(|event| event.sequence);
+            ordered_events.extend(
+                batch
+                    .ordered_events
+                    .into_iter()
+                    .map(|event| match event.kind {
+                        PlayerOrderedEventKind::CommandProgress(progress) => {
+                            GuiAttachedOrderedPlayerEvent::CommandProgress(progress)
+                        }
+                        PlayerOrderedEventKind::LocalFile(observation) => {
+                            GuiAttachedOrderedPlayerEvent::LocalFile(observation)
+                        }
+                        PlayerOrderedEventKind::MediaLoad(observation) => {
+                            GuiAttachedOrderedPlayerEvent::MediaLoad(observation)
+                        }
+                        PlayerOrderedEventKind::Transport(update) => {
+                            GuiAttachedOrderedPlayerEvent::Transport(update)
+                        }
+                    }),
+            );
+            if let Some(update) = batch.legacy_playback_telemetry {
+                playback_updates.push(update);
+            }
+        } else {
+            while let Some(progress) = player.take_command_progress() {
+                command_progress_updates.push_back(progress);
+            }
+            while let Some(update) = player.take_playback_telemetry_update() {
+                playback_updates.push(update);
+            }
+            while let Some(update) = player.take_transport_telemetry_update() {
+                transport_updates.push_back(update);
+            }
+            while let Some(observation) = player.take_media_load_observation() {
+                media_load_observations.push_back(observation);
+            }
+            while let Some(observation) = player.take_local_file_observation() {
+                local_file_observations.push_back(observation);
+            }
         }
         let mut hook_health_transitions = Vec::new();
         let mut media_policy_outcomes = Vec::new();
@@ -1210,7 +1348,7 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             self.pending_attached_player_pause_command = None;
         }
-        let mut ordered_events = Vec::with_capacity(
+        ordered_events.reserve(
             command_progress_updates.len()
                 + local_file_observations.len()
                 + media_load_observations.len()
@@ -1277,10 +1415,12 @@ impl GuiPersistedConfigRuntimeOwner {
             ordered_events.push(event);
         }
         let mut unsequenced_media_boundary = None;
+        let mut media_boundary_observed = false;
         for event in ordered_events {
             if let (
-                Some(GuiUnsequencedMediaBoundary {
+                Some(GuiMediaBoundary {
                     previous_media_generation,
+                    ..
                 }),
                 GuiAttachedOrderedPlayerEvent::Transport(update),
             ) = (unsequenced_media_boundary, &event)
@@ -1297,10 +1437,11 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Some(boundary) =
                 self.process_attached_ordered_player_event(event, user_offset_seconds)
             {
-                unsequenced_media_boundary = Some(boundary);
+                media_boundary_observed = true;
+                unsequenced_media_boundary = boundary.unsequenced.then_some(boundary);
             }
         }
-        if unsequenced_media_boundary.is_some() {
+        if media_boundary_observed {
             playback_updates.clear();
         }
         for update in playback_updates {
@@ -1645,6 +1786,9 @@ fn transport_update_on_room_timeline(
             .map(|range| range.shifted(-user_offset_seconds))
             .collect()
     });
+    update.known_live_seekable_window = update
+        .known_live_seekable_window
+        .map(|range| range.shifted(-user_offset_seconds));
     update
 }
 
@@ -1652,7 +1796,7 @@ fn transport_update_on_room_timeline(
 mod transport_timeline_tests {
     use super::transport_update_on_room_timeline;
     use sorotte_player_api::{
-        PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange,
+        PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange, PlayerTimelineKind,
         PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
     use std::time::Duration;
@@ -1668,7 +1812,54 @@ mod transport_timeline_tests {
             player_position - 10.0,
             player_position + 30.0,
         )]);
+        update.known_live_seekable_window = Some(PlayerSeekableRange::new(
+            player_position - 10.0,
+            player_position + 30.0,
+        ));
         update
+    }
+
+    fn assert_live_target_is_classified_and_clamped_on_room_timeline(
+        normalized: &PlayerTransportTelemetryUpdate,
+    ) {
+        let mut coordinator = sorotte_client_core::PlaybackCoordinator::default();
+        let plan = coordinator.prepare_media(
+            sorotte_client_core::LogicalMediaId::new("live-offset-test").unwrap(),
+            sorotte_client_core::MediaTransportKind::LiveSliding,
+            0.0,
+        );
+        coordinator.observe(
+            sorotte_client_core::PlayerTransportObservation::new(plan.media_generation, 1.0)
+                .with_phase(PlayerTransportPhase::ReadyPaused)
+                .with_position(normalized.position_seconds.unwrap())
+                .with_logical_pause(true)
+                .with_cache_pause(false)
+                .with_seeking(false)
+                .with_seekable(true)
+                .with_timeline_kind(PlayerTimelineKind::SlidingLive)
+                .with_seekable_ranges(normalized.seekable_ranges.clone().unwrap())
+                .with_known_live_seekable_window(normalized.known_live_seekable_window.unwrap()),
+        );
+        coordinator.update_desired_room_state_with_kind(
+            sorotte_client_core::DesiredRoomPlayback {
+                media_generation: plan.media_generation,
+                state_revision: 1,
+                paused: true,
+                anchor_position_seconds: 50.0,
+                anchor_observed_at_seconds: 1.0,
+                force_seek: true,
+            },
+            sorotte_client_core::DesiredRoomPlaybackUpdateKind::ExplicitSeek,
+        );
+        let preparation = coordinator
+            .seek_preparation_snapshot()
+            .expect("outside-live-window target should prepare a clamped seek");
+        assert_eq!(
+            preparation.availability,
+            sorotte_client_core::SeekTargetAvailability::OutsideLiveWindow
+        );
+        assert_eq!(preparation.requested_target_seconds, 50.0);
+        assert_eq!(preparation.frozen_target_seconds, 39.0);
     }
 
     #[test]
@@ -1680,6 +1871,11 @@ mod transport_timeline_tests {
             normalized.seekable_ranges,
             Some(vec![PlayerSeekableRange::new(0.0, 40.0)])
         );
+        assert_eq!(
+            normalized.known_live_seekable_window,
+            Some(PlayerSeekableRange::new(0.0, 40.0))
+        );
+        assert_live_target_is_classified_and_clamped_on_room_timeline(&normalized);
     }
 
     #[test]
@@ -1691,5 +1887,10 @@ mod transport_timeline_tests {
             normalized.seekable_ranges,
             Some(vec![PlayerSeekableRange::new(0.0, 40.0)])
         );
+        assert_eq!(
+            normalized.known_live_seekable_window,
+            Some(PlayerSeekableRange::new(0.0, 40.0))
+        );
+        assert_live_target_is_classified_and_clamped_on_room_timeline(&normalized);
     }
 }

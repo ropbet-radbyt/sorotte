@@ -18,11 +18,12 @@ use std::{
 use serde_json::{Value, json};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
-    PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError,
-    PlayerLocalFileObservation, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
-    PlayerPlayIntent, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
-    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerEventBatch,
+    PlayerEventSequence, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadFailureKind, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind, PlayerPlayIntent,
+    PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_secret::SecretValue;
 
@@ -42,6 +43,7 @@ use crate::legacy_ui::{
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
 const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
+const MAX_PENDING_ORDERED_PLAYER_EVENTS: usize = 256;
 const MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES: usize = 16;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -671,6 +673,8 @@ pub struct MpvAdapter {
     pending_tracked_commands: VecDeque<PendingTrackedCommand>,
     pending_command_progress_updates: VecDeque<PlayerCommandProgress>,
     pending_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
+    next_ordered_player_event_sequence: u64,
+    pending_ordered_player_events: VecDeque<PlayerOrderedEvent>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
@@ -2976,19 +2980,38 @@ impl MpvAdapter {
         self.window_minimized
     }
 
+    fn queue_ordered_player_event(&mut self, kind: PlayerOrderedEventKind) {
+        let sequence = PlayerEventSequence::new(self.next_ordered_player_event_sequence);
+        self.next_ordered_player_event_sequence = self
+            .next_ordered_player_event_sequence
+            .checked_add(1)
+            .expect("mpv ordered player event sequence exhausted");
+        if self.pending_ordered_player_events.len() >= MAX_PENDING_ORDERED_PLAYER_EVENTS {
+            self.pending_ordered_player_events.pop_front();
+        }
+        self.pending_ordered_player_events
+            .push_back(PlayerOrderedEvent::new(sequence, kind));
+    }
+
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
-        self.pending_local_file_generation = self.observation_media_generation();
-        self.pending_local_file_observed_at = Some(self.observation_timestamp());
+        let media_generation = self.observation_media_generation();
+        let observed_at = Some(self.observation_timestamp());
+        self.queue_ordered_player_event(PlayerOrderedEventKind::LocalFile(
+            PlayerLocalFileObservation::new(update.clone(), media_generation, observed_at),
+        ));
+        self.pending_local_file_generation = media_generation;
+        self.pending_local_file_observed_at = observed_at;
         self.pending_local_file_update = Some(update);
     }
 
     fn queue_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
-        self.pending_media_load_outcomes
-            .push_back(PlayerMediaLoadObservation::new(
-                outcome,
-                self.observation_media_generation(),
-                Some(self.observation_timestamp()),
-            ));
+        let observation = PlayerMediaLoadObservation::new(
+            outcome,
+            self.observation_media_generation(),
+            Some(self.observation_timestamp()),
+        );
+        self.queue_ordered_player_event(PlayerOrderedEventKind::MediaLoad(observation.clone()));
+        self.pending_media_load_outcomes.push_back(observation);
     }
 
     pub fn legacy_syncplay_ui_settings(&self) -> &LegacySyncplayUiSettings {
@@ -4276,6 +4299,7 @@ impl MpvAdapter {
     }
 
     fn queue_command_progress(&mut self, progress: PlayerCommandProgress) {
+        self.queue_ordered_player_event(PlayerOrderedEventKind::CommandProgress(progress));
         if self.pending_command_progress_updates.len() >= MAX_PENDING_COMMAND_PROGRESS_UPDATES {
             self.pending_command_progress_updates.pop_front();
         }
@@ -4583,7 +4607,27 @@ impl MpvAdapter {
                     break;
                 }
             }
+            for event in self.pending_ordered_player_events.iter_mut().rev() {
+                let PlayerOrderedEventKind::Transport(pending) = &mut event.kind else {
+                    continue;
+                };
+                if pending.media_generation != update.media_generation {
+                    break;
+                }
+                if pending.logical_pause == Some(true) {
+                    pending.logical_pause = None;
+                }
+                if pending.phase == Some(PlayerTransportPhase::ReadyPaused)
+                    && update.phase.is_some()
+                {
+                    pending.phase = update.phase;
+                }
+                if pending.playback_restart_sequence.is_some() {
+                    break;
+                }
+            }
         }
+        self.queue_ordered_player_event(PlayerOrderedEventKind::Transport(update.clone()));
 
         let update_has_cache_metrics = update.cache_buffering_percent.is_some()
             || update.buffered_ahead_seconds.is_some()

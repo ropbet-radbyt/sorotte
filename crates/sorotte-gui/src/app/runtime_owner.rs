@@ -387,6 +387,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<GuiPendingAttachedRoomUnpauseObservation>,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
+    pub(super) attached_media_observation_cursor: GuiAttachedMediaObservationCursor,
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
     pub(super) attached_system_seek_ownership: VecDeque<GuiAttachedSystemSeekOwnership>,
     pub(super) attached_system_seek_fail_closed: Option<GuiAttachedSystemSeekFailClosedGuard>,
@@ -458,6 +459,12 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub(super) struct GuiAttachedMediaObservationCursor {
+    pub(super) media_generation: Option<u64>,
+    pub(super) last_observed_at_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct GuiAttachedNativeSeekTracker {
     pub(super) media_generation: Option<u64>,
     pub(super) last_observed_at_seconds: Option<f64>,
@@ -494,6 +501,7 @@ pub(super) struct GuiAttachedSystemSeekOwnership {
     pub(super) session_generation: u64,
     pub(super) room_name: Option<String>,
     pub(super) media_generation: Option<u64>,
+    pub(super) logical_media_generation: Option<u64>,
     pub(super) issued_after_observed_at_seconds: Option<f64>,
     pub(super) requested_target_position_seconds: f64,
     pub(super) player_target_position_seconds: f64,
@@ -511,6 +519,7 @@ pub(super) struct GuiAttachedSystemSeekFailClosedGuard {
     pub(super) session_generation: u64,
     pub(super) room_name: Option<String>,
     pub(super) media_generation: Option<u64>,
+    pub(super) logical_media_generation: Option<u64>,
     pub(super) retire_after: Instant,
 }
 

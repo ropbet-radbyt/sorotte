@@ -696,6 +696,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Some(self.runtime.playback_coordination_snapshot())
     }
 
+    fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.runtime
+            .logical_generation_for_adapter_generation(adapter_generation)
+    }
+
     fn keep_waiting_for_seek_preparation(
         &mut self,
         now_seconds: f64,

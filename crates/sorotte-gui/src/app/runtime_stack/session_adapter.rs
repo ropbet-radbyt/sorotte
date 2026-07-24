@@ -253,6 +253,13 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn logical_generation_for_adapter_generation(
+        &self,
+        _adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        None
+    }
+
     fn keep_waiting_for_seek_preparation(
         &mut self,
         _now_seconds: f64,
