@@ -676,6 +676,8 @@ pub struct MpvAdapter {
     next_ordered_player_event_sequence: u64,
     pending_ordered_player_events: VecDeque<PlayerOrderedEvent>,
     ordered_player_event_reacquisition_required: bool,
+    last_delivered_ordered_command_progress: Vec<PlayerCommandProgress>,
+    rejected_delivered_ordered_command_progress: Vec<PlayerCommandProgress>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
@@ -2759,15 +2761,6 @@ impl MpvAdapter {
                     && update.phase != Some(PlayerTransportPhase::Failed)
                     && update.eof_reached != Some(true))
         });
-        self.pending_ordered_player_events.retain(|event| {
-            let PlayerOrderedEventKind::Transport(update) = &event.kind else {
-                return true;
-            };
-            update.media_generation != Some(generation)
-                || (update.phase != Some(PlayerTransportPhase::Ended)
-                    && update.phase != Some(PlayerTransportPhase::Failed)
-                    && update.eof_reached != Some(true))
-        });
         self.pending_cache_telemetry_updates
             .retain(|update| update.media_generation != Some(generation));
         self.transport_phase = PlayerTransportPhase::Loading;
@@ -2779,6 +2772,22 @@ impl MpvAdapter {
             .with_phase(PlayerTransportPhase::Loading)
             .with_position_seconds(position_seconds);
         update.eof_reached = Some(false);
+        for event in &mut self.pending_ordered_player_events {
+            let PlayerOrderedEventKind::Transport(pending) = &mut event.kind else {
+                continue;
+            };
+            if pending.media_generation == Some(generation)
+                && (matches!(
+                    pending.phase,
+                    Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                ) || pending.eof_reached == Some(true))
+            {
+                // The rejected terminal observation already owns an ordered sequence. Replacing
+                // it preserves the consumer's causal watermark; deleting it would manufacture an
+                // unannounced gap immediately before the recovery transition.
+                *pending = update.clone();
+            }
+        }
         self.queue_transport_telemetry_update(update);
         self.drain_ipc_events_if_attached();
         true
@@ -3008,6 +3017,7 @@ impl MpvAdapter {
     fn queue_authoritative_ordered_player_snapshot(
         &mut self,
         authoritative_local_file: Option<LocalFileUpdate>,
+        interrupted_command_progress: Vec<PlayerCommandProgress>,
     ) {
         if let Some(update) = authoritative_local_file {
             self.queue_local_file_update(update);
@@ -3024,6 +3034,12 @@ impl MpvAdapter {
         update.cache_buffering_percent = self.observed_state.cache_buffering_percent;
         update.seeking = self.observed_state.seeking;
         update.seekable = self.observed_state.seekable;
+        update.seekable_ranges = Some(
+            self.observed_state
+                .seekable_ranges
+                .clone()
+                .unwrap_or_default(),
+        );
         update.core_idle = self.observed_state.core_idle;
         update.demuxer_cache_idle = self.observed_state.demuxer_cache_idle;
         update.playback_restart_sequence = Some(self.playback_restart_sequence);
@@ -3032,6 +3048,53 @@ impl MpvAdapter {
         update.buffered_ahead_bytes = self.observed_state.buffered_ahead_bytes;
         update.input_rate_bytes_per_second = self.observed_state.input_rate_bytes_per_second;
         self.queue_transport_telemetry_update(update);
+        for progress in interrupted_command_progress {
+            self.queue_command_progress(progress);
+        }
+    }
+
+    fn authoritative_reacquisition_command_progress(&self) -> Vec<PlayerCommandProgress> {
+        let mut progress = Vec::new();
+        for terminal in self
+            .rejected_delivered_ordered_command_progress
+            .iter()
+            .chain(self.pending_command_progress_updates.iter())
+            .copied()
+            .filter(|progress| progress.is_terminal())
+        {
+            if progress
+                .iter()
+                .any(|existing: &PlayerCommandProgress| existing.command_id == terminal.command_id)
+            {
+                continue;
+            }
+            progress.push(PlayerCommandProgress::finished(
+                terminal.command_id,
+                terminal.media_generation,
+                Some(self.observation_timestamp()),
+                terminal.observed_position_seconds,
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::Unknown),
+            ));
+        }
+        for pending in self
+            .pending_tracked_commands
+            .iter()
+            .filter(|pending| pending.accepted_at.is_some())
+        {
+            if progress
+                .iter()
+                .any(|existing| existing.command_id == pending.id)
+            {
+                continue;
+            }
+            progress.push(PlayerCommandProgress::accepted(
+                pending.id,
+                pending.media_generation,
+                Some(self.observation_timestamp()),
+            ));
+        }
+        progress.truncate(MAX_PENDING_COMMAND_PROGRESS_UPDATES);
+        progress
     }
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
@@ -4825,6 +4888,8 @@ impl MpvAdapter {
     fn cache_state_telemetry_update(&mut self, data: &Value) -> PlayerTransportTelemetryUpdate {
         let mut update = self.transport_update();
         let Some(cache_state) = data.as_object() else {
+            self.observed_state.seekable_ranges = None;
+            self.latest_cached_seekable_window = None;
             self.observed_state.buffered_ahead_seconds = None;
             self.observed_state.buffered_ahead_bytes = None;
             self.observed_state.input_rate_bytes_per_second = None;
@@ -4857,6 +4922,7 @@ impl MpvAdapter {
                     })
                     .collect()
             });
+        self.observed_state.seekable_ranges = update.seekable_ranges.clone();
         if let Some(ranges) = update.seekable_ranges.as_deref() {
             self.latest_cached_seekable_window = ranges
                 .iter()
@@ -4867,6 +4933,8 @@ impl MpvAdapter {
                         && range.end_seconds > range.start_seconds
                 })
                 .max_by(|left, right| left.end_seconds.total_cmp(&right.end_seconds));
+        } else {
+            self.latest_cached_seekable_window = None;
         }
         update.timeline_kind = Some(self.timeline_kind);
         if self.timeline_kind == PlayerTimelineKind::SlidingLive {
@@ -4956,6 +5024,7 @@ impl MpvAdapter {
         self.ytdl_is_live = false;
         self.ytdl_is_live_metadata_generation = None;
         self.latest_cached_seekable_window = None;
+        self.observed_state.seekable_ranges = None;
         self.path_metadata_generation = None;
         self.duration_metadata_generation = None;
     }
@@ -5500,6 +5569,7 @@ impl MpvAdapter {
         self.observed_state.cache_buffering_percent = None;
         self.observed_state.seeking = None;
         self.observed_state.seekable = None;
+        self.observed_state.seekable_ranges = None;
         self.observed_state.core_idle = retained_core_idle;
         self.observed_state.demuxer_cache_idle = None;
         self.observed_state.eof_reached = Some(false);
@@ -7178,6 +7248,14 @@ mod interrupted_network_stream_recovery_tests {
         let batch = adapter
             .take_ordered_event_batch()
             .expect("mpv supports ordered event batches");
+        assert_eq!(batch.dropped_events_through, None);
+        assert!(batch.ordered_events.windows(2).all(|events| {
+            events[0]
+                .sequence
+                .get()
+                .checked_add(1)
+                .is_some_and(|expected| events[1].sequence.get() == expected)
+        }));
         assert!(batch.ordered_events.iter().any(|event| matches!(
             &event.kind,
             PlayerOrderedEventKind::Transport(update)

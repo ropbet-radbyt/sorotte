@@ -81,6 +81,14 @@ impl fmt::Debug for MpvAdapter {
                 &self.pending_command_progress_updates,
             )
             .field(
+                "last_delivered_ordered_command_progress",
+                &self.last_delivered_ordered_command_progress,
+            )
+            .field(
+                "rejected_delivered_ordered_command_progress",
+                &self.rejected_delivered_ordered_command_progress,
+            )
+            .field(
                 "pending_media_load_outcomes",
                 &self.pending_media_load_outcomes,
             )
@@ -258,6 +266,8 @@ impl Default for MpvAdapter {
             next_ordered_player_event_sequence: 1,
             pending_ordered_player_events: VecDeque::new(),
             ordered_player_event_reacquisition_required: false,
+            last_delivered_ordered_command_progress: Vec::new(),
+            rejected_delivered_ordered_command_progress: Vec::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
             interrupted_network_stream_recovery: None,
@@ -333,6 +343,7 @@ pub(super) struct MpvObservedState {
     pub(super) cache_buffering_percent: Option<f64>,
     pub(super) seeking: Option<bool>,
     pub(super) seekable: Option<bool>,
+    pub(super) seekable_ranges: Option<Vec<PlayerSeekableRange>>,
     pub(super) core_idle: Option<bool>,
     pub(super) demuxer_cache_idle: Option<bool>,
     pub(super) eof_reached: Option<bool>,
@@ -364,6 +375,7 @@ impl std::fmt::Debug for MpvObservedState {
             .field("cache_buffering_percent", &self.cache_buffering_percent)
             .field("seeking", &self.seeking)
             .field("seekable", &self.seekable)
+            .field("seekable_ranges", &self.seekable_ranges)
             .field("core_idle", &self.core_idle)
             .field("demuxer_cache_idle", &self.demuxer_cache_idle)
             .field("eof_reached", &self.eof_reached)

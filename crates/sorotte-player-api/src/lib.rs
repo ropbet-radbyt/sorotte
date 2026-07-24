@@ -883,8 +883,9 @@ pub struct PlayerEventBatch {
     /// Highest sequence discarded before the authoritative snapshot in `ordered_events`.
     ///
     /// When present, consumers must discard causal inference derived from earlier events. Events
-    /// in this batch begin at the following sequence and re-establish the adapter's current file
-    /// and transport state.
+    /// in this batch begin at the following sequence and re-establish the adapter's current file,
+    /// transport, and still-relevant command lifecycle state. This is an observation rebase, not
+    /// evidence that the media or player attachment changed.
     pub dropped_events_through: Option<PlayerEventSequence>,
     pub ordered_events: Vec<PlayerOrderedEvent>,
     pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,

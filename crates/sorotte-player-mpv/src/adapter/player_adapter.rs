@@ -1018,6 +1018,7 @@ impl PlayerAdapter for MpvAdapter {
         let dropped_events_through = self.ordered_player_event_reacquisition_required.then(|| {
             let dropped_events_through =
                 PlayerEventSequence::new(self.next_ordered_player_event_sequence - 1);
+            let interrupted_command_progress = self.authoritative_reacquisition_command_progress();
             let authoritative_local_file = self
                 .pending_local_file_update
                 .clone()
@@ -1036,7 +1037,11 @@ impl PlayerAdapter for MpvAdapter {
             self.pending_local_file_generation = None;
             self.pending_local_file_observed_at = None;
             self.pending_playback_telemetry_update = None;
-            self.queue_authoritative_ordered_player_snapshot(authoritative_local_file);
+            self.queue_authoritative_ordered_player_snapshot(
+                authoritative_local_file,
+                interrupted_command_progress,
+            );
+            self.rejected_delivered_ordered_command_progress.clear();
             dropped_events_through
         });
         self.ordered_player_event_reacquisition_required = false;
@@ -1064,6 +1069,13 @@ impl PlayerAdapter for MpvAdapter {
                 }
             }
         }
+        self.last_delivered_ordered_command_progress = ordered_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                PlayerOrderedEventKind::CommandProgress(progress) => Some(*progress),
+                _ => None,
+            })
+            .collect();
 
         self.pending_command_progress_updates.clear();
         self.pending_transport_telemetry_updates.clear();
@@ -1080,6 +1092,12 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn request_ordered_event_reacquisition(&mut self) {
+        self.rejected_delivered_ordered_command_progress = self
+            .last_delivered_ordered_command_progress
+            .iter()
+            .copied()
+            .filter(|progress| progress.is_terminal())
+            .collect();
         self.ordered_player_event_reacquisition_required = true;
     }
 
@@ -1101,6 +1119,7 @@ impl PlayerAdapter for MpvAdapter {
 #[cfg(test)]
 mod nonblocking_maintenance_tests {
     use super::*;
+    use sorotte_player_api::PlayerCommandProgressState;
     use std::{
         collections::VecDeque,
         io,
@@ -1242,7 +1261,14 @@ mod nonblocking_maintenance_tests {
                 .map(|event| event.sequence.get()),
             Some(dropped_events_through.get() + 1)
         );
-        assert_eq!(batch.ordered_events.len(), 2);
+        assert_eq!(batch.ordered_events.len(), 3);
+        assert!(batch.ordered_events.windows(2).all(|events| {
+            events[0]
+                .sequence
+                .get()
+                .checked_add(1)
+                .is_some_and(|expected| events[1].sequence.get() == expected)
+        }));
         assert!(matches!(
             &batch.ordered_events[0].kind,
             PlayerOrderedEventKind::LocalFile(observation)
@@ -1255,18 +1281,63 @@ mod nonblocking_maintenance_tests {
                     && update.phase == Some(PlayerTransportPhase::Playing)
                     && update.position_seconds == Some(32.0)
                     && update.eof_reached == Some(false)
+                    && update.seekable_ranges == Some(Vec::new())
+        ));
+        assert!(matches!(
+            &batch.ordered_events[2].kind,
+            PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.command_id == PlayerCommandId::new(11)
+                    && progress.state
+                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
+                            PlayerCommandFailureKind::Unknown
+                        ))
         ));
         assert!(batch.ordered_events.iter().all(|event| {
             !matches!(
                 &event.kind,
-                PlayerOrderedEventKind::CommandProgress(_)
-                    | PlayerOrderedEventKind::Transport(PlayerTransportTelemetryUpdate {
-                        phase: Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed),
-                        ..
-                    })
+                PlayerOrderedEventKind::Transport(PlayerTransportTelemetryUpdate {
+                    phase: Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed),
+                    ..
+                })
             )
         }));
         assert_eq!(batch.legacy_playback_telemetry, None);
+    }
+
+    #[test]
+    fn ordered_event_reacquisition_replays_the_latest_empty_seekable_range_snapshot() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(4);
+        adapter.active_media_generation = Some(generation);
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter.observed_state.path = Some("current.mkv".to_owned());
+        adapter.cache_state_telemetry_update(&json!({
+            "seekable-ranges": [{ "start": 10.0, "end": 20.0 }],
+        }));
+        adapter.cache_state_telemetry_update(&json!({
+            "seekable-ranges": [],
+        }));
+        for position in 0..=MAX_PENDING_ORDERED_PLAYER_EVENTS {
+            adapter.queue_transport_telemetry_update(
+                adapter
+                    .transport_update_for(generation)
+                    .with_position_seconds(position as f64),
+            );
+        }
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+
+        assert!(batch.dropped_events_through.is_some());
+        assert!(batch.ordered_events.iter().any(|event| matches!(
+            &event.kind,
+            PlayerOrderedEventKind::Transport(update)
+                if update.media_generation == Some(generation)
+                    && update.seekable_ranges == Some(Vec::new())
+                    && update.known_live_seekable_window.is_none()
+        )));
     }
 
     #[test]
