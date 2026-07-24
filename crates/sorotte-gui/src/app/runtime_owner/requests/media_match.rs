@@ -1646,20 +1646,31 @@ impl GuiPersistedConfigRuntimeOwner {
                                 );
                                 break;
                             }
-                            let cleanup_warning =
-                                match self.commit_media_match_background_index_backup() {
-                                    Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }) => {
-                                        cleanup_warning
-                                    }
-                                    Err(MediaIndexCommitError::NotActivated(error)) => {
-                                        self.publish_media_match_activation_failure(
+                            let cleanup_warning = match self
+                                .commit_media_match_background_index_backup()
+                            {
+                                Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }) => {
+                                    cleanup_warning
+                                }
+                                Err(MediaIndexCommitError::NotActivated(error)) => {
+                                    self.publish_media_match_activation_failure(
+                                        handle,
+                                        projected_state,
+                                        error,
+                                    );
+                                    break;
+                                }
+                                Err(MediaIndexCommitError::StaleBase(error)) => {
+                                    self.publish_media_match_activation_failure(
                                             handle,
                                             projected_state,
-                                            error,
+                                            format!(
+                                                "{error}. The media index changed concurrently; retry the scan."
+                                            ),
                                         );
-                                        break;
-                                    }
-                                };
+                                    break;
+                                }
+                            };
                             let background_status = if result.current_decision.as_deref()
                                 == Some("unknown: no resolved current local file")
                             {

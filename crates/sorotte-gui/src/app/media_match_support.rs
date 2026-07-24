@@ -445,6 +445,12 @@ impl GuiMediaMatchIndexBuildTransaction {
                     None => error,
                 }))
             }
+            (Err(MediaIndexCommitError::StaleBase(error)), cleanup) => {
+                Err(MediaIndexCommitError::StaleBase(match cleanup {
+                    Some(cleanup) => format!("{error}; {cleanup}"),
+                    None => error,
+                }))
+            }
         }
     }
 

@@ -721,11 +721,11 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
             )
     }));
     if reason == "error" {
-        let b_failure = adapter
-            .take_media_load_observation()
-            .expect("B's physical failure should retain its own media-load result");
-        assert_eq!(b_failure.media_generation, Some(generation_b));
-        assert!(b_failure.outcome.failure.is_some());
+        assert_eq!(
+            adapter.take_media_load_observation(),
+            None,
+            "a superseded physical episode must not publish a logical-generation load failure"
+        );
     }
 
     let lifecycle_request_id = next_request_id(&state);
@@ -824,18 +824,51 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
         "the missing playlist result and unknown start-file ID require adapter reconciliation"
     );
 
-    // One consumer delivery is allowed to rebuild its ordered snapshot, but two failed
-    // authoritative maintenance attempts keep the adapter-level ownership condition armed.
+    // One failed authoritative maintenance attempt keeps adapter ownership unresolved. The
+    // consumer may invoke several getters, but the adapter issues at most one query group per
+    // maintenance cycle and backs off before retrying.
+    let playlist_query_count = |state: &FakeTransportStateHandle| {
+        state
+            .writes()
+            .iter()
+            .filter(|write| {
+                serde_json::from_str::<Value>(write)
+                    .ok()
+                    .and_then(|value| value.get("command").cloned())
+                    .and_then(|command| command.as_array().cloned())
+                    .is_some_and(|command| {
+                        command.first().and_then(Value::as_str) == Some("get_property")
+                            && command.get(1).and_then(Value::as_str) == Some("playlist")
+                    })
+            })
+            .count()
+    };
     state.queue_playlist_query_error();
-    state.queue_playlist_query_error();
+    let queries_before_failed_snapshot = playlist_query_count(&state);
     let _ = adapter
         .take_ordered_event_batch()
         .expect("consumer batch should remain available during ownership ambiguity");
+    let queries_after_failed_snapshot = playlist_query_count(&state);
+    assert_eq!(
+        queries_after_failed_snapshot,
+        queries_before_failed_snapshot + 1,
+        "one maintenance cycle should issue at most one playlist query"
+    );
+    let _ = adapter.take_transport_telemetry_update();
+    let _ = adapter.take_cache_telemetry_update();
+    let _ = adapter.take_local_file_update();
+    let _ = adapter.take_media_load_outcome();
+    assert_eq!(
+        playlist_query_count(&state),
+        queries_after_failed_snapshot,
+        "subsequent getters must honor reacquisition backoff instead of flooding mpv"
+    );
     assert!(
         adapter.load_lifecycle_reacquisition_required_for_test(),
         "consumer event replay must not clear unresolved physical load ownership"
     );
 
+    adapter.force_load_lifecycle_reacquisition_due_for_test();
     adapter.maintain_runtime_integrations();
     assert!(
         !adapter.load_lifecycle_reacquisition_required_for_test(),
@@ -843,8 +876,8 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
         state.writes()
     );
     assert!(
-        !adapter.has_load_transition_for_test(generation_b),
-        "the conclusively absent B transition must not remain accepted indefinitely; pending: {:?}",
+        adapter.has_load_transition_for_test(generation_b),
+        "one snapshot must not retire B before its terminal event or accepted-attempt timeout; pending: {:?}",
         adapter.pending_load_transition_generations_for_test()
     );
     assert!(

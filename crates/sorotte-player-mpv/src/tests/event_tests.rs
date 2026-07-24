@@ -886,16 +886,11 @@ fn stale_end_file_keeps_the_new_generation_loading() {
         replacement_loading.phase,
         Some(PlayerTransportPhase::Loading)
     );
-    let stale_end = adapter
-        .take_transport_telemetry_update()
-        .expect("old end-file should remain available with its original generation");
     assert_eq!(
-        stale_end
-            .media_generation
-            .map(|generation| generation.get()),
-        Some(1)
+        adapter.take_transport_telemetry_update(),
+        None,
+        "the superseded physical episode must not publish Ended for its logical generation"
     );
-    assert_eq!(stale_end.phase, Some(PlayerTransportPhase::Ended));
 }
 
 #[test]

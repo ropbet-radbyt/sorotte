@@ -194,8 +194,9 @@ fn early_tracked_load_failure_survives_reacquisition_without_an_active_generatio
         },
     );
     adapter.accept_tracked_command(command_id);
-    adapter.insert_load_transition(generation, "https://media.invalid/fail".to_owned());
-    adapter.mark_load_transition_accepted(generation);
+    let attempt_id =
+        adapter.insert_load_transition(generation, "https://media.invalid/fail".to_owned());
+    adapter.mark_load_transition_accepted(attempt_id);
 
     adapter.handle_end_file_event(&serde_json::json!({
         "reason": "error",

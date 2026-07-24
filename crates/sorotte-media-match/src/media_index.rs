@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -11,6 +11,7 @@ use std::os::windows::ffi::OsStrExt;
 
 use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchCache,
@@ -27,8 +28,10 @@ use crate::{
 };
 
 const MEDIA_INDEX_MANIFEST_FILE: &str = "current.json";
+const MEDIA_INDEX_ALTERNATE_MANIFEST_FILE: &str = "current-b.json";
+const MEDIA_INDEX_ACTIVATION_LOCK_FILE: &str = ".media-index-activation.lock";
 const MEDIA_INDEX_GENERATIONS_DIR: &str = "generations";
-const MEDIA_INDEX_MANIFEST_VERSION: u32 = 2;
+const MEDIA_INDEX_MANIFEST_VERSION: u32 = 3;
 const MEDIA_INDEX_BUILD_PREFIX: &str = ".media-match-build-";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +42,7 @@ pub enum MediaIndexCommitOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaIndexCommitError {
     NotActivated(String),
+    StaleBase(String),
 }
 
 #[cfg(test)]
@@ -56,23 +60,58 @@ impl std::fmt::Display for MediaIndexCommitError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotActivated(message) => formatter.write_str(message),
+            Self::StaleBase(message) => formatter.write_str(message),
         }
     }
 }
 
 impl std::error::Error for MediaIndexCommitError {}
 
+impl From<String> for MediaIndexCommitError {
+    fn from(message: String) -> Self {
+        Self::NotActivated(message)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct MediaIndexManifest {
     version: u32,
+    epoch: u64,
     current: String,
     previous: Option<String>,
+    checksum: String,
 }
 
 #[derive(Debug)]
 enum ResolvedMediaIndexRoot {
     ExistingGeneration(PathBuf),
     LegacyOrNew(PathBuf),
+}
+
+#[derive(Debug)]
+struct ResolvedMediaIndex {
+    root: ResolvedMediaIndexRoot,
+    epoch: u64,
+    current_generation: Option<String>,
+}
+
+#[derive(Debug)]
+enum ManifestRead {
+    Missing,
+    Valid(MediaIndexManifest),
+    Legacy(MediaIndexManifest),
+    CorruptKnownFormat(String),
+    UnsupportedVersion(u32),
+}
+
+struct MediaIndexActivationLock {
+    file: File,
+}
+
+impl Drop for MediaIndexActivationLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// Filesystem metadata used to update one row of the media inventory.
@@ -127,7 +166,7 @@ impl MediaIndexService {
 
     pub fn index_path(&self) -> PathBuf {
         let active_root = resolve_media_index_root(&self.root)
-            .map(|resolved| match resolved {
+            .map(|resolved| match resolved.root {
                 ResolvedMediaIndexRoot::ExistingGeneration(root)
                 | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
             })
@@ -137,7 +176,7 @@ impl MediaIndexService {
 
     pub fn open(&self) -> Result<MediaIndexSession, String> {
         cleanup_abandoned_media_index_builds(&self.root);
-        match resolve_media_index_root(&self.root)? {
+        match resolve_media_index_root(&self.root)?.root {
             ResolvedMediaIndexRoot::ExistingGeneration(active_root) => {
                 open_existing_media_match_v3_index(&active_root).map(|connection| {
                     MediaIndexSession {
@@ -162,7 +201,8 @@ pub struct MediaIndexBuildTransaction {
     live_root: PathBuf,
     staging_root: PathBuf,
     had_live_index: bool,
-    previous_generation: Option<String>,
+    base_epoch: u64,
+    base_generation: Option<String>,
     finished: bool,
     manifest_replaced: bool,
     manifest_durable: bool,
@@ -192,22 +232,12 @@ impl MediaIndexBuildTransaction {
             )
         })?;
 
-        let (active_root, previous_generation) = match resolve_media_index_root(&live_root)? {
-            ResolvedMediaIndexRoot::ExistingGeneration(root) => {
-                let generation = root
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| valid_generation_name(name))
-                    .ok_or_else(|| {
-                        format!(
-                            "resolved media-match generation '{}' has no valid generation name",
-                            root.display()
-                        )
-                    })?
-                    .to_owned();
-                (root, Some(generation))
-            }
-            ResolvedMediaIndexRoot::LegacyOrNew(root) => (root, None),
+        let resolved = resolve_media_index_root(&live_root)?;
+        let base_epoch = resolved.epoch;
+        let base_generation = resolved.current_generation;
+        let active_root = match resolved.root {
+            ResolvedMediaIndexRoot::ExistingGeneration(root)
+            | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
         };
         let live_path = media_match_v3_index_path(&active_root);
         let had_live_index = live_path.exists();
@@ -221,7 +251,8 @@ impl MediaIndexBuildTransaction {
             live_root,
             staging_root,
             had_live_index,
-            previous_generation,
+            base_epoch,
+            base_generation,
             finished: false,
             manifest_replaced: false,
             manifest_durable: false,
@@ -255,12 +286,20 @@ impl MediaIndexBuildTransaction {
 
     pub fn commit(mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
         self.commit_inner()
-            .map_err(MediaIndexCommitError::NotActivated)
     }
 
-    fn commit_inner(&mut self) -> Result<MediaIndexCommitOutcome, String> {
+    fn commit_inner(&mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
         let staging_path = media_match_v3_index_path(&self.staging_root);
         validate_media_index_database(&staging_path)?;
+        let _activation_lock = acquire_media_index_activation_lock(&self.live_root)?;
+        let resolved = resolve_media_index_root_locked(&self.live_root)?;
+        if resolved.epoch != self.base_epoch || resolved.current_generation != self.base_generation
+        {
+            return Err(MediaIndexCommitError::StaleBase(format!(
+                "media-match index changed while this rebuild was staging (base epoch {}, current epoch {}); retry the rebuild against the latest index",
+                self.base_epoch, resolved.epoch
+            )));
+        }
 
         let unique = media_index_transaction_unique();
         let generation = format!("generation-{unique}");
@@ -296,12 +335,19 @@ impl MediaIndexBuildTransaction {
                 )
             })?;
         sync_directory(&generation_root)?;
-        let previous = self.previous_generation.clone();
+        let previous = self.base_generation.clone();
+        let next_epoch = self.base_epoch.checked_add(1).ok_or_else(|| {
+            MediaIndexCommitError::NotActivated(
+                "media-match activation epoch is exhausted; the index cannot be safely replaced"
+                    .to_owned(),
+            )
+        })?;
         #[cfg(test)]
         self.inject_test_failure(MediaIndexCommitFailurePoint::DuringManifestReplacement)?;
         #[cfg(test)]
         let manifest_write = write_media_index_manifest_with_post_replace_check(
             &self.live_root,
+            next_epoch,
             &generation,
             previous.as_deref(),
             || {
@@ -311,8 +357,12 @@ impl MediaIndexBuildTransaction {
             },
         )?;
         #[cfg(not(test))]
-        let manifest_write =
-            write_media_index_manifest(&self.live_root, &generation, previous.as_deref())?;
+        let manifest_write = write_media_index_manifest(
+            &self.live_root,
+            next_epoch,
+            &generation,
+            previous.as_deref(),
+        )?;
         self.manifest_replaced = true;
         self.manifest_durable = manifest_write.durable;
         self.created_generation_root = None;
@@ -331,11 +381,17 @@ impl MediaIndexBuildTransaction {
             cleanup_warnings.push(error);
         }
         if self.manifest_durable
-            && let Err(error) = collect_old_media_index_generations(
-                &self.live_root,
-                &generation,
-                previous.as_deref(),
-            )
+            && let Err(error) =
+                read_best_media_index_manifest(&self.live_root).and_then(|manifest| {
+                    let manifest = manifest.ok_or_else(|| {
+                        "media-match activation manifest disappeared before collection".to_owned()
+                    })?;
+                    collect_old_media_index_generations(
+                        &self.live_root,
+                        &manifest.current,
+                        manifest.previous.as_deref(),
+                    )
+                })
         {
             cleanup_warnings.push(error);
         }
@@ -700,45 +756,107 @@ fn inventory_count(connection: &Connection) -> Result<usize, String> {
         .map_err(|error| format!("failed reading media-match inventory count: {error}"))
 }
 
-fn resolve_media_index_root(root: &Path) -> Result<ResolvedMediaIndexRoot, String> {
-    let manifest_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
-    let manifest_present = manifest_path.exists();
-    let manifest = read_media_index_manifest(root).ok().flatten();
-    let generation_names = media_index_generation_names(root);
-    let mut candidates = Vec::new();
-    if let Some(manifest) = manifest.as_ref() {
-        candidates.push(manifest.current.clone());
-        if let Some(previous) = manifest.previous.as_ref() {
-            candidates.push(previous.clone());
+fn acquire_media_index_activation_lock(root: &Path) -> Result<MediaIndexActivationLock, String> {
+    fs::create_dir_all(root).map_err(|error| {
+        format!(
+            "failed creating media-match index root '{}' for activation locking: {error}",
+            root.display()
+        )
+    })?;
+    let path = root.join(MEDIA_INDEX_ACTIVATION_LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "failed opening media-match activation lock '{}': {error}",
+                path.display()
+            )
+        })?;
+    file.lock().map_err(|error| {
+        format!(
+            "failed acquiring media-match activation lock '{}': {error}",
+            path.display()
+        )
+    })?;
+    Ok(MediaIndexActivationLock { file })
+}
+
+fn resolve_media_index_root(root: &Path) -> Result<ResolvedMediaIndex, String> {
+    let _activation_lock = acquire_media_index_activation_lock(root)?;
+    resolve_media_index_root_locked(root)
+}
+
+fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, String> {
+    let manifest = read_best_media_index_manifest(root)?;
+    if let Some(mut manifest) = manifest {
+        if manifest.version != MEDIA_INDEX_MANIFEST_VERSION {
+            manifest.version = MEDIA_INDEX_MANIFEST_VERSION;
+            manifest.epoch = manifest.epoch.max(1);
+            manifest.checksum = manifest_checksum(
+                manifest.version,
+                manifest.epoch,
+                &manifest.current,
+                manifest.previous.as_deref(),
+            );
+            write_media_index_manifest(
+                root,
+                manifest.epoch,
+                &manifest.current,
+                manifest.previous.as_deref(),
+            )?;
+        } else if media_index_manifest_slots_need_repair(root, &manifest) {
+            write_media_index_manifest(
+                root,
+                manifest.epoch,
+                &manifest.current,
+                manifest.previous.as_deref(),
+            )?;
         }
-    }
-    for generation in &generation_names {
-        if !candidates.contains(generation) {
-            candidates.push(generation.clone());
+        let current_path = root
+            .join(MEDIA_INDEX_GENERATIONS_DIR)
+            .join(&manifest.current);
+        if validate_media_index_database(&media_match_v3_index_path(&current_path)).is_ok() {
+            let _ = collect_old_media_index_generations(
+                root,
+                &manifest.current,
+                manifest.previous.as_deref(),
+            );
+            return Ok(ResolvedMediaIndex {
+                root: ResolvedMediaIndexRoot::ExistingGeneration(current_path),
+                epoch: manifest.epoch,
+                current_generation: Some(manifest.current),
+            });
         }
-    }
-    let valid_candidates = candidates
-        .into_iter()
-        .filter(|generation| {
-            validate_media_index_database(&media_match_v3_index_path(
-                &root.join(MEDIA_INDEX_GENERATIONS_DIR).join(generation),
-            ))
-            .is_ok()
-        })
-        .collect::<Vec<_>>();
-    if let Some(current) = valid_candidates.first() {
-        let previous = valid_candidates.get(1).map(String::as_str);
-        let manifest_matches = manifest.as_ref().is_some_and(|manifest| {
-            manifest.version == MEDIA_INDEX_MANIFEST_VERSION
-                && manifest.current == *current
-                && manifest.previous.as_deref() == previous
-        });
-        if !manifest_matches {
-            write_media_index_manifest(root, current, previous)?;
+        if let Some(previous) = manifest.previous.as_deref() {
+            let previous_path = root.join(MEDIA_INDEX_GENERATIONS_DIR).join(previous);
+            if validate_media_index_database(&media_match_v3_index_path(&previous_path)).is_ok() {
+                let recovery_epoch = manifest.epoch.checked_add(1).ok_or_else(|| {
+                    "media-match activation epoch is exhausted during rollback recovery".to_owned()
+                })?;
+                write_media_index_manifest(root, recovery_epoch, previous, None)?;
+                let _ = collect_old_media_index_generations(root, previous, None);
+                return Ok(ResolvedMediaIndex {
+                    root: ResolvedMediaIndexRoot::ExistingGeneration(previous_path),
+                    epoch: recovery_epoch,
+                    current_generation: Some(previous.to_owned()),
+                });
+            }
         }
-        let _ = collect_old_media_index_generations(root, current, previous);
-        return Ok(ResolvedMediaIndexRoot::ExistingGeneration(
-            root.join(MEDIA_INDEX_GENERATIONS_DIR).join(current),
+        let legacy_path = media_match_v3_index_path(root);
+        if legacy_path.exists() && validate_media_index_database(&legacy_path).is_ok() {
+            return Ok(ResolvedMediaIndex {
+                root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+                epoch: manifest.epoch,
+                current_generation: None,
+            });
+        }
+        return Err(format!(
+            "media-match manifests under '{}' reference no valid activated index",
+            root.display()
         ));
     }
 
@@ -749,15 +867,23 @@ fn resolve_media_index_root(root: &Path) -> Result<ResolvedMediaIndexRoot, Strin
                 "media-match generation recovery failed and the legacy index is invalid: {error}"
             )
         })?;
-        return Ok(ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()));
+        return Ok(ResolvedMediaIndex {
+            root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+            epoch: 0,
+            current_generation: None,
+        });
     }
-    if manifest_present || !generation_names.is_empty() {
+    if !media_index_generation_names(root).is_empty() {
         return Err(format!(
-            "media-match manifest or generation data exists under '{}', but no valid activated index can be recovered",
+            "media-match generation data exists under '{}', but neither checksummed activation manifest is recoverable",
             root.display()
         ));
     }
-    Ok(ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()))
+    Ok(ResolvedMediaIndex {
+        root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+        epoch: 0,
+        current_generation: None,
+    })
 }
 
 fn valid_generation_name(generation: &str) -> bool {
@@ -767,61 +893,97 @@ fn valid_generation_name(generation: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn read_media_index_manifest(root: &Path) -> Result<Option<MediaIndexManifest>, String> {
-    let path = root.join(MEDIA_INDEX_MANIFEST_FILE);
+fn manifest_checksum(version: u32, epoch: u64, current: &str, previous: Option<&str>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(version.to_le_bytes());
+    hasher.update(epoch.to_le_bytes());
+    hasher.update((current.len() as u64).to_le_bytes());
+    hasher.update(current.as_bytes());
+    let previous = previous.unwrap_or_default();
+    hasher.update((previous.len() as u64).to_le_bytes());
+    hasher.update(previous.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn read_media_index_manifest_slot(path: &Path) -> ManifestRead {
     if !path.is_file() {
-        return Ok(None);
+        return ManifestRead::Missing;
     }
-    let contents = fs::read(&path).map_err(|error| {
-        format!(
-            "failed reading media-match manifest '{}': {error}",
-            path.display()
-        )
-    })?;
-    let value = serde_json::from_slice::<serde_json::Value>(&contents).map_err(|error| {
-        format!(
-            "failed parsing media-match manifest '{}': {error}",
-            path.display()
-        )
-    })?;
-    let version = value
+    let contents = match fs::read(path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            return ManifestRead::CorruptKnownFormat(format!(
+                "failed reading media-match manifest '{}': {error}",
+                path.display()
+            ));
+        }
+    };
+    let value = match serde_json::from_slice::<serde_json::Value>(&contents) {
+        Ok(value) => value,
+        Err(error) => {
+            return ManifestRead::CorruptKnownFormat(format!(
+                "failed parsing media-match manifest '{}': {error}",
+                path.display()
+            ));
+        }
+    };
+    let Some(version) = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .and_then(|version| u32::try_from(version).ok())
-        .ok_or_else(|| {
-            format!(
-                "media-match manifest '{}' has no supported version",
-                path.display()
-            )
-        })?;
-    let manifest = if version == MEDIA_INDEX_MANIFEST_VERSION {
-        serde_json::from_value::<MediaIndexManifest>(value).map_err(|error| {
-            format!(
-                "failed decoding media-match manifest '{}': {error}",
-                path.display()
-            )
-        })?
-    } else if version == 1 {
-        let current = value
-            .get("generation")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                format!(
-                    "legacy media-match manifest '{}' has no generation",
-                    path.display()
-                )
-            })?
-            .to_owned();
-        MediaIndexManifest {
-            version,
-            current,
-            previous: None,
-        }
-    } else {
-        return Err(format!(
-            "media-match manifest '{}' uses unsupported version {version}",
+    else {
+        return ManifestRead::CorruptKnownFormat(format!(
+            "media-match manifest '{}' has no supported version",
             path.display()
         ));
+    };
+    let manifest = if version == MEDIA_INDEX_MANIFEST_VERSION {
+        match serde_json::from_value::<MediaIndexManifest>(value) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return ManifestRead::CorruptKnownFormat(format!(
+                    "failed decoding media-match manifest '{}': {error}",
+                    path.display()
+                ));
+            }
+        }
+    } else if version == 1 {
+        let Some(current) = value.get("generation").and_then(serde_json::Value::as_str) else {
+            return ManifestRead::CorruptKnownFormat(format!(
+                "legacy media-match manifest '{}' has no generation",
+                path.display()
+            ));
+        };
+        MediaIndexManifest {
+            version,
+            epoch: 0,
+            current: current.to_owned(),
+            previous: None,
+            checksum: String::new(),
+        }
+    } else if version == 2 {
+        let Some(current) = value.get("current").and_then(serde_json::Value::as_str) else {
+            return ManifestRead::CorruptKnownFormat(format!(
+                "legacy media-match manifest '{}' has no current generation",
+                path.display()
+            ));
+        };
+        MediaIndexManifest {
+            version,
+            epoch: 0,
+            current: current.to_owned(),
+            previous: value
+                .get("previous")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            checksum: String::new(),
+        }
+    } else {
+        return ManifestRead::UnsupportedVersion(version);
     };
     if !valid_generation_name(&manifest.current)
         || manifest
@@ -829,12 +991,86 @@ fn read_media_index_manifest(root: &Path) -> Result<Option<MediaIndexManifest>, 
             .as_deref()
             .is_some_and(|previous| !valid_generation_name(previous))
     {
-        return Err(format!(
+        return ManifestRead::CorruptKnownFormat(format!(
             "media-match manifest '{}' contains an invalid generation name",
             path.display()
         ));
     }
-    Ok(Some(manifest))
+    if version == MEDIA_INDEX_MANIFEST_VERSION {
+        let expected = manifest_checksum(
+            manifest.version,
+            manifest.epoch,
+            &manifest.current,
+            manifest.previous.as_deref(),
+        );
+        if manifest.checksum != expected {
+            return ManifestRead::CorruptKnownFormat(format!(
+                "media-match manifest '{}' failed checksum validation",
+                path.display()
+            ));
+        }
+        ManifestRead::Valid(manifest)
+    } else {
+        ManifestRead::Legacy(manifest)
+    }
+}
+
+fn read_best_media_index_manifest(root: &Path) -> Result<Option<MediaIndexManifest>, String> {
+    let reads = [
+        read_media_index_manifest_slot(&root.join(MEDIA_INDEX_MANIFEST_FILE)),
+        read_media_index_manifest_slot(&root.join(MEDIA_INDEX_ALTERNATE_MANIFEST_FILE)),
+    ];
+    if let Some(version) = reads.iter().find_map(|read| match read {
+        ManifestRead::UnsupportedVersion(version) => Some(*version),
+        _ => None,
+    }) {
+        return Err(format!(
+            "media-match activation manifest uses unsupported version {version}; refusing to rewrite or collect generations"
+        ));
+    }
+    let mut valid = reads
+        .iter()
+        .filter_map(|read| match read {
+            ManifestRead::Valid(manifest) => Some(manifest.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    valid.sort_by_key(|manifest| manifest.epoch);
+    if let Some(manifest) = valid.pop() {
+        return Ok(Some(manifest));
+    }
+    if let Some(manifest) = reads.iter().find_map(|read| match read {
+        ManifestRead::Legacy(manifest) => Some(manifest.clone()),
+        _ => None,
+    }) {
+        return Ok(Some(manifest));
+    }
+    let errors = reads
+        .iter()
+        .filter_map(|read| match read {
+            ManifestRead::CorruptKnownFormat(error) => Some(error.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        return Err(format!(
+            "no recoverable media-match activation manifest remains: {}",
+            errors.join("; ")
+        ));
+    }
+    Ok(None)
+}
+
+fn media_index_manifest_slots_need_repair(root: &Path, selected: &MediaIndexManifest) -> bool {
+    [
+        root.join(MEDIA_INDEX_MANIFEST_FILE),
+        root.join(MEDIA_INDEX_ALTERNATE_MANIFEST_FILE),
+    ]
+    .iter()
+    .any(|path| match read_media_index_manifest_slot(path) {
+        ManifestRead::Valid(manifest) => manifest != *selected,
+        _ => true,
+    })
 }
 
 fn media_index_generation_names(root: &Path) -> Vec<String> {
@@ -853,16 +1089,11 @@ fn media_index_generation_names(root: &Path) -> Vec<String> {
             if !valid_generation_name(&name) {
                 return None;
             }
-            let modified = entry
-                .metadata()
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .unwrap_or(UNIX_EPOCH);
-            Some((modified, name))
+            Some(name)
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| right.cmp(left));
-    entries.into_iter().map(|(_, name)| name).collect()
+    entries.sort();
+    entries
 }
 
 fn cleanup_abandoned_media_index_builds(root: &Path) {
@@ -985,14 +1216,16 @@ struct MediaIndexManifestWriteOutcome {
 
 fn write_media_index_manifest(
     root: &Path,
+    epoch: u64,
     generation: &str,
     previous: Option<&str>,
 ) -> Result<MediaIndexManifestWriteOutcome, String> {
-    write_media_index_manifest_with_post_replace_check(root, generation, previous, || Ok(()))
+    write_media_index_manifest_with_post_replace_check(root, epoch, generation, previous, || Ok(()))
 }
 
 fn write_media_index_manifest_with_post_replace_check(
     root: &Path,
+    epoch: u64,
     generation: &str,
     previous: Option<&str>,
     post_replace_check: impl FnOnce() -> Result<(), String>,
@@ -1003,17 +1236,66 @@ fn write_media_index_manifest_with_post_replace_check(
             root.display()
         )
     })?;
-    let manifest_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
-    let temporary_path = root.join(format!(
-        "{MEDIA_INDEX_MANIFEST_FILE}.tmp-{}",
-        media_index_transaction_unique()
-    ));
+    let checksum = manifest_checksum(MEDIA_INDEX_MANIFEST_VERSION, epoch, generation, previous);
     let manifest = serde_json::to_vec(&MediaIndexManifest {
         version: MEDIA_INDEX_MANIFEST_VERSION,
+        epoch,
         current: generation.to_owned(),
         previous: previous.map(ToOwned::to_owned),
+        checksum,
     })
     .expect("media-index manifest serialization cannot fail");
+    for manifest_file in [
+        MEDIA_INDEX_MANIFEST_FILE,
+        MEDIA_INDEX_ALTERNATE_MANIFEST_FILE,
+    ] {
+        let path = root.join(manifest_file);
+        if path.is_dir() {
+            return Err(format!(
+                "media-match activation manifest '{}' is a directory",
+                path.display()
+            ));
+        }
+    }
+    // The alternate slot is the activation boundary. Updating the conventional primary slot
+    // afterwards keeps older readers and diagnostics useful without making recovery depend on it.
+    write_media_index_manifest_slot(root, MEDIA_INDEX_ALTERNATE_MANIFEST_FILE, &manifest)?;
+    let primary_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
+    let primary_warning =
+        write_media_index_manifest_slot(root, MEDIA_INDEX_MANIFEST_FILE, &manifest)
+            .err()
+            .map(|error| {
+                format!(
+                    "media-match generation activated through '{}', but primary manifest '{}' could not be refreshed: {error}",
+                    MEDIA_INDEX_ALTERNATE_MANIFEST_FILE,
+                    primary_path.display()
+                )
+            });
+    match post_replace_check().and_then(|()| sync_directory(root)) {
+        Ok(()) => Ok(MediaIndexManifestWriteOutcome {
+            durable: true,
+            warning: primary_warning,
+        }),
+        Err(error) => Ok(MediaIndexManifestWriteOutcome {
+            durable: false,
+            warning: Some(format!(
+                "media-match generation manifest slots under '{}' were replaced but directory durability could not be confirmed: {error}",
+                root.display()
+            )),
+        }),
+    }
+}
+
+fn write_media_index_manifest_slot(
+    root: &Path,
+    manifest_file: &str,
+    manifest: &[u8],
+) -> Result<(), String> {
+    let manifest_path = root.join(manifest_file);
+    let temporary_path = root.join(format!(
+        "{manifest_file}.tmp-{}",
+        media_index_transaction_unique()
+    ));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1024,7 +1306,7 @@ fn write_media_index_manifest_with_post_replace_check(
                 temporary_path.display()
             )
         })?;
-    file.write_all(&manifest)
+    file.write_all(manifest)
         .and_then(|()| file.sync_all())
         .map_err(|error| {
             format!(
@@ -1040,19 +1322,7 @@ fn write_media_index_manifest_with_post_replace_check(
             manifest_path.display()
         ));
     }
-    match post_replace_check().and_then(|()| sync_directory(root)) {
-        Ok(()) => Ok(MediaIndexManifestWriteOutcome {
-            durable: true,
-            warning: None,
-        }),
-        Err(error) => Ok(MediaIndexManifestWriteOutcome {
-            durable: false,
-            warning: Some(format!(
-                "media-match generation manifest '{}' was replaced but directory durability could not be confirmed: {error}",
-                manifest_path.display()
-            )),
-        }),
-    }
+    Ok(())
 }
 
 #[cfg(not(windows))]

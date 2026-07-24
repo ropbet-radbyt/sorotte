@@ -559,9 +559,9 @@ impl PlayerAdapter for MpvAdapter {
         match supersession {
             TrackedCommandSupersession::Load => {
                 debug_assert!(
-                    self.load_transitions
+                    self.load_attempts
                         .values()
-                        .any(|transition| transition.command_id == Some(command_id))
+                        .any(|attempt| attempt.command_id == Some(command_id))
                         || self
                             .unacknowledged_terminal_command_progress
                             .contains_key(&command_id),
@@ -592,7 +592,14 @@ impl PlayerAdapter for MpvAdapter {
         self.network_cache_stall = None;
         let generation = self.allocate_media_generation();
         let previous_phase = self.transport_phase;
-        self.insert_load_transition(generation, path.to_owned());
+        let (baseline_playlist_ids, baseline_current_entry) =
+            self.capture_authoritative_load_baseline();
+        let attempt_id = self.insert_load_attempt_with_baseline(
+            generation,
+            path.to_owned(),
+            baseline_playlist_ids,
+            baseline_current_entry,
+        );
         self.network_media_options_embedded_load = None;
         self.transport_phase = PlayerTransportPhase::Loading;
         let loading_update = self
@@ -622,10 +629,12 @@ impl PlayerAdapter for MpvAdapter {
             {
                 self.network_media_options_embedded_load = None;
             }
-            let replaced_generation = self
-                .load_transitions
-                .remove(&generation)
-                .and_then(|transition| transition.replaced_generation);
+            let replaced_generation = self.load_attempts.remove(&attempt_id).and_then(|attempt| {
+                attempt
+                    .replaced_attempt
+                    .and_then(|replaced| self.load_attempts.get(&replaced))
+                    .map(|replaced| replaced.logical_generation)
+            });
             if self.pending_load_generation().is_none() && self.active_media_generation.is_none() {
                 self.active_media_generation = replaced_generation;
             }
@@ -638,23 +647,23 @@ impl PlayerAdapter for MpvAdapter {
             return Err(error);
         }
 
-        self.mark_load_transition_accepted(generation);
+        self.mark_load_transition_accepted(attempt_id);
         let authoritative_playlist = self
             .ipc_client
             .as_mut()
             .and_then(|client| client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten());
-        let playlist_entry_id = authoritative_playlist
-            .as_ref()
-            .and_then(Self::authoritative_playlist_entry_id);
-        if let Some(playlist_entry_id) = playlist_entry_id {
-            self.bind_load_transition_playlist_entry(generation, playlist_entry_id);
-        } else {
+        let bound = authoritative_playlist.as_ref().is_some_and(|playlist| {
+            let entries = Self::authoritative_playlist_entries(playlist);
+            self.bind_load_attempt_from_authoritative_playlist(attempt_id, &entries)
+        });
+        if !bound {
             self.load_lifecycle_reacquisition_required = true;
+            self.load_lifecycle_next_reacquisition_at = None;
         }
         let tracked_load_command = self
-            .load_transitions
-            .get(&generation)
-            .and_then(|transition| transition.command_id);
+            .load_attempts
+            .get(&attempt_id)
+            .and_then(|attempt| attempt.command_id);
         if let Some(command_id) = tracked_load_command {
             // The loadfile response has been accepted and its authoritative playlist identity is
             // bound. Publish that acceptance before superseding B, but retire B before reducing
@@ -683,8 +692,9 @@ impl PlayerAdapter for MpvAdapter {
             }
         } else {
             self.active_media_generation = Some(generation);
-            if let Some(transition) = self.load_transitions.get_mut(&generation) {
-                transition.state = LoadTransitionState::Loaded;
+            self.active_load_attempt = Some(attempt_id);
+            if let Some(attempt) = self.load_attempts.get_mut(&attempt_id) {
+                attempt.state = LoadAttemptState::Loaded;
             }
             self.active_file_loaded = true;
             self.active_generation_has_restarted = !self.paused;

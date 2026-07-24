@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     AudioAnchor, MatchClassV3, MediaDurationCompatibility, MediaFileIdentity,
     MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexCommitError,
@@ -313,7 +315,9 @@ fn media_index_build_validation_failure_leaves_live_index_unchanged() {
     let error = transaction
         .commit()
         .expect_err("invalid staged database must not replace the live index");
-    let MediaIndexCommitError::NotActivated(error) = error;
+    let MediaIndexCommitError::NotActivated(error) = error else {
+        panic!("invalid staging should not be classified as a stale base")
+    };
     assert!(error.contains("validating") || error.contains("database"));
 
     let current = live_service
@@ -359,7 +363,9 @@ fn media_index_staging_with_invalid_schema_metadata_is_not_activated() {
     let error = transaction
         .commit()
         .expect_err("a database that activated open would reject must not receive the manifest");
-    let MediaIndexCommitError::NotActivated(error) = error;
+    let MediaIndexCommitError::NotActivated(error) = error else {
+        panic!("invalid schema should not be classified as a stale base")
+    };
     assert!(error.contains("schema version 0"));
     assert!(
         !live_root.join("current.json").exists(),
@@ -761,6 +767,21 @@ fn media_index_missing_or_corrupt_manifest_recovers_newest_valid_generation() {
             transaction.commit().expect("generation should activate");
         }
         let manifest_path = live_root.join("current.json");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&manifest_path).expect("manifest should be readable"),
+        )
+        .expect("manifest should be valid JSON");
+        let previous = manifest["previous"]
+            .as_str()
+            .expect("second activation should retain a previous generation");
+        std::fs::write(
+            live_root
+                .join("generations")
+                .join(previous)
+                .join("touched-after-activation"),
+            b"directory timestamps are not an activation authority",
+        )
+        .expect("previous generation should be touchable");
         if corrupt {
             std::fs::write(&manifest_path, b"{not-json").expect("manifest should be corruptible");
         } else {
@@ -781,13 +802,192 @@ fn media_index_missing_or_corrupt_manifest_recovers_newest_valid_generation() {
             &std::fs::read(&manifest_path).expect("manifest should be repaired"),
         )
         .expect("repaired manifest should be valid JSON");
-        assert_eq!(repaired["version"], 2);
+        assert_eq!(repaired["version"], 3);
         std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
     }
 }
 
 #[test]
-fn media_index_open_migrates_legacy_generation_manifest_to_bounded_v2() {
+fn media_index_manifest_replicas_repair_independently_and_fail_closed_together() {
+    for damaged_slot in ["current.json", "current-b.json"] {
+        let live_root = media_index_test_root(&format!("manifest-replica-repair-{damaged_slot}"));
+        let service = MediaIndexService::new(&live_root);
+        let initial = service.open().expect("initial index should open");
+        initial
+            .save_record(&record("replicated.mkv", 1), None)
+            .expect("record should save");
+        drop(initial);
+        let staging_root = media_index_test_root(&format!("manifest-replica-stage-{damaged_slot}"));
+        let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+            .expect("transaction should begin");
+        transaction.commit().expect("generation should activate");
+
+        std::fs::write(live_root.join(damaged_slot), b"{not-json")
+            .expect("one manifest replica should be corruptible");
+        drop(
+            service
+                .open()
+                .expect("the intact replica should preserve the active generation"),
+        );
+        for slot in ["current.json", "current-b.json"] {
+            let repaired: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(live_root.join(slot)).expect("replica should be repaired"),
+            )
+            .expect("repaired replica should be valid JSON");
+            assert_eq!(repaired["version"], 3);
+        }
+        std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+    }
+
+    let live_root = media_index_test_root("manifest-replicas-both-corrupt");
+    let service = MediaIndexService::new(&live_root);
+    drop(service.open().expect("initial index should open"));
+    let staging_root = media_index_test_root("manifest-replicas-both-corrupt-stage");
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("transaction should begin");
+    transaction.commit().expect("generation should activate");
+    let generations_before = std::fs::read_dir(live_root.join("generations"))
+        .expect("generations should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<BTreeSet<_>>();
+    for slot in ["current.json", "current-b.json"] {
+        std::fs::write(live_root.join(slot), b"{not-json")
+            .expect("manifest replica should be corruptible");
+    }
+
+    let error = match service.open() {
+        Ok(_) => panic!("two corrupt replicas must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("no recoverable media-match activation manifest"));
+    let generations_after = std::fs::read_dir(live_root.join("generations"))
+        .expect("generations should remain readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(generations_after, generations_before);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn concurrent_media_index_commits_allow_one_activation_and_reject_the_stale_base() {
+    let live_root = media_index_test_root("concurrent-activation-live");
+    let service = MediaIndexService::new(&live_root);
+    drop(service.open().expect("initial index should open"));
+
+    let staging_a = media_index_test_root("concurrent-activation-stage-a");
+    let staging_b = media_index_test_root("concurrent-activation-stage-b");
+    let transaction_a = MediaIndexBuildTransaction::begin(&live_root, &staging_a)
+        .expect("first transaction should begin");
+    let transaction_b = MediaIndexBuildTransaction::begin(&live_root, &staging_b)
+        .expect("second transaction should begin from the same base");
+    let staged_a = MediaIndexService::new(&staging_a)
+        .open()
+        .expect("first staged index should open");
+    staged_a
+        .save_record(&record("winner-a.mkv", 1), None)
+        .expect("first staged record should save");
+    drop(staged_a);
+    let staged_b = MediaIndexService::new(&staging_b)
+        .open()
+        .expect("second staged index should open");
+    staged_b
+        .save_record(&record("winner-b.mkv", 2), None)
+        .expect("second staged record should save");
+    drop(staged_b);
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let commit_a = {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            transaction_a.commit()
+        })
+    };
+    let commit_b = {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            transaction_b.commit()
+        })
+    };
+    barrier.wait();
+    let outcomes = [
+        commit_a.join().expect("first commit thread should finish"),
+        commit_b.join().expect("second commit thread should finish"),
+    ];
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Err(MediaIndexCommitError::StaleBase(_))))
+            .count(),
+        1
+    );
+
+    let current = service
+        .open()
+        .expect("the winning manifest must reference a valid generation");
+    let paths = current
+        .inventory_paths()
+        .expect("winning inventory should load");
+    assert_ne!(
+        paths.contains(&"winner-a.mkv".to_owned()),
+        paths.contains(&"winner-b.mkv".to_owned()),
+        "exactly one same-base transaction may become active"
+    );
+    drop(current);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn unsupported_future_media_index_manifest_fails_closed_without_rewrite_or_collection() {
+    let live_root = media_index_test_root("future-manifest-fail-closed");
+    let service = MediaIndexService::new(&live_root);
+    drop(service.open().expect("initial index should open"));
+    for index in 1..=2 {
+        let staging_root = media_index_test_root(&format!("future-manifest-stage-{index}"));
+        let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+            .expect("transaction should begin");
+        let staged = MediaIndexService::new(&staging_root)
+            .open()
+            .expect("staged index should open");
+        staged
+            .save_record(&record(&format!("episode-{index}.mkv"), index), None)
+            .expect("staged record should save");
+        drop(staged);
+        transaction.commit().expect("generation should activate");
+    }
+    let manifest_path = live_root.join("current.json");
+    let future_manifest = br#"{"version":4,"epoch":99,"current":"future-generation","previous":null,"checksum":"future"}"#;
+    std::fs::write(&manifest_path, future_manifest).expect("future manifest should be writable");
+    let generations_before = std::fs::read_dir(live_root.join("generations"))
+        .expect("generations should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<BTreeSet<_>>();
+
+    let error = match service.open() {
+        Ok(_) => panic!("unsupported future manifest must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("unsupported version 4"));
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("future manifest should remain"),
+        future_manifest
+    );
+    let generations_after = std::fs::read_dir(live_root.join("generations"))
+        .expect("generations should remain readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(generations_after, generations_before);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_open_migrates_legacy_generation_manifest_to_checksummed_v3_slots() {
     let live_root = media_index_test_root("legacy-manifest-migration");
     let staging_root = media_index_test_root("legacy-manifest-migration-stage");
     let service = MediaIndexService::new(&live_root);
@@ -825,7 +1025,7 @@ fn media_index_open_migrates_legacy_generation_manifest_to_bounded_v2() {
         &std::fs::read(&manifest_path).expect("migrated manifest should exist"),
     )
     .expect("migrated manifest should parse");
-    assert_eq!(migrated["version"].as_u64(), Some(2));
+    assert_eq!(migrated["version"].as_u64(), Some(3));
     assert_eq!(migrated["current"].as_str(), Some(generation));
     assert!(migrated.get("previous").is_some());
     std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
