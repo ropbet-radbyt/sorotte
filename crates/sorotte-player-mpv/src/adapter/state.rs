@@ -257,6 +257,7 @@ impl Default for MpvAdapter {
             pending_media_load_outcomes: VecDeque::new(),
             next_ordered_player_event_sequence: 1,
             pending_ordered_player_events: VecDeque::new(),
+            ordered_player_event_reacquisition_required: false,
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
             interrupted_network_stream_recovery: None,

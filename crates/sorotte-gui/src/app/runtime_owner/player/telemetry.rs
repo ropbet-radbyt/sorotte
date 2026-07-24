@@ -6,9 +6,9 @@ use crate::app::runtime_owner::{
     GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin,
 };
 use sorotte_player_api::{
-    PlayerCommandFailureKind, PlayerLocalFileObservation, PlayerMediaLoadObservation,
-    PlayerObservationTimestamp, PlayerOrderedEventKind, PlayerTransportPhase,
-    PlayerTransportTelemetryUpdate,
+    PlayerCommandFailureKind, PlayerEventSequence, PlayerLocalFileObservation,
+    PlayerMediaLoadObservation, PlayerObservationTimestamp, PlayerOrderedEventKind,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{
     MPV_SEEK_COMPLETION_TOLERANCE_SECONDS, MpvNetworkMediaPolicyOutcome,
@@ -37,6 +37,12 @@ enum GuiAttachedOrderedPlayerEvent {
     LocalFile(PlayerLocalFileObservation),
     MediaLoad(PlayerMediaLoadObservation),
     Transport(PlayerTransportTelemetryUpdate),
+}
+
+#[derive(Debug)]
+struct GuiAttachedSequencedPlayerEvent {
+    sequence: Option<PlayerEventSequence>,
+    kind: GuiAttachedOrderedPlayerEvent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +202,7 @@ impl GuiAttachedNativeSeekTracker {
     fn observe(
         &mut self,
         mut update: PlayerTransportTelemetryUpdate,
+        ordered_sequence_is_authoritative: bool,
     ) -> GuiAttachedTransportObservationDisposition {
         let Some(media_generation) = update.media_generation.map(|generation| generation.get())
         else {
@@ -214,18 +221,22 @@ impl GuiAttachedNativeSeekTracker {
         let observed_at_seconds = update
             .observed_at
             .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64());
-        if same_media_generation
+        let timestamp_regressed = same_media_generation
             && observed_at_seconds.is_some_and(|observed| {
                 !observed.is_finite()
                     || self
                         .last_observed_at_seconds
                         .is_some_and(|latest| observed < latest)
-            })
-        {
+            });
+        if timestamp_regressed && !ordered_sequence_is_authoritative {
             if update.position_seconds.is_some() {
                 self.disarm_untrusted_position_evidence();
             }
             return GuiAttachedTransportObservationDisposition::Rejected;
+        }
+        if timestamp_regressed && update.position_seconds.is_some() {
+            self.disarm_untrusted_position_evidence();
+            update.position_seconds = None;
         }
         if !same_media_generation {
             *self = Self {
@@ -235,7 +246,12 @@ impl GuiAttachedNativeSeekTracker {
         }
         if let Some(observed_at_seconds) = observed_at_seconds.filter(|seconds| seconds.is_finite())
         {
-            self.last_observed_at_seconds = Some(observed_at_seconds);
+            self.last_observed_at_seconds = Some(
+                self.last_observed_at_seconds
+                    .map_or(observed_at_seconds, |latest| {
+                        latest.max(observed_at_seconds)
+                    }),
+            );
         }
 
         let observation_is_fresh = update.observed_at.is_some_and(|timestamp| {
@@ -981,6 +997,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         media_generation: Option<PlayerMediaGeneration>,
         observed_at: Option<PlayerObservationTimestamp>,
+        sequence: Option<PlayerEventSequence>,
     ) -> Option<GuiAcceptedMediaObservation> {
         let previous_media_generation = self
             .attached_media_observation_cursor
@@ -1007,6 +1024,7 @@ impl GuiPersistedConfigRuntimeOwner {
             (left, right) => left.or(right),
         };
         if previous_media_generation == Some(media_generation)
+            && sequence.is_none()
             && observed_at_seconds.is_some_and(|observed| {
                 latest_observed_at_seconds.is_some_and(|latest| observed < latest)
             })
@@ -1016,14 +1034,24 @@ impl GuiPersistedConfigRuntimeOwner {
         let generation_advanced =
             previous_media_generation.is_none_or(|current| media_generation > current);
         if generation_advanced {
+            let last_ordered_event_sequence = self
+                .attached_media_observation_cursor
+                .last_ordered_event_sequence;
             self.attached_media_observation_cursor =
                 crate::app::runtime_owner::GuiAttachedMediaObservationCursor {
                     media_generation: Some(media_generation),
                     last_observed_at_seconds: observed_at_seconds,
+                    last_ordered_event_sequence,
                 };
         } else if let Some(observed_at_seconds) = observed_at_seconds {
             self.attached_media_observation_cursor
-                .last_observed_at_seconds = Some(observed_at_seconds);
+                .last_observed_at_seconds = Some(
+                self.attached_media_observation_cursor
+                    .last_observed_at_seconds
+                    .map_or(observed_at_seconds, |latest| {
+                        latest.max(observed_at_seconds)
+                    }),
+            );
         }
         if generation_advanced {
             self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker {
@@ -1045,16 +1073,43 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_transport_telemetry_authority = Default::default();
     }
 
+    fn reset_attached_ordered_player_inference_for_reacquisition(&mut self) {
+        let last_ordered_event_sequence = self
+            .attached_media_observation_cursor
+            .last_ordered_event_sequence;
+        let _ = self.interrupt_attached_playback_recovery_impl("ordered player event gap");
+        self.supersede_playlist_resolution_attempt();
+        self.reset_attached_media_boundary_state();
+        self.pending_attached_room_unpause_observation = None;
+        self.pending_attached_player_pause_confirmation_pump = None;
+        self.pending_attached_player_pause_command = None;
+        self.player_local_file = None;
+        self.player_local_file_placeholder = false;
+        self.player_position_seconds = None;
+        self.player_paused = None;
+        self.player_paused_for_cache = None;
+        self.player_cache_buffering_percent = None;
+        self.playlist_auto_advance_eof_latched = false;
+        self.attached_media_observation_cursor =
+            crate::app::runtime_owner::GuiAttachedMediaObservationCursor {
+                last_ordered_event_sequence,
+                ..Default::default()
+            };
+        self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
+    }
+
     fn process_attached_local_file_observation(
         &mut self,
         observation: PlayerLocalFileObservation,
+        sequence: Option<PlayerEventSequence>,
     ) -> Option<GuiMediaBoundary> {
         let PlayerLocalFileObservation {
             mut update,
             media_generation,
             observed_at,
         } = observation;
-        let accepted = self.accept_attached_media_observation(media_generation, observed_at)?;
+        let accepted =
+            self.accept_attached_media_observation(media_generation, observed_at, sequence)?;
         self.handle_untracked_playlist_local_file_observation(&update);
         let tracked_playlist_load_unconfirmed =
             self.tracked_playlist_resolution_load_matches_local_file(&update);
@@ -1112,22 +1167,28 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn process_attached_ordered_player_event(
         &mut self,
-        event: GuiAttachedOrderedPlayerEvent,
+        event: GuiAttachedSequencedPlayerEvent,
         user_offset_seconds: f64,
     ) -> Option<GuiMediaBoundary> {
-        match event {
+        let GuiAttachedSequencedPlayerEvent { sequence, kind } = event;
+        if let Some(sequence) = sequence {
+            self.attached_media_observation_cursor
+                .last_ordered_event_sequence = Some(sequence);
+        }
+        match kind {
             GuiAttachedOrderedPlayerEvent::CommandProgress(progress) => {
                 self.handle_playlist_resolution_command_progress(progress);
                 self.reconcile_attached_system_seek_command_progress(progress);
                 None
             }
             GuiAttachedOrderedPlayerEvent::LocalFile(observation) => {
-                self.process_attached_local_file_observation(observation)
+                self.process_attached_local_file_observation(observation, sequence)
             }
             GuiAttachedOrderedPlayerEvent::MediaLoad(observation) => {
                 let accepted = self.accept_attached_media_observation(
                     observation.media_generation,
                     observation.observed_at,
+                    sequence,
                 )?;
                 if accepted.generation_advanced {
                     self.reset_attached_media_boundary_state();
@@ -1141,12 +1202,36 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiAttachedOrderedPlayerEvent::Transport(update) => {
                 let player_position_seconds = update.position_seconds;
+                let Some(accepted) = self.accept_attached_media_observation(
+                    update.media_generation,
+                    update.observed_at,
+                    sequence,
+                ) else {
+                    if player_position_seconds.is_some() {
+                        self.attached_native_seek_tracker
+                            .disarm_untrusted_position_evidence();
+                    }
+                    return None;
+                };
+                let established_generation_advanced =
+                    accepted.generation_advanced && accepted.previous_media_generation.is_some();
+                if established_generation_advanced {
+                    self.reset_attached_media_boundary_state();
+                    self.player_local_file = None;
+                    self.player_local_file_placeholder = false;
+                    self.player_position_seconds = None;
+                    self.player_paused = None;
+                    self.player_paused_for_cache = None;
+                    self.player_cache_buffering_percent = None;
+                }
                 let update = transport_update_on_room_timeline(update, user_offset_seconds);
                 let previous_native_seek_tracker = self.attached_native_seek_tracker;
                 let GuiAttachedTransportObservationDisposition::Accepted {
                     update,
                     native_seek_classification,
-                } = self.attached_native_seek_tracker.observe(update)
+                } = self
+                    .attached_native_seek_tracker
+                    .observe(update, sequence.is_some())
                 else {
                     return None;
                 };
@@ -1221,7 +1306,10 @@ impl GuiPersistedConfigRuntimeOwner {
                         "transport observation",
                     );
                 }
-                None
+                established_generation_advanced.then_some(GuiMediaBoundary {
+                    previous_media_generation: accepted.previous_media_generation,
+                    unsequenced: false,
+                })
             }
         }
     }
@@ -1239,13 +1327,43 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut media_load_observations = VecDeque::new();
         let mut local_file_observations = VecDeque::new();
         let mut ordered_events = Vec::new();
+        let mut ordered_reacquisition_boundary = None;
+        let mut unannounced_ordered_sequence_gap = false;
         if let Some(mut batch) = player.take_ordered_event_batch() {
             batch.ordered_events.sort_by_key(|event| event.sequence);
-            ordered_events.extend(
-                batch
-                    .ordered_events
-                    .into_iter()
-                    .map(|event| match event.kind {
+            let previous_sequence = self
+                .attached_media_observation_cursor
+                .last_ordered_event_sequence;
+            let dropped_events_through = batch.dropped_events_through;
+            let marker_precedes_consumed_state = dropped_events_through
+                .zip(previous_sequence)
+                .is_some_and(|(dropped, consumed)| dropped < consumed);
+            let expected_predecessor = dropped_events_through.or(previous_sequence);
+            let first_event_is_contiguous = expected_predecessor
+                .zip(batch.ordered_events.first().map(|event| event.sequence))
+                .is_none_or(|(previous, first)| {
+                    previous
+                        .get()
+                        .checked_add(1)
+                        .is_some_and(|expected| first.get() == expected)
+                });
+            let batch_is_internally_contiguous = batch.ordered_events.windows(2).all(|events| {
+                events[0]
+                    .sequence
+                    .get()
+                    .checked_add(1)
+                    .is_some_and(|expected| events[1].sequence.get() == expected)
+            });
+            if marker_precedes_consumed_state
+                || !first_event_is_contiguous
+                || !batch_is_internally_contiguous
+            {
+                player.request_ordered_event_reacquisition();
+                unannounced_ordered_sequence_gap = true;
+            } else {
+                ordered_reacquisition_boundary = dropped_events_through;
+                ordered_events.extend(batch.ordered_events.into_iter().map(|event| {
+                    let kind = match event.kind {
                         PlayerOrderedEventKind::CommandProgress(progress) => {
                             GuiAttachedOrderedPlayerEvent::CommandProgress(progress)
                         }
@@ -1258,10 +1376,17 @@ impl GuiPersistedConfigRuntimeOwner {
                         PlayerOrderedEventKind::Transport(update) => {
                             GuiAttachedOrderedPlayerEvent::Transport(update)
                         }
-                    }),
-            );
-            if let Some(update) = batch.legacy_playback_telemetry {
-                playback_updates.push(update);
+                    };
+                    GuiAttachedSequencedPlayerEvent {
+                        sequence: Some(event.sequence),
+                        kind,
+                    }
+                }));
+                if dropped_events_through.is_none()
+                    && let Some(update) = batch.legacy_playback_telemetry
+                {
+                    playback_updates.push(update);
+                }
             }
         } else {
             while let Some(progress) = player.take_command_progress() {
@@ -1341,6 +1466,13 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return;
         }
+        if unannounced_ordered_sequence_gap {
+            self.reset_attached_ordered_player_inference_for_reacquisition();
+        } else if let Some(dropped_events_through) = ordered_reacquisition_boundary {
+            self.attached_media_observation_cursor
+                .last_ordered_event_sequence = Some(dropped_events_through);
+            self.reset_attached_ordered_player_inference_for_reacquisition();
+        }
         let now = Instant::now();
         if self
             .pending_attached_player_pause_command
@@ -1412,7 +1544,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 ),
                 _ => unreachable!("known ordered player event source"),
             };
-            ordered_events.push(event);
+            ordered_events.push(GuiAttachedSequencedPlayerEvent {
+                sequence: None,
+                kind: event,
+            });
         }
         let mut unsequenced_media_boundary = None;
         let mut media_boundary_observed = false;
@@ -1423,7 +1558,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     ..
                 }),
                 GuiAttachedOrderedPlayerEvent::Transport(update),
-            ) = (unsequenced_media_boundary, &event)
+            ) = (unsequenced_media_boundary, &event.kind)
             {
                 let proves_new_media_generation =
                     update.media_generation.is_some_and(|generation| {

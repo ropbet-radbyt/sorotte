@@ -299,6 +299,15 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
+    fn request_ordered_event_reacquisition(&mut self) {
+        match self {
+            Self::Test(player) => player.request_ordered_event_reacquisition(),
+            Self::Mpv(player) => player.request_ordered_event_reacquisition(),
+            #[cfg(test)]
+            Self::Custom(player) => player.request_ordered_event_reacquisition(),
+        }
+    }
+
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         match self {
             Self::Test(player) => player.take_playback_telemetry_update(),

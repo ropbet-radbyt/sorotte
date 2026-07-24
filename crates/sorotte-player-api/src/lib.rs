@@ -880,6 +880,12 @@ impl PlayerOrderedEvent {
 /// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerEventBatch {
+    /// Highest sequence discarded before the authoritative snapshot in `ordered_events`.
+    ///
+    /// When present, consumers must discard causal inference derived from earlier events. Events
+    /// in this batch begin at the following sequence and re-establish the adapter's current file
+    /// and transport state.
+    pub dropped_events_through: Option<PlayerEventSequence>,
     pub ordered_events: Vec<PlayerOrderedEvent>,
     pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
 }
@@ -1060,6 +1066,12 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
         None
     }
+    /// Requests a fresh authoritative ordered snapshot after the consumer detects an unannounced
+    /// sequence gap.
+    ///
+    /// Legacy adapters may ignore this request. Ordered adapters should make the next batch carry
+    /// `dropped_events_through` and current file/transport observations.
+    fn request_ordered_event_reacquisition(&mut self) {}
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
     }

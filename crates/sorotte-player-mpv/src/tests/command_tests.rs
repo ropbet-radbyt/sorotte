@@ -475,6 +475,7 @@ fn ordered_batch_includes_events_generated_by_final_local_file_poll() {
         r#"{"event":"property-change","name":"seeking","data":true}"#,
         r#"{"request_id":1,"error":"success"}"#,
         r#"{"request_id":2,"error":"success","data":"https://media.invalid/video"}"#,
+        r#"{"event":"property-change","name":"time-pos","data":41.5}"#,
         r#"{"request_id":3,"error":"success","data":null}"#,
         r#"{"request_id":4,"error":"success","data":null}"#,
     ]);
@@ -504,6 +505,65 @@ fn ordered_batch_includes_events_generated_by_final_local_file_poll() {
         event.kind,
         sorotte_player_api::PlayerOrderedEventKind::Transport(_)
     )));
+    let interleaved_transport = batch
+        .ordered_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.kind,
+                sorotte_player_api::PlayerOrderedEventKind::Transport(
+                    PlayerTransportTelemetryUpdate {
+                        position_seconds: Some(41.5),
+                        ..
+                    }
+                )
+            )
+        })
+        .expect("interleaved time-pos transport event");
+    let local_file = batch
+        .ordered_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.kind,
+                sorotte_player_api::PlayerOrderedEventKind::LocalFile(_)
+            )
+        })
+        .expect("derived local file event");
+    let media_load = batch
+        .ordered_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.kind,
+                sorotte_player_api::PlayerOrderedEventKind::MediaLoad(_)
+            )
+        })
+        .expect("derived media-load event");
+    assert!(interleaved_transport < local_file);
+    assert!(interleaved_transport < media_load);
+    let observed_at = |kind: &sorotte_player_api::PlayerOrderedEventKind| match kind {
+        sorotte_player_api::PlayerOrderedEventKind::CommandProgress(progress) => {
+            progress.observed_at
+        }
+        sorotte_player_api::PlayerOrderedEventKind::LocalFile(observation) => {
+            observation.observed_at
+        }
+        sorotte_player_api::PlayerOrderedEventKind::MediaLoad(observation) => {
+            observation.observed_at
+        }
+        sorotte_player_api::PlayerOrderedEventKind::Transport(update) => update.observed_at,
+    };
+    let transport_observed_at = observed_at(&batch.ordered_events[interleaved_transport].kind)
+        .expect("interleaved transport timestamp");
+    for derived_index in [local_file, media_load] {
+        assert!(
+            transport_observed_at
+                > observed_at(&batch.ordered_events[derived_index].kind)
+                    .expect("derived media timestamp"),
+            "later-sequenced derived media may retain the outer file-loaded timestamp"
+        );
+    }
     let command_progress: Vec<_> = batch
         .ordered_events
         .iter()

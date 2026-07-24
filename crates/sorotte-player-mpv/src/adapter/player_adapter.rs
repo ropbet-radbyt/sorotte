@@ -1015,6 +1015,31 @@ impl PlayerAdapter for MpvAdapter {
         }
         self.poll_ipc_local_file_update_if_attached();
 
+        let dropped_events_through = self.ordered_player_event_reacquisition_required.then(|| {
+            let dropped_events_through =
+                PlayerEventSequence::new(self.next_ordered_player_event_sequence - 1);
+            let authoritative_local_file = self
+                .pending_local_file_update
+                .clone()
+                .or_else(|| self.last_polled_local_file_update.clone())
+                .filter(|update| {
+                    self.active_file_loaded
+                        && self.observed_state.path.as_deref().is_some_and(|path| {
+                            Self::local_file_update_matches_request(update, path)
+                        })
+                });
+            self.pending_ordered_player_events.clear();
+            self.pending_command_progress_updates.clear();
+            self.pending_transport_telemetry_updates.clear();
+            self.pending_media_load_outcomes.clear();
+            self.pending_local_file_update = None;
+            self.pending_local_file_generation = None;
+            self.pending_local_file_observed_at = None;
+            self.pending_playback_telemetry_update = None;
+            self.queue_authoritative_ordered_player_snapshot(authoritative_local_file);
+            dropped_events_through
+        });
+        self.ordered_player_event_reacquisition_required = false;
         let delivery_reference = self.observation_clock_origin.elapsed();
         let mut ordered_events: Vec<_> = self.pending_ordered_player_events.drain(..).collect();
         for event in &mut ordered_events {
@@ -1048,9 +1073,14 @@ impl PlayerAdapter for MpvAdapter {
         self.pending_local_file_observed_at = None;
 
         Some(PlayerEventBatch {
+            dropped_events_through,
             ordered_events,
             legacy_playback_telemetry: self.pending_playback_telemetry_update.take(),
         })
+    }
+
+    fn request_ordered_event_reacquisition(&mut self) {
+        self.ordered_player_event_reacquisition_required = true;
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
@@ -1164,6 +1194,117 @@ mod nonblocking_maintenance_tests {
         assert!(adapter.pending_transport_telemetry_updates.is_empty());
         assert!(adapter.pending_media_load_outcomes.is_empty());
         assert!(adapter.pending_local_file_update.is_none());
+    }
+
+    #[test]
+    fn ordered_event_overflow_rebases_file_command_and_terminal_transport_to_snapshot() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(4);
+        adapter.active_media_generation = Some(generation);
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter.observed_state.path = Some("current.mkv".to_owned());
+        adapter.observed_state.position_seconds = Some(32.0);
+        adapter.observed_state.playback_rate = Some(1.0);
+        adapter.observed_state.logical_pause = Some(false);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.observed_state.eof_reached = Some(false);
+        adapter.queue_local_file_update(LocalFileUpdate::new("current.mkv"));
+        adapter.queue_command_progress(PlayerCommandProgress::finished(
+            PlayerCommandId::new(11),
+            Some(generation),
+            Some(adapter.observation_timestamp()),
+            Some(32.0),
+            PlayerCommandResult::Completed,
+        ));
+        let mut ended = adapter
+            .transport_update_for(generation)
+            .with_phase(PlayerTransportPhase::Ended);
+        ended.eof_reached = Some(true);
+        adapter.queue_transport_telemetry_update(ended);
+        for position in 0..MAX_PENDING_ORDERED_PLAYER_EVENTS {
+            let update = adapter
+                .transport_update_for(generation)
+                .with_position_seconds(position as f64);
+            adapter.queue_transport_telemetry_update(update);
+        }
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        let dropped_events_through = batch
+            .dropped_events_through
+            .expect("overflow must be explicit");
+        assert_eq!(
+            batch
+                .ordered_events
+                .first()
+                .map(|event| event.sequence.get()),
+            Some(dropped_events_through.get() + 1)
+        );
+        assert_eq!(batch.ordered_events.len(), 2);
+        assert!(matches!(
+            &batch.ordered_events[0].kind,
+            PlayerOrderedEventKind::LocalFile(observation)
+                if observation.update.name == "current.mkv"
+        ));
+        assert!(matches!(
+            &batch.ordered_events[1].kind,
+            PlayerOrderedEventKind::Transport(update)
+                if update.media_generation == Some(generation)
+                    && update.phase == Some(PlayerTransportPhase::Playing)
+                    && update.position_seconds == Some(32.0)
+                    && update.eof_reached == Some(false)
+        ));
+        assert!(batch.ordered_events.iter().all(|event| {
+            !matches!(
+                &event.kind,
+                PlayerOrderedEventKind::CommandProgress(_)
+                    | PlayerOrderedEventKind::Transport(PlayerTransportTelemetryUpdate {
+                        phase: Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed),
+                        ..
+                    })
+            )
+        }));
+        assert_eq!(batch.legacy_playback_telemetry, None);
+    }
+
+    #[test]
+    fn ordered_event_overflow_during_start_file_does_not_reacquire_previous_file_identity() {
+        let mut adapter = MpvAdapter::simulated();
+        let old_generation = PlayerMediaGeneration::new(4);
+        adapter.active_media_generation = Some(old_generation);
+        adapter.active_file_loaded = true;
+        adapter.current_path = Some("old.mkv".to_owned());
+        adapter.observed_state.path = Some("old.mkv".to_owned());
+        adapter.last_polled_local_file_update =
+            Some(LocalFileUpdate::new("old.mkv").with_path("old.mkv"));
+        adapter.handle_start_file_event(&json!({ "playlist_entry_id": 9 }));
+        let new_generation = adapter
+            .active_media_generation
+            .expect("start-file generation");
+        assert_ne!(new_generation, old_generation);
+        for _ in 0..MAX_PENDING_ORDERED_PLAYER_EVENTS {
+            let update = adapter.transport_update_for(new_generation);
+            adapter.queue_transport_telemetry_update(update);
+        }
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert!(batch.dropped_events_through.is_some());
+        assert!(
+            batch
+                .ordered_events
+                .iter()
+                .all(|event| !matches!(event.kind, PlayerOrderedEventKind::LocalFile(_)))
+        );
+        assert!(batch.ordered_events.iter().any(|event| matches!(
+            &event.kind,
+            PlayerOrderedEventKind::Transport(update)
+                if update.media_generation == Some(new_generation)
+                    && update.phase == Some(PlayerTransportPhase::Loading)
+        )));
     }
 
     impl RuntimeLeaseControlLaneTransport {

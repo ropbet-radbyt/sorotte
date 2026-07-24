@@ -38,7 +38,9 @@ use sorotte_client_app::app_boundary::{
     },
 };
 use sorotte_client_core::{CoordinatorCommandId, PlayerCommandCause};
-use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerTransportPhase};
+use sorotte_player_api::{
+    LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerEventSequence, PlayerTransportPhase,
+};
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
@@ -462,6 +464,7 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
 pub(super) struct GuiAttachedMediaObservationCursor {
     pub(super) media_generation: Option<u64>,
     pub(super) last_observed_at_seconds: Option<f64>,
+    pub(super) last_ordered_event_sequence: Option<PlayerEventSequence>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

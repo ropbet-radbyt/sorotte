@@ -675,6 +675,7 @@ pub struct MpvAdapter {
     pending_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     next_ordered_player_event_sequence: u64,
     pending_ordered_player_events: VecDeque<PlayerOrderedEvent>,
+    ordered_player_event_reacquisition_required: bool,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
@@ -2755,6 +2756,16 @@ impl MpvAdapter {
         self.pending_transport_telemetry_updates.retain(|update| {
             update.media_generation != Some(generation)
                 || (update.phase != Some(PlayerTransportPhase::Ended)
+                    && update.phase != Some(PlayerTransportPhase::Failed)
+                    && update.eof_reached != Some(true))
+        });
+        self.pending_ordered_player_events.retain(|event| {
+            let PlayerOrderedEventKind::Transport(update) = &event.kind else {
+                return true;
+            };
+            update.media_generation != Some(generation)
+                || (update.phase != Some(PlayerTransportPhase::Ended)
+                    && update.phase != Some(PlayerTransportPhase::Failed)
                     && update.eof_reached != Some(true))
         });
         self.pending_cache_telemetry_updates
@@ -2988,9 +2999,39 @@ impl MpvAdapter {
             .expect("mpv ordered player event sequence exhausted");
         if self.pending_ordered_player_events.len() >= MAX_PENDING_ORDERED_PLAYER_EVENTS {
             self.pending_ordered_player_events.pop_front();
+            self.ordered_player_event_reacquisition_required = true;
         }
         self.pending_ordered_player_events
             .push_back(PlayerOrderedEvent::new(sequence, kind));
+    }
+
+    fn queue_authoritative_ordered_player_snapshot(
+        &mut self,
+        authoritative_local_file: Option<LocalFileUpdate>,
+    ) {
+        if let Some(update) = authoritative_local_file {
+            self.queue_local_file_update(update);
+        }
+        let Some(generation) = self.observation_media_generation() else {
+            return;
+        };
+        let mut update = self.transport_update_for(generation);
+        update.phase = Some(self.transport_phase);
+        update.position_seconds = self.observed_state.position_seconds;
+        update.playback_rate = self.observed_state.playback_rate;
+        update.logical_pause = self.observed_state.logical_pause;
+        update.paused_for_cache = self.observed_state.paused_for_cache;
+        update.cache_buffering_percent = self.observed_state.cache_buffering_percent;
+        update.seeking = self.observed_state.seeking;
+        update.seekable = self.observed_state.seekable;
+        update.core_idle = self.observed_state.core_idle;
+        update.demuxer_cache_idle = self.observed_state.demuxer_cache_idle;
+        update.playback_restart_sequence = Some(self.playback_restart_sequence);
+        update.eof_reached = self.observed_state.eof_reached;
+        update.buffered_ahead_seconds = self.observed_state.buffered_ahead_seconds;
+        update.buffered_ahead_bytes = self.observed_state.buffered_ahead_bytes;
+        update.input_rate_bytes_per_second = self.observed_state.input_rate_bytes_per_second;
+        self.queue_transport_telemetry_update(update);
     }
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
@@ -7133,6 +7174,28 @@ mod interrupted_network_stream_recovery_tests {
         );
         assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
         assert_eq!(adapter.pending_cache_telemetry_updates[0].eof, None);
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert!(batch.ordered_events.iter().any(|event| matches!(
+            &event.kind,
+            PlayerOrderedEventKind::Transport(update)
+                if update.media_generation == generation
+                    && update.phase == Some(PlayerTransportPhase::Loading)
+                    && update.eof_reached == Some(false)
+        )));
+        assert!(batch.ordered_events.iter().all(|event| {
+            !matches!(
+                &event.kind,
+                PlayerOrderedEventKind::Transport(update)
+                    if update.media_generation == generation
+                        && (matches!(
+                            update.phase,
+                            Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                        ) || update.eof_reached == Some(true))
+            )
+        }));
     }
 
     #[test]

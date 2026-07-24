@@ -130,6 +130,10 @@ macro_rules! impl_player_wrapper {
                 self.0.take_ordered_event_batch()
             }
 
+            fn request_ordered_event_reacquisition(&mut self) {
+                self.0.request_ordered_event_reacquisition();
+            }
+
             fn take_pending_chat_request(&mut self) -> Option<String> {
                 self.0.take_pending_chat_request()
             }
