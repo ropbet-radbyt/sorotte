@@ -9972,6 +9972,67 @@ mod timeline_kind_tests {
     }
 
     #[test]
+    fn youtube_cache_stall_recovery_preserves_the_active_generation_and_live_timeline() {
+        let mut adapter = loaded_adapter("https://www.youtube.com/watch?v=characterization", None);
+        let generation = adapter
+            .active_media_generation
+            .expect("the characterization fixture should have active media");
+        adapter.active_generation_has_restarted = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        observe_ytdl_is_live(&mut adapter, json!("true"));
+        adapter.pending_transport_telemetry_updates.clear();
+
+        adapter.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": "paused-for-cache",
+            "data": true,
+        }));
+        adapter.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": "core-idle",
+            "data": true,
+        }));
+        adapter.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": "demuxer-cache-state",
+            "data": {
+                "cache-duration": 0.0,
+                "raw-input-rate": 0,
+                "eof": false,
+                "underrun": true,
+            },
+        }));
+
+        assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Rebuffering);
+        assert_eq!(adapter.active_media_generation, Some(generation));
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert_eq!(adapter.take_media_load_outcome(), None);
+
+        adapter.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": "paused-for-cache",
+            "data": false,
+        }));
+        adapter.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": "core-idle",
+            "data": false,
+        }));
+        adapter.handle_ipc_event(&json!({ "event": "playback-restart" }));
+
+        assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Playing);
+        assert_eq!(adapter.active_media_generation, Some(generation));
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
+        assert_eq!(adapter.take_media_load_outcome(), None);
+        assert!(
+            adapter
+                .pending_transport_telemetry_updates
+                .iter()
+                .all(|update| update.media_generation == Some(generation))
+        );
+    }
+
+    #[test]
     fn finite_duration_network_media_is_vod_without_positive_live_metadata() {
         let mut adapter = loaded_adapter("https://media.invalid/movie.m3u8", Some(120.0));
         observe_ytdl_is_live(&mut adapter, json!("false"));
