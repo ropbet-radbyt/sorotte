@@ -47,7 +47,7 @@ struct GuiAttachedSequencedPlayerEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GuiMediaBoundary {
+pub(in crate::app::runtime_owner) struct GuiMediaBoundary {
     previous_media_generation: Option<u64>,
     unsequenced: bool,
 }
@@ -1125,7 +1125,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
     }
 
-    fn process_attached_local_file_observation(
+    pub(in crate::app::runtime_owner) fn process_attached_local_file_observation(
         &mut self,
         observation: PlayerLocalFileObservation,
         sequence: Option<PlayerEventSequence>,
@@ -1138,8 +1138,6 @@ impl GuiPersistedConfigRuntimeOwner {
         } = observation;
         let accepted =
             self.accept_attached_media_observation(media_generation, observed_at, sequence)?;
-        let tracked_playlist_load_unconfirmed =
-            self.tracked_playlist_resolution_load_matches_local_file(&update);
         let mut logical_override_confirmed = None;
         if let Some((override_update, confirmed)) =
             self.logical_media_override_for_loaded_target(&update)
@@ -1149,13 +1147,20 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let file_changed =
             Self::local_file_update_replaces_current_file(self.player_local_file.as_ref(), &update);
+        // Identity confirmation is valid during an authoritative replay even when no new media
+        // episode exists. Keep it separate from the file-change side effects below so ordered
+        // adapters can activate an untracked playlist attempt and Plex can retire a confirmed
+        // logical placeholder without preparing the same media a second time.
+        self.handle_untracked_playlist_local_file_observation(&update);
+        let tracked_playlist_load_unconfirmed =
+            self.tracked_playlist_resolution_load_matches_local_file(&update);
+        let identity_remains_placeholder = tracked_playlist_load_unconfirmed
+            || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
         if authoritative_reacquisition && !file_changed && !accepted.generation_advanced {
-            // Replaying the adapter's current identity closes an observation gap; it is not a
-            // second media-load episode and must not restart playlist resolution or client-core.
             self.player_local_file = Some(update);
+            self.player_local_file_placeholder = identity_remains_placeholder;
             return None;
         }
-        self.handle_untracked_playlist_local_file_observation(&update);
         if file_changed || accepted.generation_advanced {
             self.reset_attached_media_boundary_state();
         }
@@ -1195,8 +1200,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         self.player_local_file = Some(update);
-        self.player_local_file_placeholder = tracked_playlist_load_unconfirmed
-            || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
+        self.player_local_file_placeholder = identity_remains_placeholder;
         if file_changed || accepted.generation_advanced || self.player_position_seconds.is_none() {
             self.player_position_seconds = Some(0.0);
         }
@@ -1340,10 +1344,18 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.player_paused = Some(logical_pause);
                 }
                 let actions = self.session.as_mut().and_then(|session| {
-                    match session.sync_attached_player_transport_telemetry(
-                        update,
-                        system_time_seconds(),
-                    ) {
+                    let result = if authoritative_reacquisition {
+                        session.rebase_attached_player_transport_telemetry(
+                            update,
+                            system_time_seconds(),
+                        )
+                    } else {
+                        session.sync_attached_player_transport_telemetry(
+                            update,
+                            system_time_seconds(),
+                        )
+                    };
+                    match result {
                         Ok(actions) => Some(actions),
                         Err(error) => {
                             eprintln!(

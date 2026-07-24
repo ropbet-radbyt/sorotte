@@ -85,8 +85,16 @@ impl fmt::Debug for MpvAdapter {
                 &self.last_delivered_ordered_command_progress,
             )
             .field(
-                "rejected_delivered_ordered_command_progress",
-                &self.rejected_delivered_ordered_command_progress,
+                "last_delivered_ordered_media_load_outcomes",
+                &self.last_delivered_ordered_media_load_outcomes,
+            )
+            .field(
+                "unacknowledged_terminal_command_progress",
+                &self.unacknowledged_terminal_command_progress,
+            )
+            .field(
+                "unacknowledged_media_load_outcomes",
+                &self.unacknowledged_media_load_outcomes,
             )
             .field(
                 "pending_media_load_outcomes",
@@ -103,6 +111,10 @@ impl fmt::Debug for MpvAdapter {
             .field(
                 "interrupted_network_stream_recovery",
                 &self.interrupted_network_stream_recovery,
+            )
+            .field(
+                "provisional_eof_observation",
+                &self.provisional_eof_observation,
             )
             .field("network_cache_stall", &self.network_cache_stall)
             .field(
@@ -266,10 +278,14 @@ impl Default for MpvAdapter {
             next_ordered_player_event_sequence: 1,
             pending_ordered_player_events: VecDeque::new(),
             ordered_player_event_reacquisition_required: false,
+            ordered_player_event_reacquisition_requested_by_consumer: false,
             last_delivered_ordered_command_progress: Vec::new(),
-            rejected_delivered_ordered_command_progress: Vec::new(),
+            last_delivered_ordered_media_load_outcomes: Vec::new(),
+            unacknowledged_terminal_command_progress: BTreeMap::new(),
+            unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
+            provisional_eof_observation: None,
             interrupted_network_stream_recovery: None,
             network_cache_stall: None,
             last_polled_local_file_update: None,

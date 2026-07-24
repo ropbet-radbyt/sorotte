@@ -638,6 +638,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
+    fn rebase_attached_player_transport_telemetry(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime.rebase_external_player_transport_at_epoch(
+                update,
+                now_seconds,
+                self.playback_transport_adapter_epoch,
+            ),
+        ))
+    }
+
     fn observe_external_player_end_of_file(&mut self, now_seconds: f64) -> Result<(), String> {
         self.runtime
             .observe_external_player_end_of_file(now_seconds)

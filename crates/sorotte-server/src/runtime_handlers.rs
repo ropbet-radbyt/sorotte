@@ -1191,6 +1191,7 @@ impl ServerRuntime {
             self.ingest_client_ping_metrics(client_id, ping.latency_calculation, ping.client_rtt);
         }
         self.record_client_state_update_now(client_id);
+        self.persist_occupied_room_activity_if_due_at(&session.room, self.current_time_seconds())?;
         let had_barrier_ack = state
             .playback_barrier
             .as_ref()

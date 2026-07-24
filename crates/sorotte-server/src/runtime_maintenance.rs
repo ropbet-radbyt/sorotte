@@ -536,10 +536,17 @@ impl ServerRuntime {
         &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
+        self.persist_room_at_if_needed(room_name, self.current_time_seconds())
+    }
+
+    fn persist_room_at_if_needed(
+        &mut self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
         if !self.room_is_persistent(room_name) {
             return Ok(());
         }
-        let now_seconds = self.current_time_seconds();
         self.persistent_room_last_activity_at
             .insert(room_name.to_owned(), now_seconds);
         if self.room_persistence.is_none() {
@@ -559,6 +566,52 @@ impl ServerRuntime {
                 last_activity_at_seconds: now_seconds,
                 version,
             });
+        Ok(())
+    }
+
+    fn persistent_room_activity_heartbeat_interval_seconds(&self) -> f64 {
+        if self.persistent_room_inactivity_expiry_seconds <= 0.0 {
+            return PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS;
+        }
+        (self.persistent_room_inactivity_expiry_seconds / 2.0).clamp(
+            SERVER_NETWORK_TICK_INTERVAL_SECONDS,
+            PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS,
+        )
+    }
+
+    pub(crate) fn persist_occupied_room_activity_if_due_at(
+        &mut self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
+        if !self.room_is_persistent(room_name)
+            || self.clients_in_room(room_name).is_empty()
+            || self
+                .persistent_room_last_activity_at
+                .get(room_name)
+                .is_some_and(|last_activity| {
+                    now_seconds >= *last_activity
+                        && now_seconds - *last_activity
+                            < self.persistent_room_activity_heartbeat_interval_seconds()
+                })
+        {
+            return Ok(());
+        }
+        self.persist_room_at_if_needed(room_name, now_seconds)
+    }
+
+    pub(crate) fn persist_occupied_room_activity_if_due_at_for_all_rooms(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
+        let occupied_rooms = self
+            .sessions
+            .values()
+            .map(|session| session.room.clone())
+            .collect::<BTreeSet<_>>();
+        for room_name in occupied_rooms {
+            self.persist_occupied_room_activity_if_due_at(&room_name, now_seconds)?;
+        }
         Ok(())
     }
 

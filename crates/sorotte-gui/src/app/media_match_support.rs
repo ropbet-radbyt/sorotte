@@ -1424,10 +1424,13 @@ fn collect_media_match_candidates_with_limits(
     limits: MediaMatchDiscoveryLimits,
 ) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
+    // Configured roots are explicit trust boundaries. Follow a root link/junction for directory
+    // validation and canonical cycle identity while preserving its configured spelling in
+    // candidate paths. Descendant links remain rejected below.
     let mut stack = search_roots
         .iter()
         .cloned()
-        .map(|root| (root, 0usize))
+        .map(|root| (root, 0usize, true))
         .collect::<Vec<_>>();
     let mut visited_directories = HashSet::new();
     // Root work items are nodes too. Count them up front so an attacker cannot bypass the global
@@ -1439,12 +1442,17 @@ fn collect_media_match_candidates_with_limits(
             limits.max_nodes
         ));
     }
-    while let Some((path, depth)) = stack.pop() {
+    while let Some((path, depth, is_explicit_root)) = stack.pop() {
         check_media_match_discovery_canceled(cancel_flag)?;
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
+        let metadata = if is_explicit_root {
+            fs::metadata(&path)
+        } else {
+            fs::symlink_metadata(&path)
+        };
+        let Ok(metadata) = metadata else {
             continue;
         };
-        if metadata_is_directory_link(&metadata) || !metadata.is_dir() {
+        if !metadata.is_dir() {
             continue;
         }
         let Ok(canonical_path) = fs::canonicalize(&path) else {
@@ -1483,7 +1491,7 @@ fn collect_media_match_candidates_with_limits(
                         path.display()
                     ));
                 }
-                stack.push((path, depth + 1));
+                stack.push((path, depth + 1, false));
             } else if metadata.is_file() && media_match_candidate_extension(&path) {
                 files.push(path);
             }
@@ -3182,6 +3190,47 @@ mod tests {
             .expect("a directory-link cycle must be skipped");
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].ends_with(Path::new("nested").join("episode.mkv")));
+    }
+
+    #[test]
+    fn media_match_discovery_accepts_an_explicit_directory_symlink_root() {
+        let container = unique_media_match_test_root("discovery-explicit-link-root");
+        let target = container.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("episode.mkv"), b"media").unwrap();
+        let link = container.join("configured-root");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&target, &link).is_err() {
+            return;
+        }
+
+        let candidates = collect_media_match_candidates(std::slice::from_ref(&link), None)
+            .expect("an explicitly configured directory link should resolve to its target");
+        assert_eq!(candidates, vec![link.join("episode.mkv")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn media_match_discovery_accepts_an_explicit_windows_junction_root() {
+        let container = unique_media_match_test_root("discovery-explicit-junction-root");
+        let target = container.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("episode.mkv"), b"media").unwrap();
+        let junction = container.join("configured-root");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()
+            .expect("junction command should start");
+        assert!(status.success(), "test junction should be created");
+
+        let candidates = collect_media_match_candidates(std::slice::from_ref(&junction), None)
+            .expect("an explicitly configured junction should resolve to its target");
+        assert_eq!(candidates, vec![junction.join("episode.mkv")]);
     }
 
     fn healthy_tool_probe(name: &str) -> MediaMatchToolProbe {

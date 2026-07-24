@@ -1143,6 +1143,76 @@ fn persisted_activity_survives_restart_and_expires_on_first_maintenance() {
 }
 
 #[test]
+fn occupied_room_activity_heartbeat_survives_unclean_restart_without_media_mutation() {
+    let db_path = temporary_sqlite_path("persistent-room-active-crash-heartbeat");
+    let _ = fs::remove_file(&db_path);
+    {
+        let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+        runtime.set_time_now_override_seconds(Some(100.0));
+        runtime.set_persistent_room_creation_cooldown_seconds(0.0);
+        runtime.set_persistent_room_inactivity_expiry_seconds(60.0);
+        runtime
+            .set_persistent_rooms_db_path(Some(db_path.clone()))
+            .expect("room persistence should initialize");
+        runtime
+            .handle_line(
+                "active-client",
+                r#"{"Hello":{"username":"alice","room":{"name":"active-room"},"version":"1.7.5"}}"#,
+            )
+            .expect("active peer should connect");
+        runtime
+            .handle_line_fanout(
+                "active-client",
+                r#"{"Set":{"playlistChange":{"files":["episode.mkv"]}}}"#,
+            )
+            .expect("persistent playlist should be accepted");
+
+        runtime
+            .collect_dispatch_at(140.0)
+            .expect("periodic maintenance should persist occupied-room activity");
+        runtime
+            .flush_persistence()
+            .expect("activity heartbeat should reach SQLite before simulated crash");
+        // Drop without a disconnect/room switch. This models the persistence state left by an
+        // unclean process restart rather than the clean empty-room path.
+    }
+
+    let stored_after_crash = RoomPersistenceStore::open(&db_path)
+        .expect("room store should reopen")
+        .load_rooms()
+        .expect("persisted room should load");
+    assert_eq!(
+        stored_after_crash["active-room"].last_activity_at_seconds, 140.0,
+        "periodic occupied-room activity must be durable without a media mutation"
+    );
+
+    let mut restarted = ServerRuntime::with_persistent_rooms_enabled(true);
+    restarted.set_time_now_override_seconds(Some(165.0));
+    restarted.set_persistent_room_inactivity_expiry_seconds(60.0);
+    restarted
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("restart should load the heartbeat timestamp");
+    restarted
+        .collect_dispatch_at(165.0)
+        .expect("first maintenance after restart should succeed");
+    assert!(
+        restarted.room_playlists.contains_key("active-room"),
+        "the active-at-crash room must not be deleted from its older media-mutation timestamp"
+    );
+
+    restarted
+        .collect_dispatch_at(200.0)
+        .expect("room should expire once the durable heartbeat itself ages out");
+    assert!(!restarted.room_playlists.contains_key("active-room"));
+    restarted
+        .flush_persistence()
+        .expect("expiry deletion should reach SQLite");
+
+    drop(restarted);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
 fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
     let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
     runtime.set_time_now_override_seconds(Some(0.0));

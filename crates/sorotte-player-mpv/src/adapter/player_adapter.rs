@@ -996,6 +996,10 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        // A later pump without a consumer reacquisition request acknowledges the previously
+        // returned semantic terminals. Keep them until this boundary so a rejected batch can be
+        // reconstructed exactly, independent of the smaller legacy progress queue.
+        self.acknowledge_last_delivered_ordered_semantic_outcomes();
         self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
@@ -1019,6 +1023,25 @@ impl PlayerAdapter for MpvAdapter {
             let dropped_events_through =
                 PlayerEventSequence::new(self.next_ordered_player_event_sequence - 1);
             let interrupted_command_progress = self.authoritative_reacquisition_command_progress();
+            let interrupted_media_load_outcomes = self
+                .unacknowledged_media_load_outcomes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            let authoritative_generation = self
+                .observation_media_generation()
+                .or_else(|| {
+                    interrupted_media_load_outcomes
+                        .iter()
+                        .rev()
+                        .find_map(|observation| observation.media_generation)
+                })
+                .or_else(|| {
+                    interrupted_command_progress
+                        .iter()
+                        .rev()
+                        .find_map(|progress| progress.media_generation)
+                });
             let authoritative_local_file = self
                 .pending_local_file_update
                 .clone()
@@ -1040,11 +1063,13 @@ impl PlayerAdapter for MpvAdapter {
             self.queue_authoritative_ordered_player_snapshot(
                 authoritative_local_file,
                 interrupted_command_progress,
+                interrupted_media_load_outcomes,
+                authoritative_generation,
             );
-            self.rejected_delivered_ordered_command_progress.clear();
             dropped_events_through
         });
         self.ordered_player_event_reacquisition_required = false;
+        self.ordered_player_event_reacquisition_requested_by_consumer = false;
         let delivery_reference = self.observation_clock_origin.elapsed();
         let mut ordered_events: Vec<_> = self.pending_ordered_player_events.drain(..).collect();
         for event in &mut ordered_events {
@@ -1076,6 +1101,13 @@ impl PlayerAdapter for MpvAdapter {
                 _ => None,
             })
             .collect();
+        self.last_delivered_ordered_media_load_outcomes = ordered_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                PlayerOrderedEventKind::MediaLoad(observation) => Some(observation.clone()),
+                _ => None,
+            })
+            .collect();
 
         self.pending_command_progress_updates.clear();
         self.pending_transport_telemetry_updates.clear();
@@ -1092,12 +1124,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn request_ordered_event_reacquisition(&mut self) {
-        self.rejected_delivered_ordered_command_progress = self
-            .last_delivered_ordered_command_progress
-            .iter()
-            .copied()
-            .filter(|progress| progress.is_terminal())
-            .collect();
+        self.ordered_player_event_reacquisition_requested_by_consumer = true;
         self.ordered_player_event_reacquisition_required = true;
     }
 
@@ -1271,26 +1298,24 @@ mod nonblocking_maintenance_tests {
         }));
         assert!(matches!(
             &batch.ordered_events[0].kind,
+            PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.command_id == PlayerCommandId::new(11)
+                    && progress.state
+                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+        ));
+        assert!(matches!(
+            &batch.ordered_events[1].kind,
             PlayerOrderedEventKind::LocalFile(observation)
                 if observation.update.name == "current.mkv"
         ));
         assert!(matches!(
-            &batch.ordered_events[1].kind,
+            &batch.ordered_events[2].kind,
             PlayerOrderedEventKind::Transport(update)
                 if update.media_generation == Some(generation)
                     && update.phase == Some(PlayerTransportPhase::Playing)
                     && update.position_seconds == Some(32.0)
                     && update.eof_reached == Some(false)
                     && update.seekable_ranges == Some(Vec::new())
-        ));
-        assert!(matches!(
-            &batch.ordered_events[2].kind,
-            PlayerOrderedEventKind::CommandProgress(progress)
-                if progress.command_id == PlayerCommandId::new(11)
-                    && progress.state
-                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
-                            PlayerCommandFailureKind::Unknown
-                        ))
         ));
         assert!(batch.ordered_events.iter().all(|event| {
             !matches!(

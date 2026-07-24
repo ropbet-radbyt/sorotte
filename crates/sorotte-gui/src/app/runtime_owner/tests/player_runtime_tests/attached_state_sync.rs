@@ -490,6 +490,93 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
 }
 
 #[test]
+fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_context() {
+    struct ReacquiredFailurePlayer {
+        batch: Option<sorotte_player_api::PlayerEventBatch>,
+    }
+
+    impl PlayerAdapter for ReacquiredFailurePlayer {
+        fn name(&self) -> &'static str {
+            "reacquired-failure"
+        }
+
+        fn take_ordered_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.batch.take()
+        }
+    }
+
+    let requested_target = "https://cdn.example.com/early-failure.m3u8".to_owned();
+    let generation = sorotte_player_api::PlayerMediaGeneration::new(1);
+    let failure = sorotte_player_api::PlayerMediaLoadObservation::new(
+        sorotte_player_api::PlayerMediaLoadOutcome::failure(
+            requested_target.clone(),
+            None,
+            sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+            "network failed before start-file",
+        ),
+        Some(generation),
+        None,
+    );
+    let batch = sorotte_player_api::PlayerEventBatch {
+        dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(10)),
+        ordered_events: vec![
+            sorotte_player_api::PlayerOrderedEvent::new(
+                sorotte_player_api::PlayerEventSequence::new(11),
+                sorotte_player_api::PlayerOrderedEventKind::MediaLoad(failure),
+            ),
+            sorotte_player_api::PlayerOrderedEvent::new(
+                sorotte_player_api::PlayerEventSequence::new(12),
+                sorotte_player_api::PlayerOrderedEventKind::Transport(
+                    sorotte_player_api::PlayerTransportTelemetryUpdate::new(
+                        generation,
+                        sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                            std::time::Duration::from_secs(1),
+                        ),
+                    )
+                    .with_phase(sorotte_player_api::PlayerTransportPhase::Failed),
+                ),
+            ),
+        ],
+        legacy_playback_telemetry: None,
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(ReacquiredFailurePlayer {
+        batch: Some(batch),
+    })));
+    owner.player_local_file =
+        Some(GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path(&requested_target));
+    owner.player_local_file_placeholder = true;
+    owner.pending_stream_retry_target = Some(requested_target.clone());
+    owner.pending_stream_load_context = Some(GuiPendingStreamLoadContext {
+        requested_target: requested_target.clone(),
+        user_initiated: true,
+    });
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, None);
+    assert!(!owner.player_local_file_placeholder);
+    assert_eq!(owner.player_position_seconds, None);
+    assert_eq!(
+        owner.pending_stream_retry_target.as_deref(),
+        Some(requested_target.as_str())
+    );
+    assert_eq!(owner.pending_stream_load_context, None);
+    assert_eq!(owner.pending_stream_feedback.len(), 1);
+    let actions = owner
+        .pending_stream_feedback
+        .front()
+        .expect("reacquired failure should queue GUI feedback");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("network failed before start-file")
+    )));
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_opens_plex_stream_as_logical_playlist_uri() {
     let playlist_uri = PlexPlaylistUri {
         machine_identifier: "machine-1".to_owned(),

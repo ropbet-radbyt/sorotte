@@ -495,6 +495,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(Vec::new())
     }
 
+    fn rebase_attached_player_transport_telemetry(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        self.sync_attached_player_transport_telemetry(update, now_seconds)
+    }
+
     fn restore_desync_correction_dispatch_snapshot(
         &mut self,
         _snapshot: DesyncCorrectionDispatchSnapshot,

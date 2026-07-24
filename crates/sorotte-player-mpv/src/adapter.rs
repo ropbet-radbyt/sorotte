@@ -44,6 +44,7 @@ const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
 const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
 const MAX_PENDING_ORDERED_PLAYER_EVENTS: usize = 256;
+const MAX_UNACKNOWLEDGED_MEDIA_LOAD_OUTCOMES: usize = MAX_PENDING_ORDERED_PLAYER_EVENTS;
 const MAX_PENDING_NETWORK_MEDIA_OPTIONS_TRANSITION_OUTCOMES: usize = 16;
 const PLAYER_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYER_LOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -52,6 +53,7 @@ const INTERRUPTED_NETWORK_STREAM_MINIMUM_REMAINING_SECONDS: f64 = 15.0;
 const INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS: f64 = 2.0;
 const MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
 const MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 5;
+const PROVISIONAL_EOF_CLASSIFICATION_DELAY: Duration = Duration::from_secs(1);
 const NETWORK_CACHE_STALL_RECOVERY_DELAY: Duration = Duration::from_secs(20);
 const NETWORK_CACHE_STALL_RECOVERY_MARGIN: Duration = Duration::from_secs(5);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
@@ -514,6 +516,12 @@ struct PendingTrackedCommand {
     kind: TrackedCommandKind,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProvisionalEofObservation {
+    media_generation: PlayerMediaGeneration,
+    observed_at: Instant,
+}
+
 #[derive(Debug)]
 enum TrackedCommandKind {
     Load {
@@ -676,10 +684,14 @@ pub struct MpvAdapter {
     next_ordered_player_event_sequence: u64,
     pending_ordered_player_events: VecDeque<PlayerOrderedEvent>,
     ordered_player_event_reacquisition_required: bool,
+    ordered_player_event_reacquisition_requested_by_consumer: bool,
     last_delivered_ordered_command_progress: Vec<PlayerCommandProgress>,
-    rejected_delivered_ordered_command_progress: Vec<PlayerCommandProgress>,
+    last_delivered_ordered_media_load_outcomes: Vec<PlayerMediaLoadObservation>,
+    unacknowledged_terminal_command_progress: BTreeMap<PlayerCommandId, PlayerCommandProgress>,
+    unacknowledged_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
+    provisional_eof_observation: Option<ProvisionalEofObservation>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
     network_cache_stall: Option<NetworkCacheStall>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
@@ -1439,6 +1451,7 @@ impl MpvAdapter {
         // same pump so a transient lease expiry never reaches the GUI as incomplete setup.
         self.drain_ipc_events_if_attached();
         self.recover_network_media_options_hook_ownership_if_needed();
+        self.maintain_provisional_eof_classification();
         self.maintain_network_cache_stall_recovery();
     }
 
@@ -3018,11 +3031,23 @@ impl MpvAdapter {
         &mut self,
         authoritative_local_file: Option<LocalFileUpdate>,
         interrupted_command_progress: Vec<PlayerCommandProgress>,
+        interrupted_media_load_outcomes: Vec<PlayerMediaLoadObservation>,
+        authoritative_generation: Option<PlayerMediaGeneration>,
     ) {
+        // Semantic command/load outcomes are not ordinary state fields. Replay their exact
+        // terminal meaning before the physical snapshot so a failed pre-start load cannot
+        // disappear behind the absence of an active media generation, and a completed load is
+        // never rewritten as an unknown failure.
+        for progress in interrupted_command_progress {
+            self.queue_command_progress(progress);
+        }
+        for observation in interrupted_media_load_outcomes {
+            self.queue_media_load_observation(observation);
+        }
         if let Some(update) = authoritative_local_file {
             self.queue_local_file_update(update);
         }
-        let Some(generation) = self.observation_media_generation() else {
+        let Some(generation) = authoritative_generation else {
             return;
         };
         let mut update = self.transport_update_for(generation);
@@ -3048,34 +3073,14 @@ impl MpvAdapter {
         update.buffered_ahead_bytes = self.observed_state.buffered_ahead_bytes;
         update.input_rate_bytes_per_second = self.observed_state.input_rate_bytes_per_second;
         self.queue_transport_telemetry_update(update);
-        for progress in interrupted_command_progress {
-            self.queue_command_progress(progress);
-        }
     }
 
     fn authoritative_reacquisition_command_progress(&self) -> Vec<PlayerCommandProgress> {
-        let mut progress = Vec::new();
-        for terminal in self
-            .rejected_delivered_ordered_command_progress
-            .iter()
-            .chain(self.pending_command_progress_updates.iter())
+        let mut progress: Vec<_> = self
+            .unacknowledged_terminal_command_progress
+            .values()
             .copied()
-            .filter(|progress| progress.is_terminal())
-        {
-            if progress
-                .iter()
-                .any(|existing: &PlayerCommandProgress| existing.command_id == terminal.command_id)
-            {
-                continue;
-            }
-            progress.push(PlayerCommandProgress::finished(
-                terminal.command_id,
-                terminal.media_generation,
-                Some(self.observation_timestamp()),
-                terminal.observed_position_seconds,
-                PlayerCommandResult::Failed(PlayerCommandFailureKind::Unknown),
-            ));
-        }
+            .collect();
         for pending in self
             .pending_tracked_commands
             .iter()
@@ -3093,8 +3098,31 @@ impl MpvAdapter {
                 Some(self.observation_timestamp()),
             ));
         }
-        progress.truncate(MAX_PENDING_COMMAND_PROGRESS_UPDATES);
         progress
+    }
+
+    fn acknowledge_last_delivered_ordered_semantic_outcomes(&mut self) {
+        if self.ordered_player_event_reacquisition_requested_by_consumer {
+            return;
+        }
+        for progress in self.last_delivered_ordered_command_progress.drain(..) {
+            if progress.is_terminal() {
+                self.unacknowledged_terminal_command_progress
+                    .remove(&progress.command_id);
+            }
+        }
+        for observation in self.last_delivered_ordered_media_load_outcomes.drain(..) {
+            if let Some(index) =
+                self.unacknowledged_media_load_outcomes
+                    .iter()
+                    .position(|pending| {
+                        pending.media_generation == observation.media_generation
+                            && pending.outcome == observation.outcome
+                    })
+            {
+                self.unacknowledged_media_load_outcomes.remove(index);
+            }
+        }
     }
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
@@ -3109,13 +3137,39 @@ impl MpvAdapter {
     }
 
     fn queue_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
+        self.queue_media_load_outcome_for_generation(outcome, self.observation_media_generation());
+    }
+
+    fn queue_media_load_outcome_for_generation(
+        &mut self,
+        outcome: PlayerMediaLoadOutcome,
+        media_generation: Option<PlayerMediaGeneration>,
+    ) {
         let observation = PlayerMediaLoadObservation::new(
             outcome,
-            self.observation_media_generation(),
+            media_generation,
             Some(self.observation_timestamp()),
         );
+        self.queue_media_load_observation(observation);
+    }
+
+    fn queue_media_load_observation(&mut self, observation: PlayerMediaLoadObservation) {
         self.queue_ordered_player_event(PlayerOrderedEventKind::MediaLoad(observation.clone()));
-        self.pending_media_load_outcomes.push_back(observation);
+        self.pending_media_load_outcomes
+            .push_back(observation.clone());
+        if !self
+            .unacknowledged_media_load_outcomes
+            .iter()
+            .any(|pending| pending == &observation)
+        {
+            if self.unacknowledged_media_load_outcomes.len()
+                >= MAX_UNACKNOWLEDGED_MEDIA_LOAD_OUTCOMES
+            {
+                self.unacknowledged_media_load_outcomes.pop_front();
+            }
+            self.unacknowledged_media_load_outcomes
+                .push_back(observation);
+        }
     }
 
     pub fn legacy_syncplay_ui_settings(&self) -> &LegacySyncplayUiSettings {
@@ -4404,6 +4458,10 @@ impl MpvAdapter {
 
     fn queue_command_progress(&mut self, progress: PlayerCommandProgress) {
         self.queue_ordered_player_event(PlayerOrderedEventKind::CommandProgress(progress));
+        if progress.is_terminal() {
+            self.unacknowledged_terminal_command_progress
+                .insert(progress.command_id, progress);
+        }
         if self.pending_command_progress_updates.len() >= MAX_PENDING_COMMAND_PROGRESS_UPDATES {
             self.pending_command_progress_updates.pop_front();
         }
@@ -4876,6 +4934,27 @@ impl MpvAdapter {
             return PlayerTransportPhase::Playing;
         }
         PlayerTransportPhase::Prebuffering
+    }
+
+    fn maintain_provisional_eof_classification(&mut self) {
+        let Some(candidate) = self.provisional_eof_observation else {
+            return;
+        };
+        if self.observation_media_generation() != Some(candidate.media_generation) {
+            self.provisional_eof_observation = None;
+            return;
+        }
+        if candidate.observed_at.elapsed() < PROVISIONAL_EOF_CLASSIFICATION_DELAY {
+            return;
+        }
+        self.provisional_eof_observation = None;
+        self.observed_state.eof_reached = Some(true);
+        self.transport_phase = PlayerTransportPhase::Ended;
+        let mut update = self
+            .transport_update_for(candidate.media_generation)
+            .with_phase(PlayerTransportPhase::Ended);
+        update.eof_reached = Some(true);
+        self.queue_transport_telemetry_update(update);
     }
 
     fn refresh_inferred_transport_phase(&mut self) {
@@ -5473,13 +5552,25 @@ impl MpvAdapter {
             }
             MPV_PROPERTY_EOF_REACHED => {
                 if let Some(eof_reached) = data.and_then(Value::as_bool) {
-                    self.observed_state.eof_reached = Some(eof_reached);
+                    if eof_reached {
+                        self.provisional_eof_observation =
+                            self.observation_media_generation().map(|media_generation| {
+                                ProvisionalEofObservation {
+                                    media_generation,
+                                    observed_at: Instant::now(),
+                                }
+                            });
+                        return;
+                    }
+                    self.provisional_eof_observation = None;
+                    self.observed_state.eof_reached = Some(false);
                     let phase = self.inferred_transport_phase();
                     self.transport_phase = phase;
                     let mut update = self.transport_update().with_phase(phase);
-                    update.eof_reached = Some(eof_reached);
+                    update.eof_reached = Some(false);
                     self.queue_transport_telemetry_update(update);
                 } else {
+                    self.provisional_eof_observation = None;
                     self.observed_state.eof_reached = None;
                 }
                 false
@@ -5503,6 +5594,7 @@ impl MpvAdapter {
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
+        self.provisional_eof_observation = None;
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
         // change when an already-paused player begins a new file, so retain
@@ -5716,6 +5808,12 @@ impl MpvAdapter {
                     .flatten()
             })
             .or(self.pending_load_generation);
+        if self
+            .provisional_eof_observation
+            .is_some_and(|candidate| Some(candidate.media_generation) == generation)
+        {
+            self.provisional_eof_observation = None;
+        }
         let message = (reason == MPV_END_FILE_REASON_ERROR).then(|| {
             event
                 .get("file_error")
@@ -5830,12 +5928,15 @@ impl MpvAdapter {
         self.observed_state.duration_seconds = None;
         self.observed_state.size_bytes = None;
         self.reset_timeline_metadata();
-        self.queue_media_load_outcome(PlayerMediaLoadOutcome::failure(
-            requested_target,
-            None,
-            error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
-            message,
-        ));
+        self.queue_media_load_outcome_for_generation(
+            PlayerMediaLoadOutcome::failure(
+                requested_target,
+                None,
+                error_kind.unwrap_or(PlayerMediaLoadFailureKind::Unknown),
+                message,
+            ),
+            generation,
+        );
     }
 
     fn handle_client_message_event(&mut self, event: &Value) {
@@ -7274,6 +7375,92 @@ mod interrupted_network_stream_recovery_tests {
                         ) || update.eof_reached == Some(true))
             )
         }));
+    }
+
+    #[test]
+    fn split_pump_eof_property_remains_provisional_until_end_file_classifies_recovery() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        let generation = adapter.active_media_generation;
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_EOF_REACHED,
+            "data": true
+        }));
+
+        let provisional = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert!(provisional.ordered_events.iter().all(|event| {
+            !matches!(
+                &event.kind,
+                PlayerOrderedEventKind::Transport(update)
+                    if update.media_generation == generation
+                        && (matches!(
+                            update.phase,
+                            Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                        ) || update.eof_reached == Some(true))
+            )
+        }));
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.observed_state.eof_reached, Some(false));
+
+        adapter.handle_end_file_event(&json!({ "reason": "eof" }));
+        let recovered = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert!(recovered.ordered_events.iter().any(|event| matches!(
+            &event.kind,
+            PlayerOrderedEventKind::Transport(update)
+                if update.media_generation == generation
+                    && update.phase == Some(PlayerTransportPhase::Loading)
+                    && update.eof_reached == Some(false)
+        )));
+        assert!(recovered.ordered_events.iter().all(|event| {
+            !matches!(
+                &event.kind,
+                PlayerOrderedEventKind::Transport(update)
+                    if update.media_generation == generation
+                        && (matches!(
+                            update.phase,
+                            Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                        ) || update.eof_reached == Some(true))
+            )
+        }));
+    }
+
+    #[test]
+    fn unclassified_eof_property_becomes_terminal_after_the_bounded_deadline() {
+        let mut adapter = loaded_network_vod(1_900.0, 1_919.0);
+        let generation = adapter
+            .active_media_generation
+            .expect("fixture should have a generation");
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_EOF_REACHED,
+            "data": true
+        }));
+        adapter
+            .provisional_eof_observation
+            .as_mut()
+            .expect("EOF should remain provisional")
+            .observed_at = Instant::now() - PROVISIONAL_EOF_CLASSIFICATION_DELAY;
+
+        adapter.maintain_provisional_eof_classification();
+
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Ended);
+        assert_eq!(adapter.observed_state.eof_reached, Some(true));
+        assert!(
+            adapter
+                .pending_ordered_player_events
+                .iter()
+                .any(|event| matches!(
+                    &event.kind,
+                    PlayerOrderedEventKind::Transport(update)
+                        if update.media_generation == Some(generation)
+                            && update.phase == Some(PlayerTransportPhase::Ended)
+                            && update.eof_reached == Some(true)
+                ))
+        );
     }
 
     #[test]

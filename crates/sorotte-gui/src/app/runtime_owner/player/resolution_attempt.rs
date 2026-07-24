@@ -1795,6 +1795,146 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_completed_load_replay_keeps_matching_candidate_active() {
+        let row_id = GuiPlaylistEntryId::next();
+        let target = "C:/media/episode.mkv";
+        let candidate = local_candidate(target);
+        let command_id = PlayerCommandId::new(11);
+        let generation = PlayerMediaGeneration::new(3);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 9;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            9,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(candidate, &started(command_id.get()));
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::accepted(
+            command_id,
+            Some(generation),
+            None,
+        ));
+        owner.player_local_file = Some(LocalFileUpdate::new("episode.mkv").with_path(target));
+        owner.player_local_file_placeholder = true;
+        owner.attached_media_observation_cursor.media_generation = Some(generation.get());
+
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::finished(
+            command_id,
+            Some(generation),
+            None,
+            None,
+            PlayerCommandResult::Completed,
+        ));
+        let boundary = owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                LocalFileUpdate::new("episode.mkv").with_path(target),
+                Some(generation),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            true,
+        );
+
+        assert_eq!(boundary, None);
+        let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
+        assert!(!attempt.fallback_pending);
+        assert!(attempt.candidate_failures.is_empty());
+        assert_eq!(
+            owner
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref()),
+            Some(target)
+        );
+        assert!(!owner.player_local_file_placeholder);
+    }
+
+    #[test]
+    fn authoritative_same_file_replay_activates_untracked_playlist_attempt() {
+        let row_id = GuiPlaylistEntryId::next();
+        let target = "C:/media/episode.mkv";
+        let candidate = local_candidate(target);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 9;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            9,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(
+            candidate,
+            &StartedMediaLoad {
+                feedback_message: "started".to_owned(),
+                player_command_id: None,
+                player_media_generation: None,
+            },
+        );
+        let update = LocalFileUpdate::new("episode.mkv").with_path(target);
+        owner.player_local_file = Some(update.clone());
+        owner.player_local_file_placeholder = true;
+        owner.attached_media_observation_cursor.media_generation = Some(3);
+
+        let boundary = owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                update,
+                Some(PlayerMediaGeneration::new(3)),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            true,
+        );
+
+        assert_eq!(boundary, None);
+        let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
+        assert!(!attempt.fallback_pending);
+        assert!(attempt.candidate_failures.is_empty());
+        assert!(!owner.player_local_file_placeholder);
+    }
+
+    #[test]
+    fn authoritative_same_file_replay_confirms_completed_plex_placeholder() {
+        let generation = PlayerMediaGeneration::new(7);
+        let command_id = PlayerCommandId::new(22);
+        let stream_target = "https://plex.example/stream?token=secret";
+        let logical_file = LocalFileUpdate::new("episode.mkv");
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.pending_logical_media_override = Some(GuiPendingLogicalMediaOverride {
+            requested_target: "episode.mkv".to_owned(),
+            loaded_target_secret: sorotte_plex::SecretPlexPlaybackUrl::new(stream_target),
+            logical_file: logical_file.clone(),
+            user_initiated: false,
+            player_command_id: Some(command_id),
+            player_media_generation: Some(generation),
+            playlist_row_id: None,
+            playlist_generation: 0,
+            load_completed: true,
+            logical_file_observed: false,
+        });
+        owner.player_local_file = Some(logical_file.clone());
+        owner.player_local_file_placeholder = true;
+        owner.attached_media_observation_cursor.media_generation = Some(generation.get());
+
+        let boundary = owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                LocalFileUpdate::new(stream_target).with_path(stream_target),
+                Some(generation),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            true,
+        );
+
+        assert_eq!(boundary, None);
+        assert_eq!(owner.player_local_file, Some(logical_file));
+        assert!(!owner.player_local_file_placeholder);
+        assert!(owner.pending_logical_media_override.is_none());
+    }
+
+    #[test]
     fn mismatched_command_or_generation_cannot_complete_current_attempt() {
         let row_id = GuiPlaylistEntryId::next();
         let candidate = local_candidate("C:/media/episode.mkv");

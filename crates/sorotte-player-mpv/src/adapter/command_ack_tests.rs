@@ -137,7 +137,7 @@ fn ordered_event_reacquisition_replays_an_accepted_pending_seek_lifecycle() {
 }
 
 #[test]
-fn consumer_reacquisition_reports_a_terminal_from_the_rejected_batch_as_unknown() {
+fn consumer_reacquisition_replays_the_exact_terminal_from_the_rejected_batch() {
     let generation = PlayerMediaGeneration::new(1);
     let command_id = PlayerCommandId::new(91);
     let mut adapter = MpvAdapter {
@@ -175,10 +175,122 @@ fn consumer_reacquisition_reports_a_terminal_from_the_rejected_batch_as_unknown(
         PlayerOrderedEventKind::CommandProgress(progress)
             if progress.command_id == command_id
                 && progress.state
+                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+    )));
+}
+
+#[test]
+fn early_tracked_load_failure_survives_reacquisition_without_an_active_generation() {
+    let generation = PlayerMediaGeneration::new(1);
+    let mut adapter = MpvAdapter {
+        pending_load_generation: Some(generation),
+        pending_load_request: Some("https://media.invalid/fail".to_owned()),
+        transport_phase: PlayerTransportPhase::Loading,
+        ..MpvAdapter::default()
+    };
+    let command_id = adapter.register_tracked_command(
+        Some(generation),
+        TrackedCommandKind::Load {
+            file_loaded: false,
+            ready: false,
+        },
+    );
+    adapter.accept_tracked_command(command_id);
+
+    adapter.handle_end_file_event(&serde_json::json!({
+        "reason": "error",
+        "file_error": "network failed before start-file"
+    }));
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.pending_load_generation, None);
+    adapter.ordered_player_event_reacquisition_required = true;
+
+    let batch = adapter
+        .take_ordered_event_batch()
+        .expect("mpv supports ordered event batches");
+
+    assert!(batch.dropped_events_through.is_some());
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        &event.kind,
+        PlayerOrderedEventKind::CommandProgress(progress)
+            if progress.command_id == command_id
+                && progress.media_generation == Some(generation)
+                && progress.state
                     == PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
-                        PlayerCommandFailureKind::Unknown
+                        PlayerCommandFailureKind::MediaEnded
                     ))
     )));
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        &event.kind,
+        PlayerOrderedEventKind::MediaLoad(observation)
+            if observation.media_generation == Some(generation)
+                && observation.outcome.requested_target == "https://media.invalid/fail"
+                && observation.outcome.failure.as_ref().is_some_and(|failure| {
+                    failure.kind == PlayerMediaLoadFailureKind::Network
+                })
+    )));
+    assert!(batch.ordered_events.iter().any(|event| matches!(
+        &event.kind,
+        PlayerOrderedEventKind::Transport(update)
+            if update.media_generation == Some(generation)
+                && update.phase == Some(PlayerTransportPhase::Failed)
+    )));
+}
+
+#[test]
+fn reacquisition_replays_more_terminal_commands_than_the_legacy_progress_queue() {
+    let generation = PlayerMediaGeneration::new(1);
+    let mut adapter = MpvAdapter {
+        active_media_generation: Some(generation),
+        active_file_loaded: true,
+        transport_phase: PlayerTransportPhase::Playing,
+        ..MpvAdapter::default()
+    };
+    let command_ids = (1..=160).map(PlayerCommandId::new).collect::<Vec<_>>();
+    for command_id in &command_ids {
+        adapter.queue_command_progress(PlayerCommandProgress::finished(
+            *command_id,
+            Some(generation),
+            Some(adapter.observation_timestamp()),
+            None,
+            PlayerCommandResult::Completed,
+        ));
+    }
+    for position in 0..120 {
+        let update = adapter
+            .transport_update_for(generation)
+            .with_position_seconds(f64::from(position));
+        adapter.queue_ordered_player_event(PlayerOrderedEventKind::Transport(update));
+    }
+    assert!(adapter.ordered_player_event_reacquisition_required);
+    assert_eq!(
+        adapter.pending_command_progress_updates.len(),
+        MAX_PENDING_COMMAND_PROGRESS_UPDATES
+    );
+
+    let batch = adapter
+        .take_ordered_event_batch()
+        .expect("mpv supports ordered event batches");
+    let replayed = batch
+        .ordered_events
+        .iter()
+        .filter_map(|event| match event.kind {
+            PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.state
+                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed) =>
+            {
+                Some(progress.command_id)
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(replayed.len(), command_ids.len());
+    assert!(
+        command_ids
+            .iter()
+            .all(|command_id| replayed.contains(command_id))
+    );
 }
 
 #[test]

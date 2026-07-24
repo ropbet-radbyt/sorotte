@@ -1528,6 +1528,16 @@ where
             .observe_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
     }
 
+    pub fn rebase_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .rebase_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
+    }
+
     pub fn reconcile_external_player_playback(
         &mut self,
         now_seconds: f64,

@@ -463,6 +463,7 @@ impl ServerRuntime {
             self.current_time_seconds()
         };
         self.prune_playback_barrier_request_tombstones();
+        self.persist_occupied_room_activity_if_due_at_for_all_rooms(now_seconds)?;
         let expired_persistent_rooms = self.expire_inactive_persistent_rooms_at(now_seconds)?;
         let mut outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
         if expired_persistent_rooms && self.persistent_rooms_enabled {

@@ -1316,6 +1316,23 @@ impl RuntimePlaybackCoordination {
         update: PlayerTransportTelemetryUpdate,
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_transport_with_semantics(update, external_now_seconds, false)
+    }
+
+    pub(crate) fn rebase_transport(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_transport_with_semantics(update, external_now_seconds, true)
+    }
+
+    fn observe_transport_with_semantics(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+        replace_previous_state: bool,
+    ) -> Vec<PlaybackCoordinatorAction> {
         // Receiving an update establishes adapter capability even when the
         // event itself is stale or cannot be bound to the active load. Once
         // known, reconnect validation must never fall back to direct player
@@ -1362,12 +1379,16 @@ impl RuntimePlaybackCoordination {
             );
             self.transport_telemetry_observed = true;
             let reported_or_retained_playback_rate = observation.playback_rate.or_else(|| {
-                self.latest_observation
-                    .as_ref()
-                    .and_then(|current| current.playback_rate)
+                (!replace_previous_state)
+                    .then(|| {
+                        self.latest_observation
+                            .as_ref()
+                            .and_then(|current| current.playback_rate)
+                    })
+                    .flatten()
             });
-            let motion_regime_transition =
-                self.latest_observation.as_ref().is_some_and(|current| {
+            let motion_regime_transition = !replace_previous_state
+                && self.latest_observation.as_ref().is_some_and(|current| {
                     observation
                         .phase
                         .is_some_and(|phase| current.phase != Some(phase))
@@ -1405,6 +1426,8 @@ impl RuntimePlaybackCoordination {
                         position_seconds,
                         playback_rate: effective_playback_rate,
                     });
+            } else if replace_previous_state {
+                self.latest_position_observation = None;
             } else if motion_regime_transition {
                 self.latest_position_observation = self
                     .project_position_observation_to(observed_at_seconds)
@@ -1415,9 +1438,17 @@ impl RuntimePlaybackCoordination {
                         position
                     });
             }
-            self.merge_latest_observation(observation.clone());
+            if replace_previous_state {
+                self.latest_observation = Some(observation.clone());
+            } else {
+                self.merge_latest_observation(observation.clone());
+            }
         }
-        let actions = self.coordinator.observe(observation);
+        let actions = if replace_previous_state {
+            self.coordinator.rebase_observation(observation)
+        } else {
+            self.coordinator.observe(observation)
+        };
         self.record_observation_outcomes(&actions);
         actions
     }
@@ -1432,6 +1463,18 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         }
         self.observe_transport(update, external_now_seconds)
+    }
+
+    pub(crate) fn rebase_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        if adapter_epoch != self.adapter_epoch {
+            return Vec::new();
+        }
+        self.rebase_transport(update, external_now_seconds)
     }
 
     /// Records an EOF discovered by a legacy attached-player surface that
@@ -3163,6 +3206,24 @@ where
         adapter_epoch: u64,
     ) -> Vec<PlaybackCoordinatorAction> {
         let mut actions = self.playback_coordination.observe_transport_at_epoch(
+            update,
+            now_seconds,
+            adapter_epoch,
+        );
+        let _ = self.handle_latest_player_readiness_observation();
+        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
+        let _ = self.report_playback_barrier_observations(&actions);
+        self.apply_external_coordinator_control_actions(&actions);
+        actions
+    }
+
+    pub fn rebase_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        let mut actions = self.playback_coordination.rebase_transport_at_epoch(
             update,
             now_seconds,
             adapter_epoch,
@@ -6890,6 +6951,92 @@ mod tests {
             runtime.projected_local_position_at(106.1, Some(30.0)),
             None,
             "room synchronization must not project a cache-stalled sample"
+        );
+    }
+
+    #[test]
+    fn authoritative_transport_rebase_clears_every_absent_sparse_field() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("authoritative-rebase").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let generation = PlayerMediaGeneration::new(1);
+        let mut stale = PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.0)),
+        )
+        .with_phase(PlayerTransportPhase::Seeking)
+        .with_position_seconds(45.0)
+        .with_logical_pause(true);
+        stale.playback_rate = Some(0.95);
+        stale.paused_for_cache = Some(true);
+        stale.cache_buffering_percent = Some(12.0);
+        stale.seeking = Some(true);
+        stale.seekable = Some(true);
+        stale.timeline_kind = Some(sorotte_player_api::PlayerTimelineKind::SlidingLive);
+        stale.core_idle = Some(true);
+        stale.playback_restart_sequence = Some(9);
+        stale.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+            100.0, 160.0,
+        )]);
+        stale.known_live_seekable_window =
+            Some(sorotte_player_api::PlayerSeekableRange::new(100.0, 160.0));
+        stale.buffered_ahead_seconds = Some(60.0);
+        stale.input_rate_bytes_per_second = Some(1_000_000);
+        runtime.observe_transport(stale, 1.0);
+
+        let replacement = PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
+        )
+        .with_phase(PlayerTransportPhase::Playing);
+        runtime.rebase_transport(replacement, 2.0);
+
+        let latest = runtime
+            .latest_observation
+            .as_ref()
+            .expect("replacement observation should remain current");
+        assert_eq!(latest.phase, Some(PlayerTransportPhase::Playing));
+        assert_eq!(latest.position_seconds, None);
+        assert_eq!(latest.playback_rate, None);
+        assert_eq!(latest.logical_pause, None);
+        assert_eq!(latest.paused_for_cache, None);
+        assert_eq!(latest.seeking, None);
+        assert_eq!(latest.seekable, None);
+        assert_eq!(latest.timeline_kind, None);
+        assert_eq!(latest.seekable_ranges, None);
+        assert_eq!(latest.known_live_seekable_window, None);
+        assert_eq!(latest.core_idle, None);
+        assert_eq!(latest.playback_restart_sequence, None);
+        assert_eq!(latest.cache_buffering_percent, None);
+        assert_eq!(latest.buffered_ahead_seconds, None);
+        assert_eq!(latest.input_rate_bytes_per_second, None);
+        assert!(runtime.latest_position_observation.is_none());
+
+        let observed = runtime
+            .coordinator
+            .observed_transport_for_test()
+            .expect("coordinator should accept the replacement");
+        assert_eq!(observed.phase, Some(PlayerTransportPhase::Playing));
+        assert_eq!(observed.position_seconds, None);
+        assert_eq!(observed.playback_rate, None);
+        assert_eq!(observed.logical_pause, None);
+        assert_eq!(observed.paused_for_cache, Some(false));
+        assert_eq!(observed.seeking, Some(false));
+        assert_eq!(observed.seekable, None);
+        assert_eq!(observed.timeline_kind, None);
+        assert_eq!(observed.seekable_ranges, None);
+        assert_eq!(observed.known_live_seekable_window, None);
+        assert_eq!(observed.core_idle, None);
+        assert_eq!(observed.playback_restart_sequence, Some(0));
+        assert_eq!(observed.cache_buffering_percent, None);
+        assert_eq!(observed.buffered_ahead_seconds, None);
+        assert_eq!(runtime.snapshot().metrics.last_buffered_ahead_seconds, None);
+        assert_eq!(
+            runtime.snapshot().metrics.last_input_rate_bytes_per_second,
+            None
         );
     }
 
