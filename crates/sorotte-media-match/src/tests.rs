@@ -330,6 +330,61 @@ fn media_index_build_validation_failure_leaves_live_index_unchanged() {
 }
 
 #[test]
+fn media_index_staging_with_invalid_schema_metadata_is_not_activated() {
+    let live_root = media_index_test_root("invalid-schema-stage-live");
+    let staging_root = media_index_test_root("invalid-schema-stage-staging");
+    let service = MediaIndexService::new(&live_root);
+    let live = service.open().expect("live index should open");
+    live.save_record(&record("live.mkv", 0), None)
+        .expect("live fixture should save");
+    drop(live);
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("staging transaction should begin");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    staged
+        .save_record(&record("staged.mkv", 1), None)
+        .expect("staged fixture should save");
+    drop(staged);
+    let staging_path = MediaIndexService::new(&staging_root).index_path();
+    let connection =
+        rusqlite::Connection::open(&staging_path).expect("staged database should be mutable");
+    connection
+        .execute("DELETE FROM metadata WHERE key = 'schema_version'", [])
+        .expect("staged schema metadata should be removable");
+    drop(connection);
+
+    let error = transaction
+        .commit()
+        .expect_err("a database that activated open would reject must not receive the manifest");
+    let MediaIndexCommitError::NotActivated(error) = error;
+    assert!(error.contains("schema version 0"));
+    assert!(
+        !live_root.join("current.json").exists(),
+        "failed schema validation must not publish a manifest"
+    );
+    assert!(
+        !live_root.join("generations").exists()
+            || std::fs::read_dir(live_root.join("generations"))
+                .expect("generation directory should be readable")
+                .next()
+                .is_none(),
+        "failed schema validation must not retain an orphan generation"
+    );
+    let current = service
+        .open()
+        .expect("the old live index should still open");
+    assert_eq!(
+        current.inventory_paths().expect("inventory should load"),
+        vec!["live.mkv".to_owned()]
+    );
+    drop(current);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
 fn media_index_manifest_activation_failure_leaves_previous_generation_active() {
     let live_root = media_index_test_root("manifest-failure-live");
     let staging_root = media_index_test_root("manifest-failure-staging");
@@ -484,6 +539,63 @@ fn media_index_post_activation_cleanup_failure_reports_success_with_warning() {
     drop(current);
 
     std::fs::remove_dir_all(staging_root).expect("staging fixture should be removable");
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_post_manifest_replace_sync_failure_preserves_activated_generation() {
+    use crate::media_index::MediaIndexCommitFailurePoint;
+
+    let live_root = media_index_test_root("post-manifest-replace-live");
+    let staging_root = media_index_test_root("post-manifest-replace-staging");
+    let service = MediaIndexService::new(&live_root);
+    let live = service.open().expect("live index should open");
+    live.save_record(&record("live.mkv", 0), None)
+        .expect("live fixture should save");
+    drop(live);
+
+    let mut transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("staging transaction should begin");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    staged
+        .save_record(&record("staged.mkv", 1), None)
+        .expect("staged fixture should save");
+    drop(staged);
+    transaction.set_test_failure_point(
+        MediaIndexCommitFailurePoint::AfterManifestReplacementBeforeDirectorySync,
+    );
+
+    let outcome = transaction
+        .commit()
+        .expect("post-replacement durability failure must still report activation");
+    assert!(matches!(
+        outcome,
+        crate::MediaIndexCommitOutcome::Activated {
+            cleanup_warning: Some(_),
+        }
+    ));
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(live_root.join("current.json")).expect("manifest should be visible"),
+    )
+    .expect("manifest should parse");
+    let generation = manifest["current"]
+        .as_str()
+        .expect("manifest should name the activated generation");
+    assert!(
+        live_root
+            .join("generations")
+            .join(generation)
+            .join("index-v3.sqlite3")
+            .is_file(),
+        "a manifest-referenced generation must never be deleted after replacement"
+    );
+    let current = service.open().expect("activated generation should open");
+    let paths = current.inventory_paths().expect("inventory should load");
+    assert!(paths.contains(&"live.mkv".to_owned()));
+    assert!(paths.contains(&"staged.mkv".to_owned()));
+    drop(current);
     std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
 }
 
@@ -760,9 +872,129 @@ fn media_index_missing_current_falls_back_to_previous_without_initializing() {
 }
 
 #[test]
+fn media_index_invalid_current_schema_metadata_falls_back_to_previous_generation() {
+    let live_root = media_index_test_root("invalid-current-schema-recovery");
+    let service = MediaIndexService::new(&live_root);
+    drop(service.open().expect("initial index should open"));
+    for (index, path) in [(1, "previous.mkv"), (2, "current-only.mkv")] {
+        let staging_root = media_index_test_root(&format!("invalid-current-schema-stage-{index}"));
+        let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+            .expect("staging transaction should begin");
+        let staged = MediaIndexService::new(&staging_root)
+            .open()
+            .expect("staged index should open");
+        staged
+            .save_record(&record(path, index), None)
+            .expect("staged record should save");
+        drop(staged);
+        transaction.commit().expect("generation should activate");
+    }
+    let manifest_path = live_root.join("current.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("manifest should exist"))
+            .expect("manifest should parse");
+    let current = manifest["current"]
+        .as_str()
+        .expect("current generation should be named");
+    let previous = manifest["previous"]
+        .as_str()
+        .expect("previous generation should be named")
+        .to_owned();
+    let current_path = live_root
+        .join("generations")
+        .join(current)
+        .join("index-v3.sqlite3");
+    let connection =
+        rusqlite::Connection::open(&current_path).expect("current generation should be mutable");
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("current schema metadata should be corruptible");
+    drop(connection);
+
+    let recovered = service
+        .open()
+        .expect("recovery should try and open the valid previous generation");
+    let paths = recovered
+        .inventory_paths()
+        .expect("recovered inventory should load");
+    assert!(paths.contains(&"previous.mkv".to_owned()));
+    assert!(!paths.contains(&"current-only.mkv".to_owned()));
+    drop(recovered);
+    let repaired: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&manifest_path).expect("manifest should be repaired"),
+    )
+    .expect("repaired manifest should parse");
+    assert_eq!(repaired["current"].as_str(), Some(previous.as_str()));
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_first_generation_failure_recovers_retained_legacy_index() {
+    let live_root = media_index_test_root("first-generation-legacy-rollback");
+    let staging_root = media_index_test_root("first-generation-legacy-rollback-stage");
+    let service = MediaIndexService::new(&live_root);
+    let legacy = service.open().expect("legacy index should open");
+    legacy
+        .save_record(&record("legacy-only.mkv", 0), None)
+        .expect("legacy fixture should save");
+    drop(legacy);
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("first staging transaction should begin");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    staged
+        .save_record(&record("new-generation-only.mkv", 1), None)
+        .expect("new-generation fixture should save");
+    drop(staged);
+    transaction
+        .commit()
+        .expect("first generation should activate");
+    assert!(
+        live_root.join("index-v3.sqlite3").is_file(),
+        "the only rollback copy must remain until a second generation activates"
+    );
+
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(live_root.join("current.json")).expect("manifest should exist"),
+    )
+    .expect("manifest should parse");
+    let current = manifest["current"]
+        .as_str()
+        .expect("current generation should be named");
+    let current_path = live_root
+        .join("generations")
+        .join(current)
+        .join("index-v3.sqlite3");
+    let connection =
+        rusqlite::Connection::open(&current_path).expect("current generation should be mutable");
+    connection
+        .execute("DROP TABLE metadata", [])
+        .expect("current schema metadata should be removable");
+    drop(connection);
+
+    let recovered = service
+        .open()
+        .expect("the retained pre-migration index should recover");
+    assert_eq!(
+        recovered
+            .inventory_paths()
+            .expect("legacy inventory should load"),
+        vec!["legacy-only.mkv".to_owned()]
+    );
+    drop(recovered);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
 fn media_index_missing_all_referenced_generations_fails_without_recreating_database() {
     let live_root = media_index_test_root("missing-all-generations");
     let staging_root = media_index_test_root("missing-all-generations-stage");
+    let second_staging_root = media_index_test_root("missing-all-generations-stage-2");
     let service = MediaIndexService::new(&live_root);
     drop(service.open().expect("initial index should open"));
     let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
@@ -773,6 +1005,20 @@ fn media_index_missing_all_referenced_generations_fails_without_recreating_datab
             .expect("staged index should open"),
     );
     transaction.commit().expect("generation should activate");
+    let second_transaction = MediaIndexBuildTransaction::begin(&live_root, &second_staging_root)
+        .expect("second staging transaction should begin");
+    drop(
+        MediaIndexService::new(&second_staging_root)
+            .open()
+            .expect("second staged index should open"),
+    );
+    second_transaction
+        .commit()
+        .expect("second generation should activate and retire the legacy rollback");
+    assert!(
+        !live_root.join("index-v3.sqlite3").exists(),
+        "legacy rollback should retire only after a second generation activates"
+    );
     std::fs::remove_dir_all(live_root.join("generations"))
         .expect("all generations should be removable");
 

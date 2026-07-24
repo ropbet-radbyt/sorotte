@@ -48,6 +48,7 @@ pub(crate) enum MediaIndexCommitFailurePoint {
     DuringGenerationCopy,
     DuringReplacementValidation,
     DuringManifestReplacement,
+    AfterManifestReplacementBeforeDirectorySync,
     DuringStagingCleanup,
 }
 
@@ -161,8 +162,10 @@ pub struct MediaIndexBuildTransaction {
     live_root: PathBuf,
     staging_root: PathBuf,
     had_live_index: bool,
+    previous_generation: Option<String>,
     finished: bool,
-    activated: bool,
+    manifest_replaced: bool,
+    manifest_durable: bool,
     created_generation_root: Option<PathBuf>,
     #[cfg(test)]
     test_failure_point: Option<MediaIndexCommitFailurePoint>,
@@ -189,9 +192,22 @@ impl MediaIndexBuildTransaction {
             )
         })?;
 
-        let active_root = match resolve_media_index_root(&live_root)? {
-            ResolvedMediaIndexRoot::ExistingGeneration(root)
-            | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
+        let (active_root, previous_generation) = match resolve_media_index_root(&live_root)? {
+            ResolvedMediaIndexRoot::ExistingGeneration(root) => {
+                let generation = root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| valid_generation_name(name))
+                    .ok_or_else(|| {
+                        format!(
+                            "resolved media-match generation '{}' has no valid generation name",
+                            root.display()
+                        )
+                    })?
+                    .to_owned();
+                (root, Some(generation))
+            }
+            ResolvedMediaIndexRoot::LegacyOrNew(root) => (root, None),
         };
         let live_path = media_match_v3_index_path(&active_root);
         let had_live_index = live_path.exists();
@@ -205,8 +221,10 @@ impl MediaIndexBuildTransaction {
             live_root,
             staging_root,
             had_live_index,
+            previous_generation,
             finished: false,
-            activated: false,
+            manifest_replaced: false,
+            manifest_durable: false,
             created_generation_root: None,
             #[cfg(test)]
             test_failure_point: None,
@@ -278,14 +296,31 @@ impl MediaIndexBuildTransaction {
                 )
             })?;
         sync_directory(&generation_root)?;
-        let previous = current_manifest_generation(&self.live_root);
+        let previous = self.previous_generation.clone();
         #[cfg(test)]
         self.inject_test_failure(MediaIndexCommitFailurePoint::DuringManifestReplacement)?;
-        write_media_index_manifest(&self.live_root, &generation, previous.as_deref())?;
-        self.activated = true;
+        #[cfg(test)]
+        let manifest_write = write_media_index_manifest_with_post_replace_check(
+            &self.live_root,
+            &generation,
+            previous.as_deref(),
+            || {
+                self.inject_test_failure(
+                    MediaIndexCommitFailurePoint::AfterManifestReplacementBeforeDirectorySync,
+                )
+            },
+        )?;
+        #[cfg(not(test))]
+        let manifest_write =
+            write_media_index_manifest(&self.live_root, &generation, previous.as_deref())?;
+        self.manifest_replaced = true;
+        self.manifest_durable = manifest_write.durable;
         self.created_generation_root = None;
         self.finished = true;
         let mut cleanup_warnings = Vec::new();
+        if let Some(warning) = manifest_write.warning {
+            cleanup_warnings.push(warning);
+        }
         #[cfg(test)]
         let staging_cleanup = self
             .inject_test_failure(MediaIndexCommitFailurePoint::DuringStagingCleanup)
@@ -295,8 +330,12 @@ impl MediaIndexBuildTransaction {
         if let Err(error) = staging_cleanup {
             cleanup_warnings.push(error);
         }
-        if let Err(error) =
-            collect_old_media_index_generations(&self.live_root, &generation, previous.as_deref())
+        if self.manifest_durable
+            && let Err(error) = collect_old_media_index_generations(
+                &self.live_root,
+                &generation,
+                previous.as_deref(),
+            )
         {
             cleanup_warnings.push(error);
         }
@@ -314,7 +353,7 @@ impl MediaIndexBuildTransaction {
 
 impl Drop for MediaIndexBuildTransaction {
     fn drop(&mut self) {
-        if !self.activated
+        if !self.manifest_replaced
             && let Some(generation_root) = self.created_generation_root.take()
         {
             let _ = remove_directory_if_exists(&generation_root);
@@ -826,13 +865,6 @@ fn media_index_generation_names(root: &Path) -> Vec<String> {
     entries.into_iter().map(|(_, name)| name).collect()
 }
 
-fn current_manifest_generation(root: &Path) -> Option<String> {
-    read_media_index_manifest(root)
-        .ok()
-        .flatten()
-        .map(|manifest| manifest.current)
-}
-
 fn cleanup_abandoned_media_index_builds(root: &Path) {
     let Some(cache_root) = root.parent() else {
         return;
@@ -918,7 +950,8 @@ fn collect_old_media_index_generations(
     };
     let mut warnings = Vec::new();
     let legacy_path = media_match_v3_index_path(root);
-    if legacy_path.exists()
+    if previous.is_some()
+        && legacy_path.exists()
         && let Err(error) = remove_sqlite_file_set(&legacy_path)
     {
         warnings.push(error);
@@ -944,11 +977,26 @@ fn collect_old_media_index_generations(
     }
 }
 
+#[derive(Debug)]
+struct MediaIndexManifestWriteOutcome {
+    durable: bool,
+    warning: Option<String>,
+}
+
 fn write_media_index_manifest(
     root: &Path,
     generation: &str,
     previous: Option<&str>,
-) -> Result<(), String> {
+) -> Result<MediaIndexManifestWriteOutcome, String> {
+    write_media_index_manifest_with_post_replace_check(root, generation, previous, || Ok(()))
+}
+
+fn write_media_index_manifest_with_post_replace_check(
+    root: &Path,
+    generation: &str,
+    previous: Option<&str>,
+    post_replace_check: impl FnOnce() -> Result<(), String>,
+) -> Result<MediaIndexManifestWriteOutcome, String> {
     fs::create_dir_all(root).map_err(|error| {
         format!(
             "failed creating media-match manifest directory '{}': {error}",
@@ -992,8 +1040,19 @@ fn write_media_index_manifest(
             manifest_path.display()
         ));
     }
-    sync_directory(root)?;
-    Ok(())
+    match post_replace_check().and_then(|()| sync_directory(root)) {
+        Ok(()) => Ok(MediaIndexManifestWriteOutcome {
+            durable: true,
+            warning: None,
+        }),
+        Err(error) => Ok(MediaIndexManifestWriteOutcome {
+            durable: false,
+            warning: Some(format!(
+                "media-match generation manifest '{}' was replaced but directory durability could not be confirmed: {error}",
+                manifest_path.display()
+            )),
+        }),
+    }
 }
 
 #[cfg(not(windows))]
@@ -1103,60 +1162,20 @@ fn online_backup_database(source_path: &Path, destination_path: &Path) -> Result
 }
 
 fn validate_media_index_database(path: &Path) -> Result<(), String> {
-    if !path.is_file() {
-        return Err(format!(
-            "media-match index candidate '{}' is missing",
-            path.display()
-        ));
-    }
-    let connection = Connection::open(path).map_err(|error| {
+    let root = path.parent().ok_or_else(|| {
         format!(
-            "failed opening media-match index candidate '{}': {error}",
+            "media-match index candidate '{}' has no parent directory",
             path.display()
         )
     })?;
-    let quick_check: String = connection
-        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+    open_existing_media_match_v3_index(root)
+        .map(drop)
         .map_err(|error| {
             format!(
-                "failed validating media-match index candidate '{}': {error}",
+                "media-match index candidate '{}' failed activated-open validation: {error}",
                 path.display()
             )
-        })?;
-    if quick_check != "ok" {
-        return Err(format!(
-            "media-match index candidate '{}' failed quick_check: {quick_check}",
-            path.display()
-        ));
-    }
-    for table in [
-        "media_files_v3",
-        "settings_v3",
-        "fingerprints_v3",
-        "audio_anchor_buckets_v3",
-    ] {
-        let exists = connection
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                [table],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(|error| {
-                format!(
-                    "failed checking media-match schema in '{}': {error}",
-                    path.display()
-                )
-            })?
-            .is_some();
-        if !exists {
-            return Err(format!(
-                "media-match index candidate '{}' is missing required table '{table}'",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
+        })
 }
 
 fn media_index_transaction_unique() -> String {

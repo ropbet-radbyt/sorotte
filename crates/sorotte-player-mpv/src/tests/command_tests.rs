@@ -774,6 +774,120 @@ fn buffered_b_stop_after_c_submission_never_publishes_a_c_terminal() {
 }
 
 #[test]
+fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance() {
+    let (transport, state) = fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+    state.synthesize_path_queries();
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    let command_b = adapter
+        .execute_tracked(PlayerCommand::OpenFile("b.mkv".to_owned()))
+        .expect("B should be accepted");
+    assert_accepted(
+        adapter
+            .take_command_progress()
+            .expect("B acceptance should be reported"),
+        command_b,
+    );
+    let generation_b = adapter
+        .media_generation()
+        .expect("B should own a pending generation");
+
+    let next_request_id = |state: &FakeTransportStateHandle| {
+        state
+            .writes()
+            .iter()
+            .filter_map(|write| {
+                serde_json::from_str::<Value>(write)
+                    .ok()?
+                    .get("request_id")?
+                    .as_u64()
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    };
+    let c_request_id = next_request_id(&state);
+    let c_response = format!(r#"{{"request_id":{c_request_id},"error":"success"}}"#);
+    state.queue_playlist_query_unavailable();
+    state.queue_reads(&[
+        &c_response,
+        r#"{"event":"start-file","playlist_entry_id":999}"#,
+    ]);
+    let command_c = adapter
+        .execute_tracked(PlayerCommand::OpenFile("c.mkv".to_owned()))
+        .expect("C should be accepted despite the missing initial playlist snapshot");
+    let generation_c = adapter
+        .media_generation()
+        .expect("C should remain the pending generation");
+    assert_ne!(generation_b, generation_c);
+    assert!(
+        adapter.load_lifecycle_reacquisition_required_for_test(),
+        "the missing playlist result and unknown start-file ID require adapter reconciliation"
+    );
+
+    // One consumer delivery is allowed to rebuild its ordered snapshot, but two failed
+    // authoritative maintenance attempts keep the adapter-level ownership condition armed.
+    state.queue_playlist_query_error();
+    state.queue_playlist_query_error();
+    let _ = adapter
+        .take_ordered_event_batch()
+        .expect("consumer batch should remain available during ownership ambiguity");
+    assert!(
+        adapter.load_lifecycle_reacquisition_required_for_test(),
+        "consumer event replay must not clear unresolved physical load ownership"
+    );
+
+    adapter.maintain_runtime_integrations();
+    assert!(
+        !adapter.load_lifecycle_reacquisition_required_for_test(),
+        "a later authoritative playlist/path query should reconcile ownership; adapter: {adapter:?}; writes: {:?}",
+        state.writes()
+    );
+    assert!(
+        !adapter.has_load_transition_for_test(generation_b),
+        "the conclusively absent B transition must not remain accepted indefinitely; pending: {:?}",
+        adapter.pending_load_transition_generations_for_test()
+    );
+    assert!(
+        adapter.has_load_transition_for_test(generation_c),
+        "the authoritative current playlist entry should bind to C"
+    );
+
+    let lifecycle_request_id = next_request_id(&state);
+    let mut lifecycle_reads = vec![
+        r#"{"event":"file-loaded"}"#.to_owned(),
+        r#"{"event":"playback-restart"}"#.to_owned(),
+        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success"}}"#),
+    ];
+    lifecycle_reads.extend(
+        (lifecycle_request_id.saturating_add(1)..=lifecycle_request_id.saturating_add(24)).map(
+            |request_id| format!(r#"{{"request_id":{request_id},"error":"success","data":null}}"#),
+        ),
+    );
+    state.queue_reads(
+        &lifecycle_reads
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    adapter
+        .set_playback_rate(1.0)
+        .expect("C lifecycle should continue after reconciliation");
+    let progress = std::iter::from_fn(|| adapter.take_command_progress()).collect::<Vec<_>>();
+    assert!(progress.iter().any(|progress| {
+        progress.command_id == command_c
+            && progress.state
+                == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+    }));
+    assert!(progress.iter().all(|progress| {
+        progress.command_id != command_b
+            || !matches!(
+                progress.state,
+                PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(_))
+            )
+    }));
+}
+
+#[test]
 fn rejected_replacement_restores_the_previous_accepted_load_transition() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"request_id":1,"error":"success"}"#,

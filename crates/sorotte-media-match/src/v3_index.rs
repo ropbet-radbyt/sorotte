@@ -244,14 +244,86 @@ pub(crate) fn open_existing_media_match_v3_index(root: &Path) -> Result<Connecti
                 path.display()
             )
         })?;
-    let version = sqlite_schema_version(&connection)?;
+    validate_existing_media_match_v3_connection(&connection, &path)?;
+    Ok(connection)
+}
+
+fn validate_existing_media_match_v3_connection(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), String> {
+    let mut quick_check_statement = connection.prepare("PRAGMA quick_check").map_err(|error| {
+        format!(
+            "failed preparing integrity validation for activated media-match V3 index '{}': {error}",
+            path.display()
+        )
+    })?;
+    let quick_check = quick_check_statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| {
+            format!(
+                "failed validating activated media-match V3 index '{}': {error}",
+                path.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "failed reading integrity validation for activated media-match V3 index '{}': {error}",
+                path.display()
+            )
+        })?;
+    if quick_check.as_slice() != ["ok"] {
+        return Err(format!(
+            "activated media-match V3 index '{}' failed quick_check: {}",
+            path.display(),
+            quick_check.join("; ")
+        ));
+    }
+
+    for table in [
+        "metadata",
+        "media_files_v3",
+        "settings_v3",
+        "fingerprints_v3",
+        "audio_anchor_buckets_v3",
+        "audio_anchor_occurrences_v3",
+    ] {
+        if !sqlite_table_exists(connection, table)? {
+            return Err(format!(
+                "activated media-match V3 index '{}' is missing required table '{table}'",
+                path.display()
+            ));
+        }
+    }
+    let version = sqlite_schema_version(connection)?;
     if version != MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION {
         return Err(format!(
             "activated media-match V3 index '{}' has schema version {version}, expected {MEDIA_MATCH_V3_SQLITE_SCHEMA_VERSION}",
             path.display()
         ));
     }
-    Ok(connection)
+    let required_index_exists = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            ["idx_audio_anchor_occurrences_v3_file"],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| {
+            format!(
+                "failed checking required indexes in activated media-match V3 index '{}': {error}",
+                path.display()
+            )
+        })?
+        .is_some();
+    if !required_index_exists {
+        return Err(format!(
+            "activated media-match V3 index '{}' is missing required index 'idx_audio_anchor_occurrences_v3_file'",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 pub fn initialize_media_match_v3_index(connection: &Connection) -> Result<(), String> {

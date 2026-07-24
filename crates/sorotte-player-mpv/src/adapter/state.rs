@@ -110,6 +110,10 @@ impl fmt::Debug for MpvAdapter {
                     .collect::<Vec<_>>(),
             )
             .field(
+                "load_lifecycle_reacquisition_required",
+                &self.load_lifecycle_reacquisition_required,
+            )
+            .field(
                 "interrupted_network_stream_recovery",
                 &self.interrupted_network_stream_recovery,
             )
@@ -286,6 +290,7 @@ impl Default for MpvAdapter {
             unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             load_transitions: BTreeMap::new(),
+            load_lifecycle_reacquisition_required: false,
             provisional_eof_observation: None,
             interrupted_network_stream_recovery: None,
             network_cache_stall: None,

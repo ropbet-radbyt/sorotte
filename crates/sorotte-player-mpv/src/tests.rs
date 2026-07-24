@@ -13,7 +13,8 @@ use crate::constants::{
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
     LEGACY_SYNCPLAYINTF_PROTOCOL, LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
     LEGACY_SYNCPLAYINTF_SCRIPT_NAME, MPV_COMMAND_GET_PROPERTY, MPV_COMMAND_LOADFILE,
-    MPV_EVENT_START_FILE, MPV_PROPERTY_PLAYLIST,
+    MPV_EVENT_START_FILE, MPV_PROPERTY_DURATION, MPV_PROPERTY_FILE_SIZE, MPV_PROPERTY_PATH,
+    MPV_PROPERTY_PLAYLIST,
 };
 use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
@@ -63,6 +64,8 @@ fn fake_transport_with_reads(lines: &[&str]) -> (FakeTransport, FakeTransportSta
         writes: Vec::new(),
         current_playlist_entry_id: None,
         current_playlist_path: None,
+        playlist_query_overrides: VecDeque::new(),
+        synthesize_path_queries: false,
     }));
     (
         FakeTransport {
@@ -122,22 +125,91 @@ impl MpvJsonIpcTransport for FakeTransport {
                     *queued = value.to_string() + "\n";
                 }
             }
-            if let Some(queued_start_id) = state.reads.iter().find_map(|queued| {
-                let event = serde_json::from_str::<Value>(queued.trim_end()).ok()?;
-                (event.get("event").and_then(Value::as_str) == Some(MPV_EVENT_START_FILE))
-                    .then(|| event.get("playlist_entry_id").and_then(Value::as_u64))
-                    .flatten()
-            }) {
-                state.current_playlist_entry_id = Some(queued_start_id);
+            let response = match state.playlist_query_overrides.pop_front() {
+                Some(FakePlaylistQueryOverride::Unavailable) => json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": null,
+                }),
+                Some(FakePlaylistQueryOverride::Error) => json!({
+                    "request_id": request_id,
+                    "error": "property unavailable",
+                }),
+                None => {
+                    if let Some(queued_start_id) = state.reads.iter().find_map(|queued| {
+                        let event = serde_json::from_str::<Value>(queued.trim_end()).ok()?;
+                        (event.get("event").and_then(Value::as_str) == Some(MPV_EVENT_START_FILE))
+                            .then(|| event.get("playlist_entry_id").and_then(Value::as_u64))
+                            .flatten()
+                    }) {
+                        state.current_playlist_entry_id = Some(queued_start_id);
+                    }
+                    let data = state.current_playlist_entry_id.map(|id| {
+                        json!([{
+                            "id": id,
+                            "filename": state.current_playlist_path,
+                            "current": true,
+                            "playing": true,
+                        }])
+                    });
+                    json!({
+                        "request_id": request_id,
+                        "error": "success",
+                        "data": data,
+                    })
+                }
+            };
+            state.reads.push_front(response.to_string() + "\n");
+        } else if command.first().and_then(Value::as_str) == Some(MPV_COMMAND_GET_PROPERTY)
+            && command.get(1).and_then(Value::as_str) == Some(MPV_PROPERTY_PATH)
+            && state.synthesize_path_queries
+        {
+            for queued in &mut state.reads {
+                let Ok(mut value) = serde_json::from_str::<Value>(queued.trim_end()) else {
+                    continue;
+                };
+                let Some(scripted_id) = value.get("request_id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if scripted_id >= request_id {
+                    value["request_id"] = json!(scripted_id.saturating_add(1));
+                    *queued = value.to_string() + "\n";
+                }
             }
-            let data = state.current_playlist_entry_id.map(|id| {
-                json!([{
-                    "id": id,
-                    "filename": state.current_playlist_path,
-                    "current": true,
-                    "playing": true,
-                }])
-            });
+            let current_playlist_path = state.current_playlist_path.clone();
+            state.reads.push_front(
+                json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": current_playlist_path,
+                })
+                .to_string()
+                    + "\n",
+            );
+        } else if command.first().and_then(Value::as_str) == Some(MPV_COMMAND_GET_PROPERTY)
+            && state.synthesize_path_queries
+            && matches!(
+                command.get(1).and_then(Value::as_str),
+                Some(MPV_PROPERTY_DURATION) | Some(MPV_PROPERTY_FILE_SIZE)
+            )
+        {
+            for queued in &mut state.reads {
+                let Ok(mut value) = serde_json::from_str::<Value>(queued.trim_end()) else {
+                    continue;
+                };
+                let Some(scripted_id) = value.get("request_id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if scripted_id >= request_id {
+                    value["request_id"] = json!(scripted_id.saturating_add(1));
+                    *queued = value.to_string() + "\n";
+                }
+            }
+            let data = if command.get(1).and_then(Value::as_str) == Some(MPV_PROPERTY_DURATION) {
+                json!(1200.0)
+            } else {
+                json!(4096)
+            };
             state.reads.push_front(
                 json!({
                     "request_id": request_id,
@@ -278,6 +350,14 @@ struct FakeTransportState {
     writes: Vec<String>,
     current_playlist_entry_id: Option<u64>,
     current_playlist_path: Option<String>,
+    playlist_query_overrides: VecDeque<FakePlaylistQueryOverride>,
+    synthesize_path_queries: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FakePlaylistQueryOverride {
+    Unavailable,
+    Error,
 }
 
 #[derive(Debug)]
@@ -306,5 +386,28 @@ impl FakeTransportStateHandle {
             }
             line
         }));
+    }
+
+    fn queue_playlist_query_unavailable(&self) {
+        self.shared
+            .lock()
+            .expect("fake transport mutex should not be poisoned")
+            .playlist_query_overrides
+            .push_back(FakePlaylistQueryOverride::Unavailable);
+    }
+
+    fn queue_playlist_query_error(&self) {
+        self.shared
+            .lock()
+            .expect("fake transport mutex should not be poisoned")
+            .playlist_query_overrides
+            .push_back(FakePlaylistQueryOverride::Error);
+    }
+
+    fn synthesize_path_queries(&self) {
+        self.shared
+            .lock()
+            .expect("fake transport mutex should not be poisoned")
+            .synthesize_path_queries = true;
     }
 }

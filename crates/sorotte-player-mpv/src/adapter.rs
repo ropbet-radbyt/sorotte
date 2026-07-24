@@ -4,7 +4,7 @@ mod player_adapter;
 mod state;
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
     path::{Path, PathBuf},
     process,
@@ -541,6 +541,13 @@ struct LoadTransition {
     state: LoadTransitionState,
 }
 
+#[derive(Debug, Clone)]
+struct AuthoritativePlaylistEntry {
+    id: u64,
+    filename: Option<String>,
+    current: bool,
+}
+
 #[derive(Debug)]
 enum TrackedCommandKind {
     Load {
@@ -710,6 +717,7 @@ pub struct MpvAdapter {
     unacknowledged_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     pending_chat_requests: VecDeque<String>,
     load_transitions: BTreeMap<PlayerMediaGeneration, LoadTransition>,
+    load_lifecycle_reacquisition_required: bool,
     provisional_eof_observation: Option<ProvisionalEofObservation>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
     network_cache_stall: Option<NetworkCacheStall>,
@@ -1461,6 +1469,7 @@ impl MpvAdapter {
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
         self.drain_ipc_events_if_attached();
+        self.maintain_load_lifecycle_reacquisition();
         self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_media_options_hook_lease();
         self.maintain_legacy_syncplayintf_lease();
@@ -1468,6 +1477,7 @@ impl MpvAdapter {
         // their control faults and ordinary observations, then recover an ownership loss in the
         // same pump so a transient lease expiry never reaches the GUI as incomplete setup.
         self.drain_ipc_events_if_attached();
+        self.maintain_load_lifecycle_reacquisition();
         self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_cache_stall_recovery();
     }
@@ -2784,11 +2794,13 @@ impl MpvAdapter {
             .ipc_client
             .as_mut()
             .and_then(|client| client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten());
-        if let Some(playlist_entry_id) = authoritative_playlist
+        let playlist_entry_id = authoritative_playlist
             .as_ref()
-            .and_then(Self::authoritative_playlist_entry_id)
-        {
+            .and_then(Self::authoritative_playlist_entry_id);
+        if let Some(playlist_entry_id) = playlist_entry_id {
             self.bind_load_transition_playlist_entry(generation, playlist_entry_id);
+        } else {
+            self.load_lifecycle_reacquisition_required = true;
         }
         self.network_media_options_embedded_load =
             (!self.network_media_options.is_empty()).then(|| EmbeddedNetworkMediaOptions {
@@ -4452,6 +4464,10 @@ impl MpvAdapter {
         )
     }
 
+    fn transition_needs_lifecycle_reconciliation(transition: &LoadTransition) -> bool {
+        Self::transition_is_pending(transition) || transition.state == LoadTransitionState::Loaded
+    }
+
     fn pending_load_transition(&self) -> Option<&LoadTransition> {
         self.load_transitions
             .values()
@@ -4540,7 +4556,7 @@ impl MpvAdapter {
             .get(&playlist_entry_id)
             .is_some_and(|mapped| *mapped != generation)
         {
-            self.ordered_player_event_reacquisition_required = true;
+            self.flag_ambiguous_load_lifecycle();
             return false;
         }
         let Some(transition) = self.load_transitions.get_mut(&generation) else {
@@ -4550,7 +4566,7 @@ impl MpvAdapter {
             .playlist_entry_id
             .is_some_and(|existing| existing != playlist_entry_id)
         {
-            self.ordered_player_event_reacquisition_required = true;
+            self.flag_ambiguous_load_lifecycle();
             return false;
         }
         transition.playlist_entry_id = Some(playlist_entry_id);
@@ -4574,6 +4590,226 @@ impl MpvAdapter {
         })
     }
 
+    fn authoritative_playlist_entries(playlist: &Value) -> Vec<AuthoritativePlaylistEntry> {
+        let Some(values) = playlist.as_array() else {
+            return Vec::new();
+        };
+        let mut entries = values
+            .iter()
+            .filter_map(|entry| {
+                let id = entry.get("id").and_then(|id| {
+                    id.as_u64()
+                        .or_else(|| id.as_i64().and_then(|value| value.try_into().ok()))
+                })?;
+                Some(AuthoritativePlaylistEntry {
+                    id,
+                    filename: entry
+                        .get("filename")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    current: entry.get("current").and_then(Value::as_bool) == Some(true)
+                        || entry.get("playing").and_then(Value::as_bool) == Some(true),
+                })
+            })
+            .collect::<Vec<_>>();
+        if entries.len() == 1 {
+            entries[0].current = true;
+        }
+        entries
+    }
+
+    fn load_transition_matches_authoritative_target(
+        transition: &LoadTransition,
+        authoritative_target: &str,
+    ) -> bool {
+        let update = Self::local_file_update_for_path(authoritative_target);
+        Self::local_file_update_matches_request(&update, &transition.requested_target)
+    }
+
+    fn retire_reconciled_load_transition(&mut self, generation: PlayerMediaGeneration) {
+        let command_id = self
+            .load_transitions
+            .get_mut(&generation)
+            .and_then(|transition| {
+                transition.state = LoadTransitionState::Superseded;
+                transition.command_id
+            });
+        self.load_transitions.remove(&generation);
+        if let Some(command_id) = command_id
+            && self
+                .pending_tracked_commands
+                .iter()
+                .any(|command| command.id == command_id)
+        {
+            self.finish_tracked_command(command_id, PlayerCommandResult::Superseded);
+        }
+    }
+
+    fn reconcile_load_lifecycle_from_authority(
+        &mut self,
+        playlist: &Value,
+        current_path: Option<&str>,
+    ) -> bool {
+        let entries = Self::authoritative_playlist_entries(playlist);
+        if entries.is_empty() {
+            return false;
+        }
+        let present_ids = entries.iter().map(|entry| entry.id).collect::<HashSet<_>>();
+        let current_entry = entries.iter().find(|entry| entry.current).cloned();
+        let current_target = current_path.or_else(|| {
+            current_entry
+                .as_ref()
+                .and_then(|entry| entry.filename.as_deref())
+        });
+
+        let mut clear_binding = Vec::new();
+        let mut retire = Vec::new();
+        for transition in self
+            .load_transitions
+            .values()
+            .filter(|transition| Self::transition_needs_lifecycle_reconciliation(transition))
+        {
+            let Some(playlist_entry_id) = transition.playlist_entry_id else {
+                continue;
+            };
+            if present_ids.contains(&playlist_entry_id) {
+                continue;
+            }
+            if current_target.is_some_and(|target| {
+                Self::load_transition_matches_authoritative_target(transition, target)
+            }) {
+                clear_binding.push(transition.generation);
+            } else {
+                retire.push(transition.generation);
+            }
+        }
+        for generation in clear_binding {
+            if let Some(transition) = self.load_transitions.get_mut(&generation) {
+                transition.playlist_entry_id = None;
+            }
+        }
+        for generation in retire {
+            self.retire_reconciled_load_transition(generation);
+        }
+
+        for entry in &entries {
+            if self.playlist_entry_generations.contains_key(&entry.id) {
+                continue;
+            }
+            let authoritative_target = if entry.current {
+                current_path.or(entry.filename.as_deref())
+            } else {
+                entry.filename.as_deref()
+            };
+            let Some(authoritative_target) = authoritative_target else {
+                continue;
+            };
+            let candidates = self
+                .load_transitions
+                .values()
+                .filter(|transition| {
+                    Self::transition_needs_lifecycle_reconciliation(transition)
+                        && transition.playlist_entry_id.is_none()
+                        && Self::load_transition_matches_authoritative_target(
+                            transition,
+                            authoritative_target,
+                        )
+                })
+                .map(|transition| transition.generation)
+                .collect::<Vec<_>>();
+            if let [generation] = candidates.as_slice() {
+                self.bind_load_transition_playlist_entry(*generation, entry.id);
+            }
+        }
+
+        if let Some(current_entry) = current_entry.as_ref()
+            && !self
+                .playlist_entry_generations
+                .contains_key(&current_entry.id)
+        {
+            let candidates = self
+                .load_transitions
+                .values()
+                .filter(|transition| {
+                    Self::transition_needs_lifecycle_reconciliation(transition)
+                        && transition.playlist_entry_id.is_none()
+                })
+                .map(|transition| transition.generation)
+                .collect::<Vec<_>>();
+            if let [generation] = candidates.as_slice() {
+                self.bind_load_transition_playlist_entry(*generation, current_entry.id);
+            }
+        }
+
+        if let Some(current_entry) = current_entry {
+            let Some(current_generation) = self
+                .playlist_entry_generations
+                .get(&current_entry.id)
+                .copied()
+            else {
+                return false;
+            };
+            let stale_generations = self
+                .load_transitions
+                .values()
+                .filter(|transition| {
+                    transition.generation != current_generation
+                        && Self::transition_needs_lifecycle_reconciliation(transition)
+                        && transition
+                            .playlist_entry_id
+                            .is_none_or(|entry_id| !present_ids.contains(&entry_id))
+                })
+                .map(|transition| transition.generation)
+                .collect::<Vec<_>>();
+            for generation in stale_generations {
+                self.retire_reconciled_load_transition(generation);
+            }
+            if self.active_playlist_entry_id != Some(current_entry.id)
+                || self.active_media_generation != Some(current_generation)
+            {
+                self.handle_start_file_event(&json!({
+                    "playlist_entry_id": current_entry.id,
+                }));
+            }
+        }
+
+        self.load_transitions
+            .values()
+            .filter(|transition| Self::transition_needs_lifecycle_reconciliation(transition))
+            .all(|transition| {
+                transition.playlist_entry_id.is_some_and(|entry_id| {
+                    present_ids.contains(&entry_id)
+                        && self.playlist_entry_generations.get(&entry_id)
+                            == Some(&transition.generation)
+                })
+            })
+    }
+
+    fn maintain_load_lifecycle_reacquisition(&mut self) {
+        if !self.load_lifecycle_reacquisition_required {
+            return;
+        }
+        let Some(client) = self.ipc_client.as_mut() else {
+            self.load_lifecycle_reacquisition_required = false;
+            return;
+        };
+        if !client.is_healthy() {
+            self.load_lifecycle_reacquisition_required = false;
+            return;
+        }
+        let Some(playlist) = client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten() else {
+            return;
+        };
+        let current_path = match client.get_property_string_classified(MPV_PROPERTY_PATH) {
+            Ok(path) => path,
+            Err(error) if error.is_property_unavailable() => None,
+            Err(_) => return,
+        };
+        if self.reconcile_load_lifecycle_from_authority(&playlist, current_path.as_deref()) {
+            self.load_lifecycle_reacquisition_required = false;
+        }
+    }
+
     fn mark_load_transition_accepted(&mut self, generation: PlayerMediaGeneration) {
         if let Some(transition) = self.load_transitions.get_mut(&generation)
             && transition.state == LoadTransitionState::Submitting
@@ -4583,7 +4819,29 @@ impl MpvAdapter {
     }
 
     fn flag_ambiguous_load_lifecycle(&mut self) {
+        self.load_lifecycle_reacquisition_required = true;
         self.ordered_player_event_reacquisition_required = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_lifecycle_reacquisition_required_for_test(&self) -> bool {
+        self.load_lifecycle_reacquisition_required
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_load_transition_for_test(&self, generation: PlayerMediaGeneration) -> bool {
+        self.load_transitions.contains_key(&generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_load_transition_generations_for_test(
+        &self,
+    ) -> Vec<PlayerMediaGeneration> {
+        self.load_transitions
+            .values()
+            .filter(|transition| Self::transition_is_pending(transition))
+            .map(|transition| transition.generation)
+            .collect()
     }
 
     fn allocate_command_id(&mut self) -> PlayerCommandId {
@@ -5415,6 +5673,9 @@ impl MpvAdapter {
             .ipc_client
             .as_ref()
             .is_some_and(|ipc_client| !ipc_client.is_healthy());
+        if disconnected {
+            self.load_lifecycle_reacquisition_required = false;
+        }
         if !disconnected
             || matches!(
                 self.transport_phase,
@@ -7630,6 +7891,7 @@ mod load_transition_ownership_tests {
         adapter.handle_start_file_event(&json!({ "playlist_entry_id": 999 }));
 
         assert!(adapter.ordered_player_event_reacquisition_required);
+        assert!(adapter.load_lifecycle_reacquisition_required);
         assert_eq!(adapter.active_media_generation, Some(active));
         assert!(!adapter.playlist_entry_generations.contains_key(&999));
         assert_eq!(
@@ -7662,6 +7924,7 @@ mod load_transition_ownership_tests {
         }));
 
         assert!(adapter.ordered_player_event_reacquisition_required);
+        assert!(adapter.load_lifecycle_reacquisition_required);
         assert_eq!(adapter.active_media_generation, Some(active));
         assert!(adapter.pending_media_load_outcomes.is_empty());
         assert_eq!(

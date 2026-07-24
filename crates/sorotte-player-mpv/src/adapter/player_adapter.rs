@@ -643,11 +643,13 @@ impl PlayerAdapter for MpvAdapter {
             .ipc_client
             .as_mut()
             .and_then(|client| client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten());
-        if let Some(playlist_entry_id) = authoritative_playlist
+        let playlist_entry_id = authoritative_playlist
             .as_ref()
-            .and_then(Self::authoritative_playlist_entry_id)
-        {
+            .and_then(Self::authoritative_playlist_entry_id);
+        if let Some(playlist_entry_id) = playlist_entry_id {
             self.bind_load_transition_playlist_entry(generation, playlist_entry_id);
+        } else {
+            self.load_lifecycle_reacquisition_required = true;
         }
         let tracked_load_command = self
             .load_transitions
