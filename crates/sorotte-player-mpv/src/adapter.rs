@@ -53,7 +53,6 @@ const INTERRUPTED_NETWORK_STREAM_MINIMUM_REMAINING_SECONDS: f64 = 15.0;
 const INTERRUPTED_NETWORK_STREAM_RECOVERY_PROGRESS_SECONDS: f64 = 2.0;
 const MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
 const MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 5;
-const PROVISIONAL_EOF_CLASSIFICATION_DELAY: Duration = Duration::from_secs(1);
 const NETWORK_CACHE_STALL_RECOVERY_DELAY: Duration = Duration::from_secs(20);
 const NETWORK_CACHE_STALL_RECOVERY_MARGIN: Duration = Duration::from_secs(5);
 const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
@@ -519,7 +518,12 @@ struct PendingTrackedCommand {
 #[derive(Clone, Copy, Debug)]
 struct ProvisionalEofObservation {
     media_generation: PlayerMediaGeneration,
-    observed_at: Instant,
+    position_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RejectedPrestartLoad {
+    media_generation: PlayerMediaGeneration,
 }
 
 #[derive(Debug)]
@@ -691,6 +695,7 @@ pub struct MpvAdapter {
     unacknowledged_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
+    rejected_prestart_load: Option<RejectedPrestartLoad>,
     provisional_eof_observation: Option<ProvisionalEofObservation>,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
     network_cache_stall: Option<NetworkCacheStall>,
@@ -1451,7 +1456,6 @@ impl MpvAdapter {
         // same pump so a transient lease expiry never reaches the GUI as incomplete setup.
         self.drain_ipc_events_if_attached();
         self.recover_network_media_options_hook_ownership_if_needed();
-        self.maintain_provisional_eof_classification();
         self.maintain_network_cache_stall_recovery();
     }
 
@@ -2763,6 +2767,7 @@ impl MpvAdapter {
 
         self.pending_load_request = Some(path.clone());
         self.pending_load_generation = Some(generation);
+        self.rejected_prestart_load = None;
         self.network_media_options_embedded_load =
             (!self.network_media_options.is_empty()).then(|| EmbeddedNetworkMediaOptions {
                 media_generation: generation,
@@ -3027,28 +3032,40 @@ impl MpvAdapter {
             .push_back(PlayerOrderedEvent::new(sequence, kind));
     }
 
-    fn queue_authoritative_ordered_player_snapshot(
-        &mut self,
+    fn authoritative_ordered_player_snapshot(
+        &self,
         authoritative_local_file: Option<LocalFileUpdate>,
         interrupted_command_progress: Vec<PlayerCommandProgress>,
         interrupted_media_load_outcomes: Vec<PlayerMediaLoadObservation>,
         authoritative_generation: Option<PlayerMediaGeneration>,
-    ) {
+    ) -> Vec<PlayerOrderedEventKind> {
+        let mut snapshot = Vec::with_capacity(
+            interrupted_command_progress.len()
+                + interrupted_media_load_outcomes.len()
+                + usize::from(authoritative_local_file.is_some())
+                + usize::from(authoritative_generation.is_some()),
+        );
         // Semantic command/load outcomes are not ordinary state fields. Replay their exact
         // terminal meaning before the physical snapshot so a failed pre-start load cannot
         // disappear behind the absence of an active media generation, and a completed load is
         // never rewritten as an unknown failure.
         for progress in interrupted_command_progress {
-            self.queue_command_progress(progress);
+            snapshot.push(PlayerOrderedEventKind::CommandProgress(progress));
         }
         for observation in interrupted_media_load_outcomes {
-            self.queue_media_load_observation(observation);
+            snapshot.push(PlayerOrderedEventKind::MediaLoad(observation));
         }
         if let Some(update) = authoritative_local_file {
-            self.queue_local_file_update(update);
+            snapshot.push(PlayerOrderedEventKind::LocalFile(
+                PlayerLocalFileObservation::new(
+                    update,
+                    self.observation_media_generation(),
+                    Some(self.observation_timestamp()),
+                ),
+            ));
         }
         let Some(generation) = authoritative_generation else {
-            return;
+            return snapshot;
         };
         let mut update = self.transport_update_for(generation);
         update.phase = Some(self.transport_phase);
@@ -3072,7 +3089,8 @@ impl MpvAdapter {
         update.buffered_ahead_seconds = self.observed_state.buffered_ahead_seconds;
         update.buffered_ahead_bytes = self.observed_state.buffered_ahead_bytes;
         update.input_rate_bytes_per_second = self.observed_state.input_rate_bytes_per_second;
-        self.queue_transport_telemetry_update(update);
+        snapshot.push(PlayerOrderedEventKind::Transport(update));
+        snapshot
     }
 
     fn authoritative_reacquisition_command_progress(&self) -> Vec<PlayerCommandProgress> {
@@ -4306,6 +4324,7 @@ impl MpvAdapter {
 
         self.position_seconds = position_seconds;
         self.observed_state.position_seconds = Some(position_seconds);
+        self.cancel_provisional_eof_after_forward_progress(position_seconds);
         self.observe_interrupted_network_stream_recovery_progress(position_seconds);
         self.queue_playback_telemetry_update(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
@@ -4936,25 +4955,23 @@ impl MpvAdapter {
         PlayerTransportPhase::Prebuffering
     }
 
-    fn maintain_provisional_eof_classification(&mut self) {
-        let Some(candidate) = self.provisional_eof_observation else {
-            return;
-        };
-        if self.observation_media_generation() != Some(candidate.media_generation) {
+    fn cancel_provisional_eof_for_current_generation(&mut self) {
+        if self.provisional_eof_observation.is_some_and(|candidate| {
+            Some(candidate.media_generation) == self.observation_media_generation()
+        }) {
             self.provisional_eof_observation = None;
-            return;
         }
-        if candidate.observed_at.elapsed() < PROVISIONAL_EOF_CLASSIFICATION_DELAY {
-            return;
+    }
+
+    fn cancel_provisional_eof_after_forward_progress(&mut self, position_seconds: f64) {
+        if self.provisional_eof_observation.is_some_and(|candidate| {
+            Some(candidate.media_generation) == self.observation_media_generation()
+                && candidate.position_seconds.is_none_or(|armed_position| {
+                    position_seconds > armed_position + PLAYBACK_ADVANCEMENT_EPSILON_SECONDS
+                })
+        }) {
+            self.provisional_eof_observation = None;
         }
-        self.provisional_eof_observation = None;
-        self.observed_state.eof_reached = Some(true);
-        self.transport_phase = PlayerTransportPhase::Ended;
-        let mut update = self
-            .transport_update_for(candidate.media_generation)
-            .with_phase(PlayerTransportPhase::Ended);
-        update.eof_reached = Some(true);
-        self.queue_transport_telemetry_update(update);
     }
 
     fn refresh_inferred_transport_phase(&mut self) {
@@ -5305,8 +5322,16 @@ impl MpvAdapter {
         let mut authoritative_path = None;
         let file_metadata_changed = match property_name {
             MPV_PROPERTY_PATH => {
-                authoritative_path_observed = true;
                 let next_path = data.and_then(Value::as_str).map(ToOwned::to_owned);
+                if self.rejected_prestart_load.is_some_and(|rejected| {
+                    Some(rejected.media_generation) != self.active_media_generation
+                }) && self.pending_load_generation.is_none()
+                    && self.active_file_loaded
+                    && next_path.as_deref() != self.current_path.as_deref()
+                {
+                    return;
+                }
+                authoritative_path_observed = true;
                 if next_path.is_some() && self.active_media_generation.is_none() {
                     let generation = self
                         .pending_load_generation
@@ -5380,6 +5405,7 @@ impl MpvAdapter {
                 if let Some(position_seconds) = data.and_then(Value::as_f64) {
                     self.position_seconds = position_seconds;
                     self.observed_state.position_seconds = Some(position_seconds);
+                    self.cancel_provisional_eof_after_forward_progress(position_seconds);
                     self.observe_interrupted_network_stream_recovery_progress(position_seconds);
                     self.queue_playback_telemetry_update(
                         PlayerPlaybackTelemetryUpdate::default()
@@ -5557,7 +5583,7 @@ impl MpvAdapter {
                             self.observation_media_generation().map(|media_generation| {
                                 ProvisionalEofObservation {
                                     media_generation,
-                                    observed_at: Instant::now(),
+                                    position_seconds: self.observed_state.position_seconds,
                                 }
                             });
                         return;
@@ -5595,6 +5621,7 @@ impl MpvAdapter {
 
     fn handle_start_file_event(&mut self, event: &Value) {
         self.provisional_eof_observation = None;
+        self.rejected_prestart_load = None;
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
         // change when an already-paused player begins a new file, so retain
@@ -5694,6 +5721,7 @@ impl MpvAdapter {
     }
 
     fn handle_seek_event(&mut self) {
+        self.cancel_provisional_eof_for_current_generation();
         self.begin_seek_cache_evidence_epoch();
         self.observed_state.seeking = Some(true);
         self.transport_phase = PlayerTransportPhase::Seeking;
@@ -5709,6 +5737,7 @@ impl MpvAdapter {
     }
 
     fn handle_playback_restart_event(&mut self) {
+        self.cancel_provisional_eof_for_current_generation();
         if self.active_media_generation.is_none() {
             self.active_media_generation = self
                 .pending_load_generation
@@ -5803,6 +5832,14 @@ impl MpvAdapter {
         let generation = playlist_entry_id
             .and_then(|entry_id| self.playlist_entry_generations.remove(&entry_id))
             .or_else(|| {
+                (playlist_entry_id.is_none()
+                    && reason == MPV_END_FILE_REASON_ERROR
+                    && self.pending_load_generation.is_some()
+                    && self.pending_load_generation != self.active_media_generation)
+                    .then_some(self.pending_load_generation)
+                    .flatten()
+            })
+            .or_else(|| {
                 (playlist_entry_id.is_none() || self.active_playlist_entry_id == playlist_entry_id)
                     .then_some(self.active_media_generation)
                     .flatten()
@@ -5834,12 +5871,14 @@ impl MpvAdapter {
         let error_kind = message
             .as_deref()
             .map(Self::media_load_failure_kind_from_message);
-        let affects_current_generation = generation.is_some()
-            && (generation == self.pending_load_generation
-                || (self.pending_load_generation.is_none()
-                    && generation == self.active_media_generation));
+        let affects_pending_generation =
+            generation.is_some() && generation == self.pending_load_generation;
+        let affects_active_generation =
+            generation.is_some() && generation == self.active_media_generation;
+        let affects_active_state = affects_active_generation
+            && (self.pending_load_generation.is_none() || affects_pending_generation);
         if reason == "eof"
-            && affects_current_generation
+            && affects_active_state
             && generation
                 .is_some_and(|generation| self.try_recover_interrupted_network_stream(generation))
         {
@@ -5865,7 +5904,7 @@ impl MpvAdapter {
             );
         }
 
-        if affects_current_generation {
+        if affects_active_state {
             self.interrupted_network_stream_recovery = None;
             self.network_cache_stall = None;
             if self
@@ -5905,12 +5944,7 @@ impl MpvAdapter {
             );
         }
 
-        if reason != MPV_END_FILE_REASON_ERROR
-            || generation.is_some_and(|generation| {
-                self.pending_load_generation.is_some()
-                    && self.pending_load_generation != Some(generation)
-            })
-        {
+        if reason != MPV_END_FILE_REASON_ERROR || !affects_pending_generation {
             return;
         }
 
@@ -5919,15 +5953,6 @@ impl MpvAdapter {
         };
         self.pending_load_generation = None;
         let message = message.expect("error end-file events should have a fallback message");
-        self.current_path = None;
-        self.pending_local_file_update = None;
-        self.pending_local_file_generation = None;
-        self.pending_local_file_observed_at = None;
-        self.last_polled_local_file_update = None;
-        self.observed_state.path = None;
-        self.observed_state.duration_seconds = None;
-        self.observed_state.size_bytes = None;
-        self.reset_timeline_metadata();
         self.queue_media_load_outcome_for_generation(
             PlayerMediaLoadOutcome::failure(
                 requested_target,
@@ -5937,6 +5962,39 @@ impl MpvAdapter {
             ),
             generation,
         );
+        if !affects_active_generation {
+            self.rejected_prestart_load =
+                generation.map(|media_generation| RejectedPrestartLoad { media_generation });
+            if let Some(active_generation) = self.active_media_generation {
+                let restored_phase = self.inferred_transport_phase();
+                self.transport_phase = restored_phase;
+                let mut update = self
+                    .transport_update_for(active_generation)
+                    .with_phase(restored_phase);
+                update.position_seconds = self.observed_state.position_seconds;
+                update.playback_rate = self.observed_state.playback_rate;
+                update.logical_pause = self.observed_state.logical_pause;
+                update.paused_for_cache = self.observed_state.paused_for_cache;
+                update.eof_reached = self.observed_state.eof_reached;
+                self.queue_transport_telemetry_update(update);
+            } else {
+                // With no prior active media there is nothing to restore. Preserve the failed
+                // transport phase so authoritative reacquisition can replay the rejected
+                // generation's terminal state alongside its command and media-load outcomes.
+                self.transport_phase = phase;
+            }
+            return;
+        }
+
+        self.current_path = None;
+        self.pending_local_file_update = None;
+        self.pending_local_file_generation = None;
+        self.pending_local_file_observed_at = None;
+        self.last_polled_local_file_update = None;
+        self.observed_state.path = None;
+        self.observed_state.duration_seconds = None;
+        self.observed_state.size_bytes = None;
+        self.reset_timeline_metadata();
     }
 
     fn handle_client_message_event(&mut self, event: &Value) {
@@ -7429,7 +7487,7 @@ mod interrupted_network_stream_recovery_tests {
     }
 
     #[test]
-    fn unclassified_eof_property_becomes_terminal_after_the_bounded_deadline() {
+    fn unclassified_eof_property_never_becomes_terminal_without_causal_end_file() {
         let mut adapter = loaded_network_vod(1_900.0, 1_919.0);
         let generation = adapter
             .active_media_generation
@@ -7439,16 +7497,102 @@ mod interrupted_network_stream_recovery_tests {
             "name": MPV_PROPERTY_EOF_REACHED,
             "data": true
         }));
-        adapter
-            .provisional_eof_observation
-            .as_mut()
-            .expect("EOF should remain provisional")
-            .observed_at = Instant::now() - PROVISIONAL_EOF_CLASSIFICATION_DELAY;
 
-        adapter.maintain_provisional_eof_classification();
+        for _ in 0..3 {
+            adapter.maintain_runtime_integrations();
+        }
 
-        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Ended);
-        assert_eq!(adapter.observed_state.eof_reached, Some(true));
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.observed_state.eof_reached, Some(false));
+        assert!(adapter.provisional_eof_observation.is_some());
+        assert!(
+            adapter
+                .pending_ordered_player_events
+                .iter()
+                .all(|event| !matches!(
+                    &event.kind,
+                    PlayerOrderedEventKind::Transport(update)
+                        if update.media_generation == Some(generation)
+                            && (matches!(
+                                update.phase,
+                                Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
+                            ) || update.eof_reached == Some(true))
+                ))
+        );
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_TIME_POS,
+            "data": 1_901.0
+        }));
+
+        assert!(adapter.provisional_eof_observation.is_none());
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.observed_state.eof_reached, Some(false));
+    }
+
+    #[test]
+    fn seek_and_playback_restart_cancel_provisional_eof_without_publishing_terminal_state() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_EOF_REACHED,
+            "data": true
+        }));
+        assert!(adapter.provisional_eof_observation.is_some());
+        adapter.handle_seek_event();
+        assert!(adapter.provisional_eof_observation.is_none());
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_EOF_REACHED,
+            "data": true
+        }));
+        assert!(adapter.provisional_eof_observation.is_some());
+        adapter.handle_playback_restart_event();
+
+        assert!(adapter.provisional_eof_observation.is_none());
+        assert_ne!(adapter.transport_phase, PlayerTransportPhase::Ended);
+        assert_eq!(adapter.observed_state.eof_reached, Some(false));
+    }
+
+    #[test]
+    fn pending_replacement_error_before_start_file_is_attributed_to_the_replacement() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        let active_generation = adapter
+            .active_media_generation
+            .expect("fixture should have an active generation");
+        let replacement_generation = PlayerMediaGeneration::new(8);
+        let replacement_target = "https://media.invalid/replacement";
+        adapter.pending_load_request = Some(replacement_target.to_owned());
+        adapter.pending_load_generation = Some(replacement_generation);
+        adapter.transport_phase = PlayerTransportPhase::Loading;
+
+        adapter.handle_end_file_event(&json!({
+            "event": MPV_EVENT_END_FILE,
+            "reason": MPV_END_FILE_REASON_ERROR,
+            "file_error": "network connection failed"
+        }));
+
+        assert_eq!(adapter.active_media_generation, Some(active_generation));
+        assert!(adapter.active_file_loaded);
+        assert_eq!(adapter.current_path.as_deref(), Some(NETWORK_PATH));
+        assert_eq!(adapter.observed_state.path.as_deref(), Some(NETWORK_PATH));
+        assert_eq!(adapter.observed_state.eof_reached, Some(false));
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert_eq!(adapter.pending_load_request, None);
+        assert_eq!(adapter.pending_load_generation, None);
+
+        let outcome = adapter
+            .pending_media_load_outcomes
+            .front()
+            .expect("replacement failure should be observable");
+        assert_eq!(outcome.media_generation, Some(replacement_generation));
+        assert_eq!(outcome.outcome.requested_target, replacement_target);
+        assert_eq!(
+            outcome.outcome.failure.as_ref().map(|failure| failure.kind),
+            Some(PlayerMediaLoadFailureKind::Network)
+        );
         assert!(
             adapter
                 .pending_ordered_player_events
@@ -7456,11 +7600,39 @@ mod interrupted_network_stream_recovery_tests {
                 .any(|event| matches!(
                     &event.kind,
                     PlayerOrderedEventKind::Transport(update)
-                        if update.media_generation == Some(generation)
-                            && update.phase == Some(PlayerTransportPhase::Ended)
-                            && update.eof_reached == Some(true)
+                        if update.media_generation == Some(replacement_generation)
+                            && update.phase == Some(PlayerTransportPhase::Failed)
                 ))
         );
+        assert!(
+            adapter
+                .pending_ordered_player_events
+                .iter()
+                .any(|event| matches!(
+                    &event.kind,
+                    PlayerOrderedEventKind::Transport(update)
+                        if update.media_generation == Some(active_generation)
+                            && update.phase == Some(PlayerTransportPhase::Playing)
+                            && update.eof_reached == Some(false)
+                ))
+        );
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PATH,
+            "data": replacement_target
+        }));
+        assert_eq!(adapter.active_media_generation, Some(active_generation));
+        assert_eq!(adapter.current_path.as_deref(), Some(NETWORK_PATH));
+        assert_eq!(adapter.observed_state.path.as_deref(), Some(NETWORK_PATH));
+        assert!(adapter.pending_ordered_player_events.iter().all(|event| {
+            !matches!(
+                &event.kind,
+                PlayerOrderedEventKind::LocalFile(observation)
+                    if observation.media_generation == Some(active_generation)
+                        && observation.update.path.as_deref() == Some(replacement_target)
+            )
+        }));
     }
 
     #[test]

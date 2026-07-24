@@ -339,6 +339,9 @@ impl ServerRuntime {
         for (room_name, persisted_room) in persisted_rooms {
             let persisted_last_activity_at_seconds = persisted_room.last_activity_at_seconds;
             let position = persisted_room.position;
+            let owner_bucket = persisted_room
+                .owner_bucket
+                .unwrap_or_else(|| LEGACY_PERSISTENT_ROOM_OWNER_BUCKET.to_owned());
             let mut playlist = RoomPlaylistState {
                 files: persisted_room.files,
                 index: persisted_room.index,
@@ -358,6 +361,18 @@ impl ServerRuntime {
             };
             self.persistent_room_last_activity_at
                 .insert(room_name.clone(), last_activity_at_seconds);
+            let created_at_seconds = if persisted_room.created_at_seconds.is_finite()
+                && persisted_room.created_at_seconds > 0.0
+                && persisted_room.created_at_seconds <= now_seconds
+            {
+                persisted_room.created_at_seconds
+            } else {
+                last_activity_at_seconds
+            };
+            self.persistent_room_owner_by_room
+                .insert(room_name.clone(), owner_bucket.clone());
+            self.persistent_room_created_at_by_room
+                .insert(room_name.clone(), created_at_seconds);
             let room_playback = self
                 .room_playback_states
                 .entry(room_name.clone())
@@ -369,7 +384,7 @@ impl ServerRuntime {
                 // this write-back, repeatedly restarting a legacy database
                 // whose placeholder is zero would renew its grace forever.
                 let playlist = self.room_playlist_state(&room_name).clone();
-                let version = self.next_room_persistence_version(&room_name);
+                let version = self.next_room_persistence_version();
                 self.room_persistence
                     .as_ref()
                     .expect("room persistence presence checked above")
@@ -379,6 +394,8 @@ impl ServerRuntime {
                         playlist_index: playlist.index,
                         position,
                         last_activity_at_seconds,
+                        owner_bucket: Some(owner_bucket),
+                        created_at_seconds,
                         version,
                     });
             }
@@ -417,13 +434,38 @@ impl ServerRuntime {
     }
 
     pub(crate) fn persistent_room_creation_identity(&self, client_id: &str) -> String {
-        self.client_peer_ips
+        let source_identity = self
+            .client_peer_ips
             .get(client_id)
-            .map(|peer_ip| format!("ip:{peer_ip}"))
+            .map(|peer_ip| format!("peer-ip:{}", peer_ip.trim().to_ascii_lowercase()))
             // Direct-runtime callers do not have a transport peer address. Keep
             // their quota namespace session-scoped; production network sessions
             // are keyed by peer IP above.
-            .unwrap_or_else(|| format!("session:{client_id}"))
+            .unwrap_or_else(|| format!("session:{client_id}"));
+        self.persistent_room_owner_bucket(&source_identity)
+    }
+
+    fn persistent_room_owner_bucket(&self, source_identity: &str) -> String {
+        let mut inner_pad = [0x36_u8; 64];
+        let mut outer_pad = [0x5c_u8; 64];
+        for (index, secret_byte) in self.persistent_room_quota_secret.iter().enumerate() {
+            inner_pad[index] ^= secret_byte;
+            outer_pad[index] ^= secret_byte;
+        }
+        let mut inner = Sha256::new();
+        inner.update(inner_pad);
+        inner.update(source_identity.as_bytes());
+        let inner_digest = inner.finalize();
+        let mut outer = Sha256::new();
+        outer.update(outer_pad);
+        outer.update(inner_digest);
+        let digest = outer.finalize();
+        let mut bucket = String::with_capacity("quota:v1:".len() + digest.len() * 2);
+        bucket.push_str("quota:v1:");
+        for byte in digest {
+            write!(&mut bucket, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        bucket
     }
 
     pub(crate) fn persistent_room_creation_required(
@@ -485,6 +527,8 @@ impl ServerRuntime {
     ) {
         self.persistent_room_owner_by_room
             .insert(room_name.to_owned(), identity.clone());
+        self.persistent_room_created_at_by_room
+            .insert(room_name.to_owned(), now_seconds);
         self.persistent_room_last_creation_by_identity
             .insert(identity, now_seconds);
         let active_owners: BTreeSet<_> = self
@@ -503,6 +547,7 @@ impl ServerRuntime {
 
     pub(crate) fn release_persistent_room_ownership(&mut self, room_name: &str) {
         self.persistent_room_owner_by_room.remove(room_name);
+        self.persistent_room_created_at_by_room.remove(room_name);
     }
 
     pub(crate) fn expire_inactive_persistent_rooms_at(
@@ -553,8 +598,21 @@ impl ServerRuntime {
             return Ok(());
         }
         let playlist = self.room_playlist_state(room_name).clone();
+        if !self.persisted_room_names.contains(room_name)
+            && !self.room_is_permanent(room_name)
+            && playlist.files.is_empty()
+        {
+            return Ok(());
+        }
         let playback = self.room_playback_state_at(room_name, now_seconds);
-        let version = self.next_room_persistence_version(room_name);
+        let version = self.next_room_persistence_version();
+        let owner_bucket = self.persistent_room_owner_by_room.get(room_name).cloned();
+        let created_at_seconds = self
+            .persistent_room_created_at_by_room
+            .get(room_name)
+            .copied()
+            .unwrap_or(now_seconds);
+        self.persisted_room_names.insert(room_name.to_owned());
         self.room_persistence
             .as_ref()
             .expect("room persistence presence checked above")
@@ -564,6 +622,8 @@ impl ServerRuntime {
                 playlist_index: playlist.index,
                 position: playback.position,
                 last_activity_at_seconds: now_seconds,
+                owner_bucket,
+                created_at_seconds,
                 version,
             });
         Ok(())
@@ -586,6 +646,9 @@ impl ServerRuntime {
     ) -> Result<(), ServerRuntimeError> {
         if !self.room_is_persistent(room_name)
             || self.clients_in_room(room_name).is_empty()
+            || (!self.persisted_room_names.contains(room_name)
+                && !self.room_is_permanent(room_name)
+                && self.room_playlist_state(room_name).files.is_empty())
             || self
                 .persistent_room_last_activity_at
                 .get(room_name)
@@ -619,10 +682,10 @@ impl ServerRuntime {
         &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
-        if self.room_persistence.is_none() {
+        if self.room_persistence.is_none() || !self.persisted_room_names.remove(room_name) {
             return Ok(());
         }
-        let version = self.next_room_persistence_version(room_name);
+        let version = self.next_room_persistence_version();
         self.room_persistence
             .as_ref()
             .expect("room persistence presence checked above")
@@ -633,13 +696,13 @@ impl ServerRuntime {
         Ok(())
     }
 
-    fn next_room_persistence_version(&mut self, room_name: &str) -> u64 {
-        let version = self
-            .room_persistence_versions
-            .entry(room_name.to_owned())
-            .or_default();
-        *version = version.saturating_add(1);
-        *version
+    fn next_room_persistence_version(&mut self) -> u64 {
+        self.next_room_persistence_version = self
+            .next_room_persistence_version
+            .checked_add(1)
+            .filter(|version| *version <= i64::MAX as u64)
+            .expect("room persistence version exhausted");
+        self.next_room_persistence_version
     }
 
     pub(crate) fn cleanup_room_if_empty(
@@ -673,6 +736,7 @@ impl ServerRuntime {
         self.playback_barrier_new_identity_rate_by_room
             .remove(room_name);
         self.persistent_room_owner_by_room.remove(room_name);
+        self.persistent_room_created_at_by_room.remove(room_name);
         self.persistent_room_last_activity_at.remove(room_name);
     }
 

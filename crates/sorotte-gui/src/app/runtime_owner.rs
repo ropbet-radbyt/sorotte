@@ -56,7 +56,7 @@ use sorotte_plex::{
 
 use self::updates::GuiUpdateRuntime;
 use super::media_match_support::{
-    MediaMatchIndexRebuildResult, MediaMatchToolProgress,
+    GuiMediaMatchIndexBuildTransaction, MediaMatchIndexRebuildResult, MediaMatchToolProgress,
     clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
     probe_media_match_startup_snapshot,
 };
@@ -411,7 +411,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
     pub(super) media_match_background_trigger_key: Option<String>,
-    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexRebuildBackup>,
+    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexBuildTransaction>,
     pub(super) media_match_background_cancel_disposition:
         Option<GuiMediaMatchBackgroundCancelDisposition>,
     pub(super) media_match_remote_lookup_rx:
@@ -1077,12 +1077,6 @@ impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
             )
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GuiMediaMatchIndexRebuildBackup {
-    pub(super) root: PathBuf,
-    pub(super) backup_existed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

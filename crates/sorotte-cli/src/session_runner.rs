@@ -45,9 +45,11 @@ use sorotte_client_core::{
 };
 use sorotte_player_api::PlayerAdapter;
 use sorotte_player_mpv::MpvAdapter;
+#[cfg(test)]
+use sorotte_protocol::decode_message_line;
 use sorotte_protocol::{
-    HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line,
-    decode_message_line_items, encode_message_line,
+    HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line_items,
+    encode_message_line,
 };
 use tokio::io::BufReader;
 use tokio::net::TcpStream;

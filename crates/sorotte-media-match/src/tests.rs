@@ -1,9 +1,10 @@
 use crate::{
     AudioAnchor, MatchClassV3, MediaDurationCompatibility, MediaFileIdentity,
-    MediaFingerprintRecord, MediaIndexInventoryEntry, MediaIndexService, MediaMatchAutoplayPolicy,
-    MediaMatchSettings, MediaMatchTier, decide_media_match,
-    decide_media_match_against_wire_signature, media_match_wire_signature_from_records,
-    rank_media_match_candidates, settings::MediaExtractionSettings,
+    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexInventoryEntry,
+    MediaIndexService, MediaMatchAutoplayPolicy, MediaMatchSettings, MediaMatchTier,
+    decide_media_match, decide_media_match_against_wire_signature,
+    media_match_wire_signature_from_records, rank_media_match_candidates,
+    settings::MediaExtractionSettings,
 };
 
 #[test]
@@ -202,6 +203,169 @@ fn media_index_inventory_cancellation_rolls_back_every_change() {
     );
     drop(session);
     std::fs::remove_dir_all(root).expect("temporary index directory should be removable");
+}
+
+#[test]
+fn media_index_build_begin_copies_committed_wal_pages_with_online_backup() {
+    let live_root = media_index_test_root("wal-backup-live");
+    let staging_root = media_index_test_root("wal-backup-staging");
+    let service = MediaIndexService::new(&live_root);
+    drop(service.open().expect("live index should initialize"));
+    let connection =
+        rusqlite::Connection::open(service.index_path()).expect("live SQLite database should open");
+    connection
+        .execute_batch(
+            "PRAGMA wal_autocheckpoint = 0;
+             INSERT INTO media_files_v3 (
+                normalized_path,
+                modified_unix_millis,
+                size_bytes,
+                duration_ms,
+                container_fingerprint,
+                updated_unix_millis
+             ) VALUES ('wal-only.mkv', 1, 2, NULL, '', 3);",
+        )
+        .expect("WAL-only fixture row should commit");
+    assert!(
+        std::path::PathBuf::from(format!("{}-wal", service.index_path().display())).exists(),
+        "fixture should retain a WAL sidecar while the writer is open"
+    );
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("online staging backup should succeed");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    assert_eq!(
+        staged
+            .inventory_paths()
+            .expect("staged inventory should load"),
+        vec!["wal-only.mkv".to_owned()]
+    );
+
+    drop(staged);
+    transaction.abort().expect("staging should abort cleanly");
+    drop(connection);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_build_commit_validates_before_replacing_live_index() {
+    let live_root = media_index_test_root("validated-swap-live");
+    let staging_root = media_index_test_root("validated-swap-staging");
+    let live_service = MediaIndexService::new(&live_root);
+    let live_session = live_service.open().expect("live index should open");
+    live_session
+        .save_record(&record("live.mkv", 0), None)
+        .expect("live fixture should save");
+    drop(live_session);
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("staging transaction should begin");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    staged
+        .save_record(&record("staged.mkv", 1), None)
+        .expect("staged fixture should save");
+    drop(staged);
+    let old_reader = live_service
+        .open()
+        .expect("an old-generation reader should remain open during commit");
+    assert_eq!(
+        old_reader
+            .inventory_paths()
+            .expect("old-generation inventory should load"),
+        vec!["live.mkv".to_owned()]
+    );
+    transaction
+        .commit()
+        .expect("validated staged index should become live");
+
+    let current = live_service.open().expect("new live index should open");
+    let paths = current
+        .inventory_paths()
+        .expect("new inventory should load");
+    assert!(paths.contains(&"live.mkv".to_owned()));
+    assert!(paths.contains(&"staged.mkv".to_owned()));
+    drop(current);
+    drop(old_reader);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_build_validation_failure_leaves_live_index_unchanged() {
+    let live_root = media_index_test_root("invalid-stage-live");
+    let staging_root = media_index_test_root("invalid-stage-staging");
+    let live_service = MediaIndexService::new(&live_root);
+    let live_session = live_service.open().expect("live index should open");
+    live_session
+        .save_record(&record("live.mkv", 0), None)
+        .expect("live fixture should save");
+    drop(live_session);
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("staging transaction should begin");
+    let staging_path = MediaIndexService::new(&staging_root).index_path();
+    std::fs::remove_file(&staging_path).expect("staged database should be removable");
+    std::fs::write(&staging_path, b"not a sqlite database")
+        .expect("invalid staged database should be writable");
+    let error = transaction
+        .commit()
+        .expect_err("invalid staged database must not replace the live index");
+    assert!(error.contains("validating") || error.contains("database"));
+
+    let current = live_service
+        .open()
+        .expect("original live index should still open");
+    assert_eq!(
+        current
+            .inventory_paths()
+            .expect("live inventory should load"),
+        vec!["live.mkv".to_owned()]
+    );
+    drop(current);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
+}
+
+#[test]
+fn media_index_manifest_activation_failure_leaves_previous_generation_active() {
+    let live_root = media_index_test_root("manifest-failure-live");
+    let staging_root = media_index_test_root("manifest-failure-staging");
+    let live_service = MediaIndexService::new(&live_root);
+    let live_session = live_service.open().expect("live index should open");
+    live_session
+        .save_record(&record("live.mkv", 0), None)
+        .expect("live fixture should save");
+    drop(live_session);
+
+    let transaction = MediaIndexBuildTransaction::begin(&live_root, &staging_root)
+        .expect("staging transaction should begin");
+    let staged = MediaIndexService::new(&staging_root)
+        .open()
+        .expect("staged index should open");
+    staged
+        .save_record(&record("staged.mkv", 1), None)
+        .expect("staged fixture should save");
+    drop(staged);
+    std::fs::create_dir_all(live_root.join("current.json"))
+        .expect("manifest destination conflict should be created");
+
+    transaction
+        .commit()
+        .expect_err("manifest replacement failure must leave the old generation active");
+    let current = live_service
+        .open()
+        .expect("previous live index should still open");
+    assert_eq!(
+        current
+            .inventory_paths()
+            .expect("live inventory should load"),
+        vec!["live.mkv".to_owned()]
+    );
+
+    drop(current);
+    std::fs::remove_dir_all(live_root).expect("temporary live index should be removable");
 }
 
 fn media_index_test_root(label: &str) -> std::path::PathBuf {

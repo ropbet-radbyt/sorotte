@@ -12,7 +12,8 @@ use rusqlite::Connection;
 use tokio::sync::broadcast;
 
 use crate::{
-    RoomPersistenceError, RoomPersistenceStore, StatsPersistenceError, StatsPersistenceStore,
+    PersistedRoomState, RoomPersistenceError, RoomPersistenceStore, StatsPersistenceError,
+    StatsPersistenceStore,
 };
 
 const PERSISTENCE_COMMAND_QUEUE_CAPACITY: usize = 256;
@@ -31,6 +32,8 @@ pub enum ServerPersistenceEffect {
         playlist_index: Option<i64>,
         position: f64,
         last_activity_at_seconds: f64,
+        owner_bucket: Option<String>,
+        created_at_seconds: f64,
         version: u64,
     },
     DeleteRoom {
@@ -129,7 +132,6 @@ impl PersistenceEventReporter {
             worker: self.worker,
             effect,
         });
-        self.recover_if_needed();
     }
 
     fn ignored_stale(&self, effect: ServerPersistenceEffect) {
@@ -290,12 +292,19 @@ impl Drop for PersistenceWorkerService {
     }
 }
 
-type CoalescedRoomEffects = Arc<Mutex<BTreeMap<String, ServerPersistenceEffect>>>;
+#[derive(Debug, Default)]
+struct RoomPersistenceDesiredState {
+    highest_seen_version: u64,
+    desired_effect: Option<ServerPersistenceEffect>,
+    unresolved_failure_version: Option<u64>,
+}
+
+type DesiredRoomEffects = Arc<Mutex<BTreeMap<String, RoomPersistenceDesiredState>>>;
 
 #[derive(Debug)]
 pub(crate) struct RoomPersistenceService {
     worker: PersistenceWorkerService,
-    coalesced_effects: CoalescedRoomEffects,
+    desired_effects: DesiredRoomEffects,
 }
 
 impl RoomPersistenceService {
@@ -319,8 +328,8 @@ impl RoomPersistenceService {
         queue_capacity: usize,
     ) -> Result<Self, RoomPersistenceError> {
         let connection = store.connection("connect persistence worker")?;
-        let coalesced_effects = Arc::new(Mutex::new(BTreeMap::new()));
-        let worker_coalesced_effects = Arc::clone(&coalesced_effects);
+        let desired_effects = Arc::new(Mutex::new(BTreeMap::new()));
+        let worker_desired_effects = Arc::clone(&desired_effects);
         let worker = PersistenceWorkerService::spawn_with_capacity(
             ServerPersistenceWorkerKind::Rooms,
             events,
@@ -332,34 +341,17 @@ impl RoomPersistenceService {
                     reporter,
                     store,
                     connection,
-                    worker_coalesced_effects,
+                    worker_desired_effects,
                 )
             },
         );
         Ok(Self {
             worker,
-            coalesced_effects,
+            desired_effects,
         })
     }
 
     pub(crate) fn enqueue(&self, effect: ServerPersistenceEffect) {
-        match self.worker.try_enqueue(effect) {
-            Ok(()) => {}
-            Err(PersistenceEnqueueError::Full(effect)) => {
-                self.coalesce(effect);
-            }
-            Err(PersistenceEnqueueError::Disconnected(effect)) => self
-                .worker
-                .reporter
-                .failed(effect, "persistence worker is disconnected"),
-        }
-    }
-
-    pub(crate) fn flush(&self) -> bool {
-        self.worker.flush()
-    }
-
-    fn coalesce(&self, effect: ServerPersistenceEffect) {
         let Some((room_name, version)) = room_effect_key_and_version(&effect) else {
             self.worker
                 .reporter
@@ -367,34 +359,38 @@ impl RoomPersistenceService {
             return;
         };
         let room_name = room_name.to_owned();
-        let mut effects = self
-            .coalesced_effects
+        let mut states = self
+            .desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let should_replace = effects
-            .get(&room_name)
-            .and_then(room_effect_key_and_version)
-            .is_none_or(|(_, pending_version)| pending_version < version);
-        if should_replace {
-            effects.insert(room_name, effect);
-        } else {
-            drop(effects);
+        let state = states.entry(room_name).or_default();
+        if version <= state.highest_seen_version {
+            drop(states);
             self.worker.reporter.ignored_stale(effect);
             return;
         }
-        drop(effects);
+        state.highest_seen_version = version;
+        state.desired_effect = Some(effect.clone());
+        state.unresolved_failure_version = None;
+        drop(states);
 
         if !self.worker.wake() {
-            let mut effects = self
-                .coalesced_effects
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for effect in std::mem::take(&mut *effects).into_values() {
-                self.worker
-                    .reporter
-                    .failed(effect, "persistence worker is disconnected");
-            }
+            self.worker
+                .reporter
+                .failed(effect, "persistence worker is disconnected");
         }
+    }
+
+    pub(crate) fn flush(&self) -> bool {
+        self.worker.flush()
+            && self
+                .desired_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .all(|state| {
+                    state.desired_effect.is_none() && state.unresolved_failure_version.is_none()
+                })
     }
 }
 
@@ -430,46 +426,23 @@ fn run_room_worker(
     reporter: PersistenceEventReporter,
     store: RoomPersistenceStore,
     connection: Connection,
-    coalesced_effects: CoalescedRoomEffects,
+    desired_effects: DesiredRoomEffects,
 ) {
-    let mut latest_versions = BTreeMap::<String, u64>::new();
     while let Ok(command) = commands.recv() {
         match command {
-            PersistenceWorkerCommand::Apply(effect) => {
-                apply_room_effect(&reporter, &store, &connection, &mut latest_versions, effect);
-                drain_coalesced_room_effects(
-                    &reporter,
-                    &store,
-                    &connection,
-                    &mut latest_versions,
-                    &coalesced_effects,
-                );
-            }
-            PersistenceWorkerCommand::Wake => drain_coalesced_room_effects(
-                &reporter,
-                &store,
-                &connection,
-                &mut latest_versions,
-                &coalesced_effects,
+            PersistenceWorkerCommand::Apply(effect) => reporter.failed(
+                effect,
+                "room persistence effects must be routed through the desired-state map",
             ),
+            PersistenceWorkerCommand::Wake => {
+                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects)
+            }
             PersistenceWorkerCommand::Flush(acknowledge) => {
-                drain_coalesced_room_effects(
-                    &reporter,
-                    &store,
-                    &connection,
-                    &mut latest_versions,
-                    &coalesced_effects,
-                );
+                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects);
                 let _ = acknowledge.send(());
             }
             PersistenceWorkerCommand::Shutdown => {
-                drain_coalesced_room_effects(
-                    &reporter,
-                    &store,
-                    &connection,
-                    &mut latest_versions,
-                    &coalesced_effects,
-                );
+                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects);
                 break;
             }
         }
@@ -488,81 +461,145 @@ fn room_effect_key_and_version(effect: &ServerPersistenceEffect) -> Option<(&str
     }
 }
 
-fn drain_coalesced_room_effects(
+fn apply_desired_room_effects(
     reporter: &PersistenceEventReporter,
     store: &RoomPersistenceStore,
     connection: &Connection,
-    latest_versions: &mut BTreeMap<String, u64>,
-    coalesced_effects: &CoalescedRoomEffects,
+    desired_effects: &DesiredRoomEffects,
 ) {
-    loop {
-        let effects = {
-            let mut effects = coalesced_effects
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *effects)
-        };
-        if effects.is_empty() {
-            return;
-        }
-        for effect in effects.into_values() {
-            apply_room_effect(reporter, store, connection, latest_versions, effect);
-        }
-    }
-}
+    let effects = {
+        let states = desired_effects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        states
+            .values()
+            .filter_map(|state| state.desired_effect.clone())
+            .collect::<Vec<_>>()
+    };
 
-fn apply_room_effect(
-    reporter: &PersistenceEventReporter,
-    store: &RoomPersistenceStore,
-    connection: &Connection,
-    latest_versions: &mut BTreeMap<String, u64>,
-    effect: ServerPersistenceEffect,
-) {
-    let (room_name, version) = match &effect {
-        ServerPersistenceEffect::SaveRoom {
-            room_name, version, ..
-        }
-        | ServerPersistenceEffect::DeleteRoom { room_name, version } => (room_name, *version),
-        ServerPersistenceEffect::RecordStatsSnapshot { .. } => {
+    let mut applied_any = false;
+    for effect in effects {
+        let Some((room_name, version)) = room_effect_key_and_version(&effect) else {
             reporter.failed(effect, "stats effect was routed to the room worker");
-            return;
+            continue;
+        };
+        let room_name = room_name.to_owned();
+        let is_current = desired_effects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&room_name)
+            .is_some_and(|state| {
+                state.highest_seen_version == version
+                    && state
+                        .desired_effect
+                        .as_ref()
+                        .and_then(room_effect_key_and_version)
+                        .is_some_and(|(_, desired_version)| desired_version == version)
+            });
+        if !is_current {
+            reporter.ignored_stale(effect);
+            continue;
         }
-    };
-    if latest_versions
-        .get(room_name)
-        .is_some_and(|latest| *latest >= version)
-    {
-        reporter.ignored_stale(effect);
-        return;
+
+        let transaction = match connection.unchecked_transaction() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                reporter.failed(effect, error.to_string());
+                continue;
+            }
+        };
+        let result = match &effect {
+            ServerPersistenceEffect::SaveRoom {
+                room_name,
+                files,
+                playlist_index,
+                position,
+                last_activity_at_seconds,
+                owner_bucket,
+                created_at_seconds,
+                version,
+                ..
+            } => store.save_room(
+                &transaction,
+                room_name,
+                &PersistedRoomState {
+                    files: files.clone(),
+                    index: *playlist_index,
+                    position: *position,
+                    last_activity_at_seconds: *last_activity_at_seconds,
+                    version: *version,
+                    owner_bucket: owner_bucket.clone(),
+                    created_at_seconds: *created_at_seconds,
+                },
+            ),
+            ServerPersistenceEffect::DeleteRoom { room_name, version } => {
+                store.delete_room(&transaction, room_name, *version)
+            }
+            ServerPersistenceEffect::RecordStatsSnapshot { .. } => unreachable!(),
+        };
+        let still_current = desired_effects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&room_name)
+            .is_some_and(|state| state.highest_seen_version == version);
+        let result = match (result, still_current) {
+            (Ok(()), true) => transaction.commit().map_err(|error| error.to_string()),
+            (Ok(()), false) => {
+                drop(transaction);
+                reporter.ignored_stale(effect);
+                continue;
+            }
+            (Err(error), _) => {
+                drop(transaction);
+                Err(error.to_string())
+            }
+        };
+        match result {
+            Ok(()) => {
+                let is_delete = matches!(effect, ServerPersistenceEffect::DeleteRoom { .. });
+                let mut states = desired_effects
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if states
+                    .get(&room_name)
+                    .is_some_and(|state| state.highest_seen_version == version)
+                {
+                    if is_delete {
+                        states.remove(&room_name);
+                    } else if let Some(state) = states.get_mut(&room_name) {
+                        state.desired_effect = None;
+                        state.unresolved_failure_version = None;
+                    }
+                }
+                drop(states);
+                reporter.applied(effect);
+                applied_any = true;
+            }
+            Err(error) => {
+                let mut states = desired_effects
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(state) = states.get_mut(&room_name)
+                    && state.highest_seen_version == version
+                {
+                    state.unresolved_failure_version = Some(version);
+                }
+                drop(states);
+                reporter.failed(effect, error);
+            }
+        }
     }
 
-    let result = match &effect {
-        ServerPersistenceEffect::SaveRoom {
-            room_name,
-            files,
-            playlist_index,
-            position,
-            last_activity_at_seconds,
-            ..
-        } => store.save_room(
-            connection,
-            room_name,
-            files,
-            *playlist_index,
-            *position,
-            *last_activity_at_seconds,
-        ),
-        ServerPersistenceEffect::DeleteRoom { room_name, .. } => {
-            store.delete_room(connection, room_name)
-        }
-        ServerPersistenceEffect::RecordStatsSnapshot { .. } => unreachable!(),
-    };
-    match result {
-        Ok(()) => {
-            latest_versions.insert(room_name.clone(), version);
-            reporter.applied(effect);
-        }
-        Err(error) => reporter.failed(effect, error.to_string()),
+    if applied_any
+        && desired_effects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .all(|state| {
+                state.desired_effect.is_none() && state.unresolved_failure_version.is_none()
+            })
+    {
+        reporter.recover_if_needed();
     }
 }
 
@@ -603,7 +640,10 @@ fn apply_stats_effect(
         }
     };
     match result {
-        Ok(()) => reporter.applied(effect),
+        Ok(()) => {
+            reporter.applied(effect);
+            reporter.recover_if_needed();
+        }
         Err(error) => reporter.failed(effect, error.to_string()),
     }
 }
@@ -620,7 +660,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OptionalExtension};
     use tokio::sync::broadcast;
 
     use super::{
@@ -638,6 +678,19 @@ mod tests {
             "sorotte-{name}-{}-{unique}.sqlite3",
             std::process::id()
         ))
+    }
+
+    fn save_room_effect(room_name: &str, file_name: &str, version: u64) -> ServerPersistenceEffect {
+        ServerPersistenceEffect::SaveRoom {
+            room_name: room_name.to_owned(),
+            files: vec![file_name.to_owned()],
+            playlist_index: Some(0),
+            position: version as f64,
+            last_activity_at_seconds: version as f64,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
+            version,
+        }
     }
 
     #[test]
@@ -723,6 +776,8 @@ mod tests {
             playlist_index: Some(0),
             position: 20.0,
             last_activity_at_seconds: 20.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 2,
         });
         service.enqueue(ServerPersistenceEffect::SaveRoom {
@@ -731,6 +786,8 @@ mod tests {
             playlist_index: Some(0),
             position: 10.0,
             last_activity_at_seconds: 10.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 1,
         });
         assert!(service.flush(), "room effects should be acknowledged");
@@ -777,6 +834,8 @@ mod tests {
             playlist_index: Some(0),
             position: 20.0,
             last_activity_at_seconds: 20.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 2,
         });
         assert!(
@@ -801,9 +860,14 @@ mod tests {
             playlist_index: Some(0),
             position: 30.0,
             last_activity_at_seconds: 30.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 1,
         });
-        assert!(service.flush(), "failed room write should be acknowledged");
+        assert!(
+            !service.flush(),
+            "flush must report the unresolved newest room write"
+        );
         assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
         let failure_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
         assert!(failure_events.iter().any(|event| matches!(
@@ -825,9 +889,14 @@ mod tests {
             playlist_index: Some(0),
             position: 10.0,
             last_activity_at_seconds: 10.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 1,
         });
-        assert!(service.flush(), "stale room effect should be acknowledged");
+        assert!(
+            !service.flush(),
+            "an ignored stale write must not hide the unresolved room failure"
+        );
         assert_eq!(
             degraded_worker_count.load(Ordering::Acquire),
             1,
@@ -857,6 +926,8 @@ mod tests {
             playlist_index: Some(0),
             position: 40.0,
             last_activity_at_seconds: 40.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 2,
         });
         assert!(
@@ -908,6 +979,8 @@ mod tests {
             playlist_index: Some(0),
             position: 10.0,
             last_activity_at_seconds: 10.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 1,
         });
         service.enqueue(ServerPersistenceEffect::SaveRoom {
@@ -916,6 +989,8 @@ mod tests {
             playlist_index: Some(0),
             position: 20.0,
             last_activity_at_seconds: 20.0,
+            owner_bucket: None,
+            created_at_seconds: 0.0,
             version: 2,
         });
         service.enqueue(ServerPersistenceEffect::DeleteRoom {
@@ -939,6 +1014,169 @@ mod tests {
             )
             .expect("persisted rooms should be queryable");
         assert_eq!(persisted_count, 0, "the latest delete must not be dropped");
+
+        drop(service);
+        drop(external);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn failed_newest_room_effect_is_retained_and_older_effects_cannot_report_recovery() {
+        let db_path = temporary_sqlite_path("room-worker-newest-failure");
+        let _ = fs::remove_file(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let (events, _) = broadcast::channel(128);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = RoomPersistenceService::start_with_queue_capacity(
+            store,
+            events,
+            degraded_worker_count.clone(),
+            1,
+        )
+        .expect("room persistence worker should start");
+        let external = Connection::open(&db_path).expect("external sqlite connection should open");
+        external
+            .execute_batch(
+                "CREATE TRIGGER fail_room_version_4 \
+                 BEFORE INSERT ON persistent_rooms \
+                 WHEN NEW.name = 'room' AND NEW.persistenceVersion = 4 \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'injected newest write failure'); \
+                 END",
+            )
+            .expect("newest-version failure trigger should be installable");
+
+        for version in 1..=4 {
+            service.enqueue(save_room_effect(
+                "room",
+                &format!("version-{version}.mkv"),
+                version,
+            ));
+        }
+        assert!(
+            !service.flush(),
+            "flush must expose the retained version-4 failure"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        let durable_before_stale: Option<(String, i64)> = external
+            .query_row(
+                "SELECT playlist, persistenceVersion FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("persisted room should be queryable");
+
+        service.enqueue(save_room_effect("room", "stale-2.mkv", 2));
+        service.enqueue(save_room_effect("room", "stale-3.mkv", 3));
+        service.enqueue(save_room_effect("other", "other.mkv", 1));
+        assert!(
+            !service.flush(),
+            "older and unrelated successes must not hide the newest failure"
+        );
+        let durable_after_stale: Option<(String, i64)> = external
+            .query_row(
+                "SELECT playlist, persistenceVersion FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("persisted room should remain queryable");
+        assert_eq!(durable_after_stale, durable_before_stale);
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        let unresolved_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert!(
+            !unresolved_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+        );
+
+        external
+            .execute("DROP TRIGGER fail_room_version_4", [])
+            .expect("failure trigger should be removable");
+        assert!(
+            service.flush(),
+            "retained newest desired state should retry successfully"
+        );
+        let durable: (String, i64) = external
+            .query_row(
+                "SELECT playlist, persistenceVersion FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("newest room state should persist");
+        assert_eq!(durable, ("version-4.mkv".to_owned(), 4));
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+
+        drop(service);
+        drop(external);
+        fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn failed_newest_delete_cannot_be_superseded_by_an_older_save() {
+        let db_path = temporary_sqlite_path("room-worker-delete-failure");
+        let _ = fs::remove_file(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let (events, _) = broadcast::channel(64);
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = RoomPersistenceService::start_with_queue_capacity(
+            store,
+            events,
+            degraded_worker_count.clone(),
+            1,
+        )
+        .expect("room persistence worker should start");
+        let external = Connection::open(&db_path).expect("external sqlite connection should open");
+
+        service.enqueue(save_room_effect("room", "baseline.mkv", 1));
+        assert!(service.flush(), "baseline should persist");
+        external
+            .execute_batch(
+                "CREATE TRIGGER fail_room_delete \
+                 BEFORE DELETE ON persistent_rooms \
+                 WHEN OLD.name = 'room' \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'injected delete failure'); \
+                 END",
+            )
+            .expect("delete failure trigger should be installable");
+        service.enqueue(ServerPersistenceEffect::DeleteRoom {
+            room_name: "room".to_owned(),
+            version: 4,
+        });
+        service.enqueue(save_room_effect("room", "stale-2.mkv", 2));
+        service.enqueue(save_room_effect("room", "stale-3.mkv", 3));
+        assert!(
+            !service.flush(),
+            "failed newest delete must remain unresolved"
+        );
+        let durable: (String, i64) = external
+            .query_row(
+                "SELECT playlist, persistenceVersion FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("baseline room should remain until delete retry");
+        assert_eq!(durable, ("baseline.mkv".to_owned(), 1));
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+
+        external
+            .execute("DROP TRIGGER fail_room_delete", [])
+            .expect("delete failure trigger should be removable");
+        assert!(service.flush(), "newest delete should retry");
+        let count: i64 = external
+            .query_row(
+                "SELECT COUNT(*) FROM persistent_rooms WHERE name = 'room'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("room count should be queryable");
+        assert_eq!(count, 0);
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
 
         drop(service);
         drop(external);

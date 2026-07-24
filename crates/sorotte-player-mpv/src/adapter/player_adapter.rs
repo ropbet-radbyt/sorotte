@@ -582,6 +582,7 @@ impl PlayerAdapter for MpvAdapter {
         let previous_phase = self.transport_phase;
         self.pending_load_request = Some(path.to_owned());
         self.pending_load_generation = Some(generation);
+        self.rejected_prestart_load = None;
         self.network_media_options_embedded_load = None;
         self.transport_phase = PlayerTransportPhase::Loading;
         let loading_update = self
@@ -1019,7 +1020,9 @@ impl PlayerAdapter for MpvAdapter {
         }
         self.poll_ipc_local_file_update_if_attached();
 
-        let dropped_events_through = self.ordered_player_event_reacquisition_required.then(|| {
+        let (dropped_events_through, authoritative_snapshot) = if self
+            .ordered_player_event_reacquisition_required
+        {
             let dropped_events_through =
                 PlayerEventSequence::new(self.next_ordered_player_event_sequence - 1);
             let interrupted_command_progress = self.authoritative_reacquisition_command_progress();
@@ -1060,18 +1063,36 @@ impl PlayerAdapter for MpvAdapter {
             self.pending_local_file_generation = None;
             self.pending_local_file_observed_at = None;
             self.pending_playback_telemetry_update = None;
-            self.queue_authoritative_ordered_player_snapshot(
+            let authoritative_snapshot = self.authoritative_ordered_player_snapshot(
                 authoritative_local_file,
                 interrupted_command_progress,
                 interrupted_media_load_outcomes,
                 authoritative_generation,
             );
-            dropped_events_through
-        });
+            (Some(dropped_events_through), Some(authoritative_snapshot))
+        } else {
+            (None, None)
+        };
         self.ordered_player_event_reacquisition_required = false;
         self.ordered_player_event_reacquisition_requested_by_consumer = false;
         let delivery_reference = self.observation_clock_origin.elapsed();
-        let mut ordered_events: Vec<_> = self.pending_ordered_player_events.drain(..).collect();
+        let mut ordered_events: Vec<_> =
+            if let Some(authoritative_snapshot) = authoritative_snapshot {
+                authoritative_snapshot
+                    .into_iter()
+                    .map(|kind| {
+                        let sequence =
+                            PlayerEventSequence::new(self.next_ordered_player_event_sequence);
+                        self.next_ordered_player_event_sequence = self
+                            .next_ordered_player_event_sequence
+                            .checked_add(1)
+                            .expect("mpv ordered player event sequence exhausted");
+                        PlayerOrderedEvent::new(sequence, kind)
+                    })
+                    .collect()
+            } else {
+                self.pending_ordered_player_events.drain(..).collect()
+            };
         for event in &mut ordered_events {
             let retag = |observed_at: PlayerObservationTimestamp| {
                 PlayerObservationTimestamp::from_adapter_observation(
@@ -1327,6 +1348,71 @@ mod nonblocking_maintenance_tests {
             )
         }));
         assert_eq!(batch.legacy_playback_telemetry, None);
+    }
+
+    #[test]
+    fn authoritative_reacquisition_can_replay_more_events_than_the_ingress_queue_capacity() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(4);
+        adapter.active_media_generation = Some(generation);
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+        adapter.observed_state.position_seconds = Some(32.0);
+        adapter.observed_state.eof_reached = Some(false);
+
+        let terminal_count = MAX_PENDING_ORDERED_PLAYER_EVENTS + 44;
+        for id in 1..=terminal_count {
+            adapter.queue_command_progress(PlayerCommandProgress::finished(
+                PlayerCommandId::new(id as u64),
+                Some(generation),
+                Some(adapter.observation_timestamp()),
+                Some(32.0),
+                PlayerCommandResult::Completed,
+            ));
+        }
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        let dropped_events_through = batch
+            .dropped_events_through
+            .expect("overflow must request authoritative reacquisition");
+        assert_eq!(batch.ordered_events.len(), terminal_count + 1);
+        assert_eq!(
+            batch
+                .ordered_events
+                .first()
+                .map(|event| event.sequence.get()),
+            Some(dropped_events_through.get() + 1)
+        );
+        assert!(batch.ordered_events.windows(2).all(|events| {
+            events[0]
+                .sequence
+                .get()
+                .checked_add(1)
+                .is_some_and(|expected| events[1].sequence.get() == expected)
+        }));
+        assert_eq!(
+            batch
+                .ordered_events
+                .iter()
+                .filter(|event| matches!(event.kind, PlayerOrderedEventKind::CommandProgress(_)))
+                .count(),
+            terminal_count
+        );
+        assert!(matches!(
+            batch.ordered_events.last().map(|event| &event.kind),
+            Some(PlayerOrderedEventKind::Transport(update))
+                if update.media_generation == Some(generation)
+                    && update.phase == Some(PlayerTransportPhase::Playing)
+        ));
+        assert!(!adapter.ordered_player_event_reacquisition_required);
+
+        let acknowledged = adapter
+            .take_ordered_event_batch()
+            .expect("mpv supports ordered event batches");
+        assert_eq!(acknowledged.dropped_events_through, None);
+        assert!(adapter.unacknowledged_terminal_command_progress.is_empty());
     }
 
     #[test]

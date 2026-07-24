@@ -1,11 +1,15 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
+use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchCache,
@@ -20,6 +24,10 @@ use crate::{
         save_media_match_v3_record_with_stats,
     },
 };
+
+const MEDIA_INDEX_MANIFEST_FILE: &str = "current.json";
+const MEDIA_INDEX_GENERATIONS_DIR: &str = "generations";
+const MEDIA_INDEX_MANIFEST_VERSION: u32 = 1;
 
 /// Filesystem metadata used to update one row of the media inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,14 +80,119 @@ impl MediaIndexService {
     }
 
     pub fn index_path(&self) -> PathBuf {
-        media_match_v3_index_path(&self.root)
+        media_match_v3_index_path(&active_media_index_root(&self.root))
     }
 
     pub fn open(&self) -> Result<MediaIndexSession, String> {
-        open_media_match_v3_index(&self.root).map(|connection| MediaIndexSession {
-            root: self.root.clone(),
+        let active_root = active_media_index_root(&self.root);
+        open_media_match_v3_index(&active_root).map(|connection| MediaIndexSession {
+            root: active_root,
             connection,
         })
+    }
+}
+
+/// Isolates an index rebuild from the live WAL database until a validated same-directory swap.
+#[derive(Debug)]
+pub struct MediaIndexBuildTransaction {
+    live_root: PathBuf,
+    staging_root: PathBuf,
+    had_live_index: bool,
+    finished: bool,
+}
+
+impl MediaIndexBuildTransaction {
+    pub fn begin(
+        live_root: impl Into<PathBuf>,
+        staging_root: impl Into<PathBuf>,
+    ) -> Result<Self, String> {
+        let live_root = live_root.into();
+        let staging_root = staging_root.into();
+        if staging_root.exists() {
+            return Err(format!(
+                "media-match staging directory '{}' already exists",
+                staging_root.display()
+            ));
+        }
+        fs::create_dir_all(&staging_root).map_err(|error| {
+            format!(
+                "failed creating media-match staging directory '{}': {error}",
+                staging_root.display()
+            )
+        })?;
+
+        let live_path = MediaIndexService::new(&live_root).index_path();
+        let had_live_index = live_path.exists();
+        if had_live_index {
+            let staging_path = media_match_v3_index_path(&staging_root);
+            online_backup_database(&live_path, &staging_path)?;
+            validate_media_index_database(&staging_path)?;
+        }
+
+        Ok(Self {
+            live_root,
+            staging_root,
+            had_live_index,
+            finished: false,
+        })
+    }
+
+    pub fn staging_root(&self) -> &Path {
+        &self.staging_root
+    }
+
+    pub fn had_live_index(&self) -> bool {
+        self.had_live_index
+    }
+
+    pub fn commit(mut self) -> Result<(), String> {
+        let staging_path = media_match_v3_index_path(&self.staging_root);
+        validate_media_index_database(&staging_path)?;
+
+        let unique = media_index_transaction_unique();
+        let generation = format!("generation-{unique}");
+        let generation_root = self
+            .live_root
+            .join(MEDIA_INDEX_GENERATIONS_DIR)
+            .join(&generation);
+        fs::create_dir_all(&generation_root).map_err(|error| {
+            format!(
+                "failed creating media-match generation directory '{}': {error}",
+                generation_root.display()
+            )
+        })?;
+        let replacement_path = media_match_v3_index_path(&generation_root);
+        online_backup_database(&staging_path, &replacement_path)?;
+        validate_media_index_database(&replacement_path)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&replacement_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| {
+                format!(
+                    "failed flushing validated media-match replacement '{}': {error}",
+                    replacement_path.display()
+                )
+            })?;
+        write_media_index_manifest(&self.live_root, &generation)?;
+        remove_directory_if_exists(&self.staging_root)?;
+        self.finished = true;
+        Ok(())
+    }
+
+    pub fn abort(mut self) -> Result<(), String> {
+        remove_directory_if_exists(&self.staging_root)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for MediaIndexBuildTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = remove_directory_if_exists(&self.staging_root);
+        }
     }
 }
 
@@ -417,6 +530,269 @@ fn inventory_count(connection: &Connection) -> Result<usize, String> {
         })
         .map(|count| count.max(0) as usize)
         .map_err(|error| format!("failed reading media-match inventory count: {error}"))
+}
+
+fn active_media_index_root(root: &Path) -> PathBuf {
+    let manifest_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
+    let Some(generation) = fs::read(&manifest_path)
+        .ok()
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .and_then(|manifest| {
+            (manifest.get("version").and_then(serde_json::Value::as_u64)
+                == Some(u64::from(MEDIA_INDEX_MANIFEST_VERSION)))
+            .then(|| {
+                manifest
+                    .get("generation")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .flatten()
+        })
+        .filter(|generation| {
+            !generation.is_empty()
+                && generation
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+    else {
+        return root.to_path_buf();
+    };
+    root.join(MEDIA_INDEX_GENERATIONS_DIR).join(generation)
+}
+
+fn write_media_index_manifest(root: &Path, generation: &str) -> Result<(), String> {
+    fs::create_dir_all(root).map_err(|error| {
+        format!(
+            "failed creating media-match manifest directory '{}': {error}",
+            root.display()
+        )
+    })?;
+    let manifest_path = root.join(MEDIA_INDEX_MANIFEST_FILE);
+    let temporary_path = root.join(format!(
+        "{MEDIA_INDEX_MANIFEST_FILE}.tmp-{}",
+        media_index_transaction_unique()
+    ));
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "version": MEDIA_INDEX_MANIFEST_VERSION,
+        "generation": generation,
+    }))
+    .expect("media-index manifest serialization cannot fail");
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|error| {
+            format!(
+                "failed creating media-match manifest staging file '{}': {error}",
+                temporary_path.display()
+            )
+        })?;
+    file.write_all(&manifest)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed flushing media-match manifest staging file '{}': {error}",
+                temporary_path.display()
+            )
+        })?;
+    drop(file);
+    if let Err(error) = atomic_replace_path(&temporary_path, &manifest_path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "failed activating media-match generation manifest '{}': {error}",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source_wide = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both buffers are stable, NUL-terminated UTF-16 paths for the duration of the call.
+    let moved = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn online_backup_database(source_path: &Path, destination_path: &Path) -> Result<(), String> {
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed creating media-match backup directory '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    remove_sqlite_file_set(destination_path)?;
+    let source = Connection::open(source_path).map_err(|error| {
+        format!(
+            "failed opening media-match source database '{}': {error}",
+            source_path.display()
+        )
+    })?;
+    let mut destination = Connection::open(destination_path).map_err(|error| {
+        format!(
+            "failed opening media-match backup destination '{}': {error}",
+            destination_path.display()
+        )
+    })?;
+    {
+        let backup = Backup::new(&source, &mut destination).map_err(|error| {
+            format!(
+                "failed starting online media-match backup '{}' to '{}': {error}",
+                source_path.display(),
+                destination_path.display()
+            )
+        })?;
+        backup
+            .run_to_completion(64, Duration::from_millis(5), None)
+            .map_err(|error| {
+                format!(
+                    "failed completing online media-match backup '{}' to '{}': {error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+    }
+    destination
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(|error| {
+            format!(
+                "failed checkpointing media-match backup '{}': {error}",
+                destination_path.display()
+            )
+        })?;
+    Ok(())
+}
+
+fn validate_media_index_database(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!(
+            "media-match index candidate '{}' is missing",
+            path.display()
+        ));
+    }
+    let connection = Connection::open(path).map_err(|error| {
+        format!(
+            "failed opening media-match index candidate '{}': {error}",
+            path.display()
+        )
+    })?;
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|error| {
+            format!(
+                "failed validating media-match index candidate '{}': {error}",
+                path.display()
+            )
+        })?;
+    if quick_check != "ok" {
+        return Err(format!(
+            "media-match index candidate '{}' failed quick_check: {quick_check}",
+            path.display()
+        ));
+    }
+    for table in [
+        "media_files_v3",
+        "settings_v3",
+        "fingerprints_v3",
+        "audio_anchor_buckets_v3",
+    ] {
+        let exists = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                format!(
+                    "failed checking media-match schema in '{}': {error}",
+                    path.display()
+                )
+            })?
+            .is_some();
+        if !exists {
+            return Err(format!(
+                "media-match index candidate '{}' is missing required table '{table}'",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn media_index_transaction_unique() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn path_with_appended_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn sqlite_file_set(path: &Path) -> [PathBuf; 4] {
+    [
+        path.to_path_buf(),
+        path_with_appended_suffix(path, "-wal"),
+        path_with_appended_suffix(path, "-shm"),
+        path_with_appended_suffix(path, "-journal"),
+    ]
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed removing '{}': {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn remove_sqlite_file_set(path: &Path) -> Result<(), String> {
+    for member in sqlite_file_set(path) {
+        remove_file_if_exists(&member)?;
+    }
+    Ok(())
+}
+
+fn remove_directory_if_exists(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("failed removing '{}': {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn check_inventory_cancelled(is_cancelled: &mut impl FnMut() -> bool) -> Result<(), String> {

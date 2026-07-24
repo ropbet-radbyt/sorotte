@@ -285,6 +285,7 @@ impl Default for MpvAdapter {
             unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
+            rejected_prestart_load: None,
             provisional_eof_observation: None,
             interrupted_network_stream_recovery: None,
             network_cache_stall: None,

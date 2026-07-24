@@ -26,7 +26,7 @@ use sorotte_client_app::app_boundary::{
 };
 
 use super::super::media_match_support::{
-    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult,
+    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildRequest, MediaMatchIndexRebuildResult,
     MediaMatchInventoryExactResolution, MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool,
     MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
     import_managed_media_match_tool_with_progress,
@@ -34,7 +34,7 @@ use super::super::media_match_support::{
     media_match_cached_probable_candidate_for_remote_signature,
     media_match_inventory_exact_resolution_for_targets, media_match_tool_paths_for_settings,
     rebuild_persisted_media_match_candidates_with_progress_and_cancel,
-    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
+    rebuild_persisted_media_match_index_with_tool_root_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
 };
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};

@@ -347,20 +347,48 @@ async fn negotiate_start_tls_with_policy(
     };
 
     let mut prefetched_plaintext_line = None;
-    let upgrade_to_tls = match decode_message_line(tls_response_line.trim()) {
-        Ok(ProtocolMessage::Tls(tls_message)) if tls_message.tls.start_tls == "true" => true,
-        Ok(ProtocolMessage::Tls(_)) => false,
-        Ok(message) => {
+    let decoded_items = decode_message_line_items(tls_response_line.trim());
+    let upgrade_to_tls = match decoded_items {
+        Ok(items) if items.iter().all(|item| item.message.is_ok()) => {
+            let messages = items
+                .into_iter()
+                .map(|item| item.message.expect("validated protocol item"))
+                .collect::<Vec<_>>();
+            if matches!(
+                messages.as_slice(),
+                [ProtocolMessage::Tls(tls_message)] if tls_message.tls.start_tls == "true"
+            ) {
+                true
+            } else if matches!(messages.as_slice(), [ProtocolMessage::Tls(_)]) {
+                false
+            } else {
+                if policy == TlsPolicy::RequireTls {
+                    if let [message] = messages.as_slice() {
+                        return Err(anyhow!(
+                            "server returned unexpected {} message instead of accepting required TLS",
+                            message.kind()
+                        ));
+                    }
+                    return Err(anyhow!(
+                        "server bundled additional protocol messages with its STARTTLS response instead of providing a standalone required TLS acceptance"
+                    ));
+                }
+                eprintln!(
+                    "warning: server returned an unexpected STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
+                );
+                prefetched_plaintext_line = Some(tls_response_line);
+                false
+            }
+        }
+        Ok(_) => {
             if policy == TlsPolicy::RequireTls {
                 return Err(anyhow!(
-                    "server returned unexpected {} message instead of accepting required TLS",
-                    message.kind()
+                    "server returned a malformed response instead of accepting required TLS"
                 ));
             }
             eprintln!(
-                "warning: server returned an unexpected STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
+                "warning: server returned a malformed STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
             );
-            prefetched_plaintext_line = Some(tls_response_line);
             false
         }
         Err(error) => {
@@ -1197,6 +1225,69 @@ mod tests {
                 "re-injected line should enter normal protocol decoding"
             );
             assert!(pending.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_reinjects_every_message_bundled_with_an_explicit_tls_refusal() {
+        for response in [
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
+                .as_slice(),
+            b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Error\":{\"message\":\"something went wrong\"}}\n"
+                .as_slice(),
+            b"{\"Error\":{\"message\":\"something went wrong\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}}}\n"
+                .as_slice(),
+            b"{\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+        ] {
+            let prefetched = prefer_tls_prefetched_line_for_response(response).await;
+            let messages = decode_message_line_items(&prefetched)
+                .expect("bundled refusal should remain valid")
+                .into_iter()
+                .map(|item| item.message.expect("every bundled item should decode"))
+                .collect::<Vec<_>>();
+
+            assert_eq!(messages.len(), 2);
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message, ProtocolMessage::Tls(tls) if tls.tls.start_tls == "false"))
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| matches!(
+                        message,
+                        ProtocolMessage::Hello(_)
+                            | ProtocolMessage::Error(_)
+                            | ProtocolMessage::State(_)
+                    ))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn require_tls_rejects_messages_bundled_with_a_tls_refusal_in_either_order() {
+        for response in [
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
+                .as_slice(),
+            b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Error\":{\"message\":\"something went wrong\"}}\n"
+                .as_slice(),
+            b"{\"Error\":{\"message\":\"something went wrong\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}}}\n"
+                .as_slice(),
+            b"{\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+        ] {
+            let error = required_tls_error_for_response(response).await;
+            assert!(error.contains("bundled additional protocol messages"));
         }
     }
 

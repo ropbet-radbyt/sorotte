@@ -12,7 +12,7 @@ use std::{
 
 use md5::Md5;
 use regex::Regex;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -96,6 +96,7 @@ const DEFAULT_MAX_PERSISTENT_ROOMS_PER_IDENTITY: usize = 64;
 const DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS: f64 = 1.0;
 const DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 const PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS: f64 = 30.0;
+const LEGACY_PERSISTENT_ROOM_OWNER_BUCKET: &str = "quota:legacy-unattributed";
 const DEFAULT_MAX_FILENAME_LENGTH: usize = 250;
 const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
@@ -425,15 +426,18 @@ pub struct ServerRuntime {
     persistent_room_creation_cooldown_seconds: f64,
     persistent_room_inactivity_expiry_seconds: f64,
     persistent_room_owner_by_room: BTreeMap<String, String>,
+    persistent_room_created_at_by_room: BTreeMap<String, f64>,
     persistent_room_last_creation_by_identity: BTreeMap<String, f64>,
     persistent_room_last_activity_at: BTreeMap<String, f64>,
+    persistent_room_quota_secret: [u8; 32],
     isolate_rooms: bool,
     chat_enabled: bool,
     readiness_enabled: bool,
     max_chat_message_length: usize,
     max_username_length: usize,
     room_persistence: Option<RoomPersistenceService>,
-    room_persistence_versions: BTreeMap<String, u64>,
+    persisted_room_names: BTreeSet<String>,
+    next_room_persistence_version: u64,
     persistence_events: broadcast::Sender<ServerPersistenceEvent>,
     persistence_degraded_worker_count: Arc<AtomicUsize>,
     permanent_rooms: BTreeSet<String>,

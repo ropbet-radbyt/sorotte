@@ -269,7 +269,19 @@ fn persistent_playlist_json_roundtrips_newlines_carriage_returns_empty_items_and
     ];
 
     store
-        .save_room(&connection, "room", &files, Some(4), 12.0, 123.5)
+        .save_room(
+            &connection,
+            "room",
+            &PersistedRoomState {
+                files: files.clone(),
+                index: Some(4),
+                position: 12.0,
+                last_activity_at_seconds: 123.5,
+                version: 1,
+                owner_bucket: None,
+                created_at_seconds: 123.5,
+            },
+        )
         .expect("playlist should save as JSON");
     drop(connection);
     let rooms = store.load_rooms().expect("playlist should reload");
@@ -277,6 +289,70 @@ fn persistent_playlist_json_roundtrips_newlines_carriage_returns_empty_items_and
     assert_eq!(rooms["room"].files, files);
     assert_eq!(rooms["room"].index, Some(4));
     assert_eq!(rooms["room"].last_activity_at_seconds, 123.5);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn persistent_room_store_rejects_stale_saves_and_deletes_by_durable_version() {
+    let db_path = temporary_sqlite_path("persistent-room-durable-version");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room persistence should initialize");
+    let connection = store
+        .connection("version test")
+        .expect("room persistence connection should open");
+
+    store
+        .save_room(
+            &connection,
+            "room",
+            &PersistedRoomState {
+                files: vec!["new.mkv".to_owned()],
+                index: Some(0),
+                position: 50.0,
+                last_activity_at_seconds: 50.0,
+                version: 5,
+                owner_bucket: Some("quota:v1:test".to_owned()),
+                created_at_seconds: 10.0,
+            },
+        )
+        .expect("new room version should persist");
+    store
+        .save_room(
+            &connection,
+            "room",
+            &PersistedRoomState {
+                files: vec!["stale.mkv".to_owned()],
+                index: Some(0),
+                position: 40.0,
+                last_activity_at_seconds: 40.0,
+                version: 4,
+                owner_bucket: None,
+                created_at_seconds: 5.0,
+            },
+        )
+        .expect("stale upsert should be ignored without failing");
+    store
+        .delete_room(&connection, "room", 4)
+        .expect("stale delete should be ignored without failing");
+
+    let persisted = store.load_rooms().expect("room should remain loadable");
+    let room = persisted.get("room").expect("newer room should remain");
+    assert_eq!(room.files, vec!["new.mkv".to_owned()]);
+    assert_eq!(room.position, 50.0);
+    assert_eq!(room.version, 5);
+    assert_eq!(room.owner_bucket.as_deref(), Some("quota:v1:test"));
+
+    store
+        .delete_room(&connection, "room", 6)
+        .expect("newer delete should remove the row");
+    assert!(
+        store
+            .load_rooms()
+            .expect("empty room store should load")
+            .is_empty()
+    );
+
+    drop(connection);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
@@ -987,6 +1063,128 @@ fn persistent_room_creation_is_limited_and_rate_limited_by_peer_ip() {
         rate_limited.room_playlist_state("second-room").files,
         vec!["second.mkv".to_owned()]
     );
+}
+
+#[test]
+fn persistent_room_owner_quota_survives_restart_without_storing_raw_peer_ip() {
+    let db_path = temporary_sqlite_path("persistent-room-owner-quota");
+    let _ = fs::remove_file(&db_path);
+    let peer_ip = "192.0.2.91";
+
+    let mut first = ServerRuntime::with_persistent_rooms_enabled(true);
+    first
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("room persistence should initialize");
+    first.set_max_persistent_rooms(10);
+    first.set_max_persistent_rooms_per_identity(1);
+    first.set_persistent_room_creation_cooldown_seconds(0.0);
+    first
+        .handle_line_fanout_with_transport_actions_for_peer(
+            "first",
+            r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5"}}"#,
+            Some(peer_ip),
+        )
+        .expect("first peer should connect");
+    first
+        .handle_line_fanout("first", r#"{"Set":{"playlistChange":{"files":["a.mkv"]}}}"#)
+        .expect("first durable room should be accepted");
+    first
+        .flush_persistence()
+        .expect("first room should become durable");
+    drop(first);
+
+    let connection = rusqlite::Connection::open(&db_path).expect("database should open");
+    let owner_bucket: String = connection
+        .query_row(
+            "SELECT ownerBucket FROM persistent_rooms WHERE name = 'room-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("owner bucket should be durable");
+    assert!(owner_bucket.starts_with("quota:v1:"));
+    assert!(!owner_bucket.contains(peer_ip));
+    drop(connection);
+
+    let mut restarted = ServerRuntime::with_persistent_rooms_enabled(true);
+    restarted
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("persisted rooms should reload");
+    restarted.set_max_persistent_rooms(10);
+    restarted.set_max_persistent_rooms_per_identity(1);
+    restarted.set_persistent_room_creation_cooldown_seconds(0.0);
+    for (client_id, username, room_name, address) in [
+        ("same", "bob", "room-b", peer_ip),
+        ("different", "carol", "room-c", "192.0.2.92"),
+    ] {
+        restarted
+            .handle_line_fanout_with_transport_actions_for_peer(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room_name}"}},"version":"1.7.5"}}}}"#
+                ),
+                Some(address),
+            )
+            .expect("restart quota peer should connect");
+    }
+    restarted
+        .handle_line_fanout("same", r#"{"Set":{"playlistChange":{"files":["b.mkv"]}}}"#)
+        .expect("same-identity quota rejection should return a correction");
+    restarted
+        .handle_line_fanout(
+            "different",
+            r#"{"Set":{"playlistChange":{"files":["c.mkv"]}}}"#,
+        )
+        .expect("different identity should retain its own allocation");
+    assert!(restarted.room_playlist_state("room-b").files.is_empty());
+    assert_eq!(
+        restarted.room_playlist_state("room-c").files,
+        vec!["c.mkv".to_owned()]
+    );
+
+    drop(restarted);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn empty_room_churn_does_not_allocate_persistence_versions_or_database_rows() {
+    let db_path = temporary_sqlite_path("persistent-empty-room-churn");
+    let _ = fs::remove_file(&db_path);
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("room persistence should initialize");
+
+    for index in 0..1_000 {
+        let client_id = format!("client-{index}");
+        runtime
+            .handle_line(
+                &client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"user-{index}","room":{{"name":"room-{index}"}},"version":"1.7.5"}}}}"#
+                ),
+            )
+            .expect("empty room client should connect");
+        runtime
+            .handle_transport_disconnect_fanout(&client_id)
+            .expect("empty room client should disconnect");
+    }
+    runtime
+        .flush_persistence()
+        .expect("empty-room churn should have no unresolved persistence");
+
+    assert!(runtime.persisted_room_names.is_empty());
+    assert_eq!(runtime.next_room_persistence_version, 0);
+    let connection = rusqlite::Connection::open(&db_path).expect("database should open");
+    let row_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM persistent_rooms", [], |row| {
+            row.get(0)
+        })
+        .expect("persisted room count should be queryable");
+    assert_eq!(row_count, 0);
+
+    drop(runtime);
+    drop(connection);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
 #[test]

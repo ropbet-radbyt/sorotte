@@ -21,12 +21,12 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintError,
-    MediaFingerprintRecord, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
-    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
-    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
-    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
-    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
-    summarize_record_v3_diagnostics,
+    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexInventoryEntry,
+    MediaIndexService, MediaIndexSession, MediaMatchCache, MediaMatchCandidateDecision,
+    MediaMatchDecision, MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths,
+    MediaMatchV3RetrievalStats, decide_media_match, fingerprint_media_file_cancellable_with_report,
+    media_extraction_settings_hash, media_match_wire_value_from_records, normalize_media_path,
+    rank_media_match_candidates, summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -41,8 +41,6 @@ use super::shell_state::{
 use zip::ZipArchive;
 
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
-const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
-const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
 const MEDIA_MATCH_DISCOVERY_MAX_DEPTH: usize = 64;
@@ -85,6 +83,16 @@ pub(super) struct MediaMatchIndexRebuildResult {
     pub(super) current_decision: Option<String>,
     pub(super) nearest_match: Option<String>,
     pub(super) last_evidence: Option<String>,
+}
+
+pub(super) struct MediaMatchIndexRebuildRequest<'a> {
+    pub(super) root: &'a Path,
+    pub(super) tool_root: &'a Path,
+    pub(super) search_roots: &'a [PathBuf],
+    pub(super) current_player_path: Option<&'a str>,
+    pub(super) settings: &'a MediaMatchSettings,
+    pub(super) extraction_settings: &'a MediaExtractionSettings,
+    pub(super) cancel_flag: Option<&'a AtomicBool>,
 }
 
 pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
@@ -384,99 +392,70 @@ fn managed_media_match_index_dir(root: &Path) -> PathBuf {
 }
 
 fn managed_media_match_index_path(root: &Path) -> PathBuf {
-    managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_FILE)
-}
-
-fn managed_media_match_index_backup_path(root: &Path) -> PathBuf {
-    managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_BACKUP_FILE)
-}
-
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut text = path.as_os_str().to_os_string();
-    text.push(suffix);
-    PathBuf::from(text)
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("failed removing '{}': {error}", path.display()))?;
-    }
-    Ok(())
-}
-
-fn remove_sqlite_file_set(path: &Path) -> Result<(), String> {
-    remove_file_if_exists(path)?;
-    remove_file_if_exists(&path_with_suffix(path, "-wal"))?;
-    remove_file_if_exists(&path_with_suffix(path, "-shm"))?;
-    remove_file_if_exists(&path_with_suffix(path, "-journal"))?;
-    Ok(())
+    MediaIndexService::new(managed_media_match_index_dir(root)).index_path()
 }
 
 pub(super) fn media_match_sqlite_index_exists(root: &Path) -> bool {
     managed_media_match_index_path(root).exists()
 }
 
-pub(super) fn prepare_media_match_index_rebuild_backup(root: &Path) -> Result<bool, String> {
-    let index_dir = managed_media_match_index_dir(root);
-    fs::create_dir_all(&index_dir).map_err(|error| {
-        format!(
-            "failed creating media-match index directory '{}': {error}",
-            index_dir.display()
-        )
-    })?;
-    let index_path = managed_media_match_index_path(root);
-    let backup_path = managed_media_match_index_backup_path(root);
-    remove_file_if_exists(&backup_path)?;
-    if !index_path.exists() {
-        return Ok(false);
-    }
-    fs::copy(&index_path, &backup_path).map_err(|error| {
-        format!(
-            "failed preserving previous media-match index '{}' as '{}': {error}",
-            index_path.display(),
-            backup_path.display()
-        )
-    })?;
-    Ok(true)
+#[derive(Debug)]
+pub(super) struct GuiMediaMatchIndexBuildTransaction {
+    staging_app_root: PathBuf,
+    transaction: Option<MediaIndexBuildTransaction>,
 }
 
-pub(super) fn restore_media_match_index_rebuild_backup(
+impl GuiMediaMatchIndexBuildTransaction {
+    pub(super) fn staging_app_root(&self) -> &Path {
+        &self.staging_app_root
+    }
+
+    pub(super) fn commit(mut self) -> Result<(), String> {
+        self.transaction
+            .take()
+            .expect("media-match build transaction should be present")
+            .commit()
+    }
+
+    pub(super) fn abort(mut self) -> Result<(), String> {
+        self.transaction
+            .take()
+            .expect("media-match build transaction should be present")
+            .abort()
+    }
+}
+
+pub(super) fn prepare_media_match_index_rebuild_backup(
     root: &Path,
-    backup_existed: bool,
-) -> Result<(), String> {
-    let index_path = managed_media_match_index_path(root);
-    let backup_path = managed_media_match_index_backup_path(root);
-    remove_sqlite_file_set(&index_path)?;
-    if backup_existed {
-        if !backup_path.exists() {
-            return Err(format!(
-                "previous media-match index backup '{}' is missing",
-                backup_path.display()
-            ));
-        }
-        fs::rename(&backup_path, &index_path).map_err(|error| {
-            format!(
-                "failed restoring previous media-match index '{}' to '{}': {error}",
-                backup_path.display(),
-                index_path.display()
-            )
-        })?;
-    } else {
-        remove_file_if_exists(&backup_path)?;
-    }
-    Ok(())
-}
-
-pub(super) fn discard_media_match_index_rebuild_backup(root: &Path) -> Result<(), String> {
-    remove_file_if_exists(&managed_media_match_index_backup_path(root))
+) -> Result<GuiMediaMatchIndexBuildTransaction, String> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging_app_root = root.join("cache").join(format!(
+        ".media-match-build-{}-{unique}",
+        std::process::id()
+    ));
+    let transaction = MediaIndexBuildTransaction::begin(
+        managed_media_match_index_dir(root),
+        managed_media_match_index_dir(&staging_app_root),
+    )?;
+    Ok(GuiMediaMatchIndexBuildTransaction {
+        staging_app_root,
+        transaction: Some(transaction),
+    })
 }
 
 pub(super) fn clear_persisted_media_match_cache_at_root(root: &Path) -> Result<(), String> {
-    let index_path = managed_media_match_index_path(root);
-    remove_sqlite_file_set(&index_path)
-        .map_err(|error| format!("failed removing media-match SQLite index: {error}"))?;
-    remove_file_if_exists(&managed_media_match_index_backup_path(root))?;
+    let index_dir = managed_media_match_index_dir(root);
+    if index_dir.exists() {
+        fs::remove_dir_all(&index_dir).map_err(|error| {
+            format!(
+                "failed removing media-match SQLite index directory '{}': {error}",
+                index_dir.display()
+            )
+        })?;
+    }
     let metadata_path = managed_media_match_metadata_path(root);
     if metadata_path.exists() {
         fs::remove_file(&metadata_path).map_err(|error| {
@@ -681,6 +660,7 @@ fn media_match_install_success_message() -> String {
     "Installed ffmpeg and ffprobe for Media Matching V3.".to_owned()
 }
 
+#[cfg(test)]
 pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_cancel<F>(
     root: &Path,
     search_roots: &[PathBuf],
@@ -688,11 +668,41 @@ pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_c
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
     cancel_flag: Option<&AtomicBool>,
+    progress: F,
+) -> Result<MediaMatchIndexRebuildResult, String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    rebuild_persisted_media_match_index_with_tool_root_and_cancel(
+        MediaMatchIndexRebuildRequest {
+            root,
+            tool_root: root,
+            search_roots,
+            current_player_path,
+            settings,
+            extraction_settings,
+            cancel_flag,
+        },
+        progress,
+    )
+}
+
+pub(super) fn rebuild_persisted_media_match_index_with_tool_root_and_cancel<F>(
+    request: MediaMatchIndexRebuildRequest<'_>,
     mut progress: F,
 ) -> Result<MediaMatchIndexRebuildResult, String>
 where
     F: FnMut(MediaMatchToolProgress),
 {
+    let MediaMatchIndexRebuildRequest {
+        root,
+        tool_root,
+        search_roots,
+        current_player_path,
+        settings,
+        extraction_settings,
+        cancel_flag,
+    } = request;
     if !settings.fingerprinting_enabled {
         return Err("Enable Media Matching fingerprinting before rebuilding the index.".to_owned());
     }
@@ -704,7 +714,7 @@ where
     let candidates = collect_media_match_candidates(search_roots, cancel_flag)?;
     if current_player_path.is_none() {
         inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
-        match media_match_tool_paths_for_settings(root, extraction_settings) {
+        match media_match_tool_paths_for_settings(tool_root, extraction_settings) {
             Ok(tools) => {
                 return rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                     MediaMatchCandidateRebuildRequest {
@@ -739,7 +749,7 @@ where
             }
         }
     }
-    let tools = media_match_tool_paths_for_settings(root, extraction_settings)?;
+    let tools = media_match_tool_paths_for_settings(tool_root, extraction_settings)?;
     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
         MediaMatchCandidateRebuildRequest {
             root,
@@ -3938,27 +3948,26 @@ mod tests {
     }
 
     #[test]
-    fn media_match_index_backup_restore_reinstates_previous_sqlite_index() {
+    fn media_match_index_build_abort_leaves_previous_sqlite_index_untouched() {
         let root = unique_media_match_test_root("restore");
         let mut previous_cache = MediaMatchCache::default();
         previous_cache.insert(fake_media_match_record("previous.mkv"));
         save_media_match_cache(&root, &previous_cache).expect("previous cache should be written");
 
-        let backup_existed =
+        let transaction =
             prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
-        assert!(backup_existed);
-
-        remove_sqlite_file_set(&managed_media_match_index_path(&root))
-            .expect("primary index should be removed for test");
+        let staging_root = transaction.staging_app_root().to_path_buf();
+        clear_persisted_media_match_cache_at_root(&staging_root)
+            .expect("staged index should be replaceable");
         let mut partial_cache = MediaMatchCache::default();
         partial_cache.insert(fake_media_match_record("partial.mkv"));
-        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
+        save_media_match_cache(&staging_root, &partial_cache)
+            .expect("partial staged cache should be written");
 
-        restore_media_match_index_rebuild_backup(&root, backup_existed)
-            .expect("previous index should be restored");
+        transaction.abort().expect("staged rebuild should abort");
         let restored =
             load_media_match_cache_for_settings(&root, &MediaExtractionSettings::default())
-                .expect("restored cache should load");
+                .expect("live cache should remain loadable");
 
         assert!(
             restored
@@ -3974,19 +3983,19 @@ mod tests {
     }
 
     #[test]
-    fn media_match_index_backup_restore_removes_partial_index_without_previous_db() {
+    fn media_match_index_build_abort_leaves_missing_live_index_missing() {
         let root = unique_media_match_test_root("restore-empty");
-        let backup_existed =
+        let transaction =
             prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
-        assert!(!backup_existed);
+        let staging_root = transaction.staging_app_root().to_path_buf();
 
         let mut partial_cache = MediaMatchCache::default();
         partial_cache.insert(fake_media_match_record("partial.mkv"));
-        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
-        assert!(managed_media_match_index_path(&root).exists());
+        save_media_match_cache(&staging_root, &partial_cache)
+            .expect("partial staged cache should be written");
+        assert!(!managed_media_match_index_path(&root).exists());
 
-        restore_media_match_index_rebuild_backup(&root, backup_existed)
-            .expect("partial index should be removed");
+        transaction.abort().expect("staged rebuild should abort");
         assert!(!managed_media_match_index_path(&root).exists());
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -78,6 +78,8 @@ fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
                 playlist_index: Some(0),
                 position: 0.0,
                 last_activity_at_seconds: 1.0,
+                owner_bucket: None,
+                created_at_seconds: 0.0,
                 version: 1,
             }
         ),
@@ -88,6 +90,9 @@ fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
                 index: Some(0),
                 position: 0.0,
                 last_activity_at_seconds: 1.0,
+                version: 0,
+                owner_bucket: None,
+                created_at_seconds: 0.0,
             }
         ),
     ];

@@ -13,6 +13,9 @@ impl ServerRuntime {
 
     pub fn with_room_password_salt(salt: impl Into<SecretValue>) -> Self {
         let (persistence_events, _) = broadcast::channel(SERVER_PERSISTENCE_EVENT_CAPACITY);
+        let mut persistent_room_quota_secret = [0_u8; 32];
+        getrandom::fill(&mut persistent_room_quota_secret)
+            .expect("operating system random source should be available");
         Self {
             domain: SyncDomain::default(),
             sessions: BTreeMap::new(),
@@ -73,15 +76,18 @@ impl ServerRuntime {
             persistent_room_inactivity_expiry_seconds:
                 DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS,
             persistent_room_owner_by_room: BTreeMap::new(),
+            persistent_room_created_at_by_room: BTreeMap::new(),
             persistent_room_last_creation_by_identity: BTreeMap::new(),
             persistent_room_last_activity_at: BTreeMap::new(),
+            persistent_room_quota_secret,
             isolate_rooms: false,
             chat_enabled: true,
             readiness_enabled: true,
             max_chat_message_length: DEFAULT_MAX_CHAT_MESSAGE_LENGTH,
             max_username_length: DEFAULT_MAX_USERNAME_LENGTH,
             room_persistence: None,
-            room_persistence_versions: BTreeMap::new(),
+            persisted_room_names: BTreeSet::new(),
+            next_room_persistence_version: 0,
             persistence_events,
             persistence_degraded_worker_count: Arc::new(AtomicUsize::new(0)),
             permanent_rooms: BTreeSet::new(),
@@ -259,20 +265,29 @@ impl ServerRuntime {
     ) -> Result<(), ServerRuntimeError> {
         let Some(db_path) = db_path else {
             self.room_persistence = None;
-            self.room_persistence_versions.clear();
+            self.persisted_room_names.clear();
+            self.next_room_persistence_version = 0;
             return Ok(());
         };
         // Flush and close the old reusable connection before loading the new
         // snapshot, especially when reconfiguring the same database path.
         drop(self.room_persistence.take());
         let store = RoomPersistenceStore::open(&db_path)?;
+        self.persistent_room_quota_secret = store.load_or_create_quota_secret()?;
         let persisted_rooms = store.load_rooms()?;
+        self.persisted_room_names = persisted_rooms.keys().cloned().collect();
+        self.next_room_persistence_version = persisted_rooms
+            .values()
+            .map(|room| room.version)
+            .max()
+            .unwrap_or(0);
+        self.persistent_room_owner_by_room.clear();
+        self.persistent_room_created_at_by_room.clear();
         self.room_persistence = Some(RoomPersistenceService::start(
             store,
             self.persistence_events.clone(),
             self.persistence_degraded_worker_count.clone(),
         )?);
-        self.room_persistence_versions.clear();
         self.apply_persisted_rooms_snapshot(persisted_rooms);
         self.apply_permanent_rooms_snapshot();
         Ok(())
