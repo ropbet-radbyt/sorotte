@@ -10,6 +10,7 @@ use sorotte_player_api::{
 
 use crate::MpvAdapter;
 
+#[derive(Debug)]
 pub struct ConnectedMpvPlayer(MpvAdapter);
 
 impl ConnectedMpvPlayer {
