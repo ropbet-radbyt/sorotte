@@ -135,6 +135,25 @@ impl fmt::Debug for MpvAdapter {
             .field("active_media_generation", &self.active_media_generation)
             .field("pending_load_generation", &self.pending_load_generation)
             .field("active_playlist_entry_id", &self.active_playlist_entry_id)
+            .field(
+                "latest_start_file_playlist_entry_id",
+                &self
+                    .latest_start_file_observation
+                    .map(|observation| observation.playlist_entry_id),
+            )
+            .field(
+                "deferred_start_file_playlist_entry_id",
+                &self
+                    .deferred_start_file_observation
+                    .map(|observation| observation.playlist_entry_id),
+            )
+            .field(
+                "deferred_file_loaded_playlist_entry_id",
+                &self
+                    .deferred_file_loaded_observation
+                    .as_ref()
+                    .map(|observation| observation.playlist_entry_id),
+            )
             .field("transport_phase", &self.transport_phase)
             .field("active_file_loaded", &self.active_file_loaded)
             .field(
@@ -302,6 +321,9 @@ impl Default for MpvAdapter {
             network_cache_stall: None,
             active_media_generation: None,
             active_playlist_entry_id: None,
+            latest_start_file_observation: None,
+            deferred_start_file_observation: None,
+            deferred_file_loaded_observation: None,
             transport_phase: PlayerTransportPhase::Empty,
             active_file_loaded: false,
             active_generation_has_restarted: false,

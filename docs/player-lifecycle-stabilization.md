@@ -460,6 +460,7 @@ Debug assertions cover cheap map/active-attempt relationships in production.
 | A active; B accepted; C synchronously rejected | C only | B retains ownership and can complete |
 | generation 7 attempt A; recovery B accepted; A ends | A only | No logical failure/end; B can start and load |
 | Unknown `start-file` ID with multiple accepted attempts | none | Defer and reconcile; no guessed mutation |
+| `start-file` and `file-loaded` arrive before the accepted entry appears in an authoritative snapshot | none until the snapshot binds the entry | Retain both ingress observations; replay identity-dependent start state and `file-loaded` exactly once after binding |
 | Accepted C absent from one stale playlist snapshot | none | C remains accepted/unbound |
 | Empty playlist and absent path | authoritative idle | Idle or accepted-unobserved, bounded query count |
 | Empty playlist and present path | incomplete | Backoff and retry; no terminal guess |
@@ -519,6 +520,7 @@ replayer are deterministic.
 | Synchronous rejection isolation | deterministic rejection scenario |
 | Same-generation recovery | old end before/after successor start and old error variants |
 | Strict binding/reconciliation | stale playlist, external current item, later causal entry, and empty-player tests |
+| Fast load before binding | deferred `start-file`/`file-loaded` adapter regression plus required real-mpv pause/seek/resume semantics |
 | Command/effect lifetime separation | timeout/supersession plus late load and seek effects |
 | Epoch isolation | reattachment with reused playlist ID and pending commands |
 | EOF evidence | restart, progress, seeking, matched end, duplicate end, and recovery successor tests |
@@ -555,6 +557,42 @@ intentional:
    `(attachment_epoch, load_attempt_id)` ownership and an authoritative
    playlist-entry binding. The strict production check and the test-only shim
    are both covered by focused adapter tests.
+
+### Fast real-mpv ingress discovery
+
+The first required Linux real-mpv run after integration exposed this ordered
+trace:
+
+1. `OpenFile` was synchronously accepted.
+2. mpv emitted `start-file` for the new playlist entry before an authoritative
+   playlist query had bound that entry to the accepted attempt.
+3. mpv emitted `file-loaded` in the same fast load episode.
+4. Later reconciliation bound and started the attempt, and transport properties
+   described `ReadyPaused`, but the already-consumed `file-loaded` observation
+   was unavailable to complete the command.
+
+The false assumption was that every fast `start-file`/`file-loaded` pair would
+remain buffered in the IPC client until the reconciliation query completed.
+The ordinary event pump can consume both before reconciliation starts.
+
+The replacement keeps adapter-ingress observations that cannot yet be reduced:
+the `start-file` record retains its attachment epoch, playlist-entry ID, and
+pre-bound transport fields; the matching `file-loaded` record retains the same
+causal identity and a private target value. Neither mutates an attempt while
+ownership is ambiguous. Once the reducer binds the entry from the authoritative
+playlist, the adapter applies the deferred identity-dependent start boundary,
+reduces `file-loaded` exactly once in ingress order, and then republishes the
+authoritative post-start transport properties for readiness consumers.
+Replacement starts, terminal events, transport loss, and attachment replacement
+invalidate the retained records.
+
+This preserves supersession and timeout behavior because ownership still comes
+only from the reducer's strict playlist mapping. It introduces no path or
+single-pending-attempt heuristic, does not cross an attachment epoch, and keeps
+duplicate terminal command outcomes idempotent. The
+`ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance`
+adapter regression now delivers `file-loaded` before binding and proves that
+the later exact snapshot completes only the owning command exactly once.
 
 ### Source-baseline discovery
 

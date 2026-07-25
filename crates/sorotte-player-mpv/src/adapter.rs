@@ -611,6 +611,23 @@ enum TrackedCommandSupersession {
     PauseOrPlay,
 }
 
+#[derive(Clone, Copy)]
+struct DeferredStartFileObservation {
+    attachment_epoch: PlayerAttachmentEpoch,
+    playlist_entry_id: i64,
+    retained_paused: Option<bool>,
+    retained_logical_pause: Option<bool>,
+    retained_playback_rate: Option<f64>,
+    retained_core_idle: Option<bool>,
+}
+
+#[derive(Clone)]
+struct DeferredFileLoadedObservation {
+    attachment_epoch: PlayerAttachmentEpoch,
+    playlist_entry_id: i64,
+    loaded_target: Option<String>,
+}
+
 pub struct MpvAdapter {
     paused: bool,
     logical_pause_explicit: bool,
@@ -709,6 +726,9 @@ pub struct MpvAdapter {
     network_cache_stall: Option<NetworkCacheStall>,
     active_media_generation: Option<PlayerMediaGeneration>,
     active_playlist_entry_id: Option<u64>,
+    latest_start_file_observation: Option<DeferredStartFileObservation>,
+    deferred_start_file_observation: Option<DeferredStartFileObservation>,
+    deferred_file_loaded_observation: Option<DeferredFileLoadedObservation>,
     transport_phase: PlayerTransportPhase,
     active_file_loaded: bool,
     active_generation_has_restarted: bool,
@@ -828,6 +848,9 @@ impl MpvAdapter {
         self.network_cache_stall = None;
         self.active_media_generation = None;
         self.active_playlist_entry_id = None;
+        self.latest_start_file_observation = None;
+        self.deferred_start_file_observation = None;
+        self.deferred_file_loaded_observation = None;
         self.active_file_loaded = false;
         self.active_generation_has_restarted = false;
         self.current_path = None;
@@ -892,6 +915,9 @@ impl MpvAdapter {
         self.pending_load_request = None;
         self.pending_load_generation = None;
         self.active_playlist_entry_id = None;
+        self.latest_start_file_observation = None;
+        self.deferred_start_file_observation = None;
+        self.deferred_file_loaded_observation = None;
         self.active_media_generation = None;
         self.interrupted_network_stream_recovery = None;
         self.network_cache_stall = None;
@@ -4650,8 +4676,12 @@ impl MpvAdapter {
                 });
             }
         }
-        // Bind identities before reducing buffered start-file/file-loaded
-        // notifications so a fast load cannot lose its physical observations.
+        // Reapply identity-dependent ingress only after the authoritative
+        // playlist has bound the physical attempt. Retained observations were
+        // consumed before this query group and therefore precede any events
+        // still buffered by the IPC client.
+        self.replay_deferred_start_file_if_bound();
+        self.replay_deferred_file_loaded_if_bound();
         self.drain_ipc_events_if_attached();
         self.observed_state.path = path.clone();
         self.observed_state.paused = paused;
@@ -4667,6 +4697,11 @@ impl MpvAdapter {
         self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
         self.observed_state.eof_reached = eof_reached;
         self.current_path = path.clone();
+        // File-loaded is the semantic load boundary, while readiness is a
+        // transport observation. Re-publish the authoritative post-start
+        // properties after every retained/buffered event has reduced so the
+        // legacy progress bridge and ordered lifecycle stream converge.
+        self.publish_reconciled_transport_state();
         if entries.iter().all(|entry| !entry.current) {
             self.lifecycle_reconciliation_due = false;
             if self.player_lifecycle.requires_authoritative_snapshot() {
@@ -4678,6 +4713,26 @@ impl MpvAdapter {
         if self.player_lifecycle.requires_authoritative_snapshot() {
             self.publish_authoritative_lifecycle_snapshot();
         }
+    }
+
+    fn publish_reconciled_transport_state(&mut self) {
+        let Some(active_attempt) = self.player_lifecycle.active_attempt().cloned() else {
+            return;
+        };
+        self.active_media_generation = Some(active_attempt.media_generation);
+        self.active_playlist_entry_id = active_attempt
+            .playlist_entry_id
+            .and_then(|playlist_entry_id| u64::try_from(playlist_entry_id).ok());
+        let phase = self.inferred_transport_phase();
+        self.transport_phase = phase;
+        let update = self
+            .transport_update_for(active_attempt.media_generation)
+            .with_phase(phase);
+        self.queue_transport_telemetry_update_for_attempt(update, Some(active_attempt.id));
+        self.observe_tracked_commands(
+            Some(active_attempt.media_generation),
+            TrackedCommandObservation::Phase(phase),
+        );
     }
 
     #[cfg_attr(test, allow(dead_code))]
@@ -6015,6 +6070,9 @@ impl MpvAdapter {
         self.apply_lifecycle_input(PlayerLifecycleInput::TransportDisconnected {
             attachment_epoch,
         });
+        self.latest_start_file_observation = None;
+        self.deferred_start_file_observation = None;
+        self.deferred_file_loaded_observation = None;
         self.transport_phase = PlayerTransportPhase::Failed;
         self.active_file_loaded = false;
         if let Some((attempt_id, generation)) = active_owner {
@@ -6435,22 +6493,40 @@ impl MpvAdapter {
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
+        let Some(playlist_entry_id) = event.get("playlist_entry_id").and_then(Value::as_u64) else {
+            self.lifecycle_reconciliation_due = true;
+            return;
+        };
+        self.handle_start_file_observation(playlist_entry_id);
+    }
+
+    fn handle_start_file_observation(&mut self, playlist_entry_id: u64) {
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
         // change when an already-paused player begins a new file, so retain
         // their last observations across the media-generation boundary.
-        let retained_paused = self.observed_state.paused;
-        let retained_logical_pause = self.observed_state.logical_pause;
-        let retained_playback_rate = self.observed_state.playback_rate;
-        let retained_core_idle = self.observed_state.core_idle;
-        let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_u64);
-        let Some(lifecycle_playlist_entry_id) =
-            playlist_entry_id.and_then(|entry_id| i64::try_from(entry_id).ok())
-        else {
+        let Some(lifecycle_playlist_entry_id) = i64::try_from(playlist_entry_id).ok() else {
             self.lifecycle_reconciliation_due = true;
             return;
         };
         let lifecycle_epoch = self.lifecycle_epoch();
+        let observation = DeferredStartFileObservation {
+            attachment_epoch: lifecycle_epoch,
+            playlist_entry_id: lifecycle_playlist_entry_id,
+            retained_paused: self.observed_state.paused,
+            retained_logical_pause: self.observed_state.logical_pause,
+            retained_playback_rate: self.observed_state.playback_rate,
+            retained_core_idle: self.observed_state.core_idle,
+        };
+        let replaces_previous_start = self.latest_start_file_observation.is_some_and(|previous| {
+            previous.attachment_epoch != lifecycle_epoch
+                || previous.playlist_entry_id != lifecycle_playlist_entry_id
+        });
+        if replaces_previous_start {
+            self.deferred_start_file_observation = None;
+            self.deferred_file_loaded_observation = None;
+        }
+        self.latest_start_file_observation = Some(observation);
         self.apply_lifecycle_input(PlayerLifecycleInput::StartFile {
             attachment_epoch: lifecycle_epoch,
             playlist_entry_id: lifecycle_playlist_entry_id,
@@ -6471,7 +6547,7 @@ impl MpvAdapter {
                     // authoritative playlist. Remember only the latest observed
                     // entry; matching path/file-loaded evidence performs the
                     // actual binding without weakening production ownership.
-                    self.active_playlist_entry_id = playlist_entry_id;
+                    self.active_playlist_entry_id = Some(playlist_entry_id);
                 }
                 #[cfg(not(test))]
                 {
@@ -6492,6 +6568,8 @@ impl MpvAdapter {
             .player_lifecycle
             .attempt_for_playlist_entry(lifecycle_playlist_entry_id)
         else {
+            self.deferred_start_file_observation = Some(observation);
+            self.lifecycle_reconciliation_due = true;
             return;
         };
         let Some(generation) = self
@@ -6502,7 +6580,16 @@ impl MpvAdapter {
         else {
             return;
         };
+        self.deferred_start_file_observation = None;
+        self.apply_bound_start_file_observation(observation, lifecycle_attempt_id, generation);
+    }
 
+    fn apply_bound_start_file_observation(
+        &mut self,
+        observation: DeferredStartFileObservation,
+        lifecycle_attempt_id: LoadAttemptId,
+        generation: PlayerMediaGeneration,
+    ) {
         if self.network_media_options_hook_instance_id.is_some()
             && self.network_media_options_hook_configured_generation
                 == Some(self.network_media_options_generation)
@@ -6525,7 +6612,7 @@ impl MpvAdapter {
         self.network_media_options_apply_identity = None;
         self.reset_network_media_policy_diagnostics();
 
-        self.active_playlist_entry_id = playlist_entry_id;
+        self.active_playlist_entry_id = u64::try_from(observation.playlist_entry_id).ok();
         self.active_media_generation = Some(generation);
         self.active_file_loaded = false;
         self.active_generation_has_restarted = false;
@@ -6534,19 +6621,19 @@ impl MpvAdapter {
         self.current_path = None;
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
-        self.observed_state.paused = retained_paused;
-        self.observed_state.logical_pause = retained_logical_pause;
+        self.observed_state.paused = observation.retained_paused;
+        self.observed_state.logical_pause = observation.retained_logical_pause;
         self.observed_state.path = None;
         self.observed_state.duration_seconds = None;
         self.observed_state.size_bytes = None;
         self.observed_state.position_seconds = None;
-        self.observed_state.playback_rate = retained_playback_rate;
+        self.observed_state.playback_rate = observation.retained_playback_rate;
         self.observed_state.paused_for_cache = None;
         self.observed_state.cache_buffering_percent = None;
         self.observed_state.seeking = None;
         self.observed_state.seekable = None;
         self.observed_state.seekable_ranges = None;
-        self.observed_state.core_idle = retained_core_idle;
+        self.observed_state.core_idle = observation.retained_core_idle;
         self.observed_state.demuxer_cache_idle = None;
         self.observed_state.eof_reached = Some(false);
         self.observed_state.buffered_ahead_seconds = None;
@@ -6562,9 +6649,9 @@ impl MpvAdapter {
         let mut update = self
             .transport_update_for(generation)
             .with_phase(PlayerTransportPhase::Loading);
-        update.logical_pause = retained_logical_pause;
-        update.playback_rate = retained_playback_rate;
-        update.core_idle = retained_core_idle;
+        update.logical_pause = observation.retained_logical_pause;
+        update.playback_rate = observation.retained_playback_rate;
+        update.core_idle = observation.retained_core_idle;
         update.eof_reached = Some(false);
         self.queue_transport_telemetry_update_for_attempt(update, Some(lifecycle_attempt_id));
         self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(Some(generation)));
@@ -6575,6 +6662,32 @@ impl MpvAdapter {
             None,
             AuthoritativePathObservationOrigin::StartFilePending,
         );
+    }
+
+    fn replay_deferred_start_file_if_bound(&mut self) {
+        let Some(observation) = self.deferred_start_file_observation else {
+            return;
+        };
+        if observation.attachment_epoch != self.lifecycle_epoch() {
+            self.deferred_start_file_observation = None;
+            return;
+        }
+        let Some(attempt_id) = self
+            .player_lifecycle
+            .attempt_for_playlist_entry(observation.playlist_entry_id)
+        else {
+            return;
+        };
+        let Some(generation) = self
+            .player_lifecycle
+            .load_attempts
+            .get(&attempt_id)
+            .map(|attempt| attempt.media_generation)
+        else {
+            return;
+        };
+        self.deferred_start_file_observation = None;
+        self.apply_bound_start_file_observation(observation, attempt_id, generation);
     }
 
     fn handle_seek_event(&mut self) {
@@ -6658,43 +6771,59 @@ impl MpvAdapter {
     }
 
     fn handle_file_loaded_event(&mut self) {
+        self.handle_file_loaded_observation(self.observed_state.path.clone());
+    }
+
+    fn handle_file_loaded_observation(&mut self, loaded_target: Option<String>) {
+        let lifecycle_epoch = self.lifecycle_epoch();
         #[allow(unused_mut)]
         let mut playlist_entry_id = self
-            .active_playlist_entry_id
-            .and_then(|entry_id| i64::try_from(entry_id).ok());
+            .latest_start_file_observation
+            .filter(|observation| observation.attachment_epoch == lifecycle_epoch)
+            .map(|observation| observation.playlist_entry_id)
+            .or_else(|| {
+                self.active_playlist_entry_id
+                    .and_then(|entry_id| i64::try_from(entry_id).ok())
+            });
         #[cfg(test)]
         if playlist_entry_id.is_none_or(|entry_id| {
             self.player_lifecycle
                 .attempt_for_playlist_entry(entry_id)
                 .is_none()
         }) {
-            let test_entry_id = self
-                .active_playlist_entry_id
-                .and_then(|entry_id| i64::try_from(entry_id).ok())
-                .or_else(|| {
-                    self.player_lifecycle
-                        .load_attempts
-                        .values()
-                        .find(|attempt| {
-                            !attempt.state.is_terminal() && attempt.playlist_entry_id.is_none()
-                        })
-                        .and_then(|attempt| i64::try_from(attempt.id.get()).ok())
-                });
+            let test_entry_id = playlist_entry_id.or_else(|| {
+                self.active_playlist_entry_id
+                    .and_then(|entry_id| i64::try_from(entry_id).ok())
+                    .or_else(|| {
+                        self.player_lifecycle
+                            .load_attempts
+                            .values()
+                            .find(|attempt| {
+                                !attempt.state.is_terminal() && attempt.playlist_entry_id.is_none()
+                            })
+                            .and_then(|attempt| i64::try_from(attempt.id.get()).ok())
+                    })
+            });
             if let Some(test_entry_id) = test_entry_id
                 && self.bind_single_pending_test_load(test_entry_id)
             {
                 playlist_entry_id = Some(test_entry_id);
             }
         }
+        self.replay_deferred_start_file_if_bound();
         let Some(playlist_entry_id) = playlist_entry_id else {
             self.lifecycle_reconciliation_due = true;
             return;
         };
-        let lifecycle_epoch = self.lifecycle_epoch();
         let Some(attempt_id) = self
             .player_lifecycle
             .attempt_for_playlist_entry(playlist_entry_id)
         else {
+            self.deferred_file_loaded_observation = Some(DeferredFileLoadedObservation {
+                attachment_epoch: lifecycle_epoch,
+                playlist_entry_id,
+                loaded_target,
+            });
             self.lifecycle_reconciliation_due = true;
             return;
         };
@@ -6706,10 +6835,21 @@ impl MpvAdapter {
         else {
             return;
         };
+        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
+        if self
+            .deferred_file_loaded_observation
+            .as_ref()
+            .is_some_and(|observation| {
+                observation.attachment_epoch == lifecycle_epoch
+                    && observation.playlist_entry_id == playlist_entry_id
+            })
+        {
+            self.deferred_file_loaded_observation = None;
+        }
         self.apply_lifecycle_input(PlayerLifecycleInput::FileLoaded {
             attachment_epoch: lifecycle_epoch,
             playlist_entry_id: Some(playlist_entry_id),
-            loaded_target: self.observed_state.path.clone(),
+            loaded_target: loaded_target.or_else(|| self.observed_state.path.clone()),
         });
         self.active_media_generation = Some(generation);
         self.active_file_loaded = true;
@@ -6767,6 +6907,35 @@ impl MpvAdapter {
         );
     }
 
+    fn replay_deferred_file_loaded_if_bound(&mut self) {
+        let Some(observation) = self.deferred_file_loaded_observation.as_ref() else {
+            return;
+        };
+        if observation.attachment_epoch != self.lifecycle_epoch() {
+            self.deferred_file_loaded_observation = None;
+            return;
+        }
+        if self.latest_start_file_observation.is_none_or(|start| {
+            start.attachment_epoch != observation.attachment_epoch
+                || start.playlist_entry_id != observation.playlist_entry_id
+        }) {
+            self.deferred_file_loaded_observation = None;
+            return;
+        }
+        if self
+            .player_lifecycle
+            .attempt_for_playlist_entry(observation.playlist_entry_id)
+            .is_none()
+        {
+            return;
+        }
+        let observation = self
+            .deferred_file_loaded_observation
+            .take()
+            .expect("checked deferred file-loaded observation");
+        self.handle_file_loaded_observation(observation.loaded_target);
+    }
+
     fn handle_end_file_event(&mut self, event: &Value) {
         let reason = event
             .get("reason")
@@ -6798,6 +6967,17 @@ impl MpvAdapter {
             self.lifecycle_reconciliation_due = true;
             return;
         };
+        if self
+            .latest_start_file_observation
+            .is_some_and(|observation| {
+                observation.attachment_epoch == self.lifecycle_epoch()
+                    && observation.playlist_entry_id == lifecycle_playlist_entry_id
+            })
+        {
+            self.latest_start_file_observation = None;
+            self.deferred_start_file_observation = None;
+            self.deferred_file_loaded_observation = None;
+        }
         #[cfg(test)]
         if self
             .player_lifecycle
@@ -8257,6 +8437,16 @@ impl MpvAdapter {
         current_path: Option<String>,
     ) {
         let attachment_epoch = self.lifecycle_epoch();
+        let paused = self.observed_state.paused;
+        let logical_pause = self.observed_state.logical_pause;
+        let playback_rate = self.observed_state.playback_rate;
+        let paused_for_cache = self.observed_state.paused_for_cache;
+        let cache_buffering_percent = self.observed_state.cache_buffering_percent;
+        let seeking = self.observed_state.seeking;
+        let seekable = self.observed_state.seekable;
+        let core_idle = self.observed_state.core_idle;
+        let demuxer_cache_idle = self.observed_state.demuxer_cache_idle;
+        let eof_reached = self.observed_state.eof_reached;
         self.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
             attachment_epoch,
             entries: entries
@@ -8265,9 +8455,27 @@ impl MpvAdapter {
                     AuthoritativePlaylistEntry::new(id, original_filename, current)
                 })
                 .collect(),
-            current_path,
+            current_path: current_path.clone(),
         });
-        self.lifecycle_reconciliation_due = self.player_lifecycle.requires_authoritative_snapshot();
+        self.replay_deferred_start_file_if_bound();
+        self.replay_deferred_file_loaded_if_bound();
+        self.observed_state.path = current_path.clone();
+        self.observed_state.paused = paused;
+        self.observed_state.logical_pause = logical_pause;
+        self.observed_state.playback_rate = playback_rate;
+        self.observed_state.paused_for_cache = paused_for_cache;
+        self.observed_state.cache_buffering_percent = cache_buffering_percent;
+        self.observed_state.seeking = seeking;
+        self.observed_state.seekable = seekable;
+        self.observed_state.core_idle = core_idle;
+        self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
+        self.observed_state.eof_reached = eof_reached;
+        self.current_path = current_path;
+        self.publish_reconciled_transport_state();
+        self.lifecycle_reconciliation_due = self.player_lifecycle.reconciliation_required
+            || self.player_lifecycle.requires_authoritative_snapshot()
+            || self.deferred_start_file_observation.is_some()
+            || self.deferred_file_loaded_observation.is_some();
     }
 
     #[cfg(test)]
@@ -8291,10 +8499,30 @@ impl MpvAdapter {
     }
 
     #[cfg(test)]
-    pub(crate) fn observe_current_load_ready_for_test(&mut self, playlist_entry_id: i64) {
-        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
-        self.handle_file_loaded_event();
-        self.handle_playback_restart_event();
+    pub(crate) fn observe_load_ready_before_binding_for_test(
+        &mut self,
+        playlist_entry_id: i64,
+        loaded_target: impl Into<String>,
+    ) {
+        let playlist_entry_id =
+            u64::try_from(playlist_entry_id).expect("test playlist entry ID should be nonnegative");
+        self.handle_start_file_observation(playlist_entry_id);
+        self.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": false,
+        }));
+        self.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": MPV_PROPERTY_PAUSE,
+            "data": true,
+        }));
+        self.handle_ipc_event(&json!({
+            "event": "property-change",
+            "name": MPV_PROPERTY_CORE_IDLE,
+            "data": true,
+        }));
+        self.handle_file_loaded_observation(Some(loaded_target.into()));
     }
 }
 

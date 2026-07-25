@@ -820,13 +820,11 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     let c_request_id = next_request_id(&state);
     let c_response = format!(r#"{{"request_id":{c_request_id},"error":"success"}}"#);
     state.queue_playlist_query_unavailable();
-    state.queue_reads(&[
-        &c_response,
-        r#"{"event":"start-file","playlist_entry_id":999}"#,
-    ]);
+    state.queue_reads(&[&c_response]);
     let command_c = adapter
         .execute_tracked(PlayerCommand::OpenFile("c.mkv".to_owned()))
         .expect("C should be accepted despite the missing initial playlist snapshot");
+    adapter.observe_load_ready_before_binding_for_test(999, "c.mkv");
     let generation_c = adapter
         .media_generation()
         .expect("C should remain the pending generation");
@@ -884,6 +882,24 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     // The successful retry supplies exact causal identity rather than inferring C from the
     // single pending request. The production maintenance path obtains the same evidence from
     // mpv's playlist/path snapshot.
+    let lifecycle_request_id = next_request_id(&state);
+    let lifecycle_reads = [
+        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success","data":"c.mkv"}}"#),
+        format!(
+            r#"{{"request_id":{},"error":"success","data":120.0}}"#,
+            lifecycle_request_id.saturating_add(1)
+        ),
+        format!(
+            r#"{{"request_id":{},"error":"success","data":123456}}"#,
+            lifecycle_request_id.saturating_add(2)
+        ),
+    ];
+    state.queue_reads(
+        &lifecycle_reads
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
     adapter.inject_authoritative_playlist_snapshot_for_test(
         [
             (10, Some("b.mkv".to_owned()), false),
@@ -906,28 +922,9 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
         "the authoritative current playlist entry should bind to C"
     );
 
-    let lifecycle_request_id = next_request_id(&state);
-    let lifecycle_reads = [
-        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success","data":"c.mkv"}}"#),
-        format!(
-            r#"{{"request_id":{},"error":"success","data":120.0}}"#,
-            lifecycle_request_id.saturating_add(1)
-        ),
-        format!(
-            r#"{{"request_id":{},"error":"success","data":123456}}"#,
-            lifecycle_request_id.saturating_add(2)
-        ),
-    ];
-    state.queue_reads(
-        &lifecycle_reads
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-    );
-    adapter.observe_current_load_ready_for_test(999);
     let mut ordered_events = adapter
         .take_ordered_event_batch()
-        .expect("C lifecycle should remain observable after reconciliation")
+        .expect("C lifecycle should be observable after deferred file-loaded reconciliation")
         .ordered_events;
     if let Some(follow_up) = adapter.take_ordered_event_batch() {
         ordered_events.extend(follow_up.ordered_events);
@@ -945,8 +942,20 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
                 && progress.state
                     == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
         }),
-        "C should complete from its exact file-loaded/restart lifecycle: {progress:#?}; adapter: {adapter:?}; writes: {:#?}",
+        "C should complete from its retained file-loaded lifecycle after exact binding: {progress:#?}; adapter: {adapter:?}; writes: {:#?}",
         state.writes()
+    );
+    assert_eq!(
+        progress
+            .iter()
+            .filter(|progress| {
+                progress.command_id == command_c
+                    && progress.state
+                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+            })
+            .count(),
+        1,
+        "retained file-loaded evidence must complete C exactly once: {progress:#?}"
     );
     assert!(progress.iter().all(|progress| {
         progress.command_id != command_b
