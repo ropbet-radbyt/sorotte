@@ -153,13 +153,15 @@ Submitting
   -> Active
   -> SupersededMayStillEmit { successor }
   -> MayStillEmit
+  -> MayStillEmitQuiescent { retire_after_tick }
   -> Terminal(Ended | Failed(kind) | NeverStarted | TransportDisconnected)
 ```
 
 `Bound`, `Starting`, and `Active` may transition to
-`SupersededMayStillEmit`. `AcceptedUnbound` may transition to `MayStillEmit`
-when semantic completion is not observed. Supersession never deletes an
-attempt.
+`SupersededMayStillEmit`. Any logically owned accepted attempt that has not
+observed `file-loaded` may transition to `MayStillEmitQuiescent` when semantic
+completion is not observed, even after strict playlist binding or
+`start-file`. Supersession never deletes an attempt.
 
 ### Submission
 
@@ -172,7 +174,10 @@ in that order after the response boundary.
 A synchronous rejection terminally rejects only the newly submitted attempt.
 The prior active or accepted attempt remains unchanged. Acceptance changes the
 new attempt to `AcceptedUnbound` and changes its predecessor to
-`SupersededMayStillEmit`.
+`SupersededMayStillEmit`. It also emits one `Superseded` load-attempt outcome
+for the predecessor and permanently revokes that attempt's logical ownership.
+Later physical events still correlate to the predecessor, but cannot restore
+it as the active logical file.
 
 Same-generation cache-stall and premature-EOF recovery allocate a new attempt
 while retaining the `PlayerMediaGeneration`.
@@ -226,14 +231,17 @@ Every submitted tracked command has exactly one terminal semantic outcome.
 `CompletionNotObserved` replaces the old interpretation of timeout as proof
 that the effect cannot arrive. An accepted load or seek can retain a
 `MayStillEmit`/`MayStillArrive` physical ownership record after semantic
-supersession or observational timeout. An accepted load that is still unbound
-at its semantic deadline becomes `MayStillEmitQuiescent`: it emits one
-`Indeterminate` attempt outcome, clears adapter-facing pending-load state, and
-stops proactive property-query reconciliation. A later unknown `start-file`
-rearms one strict reconciliation, so a target- and baseline-matching physical
-entry can still bind to the original attempt. The deadline belongs to the
-physical attempt rather than its optional tracked command, so commandless
-same-generation recovery loads cannot poll forever either.
+supersession or observational timeout. An accepted load that has not observed
+`file-loaded` by its semantic deadline becomes `MayStillEmitQuiescent`,
+including when it is already `Bound` or `Starting`: it emits one
+`Indeterminate` attempt outcome, clears adapter-facing pending/active load
+projection, and stops proactive property-query reconciliation. A later unknown
+`start-file` may rearm one strict reconciliation, and a correlated late
+`start-file` is retained as physical evidence without restoring logical
+activity. Only a later correlated `file-loaded` may reactivate a still-owned
+quiescent attempt. The deadline belongs to the physical attempt rather than its
+optional tracked command, so commandless same-generation recovery loads cannot
+poll forever either.
 
 Semantic outcomes are inserted into a retained, ordered store. They remain
 available in every compatible batch until the acknowledgement token covering
@@ -434,6 +442,16 @@ completion-not-observed, acknowledged, and reattached seek traces. A mismatch
 between system-owned and native-seek decisions fails the suite while the legacy
 GUI compatibility path remains active.
 
+A Play command's optional cache-pause confirmation is also ownership-scoped.
+The adapter accepts and dispatches Play before issuing one nonblocking
+`cache-pause` readback. Its correlation records the IPC command ID, tracked Play
+command, attachment epoch, physical attempt, media generation, and cache
+observation sequence. A newer property event wins; replacement, media change,
+control-queue gap, or command completion invalidates the readback. An
+unsupported property is nonfatal, and a lost response falls through to the
+normal tracked-command deadline rather than blocking command acceptance or
+starting an unbounded retry loop.
+
 ## Reducer inputs and effects
 
 The pure inputs include command submission/acceptance/rejection, playlist and
@@ -442,9 +460,11 @@ seeking, disconnect/replacement, consumer event gap, authoritative snapshot,
 acknowledgement, and fake-clock advancement.
 
 Effects include sending a command, requesting one authoritative query group,
-emitting one ordered event, retaining a semantic outcome, and scheduling
-bounded reconciliation. The adapter executes effects; it does not repeat their
-ownership decisions.
+emitting one ordered event, retaining a semantic outcome, recording a
+`PhysicalFileLoaded { attempt_id, owns_logical_playback }` observation, and
+scheduling bounded reconciliation. The adapter updates active projections only
+when that explicit ownership bit is true; it does not repeat reducer ownership
+decisions.
 
 ## Executable invariants
 

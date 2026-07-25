@@ -82,6 +82,105 @@ fn timed_out_unbound_load_clears_pending_ui_and_stops_property_query_scheduling(
 }
 
 #[test]
+fn timed_out_bound_load_clears_loading_projection_but_retains_late_physical_ownership() {
+    let generation = PlayerMediaGeneration::new(3);
+    let target = "https://media.invalid/bound-without-file-loaded";
+    let mut adapter = MpvAdapter::default();
+    let command_id = adapter.register_tracked_command(
+        Some(generation),
+        TrackedCommandKind::Load {
+            file_loaded: false,
+            ready: false,
+        },
+    );
+    adapter.accept_tracked_command(command_id);
+    let attempt_id =
+        adapter.submit_lifecycle_load(Some(command_id), generation, target, BTreeSet::new());
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id,
+    });
+    adapter.pending_load_request = Some(target.to_owned());
+    adapter.pending_load_generation = Some(generation);
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+        attachment_epoch,
+        entries: vec![crate::lifecycle::AuthoritativePlaylistEntry::new(
+            77,
+            Some(target.to_owned()),
+            true,
+        )],
+        current_path: Some(target.to_owned()),
+    });
+    adapter.handle_start_file_observation(77);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+    assert_eq!(adapter.active_media_generation, Some(generation));
+
+    let effects = adapter.apply_lifecycle_input(PlayerLifecycleInput::TimerAdvanced {
+        now_tick: adapter.player_lifecycle.now_tick.saturating_add(60_000),
+    });
+
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
+    assert_eq!(
+        adapter.player_lifecycle.attempt_for_playlist_entry(77),
+        Some(attempt_id)
+    );
+    assert_eq!(adapter.pending_load_request(), None);
+    assert_eq!(adapter.pending_load_generation(), None);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert!(!adapter.paused_for_cache());
+    assert_eq!(adapter.cache_buffering_percent(), None);
+    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(!adapter.player_lifecycle.reconciliation_required);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(
+                effect,
+                PlayerLifecycleEffect::EmitSemanticOutcome(outcome)
+                    if matches!(
+                        outcome.outcome,
+                        PlayerSemanticOutcome::LoadAttempt(ref load)
+                            if load.attempt_id == attempt_id
+                                && load.result == PlayerLoadAttemptResult::Indeterminate
+                    )
+            ))
+            .count(),
+        1
+    );
+
+    adapter.handle_file_loaded_observation(Some(target.to_owned()));
+    assert_eq!(
+        adapter.player_lifecycle.active_load_attempt,
+        Some(attempt_id)
+    );
+    assert_eq!(adapter.active_media_generation, Some(generation));
+    assert!(adapter.active_file_loaded);
+    assert_eq!(adapter.pending_load_generation(), None);
+    let semantic_outcomes = adapter
+        .player_lifecycle
+        .peek_event_batch()
+        .expect("retained timeout delivery")
+        .semantic_outcomes;
+    assert_eq!(
+        semantic_outcomes
+            .iter()
+            .filter(|outcome| matches!(
+                outcome.outcome,
+                PlayerSemanticOutcome::LoadAttempt(ref load) if load.attempt_id == attempt_id
+            ))
+            .count(),
+        1,
+        "late file-loaded must not emit a second success outcome"
+    );
+}
+
+#[test]
 fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() {
     let generation = PlayerMediaGeneration::new(9);
     let mut adapter = MpvAdapter::default();
@@ -89,13 +188,23 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
         None,
         generation,
         "https://media.invalid/recovery",
-        BTreeSet::from([77]),
+        BTreeSet::new(),
     );
     let attachment_epoch = adapter.lifecycle_epoch();
     adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
         attachment_epoch,
         attempt_id,
     });
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+        attachment_epoch,
+        entries: vec![crate::lifecycle::AuthoritativePlaylistEntry::new(
+            77,
+            Some("https://media.invalid/recovery".to_owned()),
+            true,
+        )],
+        current_path: Some("https://media.invalid/recovery".to_owned()),
+    });
+    adapter.handle_start_file_observation(77);
     adapter.interrupted_network_stream_recovery = Some(InterruptedNetworkStreamRecovery {
         media_generation: generation,
         latest_attempt_id: attempt_id,
@@ -103,12 +212,6 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
         consecutive_attempts: 1,
         total_attempts: 1,
     });
-    adapter.transport_phase = PlayerTransportPhase::Loading;
-    adapter.active_file_loaded = false;
-    adapter.active_media_generation = Some(generation);
-    adapter.active_playlist_entry_id = Some(77);
-    adapter.current_path = Some("https://media.invalid/recovery".to_owned());
-    adapter.observed_state.path = adapter.current_path.clone();
     adapter.lifecycle_reconciliation_due = true;
     let accepted_at_tick = adapter.player_lifecycle.now_tick;
 
@@ -137,6 +240,99 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
     assert_eq!(adapter.current_path, None);
     assert!(!adapter.lifecycle_reconciliation_due);
     assert!(!adapter.player_lifecycle.reconciliation_required);
+}
+
+#[test]
+fn delayed_file_loaded_from_superseded_attempt_cannot_replace_active_adapter_projection() {
+    let mut adapter = MpvAdapter::default();
+    let attachment_epoch = adapter.lifecycle_epoch();
+    let generation_a = PlayerMediaGeneration::new(11);
+    let attempt_a = adapter.submit_lifecycle_load(
+        None,
+        generation_a,
+        "https://media.invalid/a",
+        BTreeSet::new(),
+    );
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id: attempt_a,
+    });
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+        attachment_epoch,
+        entries: vec![crate::lifecycle::AuthoritativePlaylistEntry::new(
+            10,
+            Some("https://media.invalid/a".to_owned()),
+            true,
+        )],
+        current_path: Some("https://media.invalid/a".to_owned()),
+    });
+    adapter.handle_start_file_observation(10);
+
+    let generation_b = PlayerMediaGeneration::new(12);
+    let attempt_b = adapter.submit_lifecycle_load(
+        None,
+        generation_b,
+        "https://media.invalid/b",
+        BTreeSet::from([10]),
+    );
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id: attempt_b,
+    });
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+        attachment_epoch,
+        entries: vec![
+            crate::lifecycle::AuthoritativePlaylistEntry::new(
+                10,
+                Some("https://media.invalid/a".to_owned()),
+                false,
+            ),
+            crate::lifecycle::AuthoritativePlaylistEntry::new(
+                20,
+                Some("https://media.invalid/b".to_owned()),
+                true,
+            ),
+        ],
+        current_path: Some("https://media.invalid/b".to_owned()),
+    });
+    adapter.handle_start_file_observation(20);
+    adapter.handle_file_loaded_observation(Some("https://media.invalid/b".to_owned()));
+    assert_eq!(
+        adapter.player_lifecycle.active_load_attempt,
+        Some(attempt_b)
+    );
+    assert_eq!(adapter.active_media_generation, Some(generation_b));
+    assert_eq!(adapter.active_playlist_entry_id, Some(20));
+    assert!(adapter.active_file_loaded);
+
+    adapter.handle_start_file_observation(10);
+    adapter.handle_file_loaded_observation(Some("https://media.invalid/a".to_owned()));
+
+    assert_eq!(
+        adapter.player_lifecycle.active_load_attempt,
+        Some(attempt_b)
+    );
+    assert_eq!(adapter.active_media_generation, Some(generation_b));
+    assert_eq!(adapter.active_playlist_entry_id, Some(20));
+    assert!(adapter.active_file_loaded);
+    assert_eq!(adapter.current_path, None);
+    assert!(adapter.player_lifecycle.load_attempts[&attempt_a].logical_ownership_revoked);
+    let batch = adapter
+        .player_lifecycle
+        .peek_event_batch()
+        .expect("supersession outcomes");
+    assert!(batch.semantic_outcomes.iter().any(|outcome| matches!(
+        outcome.outcome,
+        PlayerSemanticOutcome::LoadAttempt(ref load)
+            if load.attempt_id == attempt_a
+                && load.result == PlayerLoadAttemptResult::Superseded
+    )));
+    assert!(!batch.semantic_outcomes.iter().any(|outcome| matches!(
+        outcome.outcome,
+        PlayerSemanticOutcome::LoadAttempt(ref load)
+            if load.attempt_id == attempt_a
+                && load.result == PlayerLoadAttemptResult::Loaded
+    )));
 }
 
 #[test]

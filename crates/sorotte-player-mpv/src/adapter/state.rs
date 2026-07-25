@@ -323,6 +323,8 @@ impl Default for MpvAdapter {
             last_paused_position_poll_at: None,
             last_ipc_event_fence_at: None,
             pending_ipc_event_fence_command_id: None,
+            pending_cache_pause_readback: None,
+            cache_pause_observation_sequence: 0,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
             transport_observers_registered: false,

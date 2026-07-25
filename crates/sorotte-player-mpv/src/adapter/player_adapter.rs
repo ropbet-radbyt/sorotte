@@ -7,6 +7,7 @@ const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
 const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN: u64 = 3;
 const IPC_EVENT_FENCE_COMMAND_TOKEN: u64 = 4;
+const CACHE_PAUSE_READBACK_COMMAND_TOKEN: u64 = 5;
 
 impl MpvAdapter {
     fn is_nonblocking_runtime_lease_event(event: &Value) -> bool {
@@ -19,31 +20,108 @@ impl MpvAdapter {
         // may remain authoritative after that gap.
         self.pending_ipc_event_fence_command_id = None;
         self.last_ipc_event_fence_at = Some(Instant::now());
+        self.invalidate_cache_pause_readback_scope();
         self.invalidate_network_media_options_hook_delivery();
         self.legacy_syncplayintf_pending_heartbeat_command_id = None;
     }
 
-    fn reacquire_missing_cache_pause_after_tracked_play(&mut self) {
+    fn cache_pause_readback_scope_is_current(&self, pending: &PendingCachePauseReadback) -> bool {
+        pending.attachment_epoch == self.lifecycle_epoch()
+            && pending.dispatch_observation_sequence == self.cache_pause_observation_sequence
+            && self.observed_state.paused_for_cache.is_none()
+            && self.active_file_loaded
+            && self.active_media_generation == Some(pending.media_generation)
+            && self.player_lifecycle.active_load_attempt == Some(pending.attempt_id)
+            && self
+                .player_lifecycle
+                .load_attempts
+                .get(&pending.attempt_id)
+                .is_some_and(|attempt| {
+                    attempt.media_generation == pending.media_generation
+                        && !attempt.logical_ownership_revoked
+                        && attempt.state == crate::lifecycle::LoadAttemptState::Active
+                })
+            && self.pending_tracked_commands.iter().any(|command| {
+                command.id == pending.tracked_play_command_id
+                    && command.accepted_at.is_some()
+                    && command.media_generation == Some(pending.media_generation)
+                    && matches!(command.kind, TrackedCommandKind::Play { .. })
+            })
+    }
+
+    fn schedule_cache_pause_readback_for_tracked_play(
+        &mut self,
+        tracked_play_command_id: PlayerCommandId,
+    ) {
+        self.pending_cache_pause_readback = None;
         if self.simulation_mode || self.observed_state.paused_for_cache.is_some() {
             return;
         }
-        let paused_for_cache = self
-            .ipc_client
-            .as_mut()
-            .and_then(|client| {
-                client
-                    .get_property(MPV_PROPERTY_PAUSED_FOR_CACHE)
-                    .ok()
-                    .flatten()
-            })
-            .and_then(|value| value.as_bool());
-        // The synchronous response is ordered after the Play command. Reduce every event the
-        // worker harvested first, then use the readback only if none of those events restored
-        // generation-scoped cache evidence.
-        self.drain_ipc_events_if_attached();
-        if self.observed_state.paused_for_cache.is_none()
-            && let Some(paused_for_cache) = paused_for_cache
+        let Some(active_attempt) = self.player_lifecycle.active_attempt() else {
+            return;
+        };
+        if active_attempt.state != crate::lifecycle::LoadAttemptState::Active
+            || active_attempt.logical_ownership_revoked
+            || self.active_media_generation != Some(active_attempt.media_generation)
+            || !self.active_file_loaded
         {
+            return;
+        }
+        let pending = PendingCachePauseReadback {
+            ipc_command_id: None,
+            tracked_play_command_id,
+            attachment_epoch: self.lifecycle_epoch(),
+            attempt_id: active_attempt.id,
+            media_generation: active_attempt.media_generation,
+            dispatch_observation_sequence: self.cache_pause_observation_sequence,
+            completed_value: None,
+        };
+        if !self.cache_pause_readback_scope_is_current(&pending) {
+            return;
+        }
+        self.pending_cache_pause_readback = Some(pending);
+    }
+
+    pub(super) fn maintain_cache_pause_readback_nonblocking(&mut self) {
+        let Some(pending) = self.pending_cache_pause_readback else {
+            return;
+        };
+        if !self.cache_pause_readback_scope_is_current(&pending) {
+            self.pending_cache_pause_readback = None;
+            return;
+        }
+        if pending.ipc_command_id.is_some() || pending.completed_value.is_some() {
+            return;
+        }
+        let Some(ipc_client) = self.ipc_client.as_mut() else {
+            self.pending_cache_pause_readback = None;
+            return;
+        };
+        match ipc_client.try_get_property_nonblocking(
+            MPV_PROPERTY_PAUSED_FOR_CACHE,
+            CACHE_PAUSE_READBACK_COMMAND_TOKEN,
+        ) {
+            Ok(Some(command_id)) => {
+                if let Some(pending) = self.pending_cache_pause_readback.as_mut() {
+                    pending.ipc_command_id = Some(command_id);
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                self.pending_cache_pause_readback = None;
+            }
+        }
+    }
+
+    pub(super) fn apply_completed_cache_pause_readback_if_current(&mut self) {
+        let Some(pending) = self.pending_cache_pause_readback else {
+            return;
+        };
+        let Some(paused_for_cache) = pending.completed_value else {
+            return;
+        };
+        self.pending_cache_pause_readback = None;
+        if self.cache_pause_readback_scope_is_current(&pending) {
             self.apply_paused_for_cache_observation(paused_for_cache);
         }
     }
@@ -121,7 +199,27 @@ impl MpvAdapter {
                         } if self.pending_ipc_event_fence_command_id == Some(command_id) => {
                             self.pending_ipc_event_fence_command_id = None;
                         }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                            command_id,
+                            token: CACHE_PAUSE_READBACK_COMMAND_TOKEN,
+                            response,
+                        } if self
+                            .pending_cache_pause_readback
+                            .is_some_and(|pending| pending.ipc_command_id == Some(command_id)) =>
+                        {
+                            let paused_for_cache = response.get("data").and_then(Value::as_bool);
+                            if let Some(paused_for_cache) = paused_for_cache {
+                                if let Some(pending) = self.pending_cache_pause_readback.as_mut() {
+                                    pending.completed_value = Some(paused_for_cache);
+                                }
+                            } else {
+                                self.pending_cache_pause_readback = None;
+                            }
+                        }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { .. } => {}
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                            ..
+                        } => {}
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
                             command_id,
                             token,
@@ -160,6 +258,16 @@ impl MpvAdapter {
                             ..
                         } if self.pending_ipc_event_fence_command_id == Some(command_id) => {
                             self.pending_ipc_event_fence_command_id = None;
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                            command_id,
+                            token: CACHE_PAUSE_READBACK_COMMAND_TOKEN,
+                            ..
+                        } if self
+                            .pending_cache_pause_readback
+                            .is_some_and(|pending| pending.ipc_command_id == Some(command_id)) =>
+                        {
+                            self.pending_cache_pause_readback = None;
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed { .. } => {}
                     }
@@ -563,13 +671,6 @@ impl PlayerAdapter for MpvAdapter {
                     MPV_PROPERTY_PAUSE,
                     false
                 ]));
-                if result.is_ok() {
-                    // `paused-for-cache` can transiently become unavailable after file-loaded,
-                    // and mpv may then omit a new `false` property-change because its scalar
-                    // value did not change. One targeted post-command read preserves the strict
-                    // cache-release acknowledgement without polling or accepting stale evidence.
-                    self.reacquire_missing_cache_pause_after_tracked_play();
-                }
                 if result.is_ok() && self.simulation_mode {
                     self.paused = false;
                 }
@@ -700,6 +801,10 @@ impl PlayerAdapter for MpvAdapter {
                     )
                 })
             }
+        }
+        if play_intent.is_some() {
+            self.schedule_cache_pause_readback_for_tracked_play(command_id);
+            self.maintain_cache_pause_readback_nonblocking();
         }
         Ok(command_id)
     }
@@ -1457,6 +1562,90 @@ mod nonblocking_maintenance_tests {
         ordinary_sequence: usize,
     }
 
+    struct FirstResponseThenTimeoutTransport {
+        command_count: usize,
+        delivered_responses: usize,
+        last_request_id: u64,
+    }
+
+    impl MpvJsonIpcTransport for FirstResponseThenTimeoutTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim_end()).map_err(io::Error::other)?;
+            self.last_request_id = request
+                .get("request_id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| io::Error::other("missing request id"))?;
+            self.command_count += 1;
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, deadline: Instant) -> io::Result<usize> {
+            if self.command_count == 1 && self.delivered_responses == 0 {
+                self.delivered_responses = 1;
+                *line = json!({
+                    "request_id": self.last_request_id,
+                    "error": "success",
+                })
+                .to_string()
+                    + "\n";
+                return Ok(line.len());
+            }
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "synthetic delayed cache readback",
+            ))
+        }
+    }
+
+    fn prepare_active_cache_readback(
+        adapter: &mut MpvAdapter,
+    ) -> (LoadAttemptId, PlayerMediaGeneration) {
+        let media_generation = PlayerMediaGeneration::new(7);
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch,
+            media_generation,
+            playlist_entry_id: 70,
+            observed_target: "active-cache-readback.mkv".to_owned(),
+            file_loaded: true,
+        });
+        let attempt_id = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("active load attempt");
+        adapter.active_media_generation = Some(media_generation);
+        adapter.active_playlist_entry_id = Some(70);
+        adapter.active_file_loaded = true;
+        adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
+        adapter.observed_state.paused = Some(true);
+        adapter.observed_state.logical_pause = Some(true);
+        adapter.observed_state.paused_for_cache = None;
+        (attempt_id, media_generation)
+    }
+
+    fn schedule_test_cache_readback(
+        adapter: &mut MpvAdapter,
+    ) -> (LoadAttemptId, PlayerMediaGeneration, PlayerCommandId) {
+        let (attempt_id, media_generation) = prepare_active_cache_readback(adapter);
+        let command_id = adapter.register_tracked_command(
+            Some(media_generation),
+            TrackedCommandKind::Play {
+                intent: PlayerPlayIntent::Resume,
+                restart_sequence_baseline: 0,
+                position_baseline: Some(10.0),
+                logical_play_observed: false,
+                cache_clear_observed: false,
+                restart_observed: false,
+                forward_advancement_observed: false,
+            },
+        );
+        adapter.accept_tracked_command(command_id);
+        adapter.schedule_cache_pause_readback_for_tracked_play(command_id);
+        assert!(adapter.pending_cache_pause_readback.is_some());
+        (attempt_id, media_generation, command_id)
+    }
+
     fn age_tracked_command_past_deadline(adapter: &mut MpvAdapter, command_id: PlayerCommandId) {
         let command = adapter
             .pending_tracked_commands
@@ -1484,6 +1673,116 @@ mod nonblocking_maintenance_tests {
                 )
             })
             .count()
+    }
+
+    #[test]
+    fn tracked_play_acceptance_does_not_wait_for_delayed_cache_readback() {
+        let transport = FirstResponseThenTimeoutTransport {
+            command_count: 0,
+            delivered_responses: 0,
+            last_request_id: 0,
+        };
+        let mut adapter =
+            MpvAdapter::with_test_transport_and_ipc_timeout(transport, Duration::from_secs(1));
+        adapter.observers_registered = true;
+        adapter.transport_observers_registered = true;
+        prepare_active_cache_readback(&mut adapter);
+
+        let started_at = Instant::now();
+        let command_id = adapter
+            .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::Resume))
+            .expect("tracked play should be accepted");
+        let elapsed = started_at.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(750),
+            "execute_tracked waited for the optional cache readback: {elapsed:?}"
+        );
+        assert!(matches!(
+            adapter
+                .pending_command_progress_updates
+                .pop_front()
+                .expect("accepted progress")
+                .state,
+            PlayerCommandProgressState::Accepted
+        ));
+        assert_eq!(
+            adapter
+                .pending_cache_pause_readback
+                .map(|pending| pending.tracked_play_command_id),
+            Some(command_id)
+        );
+    }
+
+    #[test]
+    fn newer_cache_property_event_wins_over_completed_readback() {
+        let mut adapter = MpvAdapter::default();
+        schedule_test_cache_readback(&mut adapter);
+        if let Some(pending) = adapter.pending_cache_pause_readback.as_mut() {
+            pending.completed_value = Some(false);
+        }
+
+        adapter.apply_paused_for_cache_observation(true);
+        adapter.apply_completed_cache_pause_readback_if_current();
+
+        assert_eq!(adapter.observed_state.paused_for_cache, Some(true));
+        assert_eq!(adapter.pending_cache_pause_readback, None);
+    }
+
+    #[test]
+    fn media_and_attachment_replacement_discard_scoped_cache_readback() {
+        let mut media_replaced = MpvAdapter::default();
+        schedule_test_cache_readback(&mut media_replaced);
+        if let Some(pending) = media_replaced.pending_cache_pause_readback.as_mut() {
+            pending.completed_value = Some(false);
+        }
+        media_replaced.handle_start_file_observation(71);
+        media_replaced.apply_completed_cache_pause_readback_if_current();
+        assert_eq!(media_replaced.pending_cache_pause_readback, None);
+        assert_eq!(media_replaced.observed_state.paused_for_cache, None);
+
+        let mut attachment_replaced = MpvAdapter::default();
+        schedule_test_cache_readback(&mut attachment_replaced);
+        if let Some(pending) = attachment_replaced.pending_cache_pause_readback.as_mut() {
+            pending.completed_value = Some(false);
+        }
+        attachment_replaced.reset_player_state_for_new_attachment();
+        attachment_replaced.apply_completed_cache_pause_readback_if_current();
+        assert_eq!(attachment_replaced.pending_cache_pause_readback, None);
+        assert_eq!(attachment_replaced.observed_state.paused_for_cache, None);
+    }
+
+    #[test]
+    fn lost_cache_readback_correlation_falls_back_to_normal_play_timeout() {
+        let mut adapter = MpvAdapter::default();
+        let (_, _, command_id) = schedule_test_cache_readback(&mut adapter);
+        if let Some(pending) = adapter.pending_cache_pause_readback.as_mut() {
+            pending.ipc_command_id = Some(99);
+        }
+        let accepted = adapter
+            .pending_command_progress_updates
+            .pop_front()
+            .expect("accepted progress");
+        assert_eq!(accepted.command_id, command_id);
+        assert_eq!(accepted.state, PlayerCommandProgressState::Accepted);
+
+        adapter.invalidate_nonblocking_runtime_commands_after_control_gap();
+        assert_eq!(adapter.pending_cache_pause_readback, None);
+        age_tracked_command_past_deadline(&mut adapter, command_id);
+        adapter.expire_tracked_commands();
+
+        let finished = adapter
+            .pending_command_progress_updates
+            .pop_front()
+            .expect("timed-out progress");
+        assert_eq!(finished.command_id, command_id);
+        assert_eq!(
+            finished.state,
+            PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
+                PlayerCommandFailureKind::TimedOut
+            ))
+        );
+        assert!(adapter.pending_tracked_commands.is_empty());
     }
 
     #[test]

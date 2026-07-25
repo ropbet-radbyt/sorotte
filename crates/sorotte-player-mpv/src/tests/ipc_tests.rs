@@ -1020,6 +1020,77 @@ fn each_nonblocking_command_receives_a_unique_completion_identity() {
 }
 
 #[test]
+fn nonblocking_property_read_retains_its_response_for_scoped_consumers() {
+    let response = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                command_id: 1,
+                token: 5,
+                response: observed,
+            }
+        )] if observed == &response
+    ));
+}
+
+#[test]
+fn unavailable_nonblocking_property_read_emits_no_connection_failure() {
+    let response = json!({
+        "request_id": 1,
+        "error": crate::constants::MPV_RESPONSE_PROPERTY_UNAVAILABLE,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert!(matches!(
+        client.take_connection_events().as_slice(),
+        [MpvIpcConnectionEvent::Connected { .. }]
+    ));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                command_id: 1,
+                token: 5,
+                ..
+            }
+        )]
+    ));
+    assert!(client.take_connection_events().is_empty());
+    assert!(client.is_healthy());
+}
+
+#[test]
 fn unrelated_client_message_stays_on_the_ordinary_full_pump_lane() {
     let unrelated = json!({
         "event": "client-message",

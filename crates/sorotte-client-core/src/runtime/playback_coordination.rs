@@ -4245,8 +4245,14 @@ where
                 media_generation,
                 command_id,
                 playlist_entry_id,
-            }
-            | PlayerEvent::LoadAttemptActive {
+            } => self.ordered_player_events.install_attempt(
+                attempt_id,
+                media_generation,
+                command_id,
+                Some(playlist_entry_id),
+                false,
+            ),
+            PlayerEvent::LoadAttemptActive {
                 attempt_id,
                 media_generation,
                 command_id,
@@ -4321,9 +4327,12 @@ where
                     load.media_generation,
                     load.command_id,
                     None,
-                    load.result == PlayerLoadAttemptResult::Loaded,
+                    false,
                 );
-                if load.result != PlayerLoadAttemptResult::Loaded {
+                if !matches!(
+                    load.result,
+                    PlayerLoadAttemptResult::Loaded | PlayerLoadAttemptResult::Indeterminate
+                ) {
                     self.ordered_player_events
                         .terminate_attempt(load.attempt_id, load.media_generation);
                 }
@@ -5730,7 +5739,7 @@ mod tests {
             vec![
                 event(
                     1,
-                    PlayerEvent::LoadAttemptStarting {
+                    PlayerEvent::LoadAttemptActive {
                         attempt_id: first_attempt,
                         media_generation: generation,
                         command_id: None,
@@ -5748,7 +5757,7 @@ mod tests {
                 ),
                 event(
                     3,
-                    PlayerEvent::LoadAttemptStarting {
+                    PlayerEvent::LoadAttemptActive {
                         attempt_id: second_attempt,
                         media_generation: generation,
                         command_id: None,
@@ -5860,6 +5869,132 @@ mod tests {
     }
 
     #[test]
+    fn loaded_semantic_outcome_without_active_event_does_not_claim_transport_ownership() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            21,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 1),
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                },
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        requested_target: "superseded-physical-load".to_owned(),
+                        loaded_target: Some("superseded-physical-load".to_owned()),
+                        result: PlayerLoadAttemptResult::Loaded,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(runtime.ordered_player_events.active_attempt, None);
+        assert!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .contains_key(&attempt_id)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.load_attempt_id),
+            None
+        );
+    }
+
+    #[test]
+    fn indeterminate_load_outcome_preserves_binding_for_a_late_active_event() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            22,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 1),
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                },
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        requested_target: "late-load.mkv".to_owned(),
+                        loaded_target: None,
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                    },
+                ),
+            }],
+        ));
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(runtime.ordered_player_events.active_attempt, None);
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .get(&attempt_id)
+                .map(|binding| binding.terminal),
+            Some(false)
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            23,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::LoadAttemptActive {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                },
+            }],
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(2.0).unwrap();
+
+        assert_eq!(
+            runtime.ordered_player_events.active_attempt,
+            Some(attempt_id)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.load_attempt_id),
+            None
+        );
+    }
+
+    #[test]
     fn acknowledged_terminal_batch_compacts_consumer_replay_state() {
         let epoch = PlayerAttachmentEpoch::new(1);
         let generation = PlayerMediaGeneration::new(1);
@@ -5881,7 +6016,7 @@ mod tests {
                         command_id: None,
                         requested_target: "retired-private-target".to_owned(),
                         loaded_target: None,
-                        result: PlayerLoadAttemptResult::Indeterminate,
+                        result: PlayerLoadAttemptResult::NeverStarted,
                     },
                 ),
             }],

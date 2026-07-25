@@ -549,6 +549,17 @@ struct PendingTrackedCommand {
     kind: TrackedCommandKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingCachePauseReadback {
+    ipc_command_id: Option<u64>,
+    tracked_play_command_id: PlayerCommandId,
+    attachment_epoch: PlayerAttachmentEpoch,
+    attempt_id: LoadAttemptId,
+    media_generation: PlayerMediaGeneration,
+    dispatch_observation_sequence: u64,
+    completed_value: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnacknowledgedMediaLoadOutcome {
     attempt_id: Option<LoadAttemptId>,
@@ -747,6 +758,8 @@ pub struct MpvAdapter {
     last_paused_position_poll_at: Option<Instant>,
     last_ipc_event_fence_at: Option<Instant>,
     pending_ipc_event_fence_command_id: Option<u64>,
+    pending_cache_pause_readback: Option<PendingCachePauseReadback>,
+    cache_pause_observation_sequence: u64,
     observed_state: MpvObservedState,
     observers_registered: bool,
     transport_observers_registered: bool,
@@ -896,6 +909,7 @@ impl MpvAdapter {
         self.last_polled_local_file_update = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
+        self.invalidate_cache_pause_readback_scope();
         self.pending_playback_telemetry_update = None;
         self.pending_transport_telemetry_updates.clear();
         self.pending_cache_telemetry_updates.clear();
@@ -976,6 +990,7 @@ impl MpvAdapter {
         self.last_paused_position_poll_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
+        self.invalidate_cache_pause_readback_scope();
         self.playback_restart_sequence = 0;
         self.reset_timeline_metadata();
         self.ordered_player_event_reacquisition_required = true;
@@ -1680,6 +1695,7 @@ impl MpvAdapter {
         self.maintain_network_cache_stall_recovery();
         self.maintain_network_media_options_hook_lease();
         self.maintain_legacy_syncplayintf_lease();
+        self.maintain_cache_pause_readback_nonblocking();
         self.maintain_ipc_event_fence_nonblocking();
         // Synchronous heartbeat commands can themselves harvest a bounded batch of events. Flush
         // their control faults and ordinary observations. The nonblocking event fence above also
@@ -4546,7 +4562,8 @@ impl MpvAdapter {
         attempt_id: LoadAttemptId,
         media_generation: PlayerMediaGeneration,
     ) {
-        if self.pending_load_generation == Some(media_generation) {
+        let pending_load_was_generation = self.pending_load_generation == Some(media_generation);
+        if pending_load_was_generation {
             self.pending_load_request = None;
             self.pending_load_generation = None;
             if self
@@ -4555,13 +4572,6 @@ impl MpvAdapter {
                 .is_some_and(|embedded| embedded.media_generation == media_generation)
             {
                 self.network_media_options_embedded_load = None;
-            }
-            if self.active_media_generation.is_none() {
-                self.transport_phase = PlayerTransportPhase::Empty;
-                let update = self
-                    .transport_update_for(media_generation)
-                    .with_phase(PlayerTransportPhase::Empty);
-                self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
             }
         }
 
@@ -4572,12 +4582,31 @@ impl MpvAdapter {
             self.interrupted_network_stream_recovery = None;
             self.network_stream_recovery_evidence = None;
             self.network_cache_stall = None;
+        }
+
+        if (self.active_media_generation == Some(media_generation) && !self.active_file_loaded)
+            || (pending_load_was_generation && self.active_media_generation.is_none())
+        {
             self.transport_phase = PlayerTransportPhase::Empty;
             self.active_file_loaded = false;
             self.active_media_generation = None;
             self.active_playlist_entry_id = None;
             self.current_path = None;
+            self.paused = false;
+            self.logical_pause_explicit = false;
+            self.position_seconds = 0.0;
+            self.playback_rate = 0.0;
+            self.paused_for_cache = false;
+            self.cache_buffering_percent = None;
             self.observed_state.path = None;
+            self.observed_state.duration_seconds = None;
+            self.observed_state.size_bytes = None;
+            self.observed_state.position_seconds = None;
+            self.observed_state.paused_for_cache = None;
+            self.observed_state.cache_buffering_percent = None;
+            self.observed_state.seeking = None;
+            self.observed_state.seekable = None;
+            self.observed_state.seekable_ranges = None;
             self.observed_state.eof_reached = None;
             self.reset_timeline_metadata();
             self.queue_cache_telemetry_update(
@@ -6285,6 +6314,7 @@ impl MpvAdapter {
         // command. Its events have now reduced in order; consume the following completion before
         // flushing deferred path work.
         self.drain_runtime_lease_events_nonblocking();
+        self.apply_completed_cache_pause_readback_if_current();
         self.flush_deferred_network_media_options_observation();
     }
 
@@ -6377,6 +6407,7 @@ impl MpvAdapter {
     }
 
     fn apply_paused_for_cache_observation(&mut self, paused_for_cache: bool) {
+        self.invalidate_cache_pause_readback_scope();
         self.paused_for_cache = paused_for_cache;
         self.observed_state.paused_for_cache = Some(paused_for_cache);
         self.observe_network_cache_pause_for_recovery(paused_for_cache);
@@ -6808,6 +6839,7 @@ impl MpvAdapter {
             self.lifecycle_reconciliation_due = true;
             return;
         };
+        self.invalidate_cache_pause_readback_scope();
         let lifecycle_epoch = self.lifecycle_epoch();
         let observation = DeferredStartFileObservation {
             attachment_epoch: lifecycle_epoch,
@@ -6880,7 +6912,30 @@ impl MpvAdapter {
             return;
         };
         self.deferred_start_file_observation = None;
-        self.apply_bound_start_file_observation(observation, lifecycle_attempt_id, generation);
+        if self.lifecycle_attempt_owns_loading_projection(lifecycle_attempt_id) {
+            self.apply_bound_start_file_observation(observation, lifecycle_attempt_id, generation);
+        }
+    }
+
+    fn lifecycle_attempt_owns_loading_projection(&self, attempt_id: LoadAttemptId) -> bool {
+        self.player_lifecycle.active_load_attempt == Some(attempt_id)
+            && self
+                .player_lifecycle
+                .load_attempts
+                .get(&attempt_id)
+                .is_some_and(|attempt| {
+                    !attempt.logical_ownership_revoked
+                        && !matches!(
+                            attempt.state,
+                            crate::lifecycle::LoadAttemptState::MayStillEmitQuiescent { .. }
+                        )
+                })
+    }
+
+    fn invalidate_cache_pause_readback_scope(&mut self) {
+        self.cache_pause_observation_sequence =
+            self.cache_pause_observation_sequence.wrapping_add(1).max(1);
+        self.pending_cache_pause_readback = None;
     }
 
     fn apply_bound_start_file_observation(
@@ -6986,7 +7041,9 @@ impl MpvAdapter {
             return;
         };
         self.deferred_start_file_observation = None;
-        self.apply_bound_start_file_observation(observation, attempt_id, generation);
+        if self.lifecycle_attempt_owns_loading_projection(attempt_id) {
+            self.apply_bound_start_file_observation(observation, attempt_id, generation);
+        }
     }
 
     fn handle_seek_event(&mut self) {
@@ -7134,7 +7191,6 @@ impl MpvAdapter {
         else {
             return;
         };
-        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
         if self
             .deferred_file_loaded_observation
             .as_ref()
@@ -7145,11 +7201,24 @@ impl MpvAdapter {
         {
             self.deferred_file_loaded_observation = None;
         }
-        self.apply_lifecycle_input(PlayerLifecycleInput::FileLoaded {
+        let lifecycle_effects = self.apply_lifecycle_input(PlayerLifecycleInput::FileLoaded {
             attachment_epoch: lifecycle_epoch,
             playlist_entry_id: Some(playlist_entry_id),
             loaded_target: loaded_target.or_else(|| self.observed_state.path.clone()),
         });
+        let owns_logical_playback = lifecycle_effects.iter().any(|effect| {
+            matches!(
+                effect,
+                PlayerLifecycleEffect::PhysicalFileLoaded {
+                    attempt_id: observed_attempt_id,
+                    owns_logical_playback: true,
+                } if *observed_attempt_id == attempt_id
+            )
+        });
+        if !owns_logical_playback {
+            return;
+        }
+        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
         self.active_media_generation = Some(generation);
         self.active_file_loaded = true;
         // `start-file` clears generation-scoped transport observations, but mpv does not
@@ -7168,6 +7237,11 @@ impl MpvAdapter {
         self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
         self.observe_tracked_commands(Some(generation), TrackedCommandObservation::FileLoaded);
         self.observe_tracked_commands(Some(generation), TrackedCommandObservation::Phase(phase));
+        // Path can arrive between start-file and file-loaded. Ordered consumers
+        // deliberately do not grant ownership at Starting, so publish file
+        // identity only after this owned file-loaded observation has emitted
+        // LoadAttemptActive.
+        self.maybe_emit_local_file_update_from_observed_state();
 
         if self.pending_load_generation != Some(generation) {
             return;
@@ -8206,7 +8280,7 @@ impl MpvAdapter {
     }
 
     fn maybe_emit_local_file_update_from_observed_state(&mut self) {
-        if self.pending_load_request().is_some() {
+        if !self.active_file_loaded || self.pending_load_request().is_some() {
             return;
         }
         let Some(path) = self.observed_state.path.as_deref() else {
@@ -8428,6 +8502,7 @@ impl MpvAdapter {
         self.legacy_syncplay_osd_placement_restore = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
+        self.invalidate_cache_pause_readback_scope();
     }
 
     #[cfg(test)]

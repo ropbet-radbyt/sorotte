@@ -1157,6 +1157,9 @@ pub enum PlayerPhysicalLoadOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayerLoadAttemptResult {
     Loaded,
+    /// The physical attempt may still emit lifecycle events, but no longer
+    /// owns logical playback.
+    Superseded,
     Failed(PlayerMediaLoadFailureKind),
     NeverStarted,
     TransportDisconnected,

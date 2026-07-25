@@ -2354,8 +2354,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 media_generation,
                 command_id,
                 playlist_entry_id,
+            } => {
+                self.ordered_player_events.validate_attempt_binding(
+                    attempt_id,
+                    media_generation,
+                    command_id,
+                    Some(playlist_entry_id),
+                )?;
+                self.ordered_player_events.install_attempt(
+                    attempt_id,
+                    media_generation,
+                    command_id,
+                    Some(playlist_entry_id),
+                    false,
+                );
             }
-            | PlayerEvent::LoadAttemptActive {
+            PlayerEvent::LoadAttemptActive {
                 attempt_id,
                 media_generation,
                 command_id,
@@ -2463,11 +2477,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 ) {
                     return Ok(());
                 }
+                let attempt_is_owned = self
+                    .ordered_player_events
+                    .attempt_is_owned(load.attempt_id, load.media_generation);
                 let legacy_outcome = match load.result {
-                    PlayerLoadAttemptResult::Loaded => Some(PlayerMediaLoadOutcome::success(
-                        load.requested_target,
-                        load.loaded_target,
-                    )),
+                    PlayerLoadAttemptResult::Loaded if attempt_is_owned => Some(
+                        PlayerMediaLoadOutcome::success(load.requested_target, load.loaded_target),
+                    ),
+                    PlayerLoadAttemptResult::Loaded | PlayerLoadAttemptResult::Superseded => None,
                     PlayerLoadAttemptResult::Failed(kind) => Some(PlayerMediaLoadOutcome::failure(
                         load.requested_target,
                         load.loaded_target,
@@ -2494,7 +2511,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.handle_playlist_media_load_outcome(&legacy_outcome);
                     self.handle_player_media_load_outcome(legacy_outcome);
                 }
-                if load.result != PlayerLoadAttemptResult::Loaded {
+                if !matches!(
+                    load.result,
+                    PlayerLoadAttemptResult::Loaded | PlayerLoadAttemptResult::Indeterminate
+                ) {
                     self.ordered_player_events
                         .terminate_attempt(load.attempt_id, load.media_generation);
                 }
@@ -4011,6 +4031,167 @@ mod ordered_delivery_tests {
                 .attempts
                 .contains_key(&predecessor)
         );
+    }
+
+    #[test]
+    fn gui_accepts_late_active_event_after_indeterminate_load_deadline() {
+        let mut state = PlayerLifecycleState::default();
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptSubmitted {
+                command_id: Some(PlayerCommandId::new(1)),
+                media_generation: PlayerMediaGeneration::new(1),
+                requested_target: "late-load.mkv".to_owned(),
+                baseline_playlist_entry_ids: BTreeSet::new(),
+            },
+        );
+        let attempt_id = state
+            .attempt_for_command(PlayerCommandId::new(1))
+            .expect("load attempt");
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptAccepted {
+                attachment_epoch: epoch(),
+                attempt_id,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: epoch(),
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    10,
+                    Some("late-load.mkv".to_owned()),
+                    true,
+                )],
+                current_path: Some("late-load.mkv".to_owned()),
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::TimerAdvanced { now_tick: 60_000 },
+        );
+        assert_eq!(
+            state.active_load_attempt, None,
+            "quiescent ownership must not appear active in a snapshot"
+        );
+        assert!(state.peek_event_batch().is_some_and(|batch| {
+            batch.semantic_outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome.outcome,
+                    PlayerSemanticOutcome::LoadAttempt(ref load)
+                        if load.attempt_id == attempt_id
+                            && load.result == PlayerLoadAttemptResult::Indeterminate
+                )
+            })
+        }));
+
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::FileLoaded {
+                attachment_epoch: epoch(),
+                playlist_entry_id: Some(10),
+                loaded_target: Some("late-load.mkv".to_owned()),
+            },
+        );
+        assert_eq!(state.active_load_attempt, Some(attempt_id));
+
+        let acknowledged_epochs = Arc::new(Mutex::new(Vec::new()));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(LifecycleBatchPlayer {
+            state,
+            acknowledged_epochs: acknowledged_epochs.clone(),
+        })));
+        owner.session = Some(Box::new(CountingSession {
+            transport_updates: Arc::new(AtomicUsize::new(0)),
+        }));
+
+        owner.refresh_player_state_impl();
+
+        assert_eq!(
+            *acknowledged_epochs
+                .lock()
+                .expect("acknowledgement epoch lock"),
+            vec![epoch(), epoch()]
+        );
+        assert_eq!(owner.ordered_player_events.active_attempt, Some(attempt_id));
+        assert_eq!(
+            owner
+                .ordered_player_events
+                .attempts
+                .get(&attempt_id)
+                .map(|binding| binding.terminal),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn gui_ignores_loaded_success_for_an_attempt_that_is_not_currently_owned() {
+        let predecessor = LoadAttemptId::new(1);
+        let successor = LoadAttemptId::new(2);
+        let predecessor_generation = PlayerMediaGeneration::new(1);
+        let successor_generation = PlayerMediaGeneration::new(2);
+        let batch = PlayerEventBatch {
+            attachment_epoch: epoch(),
+            sequence_boundary: PlayerSequenceBoundary::new(epoch(), 3),
+            authoritative_snapshot: None,
+            events: vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch(), 1),
+                    event: PlayerEvent::LoadAttemptBound {
+                        attempt_id: predecessor,
+                        media_generation: predecessor_generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch(), 2),
+                    event: PlayerEvent::LoadAttemptActive {
+                        attempt_id: successor,
+                        media_generation: successor_generation,
+                        command_id: None,
+                        playlist_entry_id: 20,
+                    },
+                },
+            ],
+            semantic_outcomes: vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch(), 3),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch(),
+                        attempt_id: predecessor,
+                        media_generation: predecessor_generation,
+                        command_id: None,
+                        requested_target: "A".to_owned(),
+                        loaded_target: Some("A".to_owned()),
+                        result: PlayerLoadAttemptResult::Loaded,
+                    },
+                ),
+            }],
+            acknowledgement_token: PlayerEventAcknowledgementToken::new(epoch(), 1),
+        };
+        let acknowledgement_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_drain_calls = Arc::new(AtomicUsize::new(0));
+        let mut owner = owner_with_batches(
+            vec![batch],
+            false,
+            acknowledgement_calls.clone(),
+            legacy_drain_calls.clone(),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        owner.player_local_file = Some(LocalFileUpdate::new("A").with_path("A"));
+        owner.player_local_file_placeholder = true;
+
+        owner.refresh_player_state_impl();
+
+        assert_eq!(owner.ordered_player_events.active_attempt, Some(successor));
+        assert!(
+            owner.player_local_file_placeholder,
+            "a stale Loaded outcome must not confirm the predecessor's placeholder"
+        );
+        assert_eq!(acknowledgement_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_drain_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -415,6 +415,31 @@ impl MpvJsonIpcClient {
         command: Value,
         token: u64,
     ) -> Result<Option<u64>, String> {
+        self.try_send_command_nonblocking(command, token, false, false)
+    }
+
+    /// Attempts a nonblocking property read whose successful completion retains
+    /// the response and whose ordinary server rejection is nonfatal.
+    pub(crate) fn try_get_property_nonblocking(
+        &mut self,
+        property_name: &str,
+        token: u64,
+    ) -> Result<Option<u64>, String> {
+        self.try_send_command_nonblocking(
+            json!([MPV_COMMAND_GET_PROPERTY, property_name]),
+            token,
+            true,
+            true,
+        )
+    }
+
+    fn try_send_command_nonblocking(
+        &mut self,
+        command: Value,
+        token: u64,
+        include_response: bool,
+        suppress_server_rejection_event: bool,
+    ) -> Result<Option<u64>, String> {
         self.poll_nonblocking_command();
         if self.pending_nonblocking_command.is_some() {
             return Ok(None);
@@ -450,6 +475,8 @@ impl MpvJsonIpcClient {
                 self.pending_nonblocking_command = Some(PendingMpvIpcCommand {
                     command_id,
                     token,
+                    include_response,
+                    suppress_server_rejection_event,
                     response_rx: Mutex::new(response_rx),
                     response_deadline,
                 });
@@ -493,7 +520,13 @@ impl MpvJsonIpcClient {
             .pending_nonblocking_command
             .take()
             .expect("polled nonblocking IPC command should remain present");
-        self.record_nonblocking_completion(pending.command_id, pending.token, completion);
+        self.record_nonblocking_completion(
+            pending.command_id,
+            pending.token,
+            pending.include_response,
+            pending.suppress_server_rejection_event,
+            completion,
+        );
     }
 
     fn finish_nonblocking_command(&mut self) {
@@ -508,23 +541,40 @@ impl MpvJsonIpcClient {
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv_timeout(remaining);
-        self.record_nonblocking_completion(pending.command_id, pending.token, completion);
+        self.record_nonblocking_completion(
+            pending.command_id,
+            pending.token,
+            pending.include_response,
+            pending.suppress_server_rejection_event,
+            completion,
+        );
     }
 
     fn record_nonblocking_completion(
         &mut self,
         command_id: u64,
         token: u64,
+        include_response: bool,
+        suppress_server_rejection_event: bool,
         completion: Result<MpvIpcCommandOutcome, mpsc::RecvTimeoutError>,
     ) {
         match completion {
             Ok(outcome) => match outcome.result {
+                Ok(response) if include_response => self.push_nonblocking_completion(
+                    MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                        command_id,
+                        token,
+                        response,
+                    },
+                ),
                 Ok(_) => self.push_nonblocking_completion(
                     MpvIpcNonblockingCommandCompletion::Succeeded { command_id, token },
                 ),
                 Err(failure) => {
                     let message = failure.message.clone();
-                    self.record_failure(&failure);
+                    if !(suppress_server_rejection_event && failure.is_server_rejection()) {
+                        self.record_failure(&failure);
+                    }
                     self.push_nonblocking_completion(MpvIpcNonblockingCommandCompletion::Failed {
                         command_id,
                         token,
@@ -1014,6 +1064,8 @@ impl MpvIpcWorker {
 struct PendingMpvIpcCommand {
     command_id: u64,
     token: u64,
+    include_response: bool,
+    suppress_server_rejection_event: bool,
     response_rx: Mutex<mpsc::Receiver<MpvIpcCommandOutcome>>,
     response_deadline: Instant,
 }
@@ -1253,6 +1305,11 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
     Succeeded {
         command_id: u64,
         token: u64,
+    },
+    SucceededWithResponse {
+        command_id: u64,
+        token: u64,
+        response: Value,
     },
     Failed {
         command_id: u64,
