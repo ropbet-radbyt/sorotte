@@ -2,16 +2,32 @@
 
 Status: implementation design and verification contract.
 
-Source baseline:
+Design baseline:
 
 - branch: `codex/upgrade-rust-stable-dependencies`
 - commit: `fe80cc75f2c2933b75298f865e2d528bcf73adfb`
 - stabilization branch: `codex/player-lifecycle-stabilization`
 
+Integration base:
+
+- branch: `origin/codex/fix-youtube-buffering-stall`
+- commit: `0ed6223b504d57416af313a7369d5d8a1f20d190`
+- rebased and audited: 2026-07-25
+
 This work preserves the Rust 1.97.1/dependency upgrade and the working network
 media policy, cache-stall, and premature-EOF recovery behavior on the source
 branch. It changes ownership and delivery semantics, not the network protocol or
 the visible meaning of play, pause, seek, or media replacement.
+
+The integration audit retained the pushed branch's authoritative pre-command
+playlist baseline, bounded reconciliation and accepted-load expiry, IPC ingress
+and per-field observation clocks, provisional EOF and cache-stall recovery
+budgets, and system-seek fencing. Where both branches introduced ownership
+models, those behaviors were translated into the pure `PlayerLifecycleState`
+reducer instead of keeping a second adapter-private load registry. The pushed
+observation-batch contract remains available for existing GUI/native-seek
+inference, while new lifecycle consumers use the acknowledged event-batch
+contract exclusively.
 
 ## Current implementation
 

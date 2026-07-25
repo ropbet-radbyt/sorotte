@@ -68,7 +68,10 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
             .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
         self.playback_updates.push_back(
             PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
+                // Managed mpv is launched with `--pause`; reporting an
+                // unpaused open here invents a native Play gesture and can
+                // incorrectly promote the local user to Ready.
+                .with_paused(true)
                 .with_position_seconds(0.0),
         );
         Ok(())

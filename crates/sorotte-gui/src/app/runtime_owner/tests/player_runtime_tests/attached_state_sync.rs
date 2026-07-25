@@ -233,6 +233,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(false),
+        // This test asserts exact player-projection actions. Keep unrelated
+        // asynchronous public-server hydration out of that action stream.
+        public_servers: Some(Vec::new()),
         ..StoredClientSettingsMvp::default()
     });
 

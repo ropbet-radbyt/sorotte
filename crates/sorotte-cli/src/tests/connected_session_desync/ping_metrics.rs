@@ -105,6 +105,14 @@ async fn connected_client_session_inbound_state_ping_updates_outbound_state_ping
             .shutdown()
             .await
             .expect("server shutdown should succeed");
+        // On Windows, dropping a socket with unread client writes after the
+        // write-half shutdown can turn the intended EOF into WSAECONNABORTED
+        // for the peer. Drain until the client observes EOF and closes, while
+        // keeping the fixture bounded if the peer fails to do so.
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            while let Ok(Some(_)) = lines.next_line().await {}
+        })
+        .await;
     });
 
     let config = ClientLoopConfig {

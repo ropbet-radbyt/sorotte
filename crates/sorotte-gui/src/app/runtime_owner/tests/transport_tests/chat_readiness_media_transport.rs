@@ -11,6 +11,9 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(false),
+        // This test owns its in-memory transport and does not exercise startup
+        // public-server hydration.
+        public_servers: Some(Vec::new()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -250,6 +253,10 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
+        // This test owns its loopback transport and does not exercise startup
+        // public-server hydration. An explicit empty cache keeps unrelated
+        // remote fetch completion out of the chat assertions below.
+        public_servers: Some(Vec::new()),
         ..StoredClientSettingsMvp::default()
     });
 
