@@ -1038,7 +1038,7 @@ impl PlayerAdapter for MpvAdapter {
         Some(observation)
     }
 
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         // A later pump without a consumer reacquisition request acknowledges the previously
         // returned semantic terminals. Keep them until this boundary so a rejected batch can be
         // reconstructed exactly, independent of the smaller legacy progress queue.
@@ -1179,7 +1179,7 @@ impl PlayerAdapter for MpvAdapter {
         self.pending_local_file_generation = None;
         self.pending_local_file_observed_at = None;
 
-        Some(PlayerEventBatch {
+        Some(PlayerObservationBatch {
             dropped_events_through,
             ordered_events,
             legacy_playback_telemetry: self.pending_playback_telemetry_update.take(),

@@ -4,6 +4,7 @@ mod bridge_resource;
 mod constants;
 mod ipc;
 mod legacy_ui;
+pub mod lifecycle;
 mod players;
 #[cfg(feature = "test-support")]
 mod test_support;

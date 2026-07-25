@@ -4,8 +4,8 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerEventBatch, PlayerLocalFileObservation,
-    PlayerMediaGeneration, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerCommandProgress, PlayerError, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
@@ -290,7 +290,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         match self {
             Self::Test(player) => player.take_ordered_event_batch(),
             Self::Mpv(player) => player.take_ordered_event_batch(),

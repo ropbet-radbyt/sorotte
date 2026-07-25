@@ -2,8 +2,8 @@ use std::path::Path;
 
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapabilities, PlayerCommand,
-    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerEventBatch,
-    PlayerLocalFileObservation, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerLocalFileObservation,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 
@@ -126,7 +126,7 @@ macro_rules! impl_player_wrapper {
                 self.0.take_media_load_observation()
             }
 
-            fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+            fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
                 self.0.take_ordered_event_batch()
             }
 

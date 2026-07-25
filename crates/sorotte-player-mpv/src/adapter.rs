@@ -18,9 +18,9 @@ use std::{
 use serde_json::{Value, json};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
-    PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerEventBatch,
-    PlayerEventSequence, PlayerLocalFileObservation, PlayerMediaGeneration,
-    PlayerMediaLoadFailureKind, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerEventSequence,
+    PlayerLocalFileObservation, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind, PlayerPlayIntent,
     PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind, PlayerTransportPhase,
     PlayerTransportTelemetryUpdate,

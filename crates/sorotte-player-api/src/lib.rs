@@ -441,6 +441,89 @@ impl From<u64> for PlayerCommandId {
     }
 }
 
+/// Identifies one attached player core.
+///
+/// Player-local identities such as playlist entry IDs and command bindings are
+/// valid only within one attachment epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PlayerAttachmentEpoch(u64);
+
+impl PlayerAttachmentEpoch {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+impl From<u64> for PlayerAttachmentEpoch {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Identifies one physical player load episode.
+///
+/// Several load attempts may belong to the same logical
+/// [`PlayerMediaGeneration`], for example during same-generation stream
+/// recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LoadAttemptId(u64);
+
+impl LoadAttemptId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for LoadAttemptId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Authoritative causal order of one normalized player event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerEventOrder {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence: u64,
+}
+
+impl PlayerEventOrder {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, sequence: u64) -> Self {
+        Self {
+            attachment_epoch,
+            sequence,
+        }
+    }
+}
+
+/// The inclusive ordered-event boundary established by a batch or snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PlayerSequenceBoundary {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub through_sequence: u64,
+}
+
+impl PlayerSequenceBoundary {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, through_sequence: u64) -> Self {
+        Self {
+            attachment_epoch,
+            through_sequence,
+        }
+    }
+}
+
 /// Why an accepted player command reached a failed terminal state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerCommandFailureKind {
@@ -734,7 +817,177 @@ impl PlayerTransportTelemetryUpdate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One field in a complete authoritative player snapshot.
+///
+/// `KnownAbsent` and `Unavailable` both clear an older value. They remain
+/// distinct so consumers can distinguish an authoritative absence from a
+/// player that cannot currently provide the property.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SnapshotField<T> {
+    Known(T),
+    KnownAbsent,
+    #[default]
+    Unavailable,
+}
+
+impl<T> SnapshotField<T> {
+    pub const fn known(value: T) -> Self {
+        Self::Known(value)
+    }
+
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+
+    pub const fn is_known_absent(&self) -> bool {
+        matches!(self, Self::KnownAbsent)
+    }
+
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+
+    pub const fn as_ref(&self) -> SnapshotField<&T> {
+        match self {
+            Self::Known(value) => SnapshotField::Known(value),
+            Self::KnownAbsent => SnapshotField::KnownAbsent,
+            Self::Unavailable => SnapshotField::Unavailable,
+        }
+    }
+}
+
+/// A sparse ordered transport update.
+///
+/// Omitted fields retain their previously applied values. This contract is
+/// deliberately separate from [`PlayerTransportSnapshot`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerTransportDelta {
+    pub load_attempt_id: Option<LoadAttemptId>,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub phase: Option<PlayerTransportPhase>,
+    pub position_seconds: Option<f64>,
+    pub playback_rate: Option<f64>,
+    pub logical_pause: Option<bool>,
+    pub paused_for_cache: Option<bool>,
+    pub cache_percentage: Option<f64>,
+    pub seeking: Option<bool>,
+    pub seekable: Option<bool>,
+    pub timeline_kind: Option<PlayerTimelineKind>,
+    pub core_idle: Option<bool>,
+    pub demuxer_cache_idle: Option<bool>,
+    pub playback_restart_sequence: Option<u64>,
+    pub eof_reached: Option<bool>,
+    pub seekable_ranges: Option<Vec<PlayerSeekableRange>>,
+    pub known_live_seekable_window: Option<PlayerSeekableRange>,
+    pub buffered_duration_seconds: Option<f64>,
+    pub buffered_bytes: Option<u64>,
+    pub input_rate_bytes_per_second: Option<u64>,
+    pub error_kind: Option<PlayerMediaLoadFailureKind>,
+}
+
+impl From<PlayerTransportTelemetryUpdate> for PlayerTransportDelta {
+    fn from(update: PlayerTransportTelemetryUpdate) -> Self {
+        Self {
+            load_attempt_id: None,
+            media_generation: update.media_generation,
+            observed_at: update.observed_at,
+            phase: update.phase,
+            position_seconds: update.position_seconds,
+            playback_rate: update.playback_rate,
+            logical_pause: update.logical_pause,
+            paused_for_cache: update.paused_for_cache,
+            cache_percentage: update.cache_buffering_percent,
+            seeking: update.seeking,
+            seekable: update.seekable,
+            timeline_kind: update.timeline_kind,
+            core_idle: update.core_idle,
+            demuxer_cache_idle: update.demuxer_cache_idle,
+            playback_restart_sequence: update.playback_restart_sequence,
+            eof_reached: update.eof_reached,
+            seekable_ranges: update.seekable_ranges,
+            known_live_seekable_window: update.known_live_seekable_window,
+            buffered_duration_seconds: update.buffered_ahead_seconds,
+            buffered_bytes: update.buffered_ahead_bytes,
+            input_rate_bytes_per_second: update.input_rate_bytes_per_second,
+            error_kind: update.error_kind,
+        }
+    }
+}
+
+/// A complete authoritative transport observation.
+///
+/// Consumers rebase to this structure as a whole. They must not route it
+/// through sparse-delta merge behavior.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerTransportSnapshot {
+    pub load_attempt_id: SnapshotField<LoadAttemptId>,
+    pub media_generation: SnapshotField<PlayerMediaGeneration>,
+    pub observed_at: SnapshotField<PlayerObservationTimestamp>,
+    pub phase: SnapshotField<PlayerTransportPhase>,
+    pub position_seconds: SnapshotField<f64>,
+    pub playback_rate: SnapshotField<f64>,
+    pub logical_pause: SnapshotField<bool>,
+    pub paused_for_cache: SnapshotField<bool>,
+    pub cache_percentage: SnapshotField<f64>,
+    pub seeking: SnapshotField<bool>,
+    pub seekable: SnapshotField<bool>,
+    pub timeline_kind: SnapshotField<PlayerTimelineKind>,
+    pub core_idle: SnapshotField<bool>,
+    pub demuxer_cache_idle: SnapshotField<bool>,
+    pub playback_restart_sequence: SnapshotField<u64>,
+    pub eof_reached: SnapshotField<bool>,
+    pub seekable_ranges: SnapshotField<Vec<PlayerSeekableRange>>,
+    pub known_live_seekable_window: SnapshotField<PlayerSeekableRange>,
+    pub buffered_duration_seconds: SnapshotField<f64>,
+    pub buffered_bytes: SnapshotField<u64>,
+    pub input_rate_bytes_per_second: SnapshotField<u64>,
+    pub error_kind: SnapshotField<PlayerMediaLoadFailureKind>,
+}
+
+impl PlayerTransportSnapshot {
+    /// Replaces every authoritative field, including absent and unavailable
+    /// fields.
+    pub fn rebase(&mut self, authoritative: Self) {
+        *self = authoritative;
+    }
+
+    /// Applies one sparse delta while retaining every omitted field.
+    pub fn apply_delta(&mut self, delta: PlayerTransportDelta) {
+        macro_rules! apply {
+            ($field:ident) => {
+                if let Some(value) = delta.$field {
+                    self.$field = SnapshotField::Known(value);
+                }
+            };
+        }
+
+        apply!(load_attempt_id);
+        apply!(media_generation);
+        apply!(observed_at);
+        apply!(phase);
+        apply!(position_seconds);
+        apply!(playback_rate);
+        apply!(logical_pause);
+        apply!(paused_for_cache);
+        apply!(cache_percentage);
+        apply!(seeking);
+        apply!(seekable);
+        apply!(timeline_kind);
+        apply!(core_idle);
+        apply!(demuxer_cache_idle);
+        apply!(playback_restart_sequence);
+        apply!(eof_reached);
+        apply!(seekable_ranges);
+        apply!(known_live_seekable_window);
+        apply!(buffered_duration_seconds);
+        apply!(buffered_bytes);
+        apply!(input_rate_bytes_per_second);
+        apply!(error_kind);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerMediaLoadFailureKind {
     LoadAborted,
     FormatUnsupported,
@@ -879,7 +1132,7 @@ impl PlayerOrderedEvent {
 /// Legacy playback telemetry remains available in the same batch for field-level fallback, so
 /// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct PlayerEventBatch {
+pub struct PlayerObservationBatch {
     /// Highest sequence discarded before the authoritative snapshot in `ordered_events`.
     ///
     /// When present, consumers must discard causal inference derived from earlier events. Events
@@ -889,6 +1142,209 @@ pub struct PlayerEventBatch {
     pub dropped_events_through: Option<PlayerEventSequence>,
     pub ordered_events: Vec<PlayerOrderedEvent>,
     pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
+}
+
+/// Terminal state of one physical player load attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerPhysicalLoadOutcome {
+    Ended,
+    Failed(PlayerMediaLoadFailureKind),
+    NeverStarted,
+    TransportDisconnected,
+}
+
+/// Semantic media-load result retained independently from telemetry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlayerLoadAttemptResult {
+    Loaded,
+    Failed(PlayerMediaLoadFailureKind),
+    NeverStarted,
+    TransportDisconnected,
+    /// Authoritative recovery could not prove either success or failure.
+    Indeterminate,
+}
+
+/// One semantic result for a physical media load attempt.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoadAttemptOutcome {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub attempt_id: LoadAttemptId,
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub requested_target: String,
+    pub loaded_target: Option<String>,
+    pub result: PlayerLoadAttemptResult,
+}
+
+impl std::fmt::Debug for LoadAttemptOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadAttemptOutcome")
+            .field("attachment_epoch", &self.attachment_epoch)
+            .field("attempt_id", &self.attempt_id)
+            .field("media_generation", &self.media_generation)
+            .field("command_id", &self.command_id)
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
+            .field(
+                "loaded_target",
+                &self
+                    .loaded_target
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("result", &self.result)
+            .finish()
+    }
+}
+
+/// A complete state reacquisition delivered outside the ordinary event queue.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerAuthoritativeSnapshot {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence_boundary: PlayerSequenceBoundary,
+    pub transport: PlayerTransportSnapshot,
+    pub active_load: SnapshotField<PlayerActiveLoadSnapshot>,
+    pub current_playlist_entry_id: SnapshotField<i64>,
+    pub current_path: SnapshotField<String>,
+}
+
+/// Authoritative identity of the load that currently owns player transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerActiveLoadSnapshot {
+    pub attempt_id: LoadAttemptId,
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub playlist_entry_id: Option<i64>,
+}
+
+/// One normalized semantic or telemetry event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerEvent {
+    AttachmentReplaced {
+        previous_epoch: PlayerAttachmentEpoch,
+    },
+    LocalFileChanged {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        update: LocalFileUpdate,
+    },
+    TransportDelta(PlayerTransportDelta),
+    LoadAttemptBound {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+    },
+    LoadAttemptStarting {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+    },
+    LoadAttemptActive {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+    },
+    LoadAttemptTerminal {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        outcome: PlayerPhysicalLoadOutcome,
+    },
+    LogicalPlaybackTerminal {
+        media_generation: PlayerMediaGeneration,
+        attempt_id: LoadAttemptId,
+        outcome: PlayerPhysicalLoadOutcome,
+    },
+    EventGapDetected,
+}
+
+/// One normalized event carrying its authoritative ingress order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequencedPlayerEvent {
+    pub order: PlayerEventOrder,
+    pub event: PlayerEvent,
+}
+
+/// Terminal semantic result of one tracked player command.
+///
+/// Completion observation and physical-effect lifetime are deliberately
+/// separate. In particular, `CompletionNotObserved` does not mean that an
+/// accepted load or seek can no longer produce player events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCommandSemanticResult {
+    Completed,
+    Superseded,
+    Failed(PlayerCommandFailureKind),
+    CompletionNotObserved,
+    TransportDisconnected,
+}
+
+/// One non-lossy terminal command outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerCommandOutcome {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub command_id: PlayerCommandId,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub result: PlayerCommandSemanticResult,
+}
+
+/// A non-lossy semantic outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerSemanticOutcome {
+    Command(PlayerCommandOutcome),
+    LoadAttempt(LoadAttemptOutcome),
+}
+
+/// One semantic outcome carrying the same causal order as normalized events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequencedPlayerSemanticOutcome {
+    pub order: PlayerEventOrder,
+    pub outcome: PlayerSemanticOutcome,
+}
+
+/// Opaque consumer acknowledgement for one event batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerEventAcknowledgementToken {
+    attachment_epoch: PlayerAttachmentEpoch,
+    value: u64,
+}
+
+impl PlayerEventAcknowledgementToken {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, value: u64) -> Self {
+        Self {
+            attachment_epoch,
+            value,
+        }
+    }
+
+    pub const fn attachment_epoch(self) -> PlayerAttachmentEpoch {
+        self.attachment_epoch
+    }
+
+    pub const fn get(self) -> u64 {
+        self.value
+    }
+}
+
+/// Ordered player delivery unit with explicit recovery and acknowledgement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerEventBatch {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence_boundary: PlayerSequenceBoundary,
+    pub authoritative_snapshot: Option<PlayerAuthoritativeSnapshot>,
+    pub events: Vec<SequencedPlayerEvent>,
+    /// Retained until [`PlayerAdapter::acknowledge_player_event_batch`] accepts
+    /// this batch's token.
+    pub semantic_outcomes: Vec<SequencedPlayerSemanticOutcome>,
+    pub acknowledgement_token: PlayerEventAcknowledgementToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerEventDeliveryMode {
+    LegacyTypedQueues,
+    OrderedAcknowledgedBatches,
 }
 
 pub trait PlayerAdapter: Send + Sync {
@@ -1064,7 +1520,7 @@ pub trait PlayerAdapter: Send + Sync {
     ///
     /// Returning `None` advertises legacy independent getter semantics. Adapters that return a
     /// batch must perform maintenance and event polling exactly once before draining the batch.
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         None
     }
     /// Requests a fresh authoritative ordered snapshot after the consumer detects an unannounced
