@@ -20,12 +20,13 @@ use sorotte_player_api::{
     LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
     PlayerAuthoritativeSnapshot, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
     PlayerCommandId, PlayerCommandProgress, PlayerCommandResult, PlayerError, PlayerEventSequence,
-    PlayerLocalFileObservation, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
-    PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind,
+    PlayerLoadAttemptResult, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadFailureKind, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerObservationBatch, PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind,
     PlayerPhysicalLoadOutcome, PlayerPlayIntent, PlayerPlaybackTelemetryUpdate,
-    PlayerSeekableRange, PlayerSequenceBoundary, PlayerTimelineKind, PlayerTransportDelta,
-    PlayerTransportPhase, PlayerTransportSnapshot, PlayerTransportTelemetryUpdate, SnapshotField,
+    PlayerSeekableRange, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTimelineKind,
+    PlayerTransportDelta, PlayerTransportPhase, PlayerTransportSnapshot,
+    PlayerTransportTelemetryUpdate, SnapshotField,
 };
 use sorotte_secret::SecretValue;
 
@@ -4426,9 +4427,51 @@ impl MpvAdapter {
     }
 
     fn apply_lifecycle_input(&mut self, input: PlayerLifecycleInput) -> Vec<PlayerLifecycleEffect> {
+        let mut effects = Vec::new();
+        if matches!(&input, PlayerLifecycleInput::LoadAttemptAccepted { .. }) {
+            let now_tick = u64::try_from(self.observation_clock_origin.elapsed().as_millis())
+                .unwrap_or(u64::MAX);
+            let current = std::mem::take(&mut self.player_lifecycle);
+            let (next, timer_effects) =
+                reduce_player_lifecycle(current, PlayerLifecycleInput::TimerAdvanced { now_tick });
+            self.player_lifecycle = next;
+            effects.extend(timer_effects);
+        }
         let current = std::mem::take(&mut self.player_lifecycle);
-        let (next, effects) = reduce_player_lifecycle(current, input);
+        let (next, input_effects) = reduce_player_lifecycle(current, input);
         self.player_lifecycle = next;
+        effects.extend(input_effects);
+        let newly_quiescent_attempts =
+            effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    PlayerLifecycleEffect::EmitSemanticOutcome(outcome) => match &outcome.outcome {
+                        PlayerSemanticOutcome::LoadAttempt(load)
+                            if load.result == PlayerLoadAttemptResult::Indeterminate
+                                && self
+                                    .player_lifecycle
+                                    .load_attempts
+                                    .get(&load.attempt_id)
+                                    .is_some_and(|attempt| {
+                                        matches!(
+                                        attempt.state,
+                                        crate::lifecycle::LoadAttemptState::MayStillEmitQuiescent {
+                                            ..
+                                        }
+                                    )
+                                    }) =>
+                        {
+                            Some((load.attempt_id, load.media_generation))
+                        }
+                        PlayerSemanticOutcome::Command(_)
+                        | PlayerSemanticOutcome::LoadAttempt(_) => None,
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+        for (attempt_id, media_generation) in newly_quiescent_attempts {
+            self.clear_adapter_pending_load_after_quiescence(attempt_id, media_generation);
+        }
         if effects.iter().any(|effect| {
             matches!(
                 effect,
@@ -4438,6 +4481,59 @@ impl MpvAdapter {
             self.lifecycle_reconciliation_due = true;
         }
         effects
+    }
+
+    fn clear_adapter_pending_load_after_quiescence(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        if self.pending_load_generation == Some(media_generation) {
+            self.pending_load_request = None;
+            self.pending_load_generation = None;
+            if self
+                .network_media_options_embedded_load
+                .as_ref()
+                .is_some_and(|embedded| embedded.media_generation == media_generation)
+            {
+                self.network_media_options_embedded_load = None;
+            }
+            if self.active_media_generation.is_none() {
+                self.transport_phase = PlayerTransportPhase::Empty;
+                let update = self
+                    .transport_update_for(media_generation)
+                    .with_phase(PlayerTransportPhase::Empty);
+                self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
+            }
+        }
+
+        if self
+            .interrupted_network_stream_recovery
+            .is_some_and(|recovery| recovery.latest_attempt_id == attempt_id)
+        {
+            self.interrupted_network_stream_recovery = None;
+            self.network_cache_stall = None;
+            self.transport_phase = PlayerTransportPhase::Empty;
+            self.active_file_loaded = false;
+            self.active_media_generation = None;
+            self.active_playlist_entry_id = None;
+            self.current_path = None;
+            self.observed_state.path = None;
+            self.observed_state.eof_reached = None;
+            self.reset_timeline_metadata();
+            self.queue_cache_telemetry_update(
+                self.cleared_cache_telemetry_update(Some(media_generation)),
+            );
+            let update = self
+                .transport_update_for(media_generation)
+                .with_phase(PlayerTransportPhase::Empty);
+            self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
+        }
+
+        self.lifecycle_reconciliation_due = self.player_lifecycle.reconciliation_required
+            || self.player_lifecycle.requires_authoritative_snapshot()
+            || self.deferred_start_file_observation.is_some()
+            || self.deferred_file_loaded_observation.is_some();
     }
 
     fn submit_lifecycle_load(
@@ -7002,7 +7098,9 @@ impl MpvAdapter {
             let already_terminal = self.player_lifecycle.load_attempts.values().any(|attempt| {
                 attempt.playlist_entry_id == Some(lifecycle_playlist_entry_id)
                     && attempt.state.is_terminal()
-            });
+            }) || self
+                .player_lifecycle
+                .is_known_terminal_playlist_entry(lifecycle_playlist_entry_id);
             if !already_terminal {
                 self.lifecycle_reconciliation_due = true;
             }
@@ -8509,7 +8607,13 @@ impl MpvAdapter {
         self.player_lifecycle
             .load_attempts
             .values()
-            .filter(|attempt| !attempt.state.is_terminal())
+            .filter(|attempt| {
+                !attempt.state.is_terminal()
+                    && !matches!(
+                        attempt.state,
+                        crate::lifecycle::LoadAttemptState::MayStillEmitQuiescent { .. }
+                    )
+            })
             .map(|attempt| attempt.media_generation)
             .collect()
     }

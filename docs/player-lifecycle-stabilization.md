@@ -226,7 +226,14 @@ Every submitted tracked command has exactly one terminal semantic outcome.
 `CompletionNotObserved` replaces the old interpretation of timeout as proof
 that the effect cannot arrive. An accepted load or seek can retain a
 `MayStillEmit`/`MayStillArrive` physical ownership record after semantic
-supersession or observational timeout.
+supersession or observational timeout. An accepted load that is still unbound
+at its semantic deadline becomes `MayStillEmitQuiescent`: it emits one
+`Indeterminate` attempt outcome, clears adapter-facing pending-load state, and
+stops proactive property-query reconciliation. A later unknown `start-file`
+rearms one strict reconciliation, so a target- and baseline-matching physical
+entry can still bind to the original attempt. The deadline belongs to the
+physical attempt rather than its optional tracked command, so commandless
+same-generation recovery loads cannot poll forever either.
 
 Semantic outcomes are inserted into a retained, ordered store. They remain
 available in every compatible batch until the acknowledgement token covering
@@ -273,6 +280,12 @@ These are separate contracts:
   authoritative snapshot, ordered events, retained semantic outcomes, and one
   acknowledgement token.
 
+Every batch is closed over exactly one attachment epoch. The header, boundary,
+token, snapshot, event orders, semantic orders, and semantic payloads must all
+name that epoch. Retired attachment epochs are held in FIFO delivery buffers;
+the producer cannot expose a newer epoch until all older handoff deliveries
+have been acknowledged.
+
 Snapshot meanings:
 
 - `Known(value)`: replace the field.
@@ -290,6 +303,11 @@ ambiguity. An unacknowledged batch is returned again, so applying a batch and
 acknowledging it is one consumer transaction. Applying a repeated event or
 snapshot is idempotent by order/boundary.
 
+After the gap marker itself is acknowledged, the unresolved internal snapshot
+latch is not a deliverable payload. Batch delivery pauses instead of producing
+empty acknowledgement batches until an authoritative snapshot or another
+ordered event becomes available.
+
 Recovery never manufactures a success or failure. Where command or attempt
 completion is unknown, the outcome is `CompletionNotObserved` or another
 explicit indeterminate state.
@@ -299,16 +317,23 @@ explicit indeterminate state.
 A candidate replacement is version-validated before any current state changes.
 On acceptance:
 
-1. Stamp one final old-epoch boundary.
+1. If old telemetry has a gap without a snapshot, freeze a closing old-epoch
+   lifecycle snapshot at the last pre-terminal sequence.
 2. Finish every old accepted command exactly once as
    `TransportDisconnected` and retain those outcomes until acknowledged.
 3. Terminally disconnect old physical attempts.
-4. Clear old playlist bindings, active attempt, seek ownership, provisional
+4. Freeze all remaining old events, semantic outcomes, and recovery state into
+   an old-epoch handoff buffer.
+5. Clear old playlist bindings, active attempt, seek ownership, provisional
    EOF, active path/file identity, cache-stall recovery, and inference state.
-5. Increment `PlayerAttachmentEpoch` and reset the per-epoch event sequence.
-6. Install the new IPC client and register observers.
-7. Acquire an authoritative new-core playlist/path/transport snapshot outside
+6. Increment `PlayerAttachmentEpoch` and reset the per-epoch event sequence.
+7. Install the new IPC client and register observers.
+8. Acquire an authoritative new-core playlist/path/transport snapshot outside
    the lossy event queue.
+
+`take_player_event_batch` first replays any already-cached batch byte for byte,
+then drains retired epoch buffers in order, and only then exposes the current
+epoch. Acknowledgement mutates only the buffer named by the cached batch.
 
 An unsupported candidate replacement leaves the existing attachment and epoch
 untouched. Reuse of playlist-entry or command IDs by a new core cannot match
@@ -349,14 +374,36 @@ TransportFailure
 ```
 
 Maintenance performs at most one playlist/path query group per cycle.
-Incomplete results use bounded exponential backoff with a maximum delay and no
-busy loop. Empty playlist plus absent path is authoritative idle. Empty
-playlist plus a nonempty path is incomplete and retried. A recently accepted
-unbound attempt can remain awaiting within a semantic deadline, but command
-timeout does not erase it.
+Incomplete results use real-duration backoff at 100 ms, 250 ms, 500 ms, one
+second, and a two-second ceiling. Empty playlist plus absent path is
+authoritative idle. Empty playlist plus a nonempty path is incomplete and
+retried. A recently accepted unbound attempt can remain awaiting within its
+semantic deadline; after that deadline it becomes quiescent rather than being
+erased or polled indefinitely.
 
 Getters never perform repeated synchronous reacquisition. Taking a consumer
 batch does not clear reconciliation-required state.
+
+## Acknowledgement-driven lifecycle compaction
+
+Commands and attempts record the event sequence that made each semantic or
+physical terminal safe to retire. A successful current-epoch acknowledgement
+compacts only records whose required orders are covered by that batch. Active
+loads are retained even after their successful load outcome is acknowledged;
+they become compactable only after their physical terminal is also
+acknowledged.
+
+Removed load attempts become bounded, target-free tombstones containing only
+epoch, attempt/generation identity, optional command and playlist-entry IDs,
+and the terminal sequence. Removed commands and delayed system seeks use
+separate bounded tombstone ledgers. Load tombstones preserve duplicate
+lifecycle idempotence without retaining paths, URLs, or baseline sets.
+Late-seek overflow fails closed by generation until its physical safety window
+expires. Attachment replacement clears current-epoch tombstones. After a
+successful adapter acknowledgement, the GUI and client-core consumers also
+collapse their per-outcome replay sets into one acknowledged sequence watermark
+and remove terminal attempt bindings; failed acknowledgements retain the exact
+replay state.
 
 ## Player action ownership and native actions
 
@@ -380,6 +427,12 @@ and update display state. It does not bind a lifecycle event to a load based on
 the newest/only transition, logical generation, current path, or timing.
 Native-seek inference runs only after attachment, media generation, event
 order, freshness, and command ownership validation.
+
+The generated ordered-history suite drives the reducer and the production GUI
+ownership ledger as independent oracles over the same accepted, superseded,
+completion-not-observed, acknowledged, and reattached seek traces. A mismatch
+between system-owned and native-seek decisions fails the suite while the legacy
+GUI compatibility path remains active.
 
 ## Reducer inputs and effects
 
@@ -634,6 +687,13 @@ transport failure follows the existing disconnect path. Deterministic adapter
 regressions prove that a Play completes from post-response pause/position
 events without an unrelated mutation and that active media still delivers its
 generation-scoped `end-file` after the load command has already completed.
+
+A control-queue overflow is also a correlation gap: it may have evicted the
+completion for the in-flight fence, network-hook probe, or bridge heartbeat.
+The adapter therefore clears every small nonblocking command correlation,
+marks lifecycle state for authoritative recovery, and rearms the fence after
+one bounded cadence interval. It never waits for a command ID whose completion
+may have been discarded.
 
 ### Source-baseline discovery
 

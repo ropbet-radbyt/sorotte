@@ -314,6 +314,41 @@ impl BatchItem {
 
 impl ConsumerState {
     fn apply_batch(&mut self, batch: &PlayerEventBatch) {
+        assert_eq!(
+            batch.sequence_boundary.attachment_epoch, batch.attachment_epoch,
+            "batch boundary must belong to its header epoch"
+        );
+        assert_eq!(
+            batch.acknowledgement_token.attachment_epoch(),
+            batch.attachment_epoch,
+            "batch token must belong to its header epoch"
+        );
+        assert!(
+            batch
+                .events
+                .iter()
+                .all(|event| { event.order.attachment_epoch == batch.attachment_epoch })
+        );
+        assert!(batch.semantic_outcomes.iter().all(|outcome| {
+            outcome.order.attachment_epoch == batch.attachment_epoch
+                && match &outcome.outcome {
+                    PlayerSemanticOutcome::Command(command) => {
+                        command.attachment_epoch == batch.attachment_epoch
+                    }
+                    PlayerSemanticOutcome::LoadAttempt(attempt) => {
+                        attempt.attachment_epoch == batch.attachment_epoch
+                    }
+                }
+        }));
+        assert!(
+            batch
+                .authoritative_snapshot
+                .as_ref()
+                .is_none_or(|snapshot| {
+                    snapshot.attachment_epoch == batch.attachment_epoch
+                        && snapshot.sequence_boundary.attachment_epoch == batch.attachment_epoch
+                })
+        );
         if let Some(snapshot) = &batch.authoritative_snapshot {
             self.attachment_epoch = snapshot.attachment_epoch;
             self.snapshot_boundaries.insert(

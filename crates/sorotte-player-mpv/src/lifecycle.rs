@@ -10,17 +10,25 @@ use std::{
 };
 
 use sorotte_player_api::{
-    LoadAttemptId, LoadAttemptOutcome, LocalFileUpdate, PlayerAttachmentEpoch,
-    PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandOutcome,
-    PlayerCommandSemanticResult, PlayerEvent, PlayerEventAcknowledgementToken, PlayerEventBatch,
-    PlayerEventOrder, PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerPhysicalLoadOutcome,
-    PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportPhase,
-    SequencedPlayerEvent, SequencedPlayerSemanticOutcome,
+    LoadAttemptId, LoadAttemptOutcome, LocalFileUpdate, PlayerActiveLoadSnapshot,
+    PlayerAttachmentEpoch, PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId,
+    PlayerCommandOutcome, PlayerCommandSemanticResult, PlayerEvent,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventOrder, PlayerLoadAttemptResult,
+    PlayerMediaGeneration, PlayerPhysicalLoadOutcome, PlayerSemanticOutcome,
+    PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportPhase, PlayerTransportSnapshot,
+    SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 
 const MAX_PENDING_TELEMETRY_EVENTS: usize = 64;
-const INITIAL_RECONCILIATION_BACKOFF_TICKS: u64 = 1;
-const MAX_RECONCILIATION_BACKOFF_TICKS: u64 = 64;
+const INITIAL_RECONCILIATION_BACKOFF_TICKS: u64 = 100;
+const MAX_RECONCILIATION_BACKOFF_TICKS: u64 = 2_000;
+const ACCEPTED_UNBOUND_RECONCILIATION_TICKS: u64 = 60 * 1_000;
+const QUIESCENT_LOAD_ATTEMPT_RETENTION_TICKS: u64 = 10 * 60 * 1_000;
+const SEEK_TOMBSTONE_RETENTION_TICKS: u64 = 60_000;
+const MAX_TERMINAL_ATTEMPT_TOMBSTONES: usize = 256;
+const MAX_RETIRED_COMMAND_TOMBSTONES: usize = 512;
+const MAX_RETIRED_SEEK_TOMBSTONES: usize = 256;
+const TERMINAL_TOMBSTONE_SEQUENCE_WINDOW: u64 = 4_096;
 const SEEK_MATCH_TOLERANCE_SECONDS: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +82,7 @@ pub struct LifecycleCommand {
     pub kind: LifecycleCommandKind,
     pub state: CommandSemanticState,
     outcome_emitted: bool,
+    terminal_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +94,7 @@ pub enum LoadAttemptState {
     Active,
     SupersededMayStillEmit { successor: LoadAttemptId },
     MayStillEmit,
+    MayStillEmitQuiescent { retire_after_tick: u64 },
     Terminal(PlayerPhysicalLoadOutcome),
 }
 
@@ -111,6 +121,9 @@ pub struct LoadAttempt {
     pub superseded_by: Option<LoadAttemptId>,
     pub state: LoadAttemptState,
     pub semantic_outcome_emitted: bool,
+    reconcile_until_tick: Option<u64>,
+    semantic_outcome_sequence: Option<u64>,
+    physical_terminal_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,11 +184,69 @@ struct DeferredStartFile {
     playlist_entry_id: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalAttemptTombstone {
+    attachment_epoch: PlayerAttachmentEpoch,
+    attempt_id: LoadAttemptId,
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    terminal_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RetiredCommandTombstone {
+    attachment_epoch: PlayerAttachmentEpoch,
+    command_id: PlayerCommandId,
+    terminal_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RetiredSeekTombstone {
+    ownership: SystemSeekOwnership,
+    retire_after_tick: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct CachedBatch {
     batch: PlayerEventBatch,
     event_count: usize,
     outcome_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct EpochDeliveryBuffer {
+    attachment_epoch: PlayerAttachmentEpoch,
+    pending_events: VecDeque<SequencedPlayerEvent>,
+    retained_semantic_outcomes: VecDeque<SequencedPlayerSemanticOutcome>,
+    recovery_snapshot: Option<PlayerAuthoritativeSnapshot>,
+    gap_detected: bool,
+}
+
+impl EpochDeliveryBuffer {
+    fn is_empty(&self) -> bool {
+        self.pending_events.is_empty()
+            && self.retained_semantic_outcomes.is_empty()
+            && self.recovery_snapshot.is_none()
+            && !self.gap_detected
+    }
+
+    fn has_deliverable_content(&self) -> bool {
+        !self.pending_events.is_empty()
+            || !self.retained_semantic_outcomes.is_empty()
+            || self.recovery_snapshot.is_some()
+    }
+
+    fn prune_snapshot_covered_events(&mut self) {
+        let Some(snapshot) = &self.recovery_snapshot else {
+            return;
+        };
+        let attachment_epoch = snapshot.attachment_epoch;
+        let boundary = snapshot.sequence_boundary.through_sequence;
+        self.pending_events.retain(|event| {
+            event.order.attachment_epoch != attachment_epoch || event.order.sequence > boundary
+        });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +273,11 @@ pub struct PlayerLifecycleState {
     recovery_snapshot: Option<PlayerAuthoritativeSnapshot>,
     gap_detected: bool,
     pending_native_seek_generation: Option<PlayerMediaGeneration>,
+    retired_epoch_deliveries: VecDeque<EpochDeliveryBuffer>,
+    terminal_attempt_tombstones: VecDeque<TerminalAttemptTombstone>,
+    retired_command_tombstones: VecDeque<RetiredCommandTombstone>,
+    retired_seek_tombstones: VecDeque<RetiredSeekTombstone>,
+    uncertain_seek_generations: BTreeMap<PlayerMediaGeneration, u64>,
     cached_batch: Option<CachedBatch>,
 }
 
@@ -236,6 +312,11 @@ impl PlayerLifecycleState {
             recovery_snapshot: None,
             gap_detected: false,
             pending_native_seek_generation: None,
+            retired_epoch_deliveries: VecDeque::new(),
+            terminal_attempt_tombstones: VecDeque::new(),
+            retired_command_tombstones: VecDeque::new(),
+            retired_seek_tombstones: VecDeque::new(),
+            uncertain_seek_generations: BTreeMap::new(),
             cached_batch: None,
         }
     }
@@ -297,12 +378,34 @@ impl PlayerLifecycleState {
             .copied()
     }
 
+    pub fn is_known_terminal_playlist_entry(&self, playlist_entry_id: i64) -> bool {
+        self.terminal_attempt_tombstones
+            .iter()
+            .any(|tombstone| tombstone.playlist_entry_id == Some(playlist_entry_id))
+    }
+
+    fn is_retired_command(&self, command_id: PlayerCommandId) -> bool {
+        self.retired_command_tombstones
+            .iter()
+            .any(|tombstone| tombstone.command_id == command_id)
+    }
+
     pub fn pending_semantic_outcome_count(&self) -> usize {
         self.retained_semantic_outcomes.len()
+            + self
+                .retired_epoch_deliveries
+                .iter()
+                .map(|delivery| delivery.retained_semantic_outcomes.len())
+                .sum::<usize>()
     }
 
     pub fn pending_event_count(&self) -> usize {
         self.pending_events.len()
+            + self
+                .retired_epoch_deliveries
+                .iter()
+                .map(|delivery| delivery.pending_events.len())
+                .sum::<usize>()
     }
 
     pub fn last_event_sequence(&self) -> u64 {
@@ -336,8 +439,8 @@ impl PlayerLifecycleState {
             optional_id(self.next_reconciliation_tick),
             self.reconciliation_backoff_ticks,
             self.last_event_sequence(),
-            self.pending_events.len(),
-            self.retained_semantic_outcomes.len(),
+            self.pending_event_count(),
+            self.pending_semantic_outcome_count(),
             self.gap_detected,
         );
         for attempt in self.load_attempts.values() {
@@ -398,43 +501,58 @@ impl PlayerLifecycleState {
             return Some(cached.batch.clone());
         }
         self.prune_snapshot_covered_events();
-        if self.pending_events.is_empty()
-            && self.retained_semantic_outcomes.is_empty()
-            && self.recovery_snapshot.is_none()
-            && !self.gap_detected
+        while self
+            .retired_epoch_deliveries
+            .front()
+            .is_some_and(EpochDeliveryBuffer::is_empty)
         {
-            return None;
+            self.retired_epoch_deliveries.pop_front();
         }
 
+        let delivery = self.retired_epoch_deliveries.front().map_or_else(
+            || EpochDeliveryBuffer {
+                attachment_epoch: self.attachment_epoch,
+                pending_events: self.pending_events.clone(),
+                retained_semantic_outcomes: self.retained_semantic_outcomes.clone(),
+                recovery_snapshot: self.recovery_snapshot.clone(),
+                gap_detected: self.gap_detected,
+            },
+            Clone::clone,
+        );
+        if !delivery.has_deliverable_content() {
+            return None;
+        }
         let token_value = self.next_acknowledgement_token.max(1);
         self.next_acknowledgement_token = token_value.saturating_add(1).max(1);
-        let through_sequence = self
+        let through_sequence = delivery
             .pending_events
             .iter()
-            .filter(|event| event.order.attachment_epoch == self.attachment_epoch)
             .map(|event| event.order.sequence)
             .chain(
-                self.retained_semantic_outcomes
+                delivery
+                    .retained_semantic_outcomes
                     .iter()
-                    .filter(|outcome| outcome.order.attachment_epoch == self.attachment_epoch)
                     .map(|outcome| outcome.order.sequence),
             )
             .chain(
-                self.recovery_snapshot
+                delivery
+                    .recovery_snapshot
                     .as_ref()
                     .map(|snapshot| snapshot.sequence_boundary.through_sequence),
             )
             .max()
-            .unwrap_or_else(|| self.next_event_sequence.saturating_sub(1));
-        let snapshot = self.recovery_snapshot.clone();
+            .unwrap_or(0);
         let batch = PlayerEventBatch {
-            attachment_epoch: self.attachment_epoch,
-            sequence_boundary: PlayerSequenceBoundary::new(self.attachment_epoch, through_sequence),
-            authoritative_snapshot: snapshot,
-            events: self.pending_events.iter().cloned().collect(),
-            semantic_outcomes: self.retained_semantic_outcomes.iter().cloned().collect(),
+            attachment_epoch: delivery.attachment_epoch,
+            sequence_boundary: PlayerSequenceBoundary::new(
+                delivery.attachment_epoch,
+                through_sequence,
+            ),
+            authoritative_snapshot: delivery.recovery_snapshot,
+            events: delivery.pending_events.into_iter().collect(),
+            semantic_outcomes: delivery.retained_semantic_outcomes.into_iter().collect(),
             acknowledgement_token: PlayerEventAcknowledgementToken::new(
-                self.attachment_epoch,
+                delivery.attachment_epoch,
                 token_value,
             ),
         };
@@ -454,21 +572,57 @@ impl PlayerLifecycleState {
             self.cached_batch = Some(cached);
             return false;
         }
-        for _ in 0..cached.event_count {
-            self.pending_events.pop_front();
-        }
-        for _ in 0..cached.outcome_count {
-            self.retained_semantic_outcomes.pop_front();
-        }
-        if cached.batch.authoritative_snapshot.is_some() {
-            self.recovery_snapshot = None;
-            self.gap_detected = false;
+        let acknowledged_current_epoch = cached.batch.attachment_epoch == self.attachment_epoch;
+        let acknowledged_through_sequence = cached.batch.sequence_boundary.through_sequence;
+        if self
+            .retired_epoch_deliveries
+            .front()
+            .is_some_and(|delivery| delivery.attachment_epoch == cached.batch.attachment_epoch)
+        {
+            let delivery = self
+                .retired_epoch_deliveries
+                .front_mut()
+                .expect("retired delivery was present");
+            for _ in 0..cached.event_count {
+                delivery.pending_events.pop_front();
+            }
+            for _ in 0..cached.outcome_count {
+                delivery.retained_semantic_outcomes.pop_front();
+            }
+            if cached.batch.authoritative_snapshot.is_some() {
+                delivery.recovery_snapshot = None;
+                delivery.gap_detected = false;
+            }
+            delivery.prune_snapshot_covered_events();
+            if delivery.is_empty() {
+                self.retired_epoch_deliveries.pop_front();
+            }
+        } else if cached.batch.attachment_epoch == self.attachment_epoch {
+            for _ in 0..cached.event_count {
+                self.pending_events.pop_front();
+            }
+            for _ in 0..cached.outcome_count {
+                self.retained_semantic_outcomes.pop_front();
+            }
+            if cached.batch.authoritative_snapshot.is_some() {
+                self.recovery_snapshot = None;
+                self.gap_detected = false;
+            }
+        } else {
+            self.cached_batch = Some(cached);
+            return false;
         }
         self.prune_snapshot_covered_events();
+        if acknowledged_current_epoch {
+            self.compact_acknowledged_lifecycle(acknowledged_through_sequence);
+        }
         true
     }
 
     fn prune_snapshot_covered_events(&mut self) {
+        for delivery in &mut self.retired_epoch_deliveries {
+            delivery.prune_snapshot_covered_events();
+        }
         let Some(snapshot) = &self.recovery_snapshot else {
             return;
         };
@@ -477,6 +631,229 @@ impl PlayerLifecycleState {
         self.pending_events.retain(|event| {
             event.order.attachment_epoch != attachment_epoch || event.order.sequence > boundary
         });
+    }
+
+    fn closing_snapshot_for_current_epoch(&self) -> PlayerAuthoritativeSnapshot {
+        let active = self.active_attempt();
+        let active_load = active.map(|attempt| PlayerActiveLoadSnapshot {
+            attempt_id: attempt.id,
+            media_generation: attempt.media_generation,
+            command_id: attempt.command_id,
+            playlist_entry_id: attempt.playlist_entry_id,
+        });
+        PlayerAuthoritativeSnapshot {
+            attachment_epoch: self.attachment_epoch,
+            sequence_boundary: PlayerSequenceBoundary::new(
+                self.attachment_epoch,
+                self.last_event_sequence(),
+            ),
+            transport: PlayerTransportSnapshot {
+                load_attempt_id: active
+                    .map(|attempt| SnapshotField::Known(attempt.id))
+                    .unwrap_or(SnapshotField::KnownAbsent),
+                media_generation: active
+                    .map(|attempt| SnapshotField::Known(attempt.media_generation))
+                    .unwrap_or(SnapshotField::KnownAbsent),
+                ..PlayerTransportSnapshot::default()
+            },
+            active_load: active_load
+                .map(SnapshotField::Known)
+                .unwrap_or(SnapshotField::KnownAbsent),
+            current_playlist_entry_id: active
+                .and_then(|attempt| attempt.playlist_entry_id)
+                .map(SnapshotField::Known)
+                .unwrap_or(SnapshotField::KnownAbsent),
+            current_path: SnapshotField::Unavailable,
+        }
+    }
+
+    fn retire_current_epoch_delivery(&mut self) {
+        let delivery = EpochDeliveryBuffer {
+            attachment_epoch: self.attachment_epoch,
+            pending_events: std::mem::take(&mut self.pending_events),
+            retained_semantic_outcomes: std::mem::take(&mut self.retained_semantic_outcomes),
+            recovery_snapshot: self.recovery_snapshot.take(),
+            gap_detected: std::mem::take(&mut self.gap_detected),
+        };
+        if !delivery.is_empty() {
+            self.retired_epoch_deliveries.push_back(delivery);
+        }
+    }
+
+    fn retire_command_record(&mut self, command_id: PlayerCommandId) {
+        let Some(command) = self.commands.remove(&command_id) else {
+            return;
+        };
+        let Some(terminal_sequence) = command.terminal_sequence else {
+            self.commands.insert(command_id, command);
+            return;
+        };
+        self.retired_command_tombstones
+            .push_back(RetiredCommandTombstone {
+                attachment_epoch: command.attachment_epoch,
+                command_id,
+                terminal_sequence,
+            });
+    }
+
+    fn push_retired_seek_tombstone(&mut self, ownership: SystemSeekOwnership) {
+        let retire_after_tick = self.now_tick.saturating_add(SEEK_TOMBSTONE_RETENTION_TICKS);
+        if self.retired_seek_tombstones.len() >= MAX_RETIRED_SEEK_TOMBSTONES
+            && let Some(evicted) = self.retired_seek_tombstones.pop_front()
+        {
+            self.uncertain_seek_generations
+                .entry(evicted.ownership.media_generation)
+                .and_modify(|deadline| *deadline = (*deadline).max(evicted.retire_after_tick))
+                .or_insert(evicted.retire_after_tick);
+        }
+        self.retired_seek_tombstones
+            .push_back(RetiredSeekTombstone {
+                ownership,
+                retire_after_tick,
+            });
+    }
+
+    fn compact_acknowledged_lifecycle(&mut self, through_sequence: u64) {
+        let terminal_attempt_ids = self
+            .load_attempts
+            .values()
+            .filter(|attempt| {
+                attempt.state.is_terminal()
+                    && attempt
+                        .semantic_outcome_sequence
+                        .is_some_and(|sequence| sequence <= through_sequence)
+                    && attempt
+                        .physical_terminal_sequence
+                        .is_some_and(|sequence| sequence <= through_sequence)
+            })
+            .map(|attempt| attempt.id)
+            .collect::<Vec<_>>();
+        for attempt_id in terminal_attempt_ids {
+            let Some(attempt) = self.load_attempts.remove(&attempt_id) else {
+                continue;
+            };
+            if let Some(successor_id) = attempt.superseded_by
+                && let Some(successor) = self.load_attempts.get_mut(&successor_id)
+                && successor.replaced_attempt == Some(attempt_id)
+            {
+                successor.replaced_attempt = None;
+            }
+            if let Some(predecessor_id) = attempt.replaced_attempt
+                && let Some(predecessor) = self.load_attempts.get_mut(&predecessor_id)
+                && predecessor.superseded_by == Some(attempt_id)
+            {
+                predecessor.superseded_by = None;
+            }
+            let terminal_sequence = attempt
+                .physical_terminal_sequence
+                .unwrap_or(through_sequence)
+                .max(
+                    attempt
+                        .semantic_outcome_sequence
+                        .unwrap_or(through_sequence),
+                );
+            self.terminal_attempt_tombstones
+                .push_back(TerminalAttemptTombstone {
+                    attachment_epoch: attempt.attachment_epoch,
+                    attempt_id,
+                    media_generation: attempt.media_generation,
+                    command_id: attempt.command_id,
+                    playlist_entry_id: attempt.playlist_entry_id,
+                    terminal_sequence,
+                });
+            if let Some(command_id) = attempt.command_id
+                && self.commands.get(&command_id).is_some_and(|command| {
+                    command.state.is_terminal()
+                        && command
+                            .terminal_sequence
+                            .is_some_and(|sequence| sequence <= through_sequence)
+                })
+            {
+                self.retire_command_record(command_id);
+            }
+        }
+
+        let retired_seek_ids = self
+            .seek_ownership
+            .iter()
+            .filter(|(command_id, ownership)| {
+                matches!(
+                    ownership.state,
+                    SystemSeekOwnershipState::Observed
+                        | SystemSeekOwnershipState::Invalidated
+                        | SystemSeekOwnershipState::MayStillArrive
+                ) && self.commands.get(command_id).is_some_and(|command| {
+                    command.state.is_terminal()
+                        && command
+                            .terminal_sequence
+                            .is_some_and(|sequence| sequence <= through_sequence)
+                })
+            })
+            .map(|(command_id, ownership)| (*command_id, *ownership))
+            .collect::<Vec<_>>();
+        for (command_id, ownership) in retired_seek_ids {
+            self.seek_ownership.remove(&command_id);
+            if ownership.state == SystemSeekOwnershipState::MayStillArrive {
+                self.push_retired_seek_tombstone(ownership);
+            }
+            self.retire_command_record(command_id);
+        }
+
+        let referenced_commands = self
+            .load_attempts
+            .values()
+            .filter_map(|attempt| attempt.command_id)
+            .chain(self.seek_ownership.keys().copied())
+            .collect::<BTreeSet<_>>();
+        let retired_command_ids = self
+            .commands
+            .values()
+            .filter(|command| {
+                command.state.is_terminal()
+                    && command
+                        .terminal_sequence
+                        .is_some_and(|sequence| sequence <= through_sequence)
+                    && !referenced_commands.contains(&command.id)
+            })
+            .map(|command| command.id)
+            .collect::<Vec<_>>();
+        for command_id in retired_command_ids {
+            self.retire_command_record(command_id);
+        }
+
+        while self.terminal_attempt_tombstones.len() > MAX_TERMINAL_ATTEMPT_TOMBSTONES
+            || self
+                .terminal_attempt_tombstones
+                .front()
+                .is_some_and(|tombstone| {
+                    tombstone
+                        .terminal_sequence
+                        .saturating_add(TERMINAL_TOMBSTONE_SEQUENCE_WINDOW)
+                        < through_sequence
+                })
+        {
+            self.terminal_attempt_tombstones.pop_front();
+        }
+        while self.retired_command_tombstones.len() > MAX_RETIRED_COMMAND_TOMBSTONES
+            || self
+                .retired_command_tombstones
+                .front()
+                .is_some_and(|tombstone| {
+                    tombstone
+                        .terminal_sequence
+                        .saturating_add(TERMINAL_TOMBSTONE_SEQUENCE_WINDOW)
+                        < through_sequence
+                })
+        {
+            self.retired_command_tombstones.pop_front();
+        }
+    }
+
+    fn prune_expired_seek_tombstones(&mut self) {
+        self.retired_seek_tombstones
+            .retain(|tombstone| self.now_tick < tombstone.retire_after_tick);
+        self.uncertain_seek_generations
+            .retain(|_, deadline| self.now_tick < *deadline);
     }
 
     pub fn assert_invariants(&self) -> Result<(), String> {
@@ -542,6 +919,28 @@ impl PlayerLifecycleState {
             {
                 return Err("live attempt playlist ID is not reverse-mapped".to_owned());
             }
+            if attempt.semantic_outcome_emitted != attempt.semantic_outcome_sequence.is_some() {
+                return Err("load outcome sequence invariant is violated".to_owned());
+            }
+            if attempt.state.is_terminal() != attempt.physical_terminal_sequence.is_some() {
+                return Err("physical terminal sequence invariant is violated".to_owned());
+            }
+            if attempt.state == LoadAttemptState::AcceptedUnbound
+                && (attempt.playlist_entry_id.is_some() || attempt.reconcile_until_tick.is_none())
+            {
+                return Err("accepted unbound attempt has no reconciliation deadline".to_owned());
+            }
+            if attempt.reconcile_until_tick.is_some()
+                && (attempt.playlist_entry_id.is_some()
+                    || !matches!(
+                        attempt.state,
+                        LoadAttemptState::AcceptedUnbound
+                            | LoadAttemptState::MayStillEmit
+                            | LoadAttemptState::SupersededMayStillEmit { .. }
+                    ))
+            {
+                return Err("load attempt reconciliation deadline is inconsistent".to_owned());
+            }
             if let Some(successor) = attempt.superseded_by {
                 let successor = self
                     .load_attempts
@@ -590,6 +989,9 @@ impl PlayerLifecycleState {
             }
             if command.outcome_emitted != command.state.is_terminal() {
                 return Err("command terminal/outcome invariant is violated".to_owned());
+            }
+            if command.outcome_emitted != command.terminal_sequence.is_some() {
+                return Err("command outcome sequence invariant is violated".to_owned());
             }
             if let LifecycleCommandKind::Load(attempt_id) = command.kind {
                 let attempt = self
@@ -659,15 +1061,82 @@ impl PlayerLifecycleState {
             }
         }
 
+        if self.terminal_attempt_tombstones.len() > MAX_TERMINAL_ATTEMPT_TOMBSTONES
+            || self.retired_command_tombstones.len() > MAX_RETIRED_COMMAND_TOMBSTONES
+            || self.retired_seek_tombstones.len() > MAX_RETIRED_SEEK_TOMBSTONES
+        {
+            return Err("lifecycle tombstone bound is violated".to_owned());
+        }
+        if self.terminal_attempt_tombstones.iter().any(|tombstone| {
+            tombstone.attachment_epoch != self.attachment_epoch
+                || tombstone.attempt_id.get() == 0
+                || tombstone.media_generation.get() == 0
+                || tombstone
+                    .command_id
+                    .is_some_and(|command_id| command_id.get() == 0)
+                || tombstone.terminal_sequence == 0
+        }) || self.retired_command_tombstones.iter().any(|tombstone| {
+            tombstone.attachment_epoch != self.attachment_epoch || tombstone.terminal_sequence == 0
+        }) || self.retired_seek_tombstones.iter().any(|tombstone| {
+            tombstone.ownership.attachment_epoch != self.attachment_epoch
+                || tombstone.retire_after_tick <= self.now_tick
+        }) {
+            return Err("lifecycle tombstone identity is invalid".to_owned());
+        }
+
         let mut ordered_items = BTreeSet::new();
+        let mut previous_retired_epoch = None;
+        for delivery in &self.retired_epoch_deliveries {
+            if delivery.attachment_epoch == self.attachment_epoch
+                || previous_retired_epoch
+                    .is_some_and(|previous| previous >= delivery.attachment_epoch)
+            {
+                return Err("retired epoch delivery order is invalid".to_owned());
+            }
+            previous_retired_epoch = Some(delivery.attachment_epoch);
+            if let Some(snapshot) = &delivery.recovery_snapshot
+                && (snapshot.attachment_epoch != delivery.attachment_epoch
+                    || snapshot.sequence_boundary.attachment_epoch != delivery.attachment_epoch)
+            {
+                return Err("retired recovery snapshot crosses attachment epoch".to_owned());
+            }
+            let mut previous_event_sequence = None;
+            for event in &delivery.pending_events {
+                if event.order.attachment_epoch != delivery.attachment_epoch
+                    || event.order.sequence == 0
+                    || previous_event_sequence
+                        .is_some_and(|previous| previous >= event.order.sequence)
+                    || !ordered_items.insert((event.order.attachment_epoch, event.order.sequence))
+                {
+                    return Err("retired event order is invalid".to_owned());
+                }
+                previous_event_sequence = Some(event.order.sequence);
+            }
+            let mut previous_outcome_sequence = None;
+            for outcome in &delivery.retained_semantic_outcomes {
+                if outcome.order.attachment_epoch != delivery.attachment_epoch
+                    || outcome.order.sequence == 0
+                    || previous_outcome_sequence
+                        .is_some_and(|previous| previous >= outcome.order.sequence)
+                    || !ordered_items
+                        .insert((outcome.order.attachment_epoch, outcome.order.sequence))
+                {
+                    return Err("retired semantic outcome order is invalid".to_owned());
+                }
+                let payload_epoch = match &outcome.outcome {
+                    PlayerSemanticOutcome::Command(command) => command.attachment_epoch,
+                    PlayerSemanticOutcome::LoadAttempt(attempt) => attempt.attachment_epoch,
+                };
+                if payload_epoch != delivery.attachment_epoch {
+                    return Err("retired semantic payload crosses attachment epoch".to_owned());
+                }
+                previous_outcome_sequence = Some(outcome.order.sequence);
+            }
+        }
+
         let mut previous = None;
         for event in &self.pending_events {
-            if event.order.attachment_epoch != self.attachment_epoch
-                && self
-                    .cached_batch
-                    .as_ref()
-                    .is_none_or(|cached| !cached.batch.events.contains(event))
-            {
+            if event.order.attachment_epoch != self.attachment_epoch {
                 return Err("pending event crosses attachment epoch".to_owned());
             }
             if previous.is_some_and(|(epoch, sequence)| {
@@ -687,6 +1156,9 @@ impl PlayerLifecycleState {
         let mut command_outcomes = BTreeSet::new();
         let mut load_outcomes = BTreeSet::new();
         for outcome in &self.retained_semantic_outcomes {
+            if outcome.order.attachment_epoch != self.attachment_epoch {
+                return Err("semantic outcome crosses attachment epoch".to_owned());
+            }
             if outcome.order.sequence == 0
                 || !ordered_items.insert((outcome.order.attachment_epoch, outcome.order.sequence))
             {
@@ -728,6 +1200,38 @@ impl PlayerLifecycleState {
         {
             return Err("recovery snapshot crosses attachment epoch".to_owned());
         }
+        if let Some(cached) = &self.cached_batch {
+            let epoch = cached.batch.attachment_epoch;
+            if cached.batch.sequence_boundary.attachment_epoch != epoch
+                || cached.batch.acknowledgement_token.attachment_epoch() != epoch
+                || cached
+                    .batch
+                    .authoritative_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| {
+                        snapshot.attachment_epoch != epoch
+                            || snapshot.sequence_boundary.attachment_epoch != epoch
+                    })
+                || cached
+                    .batch
+                    .events
+                    .iter()
+                    .any(|event| event.order.attachment_epoch != epoch)
+                || cached.batch.semantic_outcomes.iter().any(|outcome| {
+                    outcome.order.attachment_epoch != epoch
+                        || match &outcome.outcome {
+                            PlayerSemanticOutcome::Command(command) => {
+                                command.attachment_epoch != epoch
+                            }
+                            PlayerSemanticOutcome::LoadAttempt(attempt) => {
+                                attempt.attachment_epoch != epoch
+                            }
+                        }
+                })
+            {
+                return Err("cached batch is not single-epoch".to_owned());
+            }
+        }
         Ok(())
     }
 
@@ -737,7 +1241,11 @@ impl PlayerLifecycleState {
         PlayerEventOrder::new(self.attachment_epoch, sequence)
     }
 
-    fn queue_event(&mut self, event: PlayerEvent, effects: &mut Vec<PlayerLifecycleEffect>) {
+    fn queue_event(
+        &mut self,
+        event: PlayerEvent,
+        effects: &mut Vec<PlayerLifecycleEffect>,
+    ) -> PlayerEventOrder {
         if matches!(event, PlayerEvent::TransportDelta(_)) {
             let telemetry_count = self
                 .pending_events
@@ -759,21 +1267,25 @@ impl PlayerLifecycleState {
             order: self.next_order(),
             event,
         };
+        let order = sequenced.order;
         effects.push(PlayerLifecycleEffect::EmitOrderedEvent(sequenced.clone()));
         self.pending_events.push_back(sequenced);
+        order
     }
 
     fn retain_outcome(
         &mut self,
         outcome: PlayerSemanticOutcome,
         effects: &mut Vec<PlayerLifecycleEffect>,
-    ) {
+    ) -> PlayerEventOrder {
         let outcome = SequencedPlayerSemanticOutcome {
             order: self.next_order(),
             outcome,
         };
+        let order = outcome.order;
         effects.push(PlayerLifecycleEffect::EmitSemanticOutcome(outcome.clone()));
         self.retained_semantic_outcomes.push_back(outcome);
+        order
     }
 
     fn mark_gap(&mut self, effects: &mut Vec<PlayerLifecycleEffect>) {
@@ -798,10 +1310,12 @@ impl PlayerLifecycleState {
             self.now_tick
                 .saturating_add(self.reconciliation_backoff_ticks),
         );
-        self.reconciliation_backoff_ticks = self
-            .reconciliation_backoff_ticks
-            .saturating_mul(2)
-            .min(MAX_RECONCILIATION_BACKOFF_TICKS);
+        self.reconciliation_backoff_ticks = match self.reconciliation_backoff_ticks {
+            0..=100 => 250,
+            101..=250 => 500,
+            251..=500 => 1_000,
+            _ => MAX_RECONCILIATION_BACKOFF_TICKS,
+        };
     }
 
     fn command_terminal(
@@ -827,7 +1341,10 @@ impl PlayerLifecycleState {
             media_generation: command.media_generation,
             result,
         };
-        self.retain_outcome(PlayerSemanticOutcome::Command(outcome), effects);
+        let order = self.retain_outcome(PlayerSemanticOutcome::Command(outcome), effects);
+        if let Some(command) = self.commands.get_mut(&command_id) {
+            command.terminal_sequence = Some(order.sequence);
+        }
     }
 
     fn emit_load_outcome(
@@ -853,7 +1370,10 @@ impl PlayerLifecycleState {
             loaded_target,
             result,
         };
-        self.retain_outcome(PlayerSemanticOutcome::LoadAttempt(outcome), effects);
+        let order = self.retain_outcome(PlayerSemanticOutcome::LoadAttempt(outcome), effects);
+        if let Some(attempt) = self.load_attempts.get_mut(&attempt_id) {
+            attempt.semantic_outcome_sequence = Some(order.sequence);
+        }
     }
 
     fn bind_attempt(
@@ -884,9 +1404,12 @@ impl PlayerLifecycleState {
         }
         let was_unbound = attempt.playlist_entry_id.is_none();
         attempt.playlist_entry_id = Some(playlist_entry_id);
+        attempt.reconcile_until_tick = None;
         if matches!(
             attempt.state,
-            LoadAttemptState::AcceptedUnbound | LoadAttemptState::MayStillEmit
+            LoadAttemptState::AcceptedUnbound
+                | LoadAttemptState::MayStillEmit
+                | LoadAttemptState::MayStillEmitQuiescent { .. }
         ) {
             attempt.state = LoadAttemptState::Bound;
         }
@@ -982,10 +1505,32 @@ impl PlayerLifecycleState {
             }
         }
         self.deferred_start_files = retained;
-        if !self.deferred_start_files.is_empty() {
+        if !self.deferred_start_files.is_empty() && self.has_proactive_unbound_load_attempt() {
             self.schedule_reconciliation();
             effects.push(PlayerLifecycleEffect::RequestLifecycleReconciliation);
         }
+    }
+
+    fn has_proactive_unbound_load_attempt(&self) -> bool {
+        self.load_attempts.values().any(|attempt| {
+            attempt.attachment_epoch == self.attachment_epoch
+                && attempt.playlist_entry_id.is_none()
+                && matches!(
+                    attempt.state,
+                    LoadAttemptState::Submitting
+                        | LoadAttemptState::AcceptedUnbound
+                        | LoadAttemptState::MayStillEmit
+                )
+        })
+    }
+
+    fn stop_reconciliation_without_proactive_work(&mut self) {
+        if self.has_proactive_unbound_load_attempt() || !self.deferred_start_files.is_empty() {
+            return;
+        }
+        self.reconciliation_required = false;
+        self.next_reconciliation_tick = None;
+        self.reconciliation_backoff_ticks = INITIAL_RECONCILIATION_BACKOFF_TICKS;
     }
 
     fn accepted_successor_exists(&self, attempt_id: LoadAttemptId) -> bool {
@@ -1031,11 +1576,12 @@ impl PlayerLifecycleState {
         }
         if let Some(attempt) = self.load_attempts.get_mut(&attempt_id) {
             attempt.state = LoadAttemptState::Terminal(outcome);
+            attempt.reconcile_until_tick = None;
         }
         if self.active_load_attempt == Some(attempt_id) {
             self.active_load_attempt = None;
         }
-        self.queue_event(
+        let terminal_order = self.queue_event(
             PlayerEvent::LoadAttemptTerminal {
                 attempt_id,
                 media_generation: before.media_generation,
@@ -1043,6 +1589,9 @@ impl PlayerLifecycleState {
             },
             effects,
         );
+        if let Some(attempt) = self.load_attempts.get_mut(&attempt_id) {
+            attempt.physical_terminal_sequence = Some(terminal_order.sequence);
+        }
 
         if !before.semantic_outcome_emitted {
             let result = match outcome {
@@ -1143,6 +1692,7 @@ impl PlayerLifecycleState {
                     effects,
                 );
             }
+            self.deferred_start_files.clear();
             self.last_reconciliation = Some(LoadLifecycleReconciliation::AuthoritativeIdle);
             self.reconciliation_required = false;
             self.next_reconciliation_tick = None;
@@ -1200,15 +1750,18 @@ impl PlayerLifecycleState {
         self.try_deferred_starts(effects);
         let unresolved = self.load_attempts.values().any(|attempt| {
             attempt.attachment_epoch == self.attachment_epoch
-                && attempt.state.may_receive_lifecycle()
-                && !matches!(attempt.state, LoadAttemptState::Submitting)
                 && attempt.playlist_entry_id.is_none()
-        }) || !self.deferred_start_files.is_empty();
+                && matches!(
+                    attempt.state,
+                    LoadAttemptState::AcceptedUnbound | LoadAttemptState::MayStillEmit
+                )
+        });
         if unresolved {
             self.last_reconciliation = Some(LoadLifecycleReconciliation::AwaitingAcceptedAttempt);
             self.schedule_reconciliation();
             effects.push(PlayerLifecycleEffect::RequestLifecycleReconciliation);
         } else {
+            self.deferred_start_files.clear();
             self.last_reconciliation = Some(LoadLifecycleReconciliation::Resolved);
             self.reconciliation_required = false;
             self.next_reconciliation_tick = None;
@@ -1424,7 +1977,9 @@ pub fn reduce_player_lifecycle(
             requested_target,
             baseline_playlist_entry_ids,
         } => {
-            if command_id.is_none_or(|command_id| !state.commands.contains_key(&command_id)) {
+            if command_id.is_none_or(|command_id| {
+                !state.commands.contains_key(&command_id) && !state.is_retired_command(command_id)
+            }) {
                 let attempt_id = state.allocate_load_attempt_id();
                 let replaced_attempt = state
                     .load_attempts
@@ -1450,6 +2005,9 @@ pub fn reduce_player_lifecycle(
                         superseded_by: None,
                         state: LoadAttemptState::Submitting,
                         semantic_outcome_emitted: false,
+                        reconcile_until_tick: None,
+                        semantic_outcome_sequence: None,
+                        physical_terminal_sequence: None,
                     },
                 );
                 if let Some(command_id) = command_id {
@@ -1462,6 +2020,7 @@ pub fn reduce_player_lifecycle(
                             kind: LifecycleCommandKind::Load(attempt_id),
                             state: CommandSemanticState::Submitted,
                             outcome_emitted: false,
+                            terminal_sequence: None,
                         },
                     );
                 }
@@ -1482,6 +2041,7 @@ pub fn reduce_player_lifecycle(
                 || state
                     .playlist_entry_attempts
                     .contains_key(&playlist_entry_id)
+                || state.is_known_terminal_playlist_entry(playlist_entry_id)
             {
                 return (state, effects);
             }
@@ -1509,6 +2069,9 @@ pub fn reduce_player_lifecycle(
                         LoadAttemptState::Starting
                     },
                     semantic_outcome_emitted: false,
+                    reconcile_until_tick: None,
+                    semantic_outcome_sequence: None,
+                    physical_terminal_sequence: None,
                 },
             );
             if let Some(predecessor_id) = predecessor_id
@@ -1598,8 +2161,12 @@ pub fn reduce_player_lifecycle(
             {
                 command.state = CommandSemanticState::Accepted;
             }
+            let reconcile_until_tick = state
+                .now_tick
+                .saturating_add(ACCEPTED_UNBOUND_RECONCILIATION_TICKS);
             if let Some(attempt) = state.load_attempts.get_mut(&attempt_id) {
                 attempt.state = LoadAttemptState::AcceptedUnbound;
+                attempt.reconcile_until_tick = Some(reconcile_until_tick);
             }
             if let Some(predecessor_id) = replaced_attempt {
                 let predecessor_command = state
@@ -1669,6 +2236,9 @@ pub fn reduce_player_lifecycle(
             media_generation,
             kind,
         } => {
+            if state.is_retired_command(command_id) {
+                return (state, effects);
+            }
             state
                 .commands
                 .entry(command_id)
@@ -1679,6 +2249,7 @@ pub fn reduce_player_lifecycle(
                     kind,
                     state: CommandSemanticState::Submitted,
                     outcome_emitted: false,
+                    terminal_sequence: None,
                 });
         }
         PlayerLifecycleInput::CommandAccepted {
@@ -1808,15 +2379,36 @@ pub fn reduce_player_lifecycle(
             {
                 owner.state = SystemSeekOwnershipState::MayStillArrive;
             }
+            let mut quiesced_attempt = None;
             if let Some(attempt_id) = state.attempt_for_command(command_id)
                 && let Some(attempt) = state.load_attempts.get_mut(&attempt_id)
                 && !attempt.state.is_terminal()
                 && !matches!(
                     attempt.state,
                     LoadAttemptState::SupersededMayStillEmit { .. }
+                        | LoadAttemptState::MayStillEmitQuiescent { .. }
                 )
             {
-                attempt.state = LoadAttemptState::MayStillEmit;
+                if attempt.playlist_entry_id.is_none() {
+                    attempt.state = LoadAttemptState::MayStillEmitQuiescent {
+                        retire_after_tick: state
+                            .now_tick
+                            .saturating_add(QUIESCENT_LOAD_ATTEMPT_RETENTION_TICKS),
+                    };
+                    attempt.reconcile_until_tick = None;
+                    quiesced_attempt = Some(attempt_id);
+                } else {
+                    attempt.state = LoadAttemptState::MayStillEmit;
+                }
+            }
+            if let Some(attempt_id) = quiesced_attempt {
+                state.emit_load_outcome(
+                    attempt_id,
+                    PlayerLoadAttemptResult::Indeterminate,
+                    None,
+                    &mut effects,
+                );
+                state.stop_reconciliation_without_proactive_work();
             }
         }
         PlayerLifecycleInput::StartFile {
@@ -1824,6 +2416,9 @@ pub fn reduce_player_lifecycle(
             playlist_entry_id,
         } => {
             if attachment_epoch == state.attachment_epoch {
+                if state.is_known_terminal_playlist_entry(playlist_entry_id) {
+                    return (state, effects);
+                }
                 if let Some(attempt_id) = state.strict_start_owner(playlist_entry_id) {
                     state.start_attempt(attempt_id, playlist_entry_id, &mut effects);
                 } else {
@@ -2038,12 +2633,36 @@ pub fn reduce_player_lifecycle(
                         position_seconds,
                     });
                     state.pending_native_seek_generation = None;
-                } else if state.pending_native_seek_generation == Some(media_generation) {
-                    state.pending_native_seek_generation = None;
-                    effects.push(PlayerLifecycleEffect::NativeSeekCandidate {
-                        media_generation,
+                } else if let Some(index) =
+                    state.retired_seek_tombstones.iter().position(|tombstone| {
+                        let owner = tombstone.ownership;
+                        owner.attachment_epoch == attachment_epoch
+                            && owner.media_generation == media_generation
+                            && observed_sequence > owner.dispatch_sequence_boundary
+                            && (owner.raw_player_target_seconds - position_seconds).abs()
+                                <= SEEK_MATCH_TOLERANCE_SECONDS
+                    })
+                {
+                    let tombstone = state
+                        .retired_seek_tombstones
+                        .remove(index)
+                        .expect("matched retired seek tombstone");
+                    effects.push(PlayerLifecycleEffect::ConsumeSystemSeek {
+                        command_id: tombstone.ownership.command_id,
                         position_seconds,
                     });
+                    state.pending_native_seek_generation = None;
+                } else if state.pending_native_seek_generation == Some(media_generation) {
+                    state.pending_native_seek_generation = None;
+                    if !state
+                        .uncertain_seek_generations
+                        .contains_key(&media_generation)
+                    {
+                        effects.push(PlayerLifecycleEffect::NativeSeekCandidate {
+                            media_generation,
+                            position_seconds,
+                        });
+                    }
                 }
             }
         }
@@ -2055,16 +2674,24 @@ pub fn reduce_player_lifecycle(
         } => {
             if attachment_epoch == state.attachment_epoch && seeking {
                 state.provisional_eof = None;
-                let may_be_system_seek = state.seek_ownership.values().any(|owner| {
-                    owner.attachment_epoch == attachment_epoch
-                        && owner.media_generation == media_generation
-                        && observed_sequence > owner.dispatch_sequence_boundary
-                        && matches!(
-                            owner.state,
-                            SystemSeekOwnershipState::Accepted
-                                | SystemSeekOwnershipState::MayStillArrive
-                        )
-                });
+                let may_be_system_seek =
+                    state.seek_ownership.values().any(|owner| {
+                        owner.attachment_epoch == attachment_epoch
+                            && owner.media_generation == media_generation
+                            && observed_sequence > owner.dispatch_sequence_boundary
+                            && matches!(
+                                owner.state,
+                                SystemSeekOwnershipState::Accepted
+                                    | SystemSeekOwnershipState::MayStillArrive
+                            )
+                    }) || state.retired_seek_tombstones.iter().any(|tombstone| {
+                        let owner = tombstone.ownership;
+                        owner.attachment_epoch == attachment_epoch
+                            && owner.media_generation == media_generation
+                            && observed_sequence > owner.dispatch_sequence_boundary
+                    }) || state
+                        .uncertain_seek_generations
+                        .contains_key(&media_generation);
                 state.pending_native_seek_generation =
                     (!may_be_system_seek).then_some(media_generation);
             }
@@ -2123,6 +2750,9 @@ pub fn reduce_player_lifecycle(
             effective_room_target_seconds,
             dispatch_sequence_boundary,
         } => {
+            if state.is_retired_command(command_id) {
+                return (state, effects);
+            }
             let superseded = state
                 .commands
                 .values()
@@ -2159,6 +2789,7 @@ pub fn reduce_player_lifecycle(
                     kind: LifecycleCommandKind::Seek,
                     state: CommandSemanticState::Submitted,
                     outcome_emitted: false,
+                    terminal_sequence: None,
                 });
             state.seek_ownership.insert(
                 command_id,
@@ -2254,6 +2885,61 @@ pub fn reduce_player_lifecycle(
         }
         PlayerLifecycleInput::TimerAdvanced { now_tick } => {
             state.now_tick = state.now_tick.max(now_tick);
+            state.prune_expired_seek_tombstones();
+            let expired_active_reconciliation_attempts = state
+                .load_attempts
+                .values()
+                .filter(|attempt| {
+                    attempt.playlist_entry_id.is_none()
+                        && attempt
+                            .reconcile_until_tick
+                            .is_some_and(|deadline| state.now_tick >= deadline)
+                        && matches!(
+                            attempt.state,
+                            LoadAttemptState::AcceptedUnbound
+                                | LoadAttemptState::MayStillEmit
+                                | LoadAttemptState::SupersededMayStillEmit { .. }
+                        )
+                })
+                .map(|attempt| attempt.id)
+                .collect::<Vec<_>>();
+            let quiescent_retire_after_tick = state
+                .now_tick
+                .saturating_add(QUIESCENT_LOAD_ATTEMPT_RETENTION_TICKS);
+            for attempt_id in expired_active_reconciliation_attempts {
+                if let Some(attempt) = state.load_attempts.get_mut(&attempt_id) {
+                    attempt.state = LoadAttemptState::MayStillEmitQuiescent {
+                        retire_after_tick: quiescent_retire_after_tick,
+                    };
+                    attempt.reconcile_until_tick = None;
+                }
+                state.emit_load_outcome(
+                    attempt_id,
+                    PlayerLoadAttemptResult::Indeterminate,
+                    None,
+                    &mut effects,
+                );
+            }
+            let expired_quiescent_attempts = state
+                .load_attempts
+                .values()
+                .filter_map(|attempt| match attempt.state {
+                    LoadAttemptState::MayStillEmitQuiescent { retire_after_tick }
+                        if state.now_tick >= retire_after_tick =>
+                    {
+                        Some(attempt.id)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for attempt_id in expired_quiescent_attempts {
+                state.commit_physical_attempt_terminal(
+                    attempt_id,
+                    PlayerPhysicalLoadOutcome::NeverStarted,
+                    &mut effects,
+                );
+            }
+            state.stop_reconciliation_without_proactive_work();
             if state.reconciliation_required
                 && state
                     .next_reconciliation_tick
@@ -2299,7 +2985,9 @@ pub fn reduce_player_lifecycle(
         }
         PlayerLifecycleInput::AttachmentReplaced => {
             let previous_epoch = state.attachment_epoch;
-            let cached_event_count = state.cached_batch.as_ref().map(|cached| cached.event_count);
+            if state.gap_detected && state.recovery_snapshot.is_none() {
+                state.recovery_snapshot = Some(state.closing_snapshot_for_current_epoch());
+            }
             let command_ids = state
                 .commands
                 .values()
@@ -2326,20 +3014,20 @@ pub fn reduce_player_lifecycle(
                     &mut effects,
                 );
             }
+            state.retire_current_epoch_delivery();
             state.attachment_epoch = state.attachment_epoch.next();
             state.load_attempts.clear();
             state.playlist_entry_attempts.clear();
             state.active_load_attempt = None;
             state.commands.clear();
             state.seek_ownership.clear();
+            state.terminal_attempt_tombstones.clear();
+            state.retired_command_tombstones.clear();
+            state.retired_seek_tombstones.clear();
+            state.uncertain_seek_generations.clear();
             state.deferred_start_files.clear();
             state.provisional_eof = None;
             state.logical_terminal = None;
-            if let Some(cached_event_count) = cached_event_count {
-                state.pending_events.truncate(cached_event_count);
-            } else {
-                state.pending_events.clear();
-            }
             state.next_event_sequence = 1;
             state.reconciliation_required = true;
             state.next_reconciliation_tick = None;
@@ -2670,6 +3358,159 @@ mod tests {
     }
 
     #[test]
+    fn commandless_accepted_load_quiesces_at_its_physical_reconciliation_deadline() {
+        let state = PlayerLifecycleState::default();
+        let (mut state, effects) = reduce_player_lifecycle(
+            state,
+            PlayerLifecycleInput::LoadAttemptSubmitted {
+                command_id: None,
+                media_generation: PlayerMediaGeneration::new(7),
+                requested_target: "same-generation-recovery".to_owned(),
+                baseline_playlist_entry_ids: baseline(&[10]),
+            },
+        );
+        let attempt_id = effects
+            .iter()
+            .find_map(|effect| match effect {
+                PlayerLifecycleEffect::LoadAttemptAllocated { attempt_id, .. } => Some(*attempt_id),
+                _ => None,
+            })
+            .expect("commandless load attempt");
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptAccepted {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                attempt_id,
+            },
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: Vec::new(),
+                current_path: None,
+            },
+        );
+
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::TimerAdvanced {
+                now_tick: ACCEPTED_UNBOUND_RECONCILIATION_TICKS,
+            },
+        );
+        state = next;
+        state
+            .assert_invariants()
+            .expect("commandless quiescent invariants");
+        assert!(matches!(
+            state.load_attempts[&attempt_id].state,
+            LoadAttemptState::MayStillEmitQuiescent { .. }
+        ));
+        assert!(!state.reconciliation_required);
+        assert_eq!(state.next_reconciliation_tick, None);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitSemanticOutcome(outcome)
+                if matches!(
+                    outcome.outcome,
+                    PlayerSemanticOutcome::LoadAttempt(LoadAttemptOutcome {
+                        attempt_id: observed,
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                        ..
+                    }) if observed == attempt_id
+                )
+        )));
+        assert!(!effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::RequestLifecycleReconciliation
+        )));
+    }
+
+    #[test]
+    fn timed_out_unbound_load_quiesces_without_losing_strict_late_ownership() {
+        let mut state = PlayerLifecycleState::default();
+        let attempt_id = submit(&mut state, 1, 1, "late-target", &[]);
+        accept(&mut state, 1);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: Vec::new(),
+                current_path: None,
+            },
+        );
+        assert!(state.reconciliation_required);
+
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::CommandCompletionNotObserved {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                command_id: PlayerCommandId::new(1),
+            },
+        );
+        state = next;
+        state.assert_invariants().expect("quiescent invariants");
+        assert!(matches!(
+            state.load_attempts[&attempt_id].state,
+            LoadAttemptState::MayStillEmitQuiescent { .. }
+        ));
+        assert!(!state.reconciliation_required);
+        assert_eq!(state.next_reconciliation_tick, None);
+        assert_eq!(state.current_media_generation(), None);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitSemanticOutcome(outcome)
+                if matches!(
+                    outcome.outcome,
+                    PlayerSemanticOutcome::LoadAttempt(LoadAttemptOutcome {
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                        ..
+                    })
+                )
+        )));
+
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::TimerAdvanced { now_tick: 120_000 },
+        );
+        state = next;
+        assert!(!effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::RequestLifecycleReconciliation
+        )));
+
+        let attachment_epoch = state.attachment_epoch;
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch,
+                playlist_entry_id: 77,
+            },
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch,
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    77,
+                    Some("late-target".to_owned()),
+                    true,
+                )],
+                current_path: Some("late-target".to_owned()),
+            },
+        );
+        assert_eq!(state.attempt_for_playlist_entry(77), Some(attempt_id));
+        assert_eq!(state.active_load_attempt, Some(attempt_id));
+        assert_eq!(
+            state.load_attempts[&attempt_id].state,
+            LoadAttemptState::Starting
+        );
+    }
+
+    #[test]
     fn eof_is_provisional_and_contradictory_evidence_cancels_it() {
         for contradiction in 0..3 {
             let mut state = PlayerLifecycleState::default();
@@ -2740,27 +3581,205 @@ mod tests {
         assert_eq!(state.attachment_epoch, PlayerAttachmentEpoch::new(2));
         assert!(state.load_attempts.is_empty());
         assert!(state.playlist_entry_attempts.is_empty());
-        assert!(
-            state
-                .retained_semantic_outcomes
-                .iter()
-                .any(|outcome| matches!(
-                    &outcome.outcome,
-                    PlayerSemanticOutcome::Command(command)
-                        if command.attachment_epoch == PlayerAttachmentEpoch::new(1)
-                            && command.result == PlayerCommandSemanticResult::TransportDisconnected
-                ))
-        );
 
         submit(&mut state, 2, 2, "new", &[]);
         accept(&mut state, 2);
         bind_with_snapshot(&mut state, 1, "new", true);
+        let new_attempt_id = state.active_load_attempt.expect("new active attempt");
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(PlayerAuthoritativeSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(2),
+                sequence_boundary: PlayerSequenceBoundary::new(PlayerAttachmentEpoch::new(2), 0),
+                transport: PlayerTransportSnapshot::default(),
+                active_load: SnapshotField::Known(PlayerActiveLoadSnapshot {
+                    attempt_id: new_attempt_id,
+                    media_generation: PlayerMediaGeneration::new(2),
+                    command_id: Some(PlayerCommandId::new(2)),
+                    playlist_entry_id: Some(1),
+                }),
+                current_playlist_entry_id: SnapshotField::Known(1),
+                current_path: SnapshotField::Known("new".to_owned()),
+            }),
+        );
         assert_eq!(
             state
                 .active_attempt()
                 .map(|attempt| attempt.requested_target.as_str()),
             Some("new")
         );
+
+        let old_batch = state.peek_event_batch().expect("old-epoch handoff batch");
+        assert_eq!(old_batch.attachment_epoch, PlayerAttachmentEpoch::new(1));
+        assert_eq!(state.peek_event_batch(), Some(old_batch.clone()));
+        assert!(
+            old_batch
+                .events
+                .iter()
+                .all(|event| { event.order.attachment_epoch == PlayerAttachmentEpoch::new(1) })
+        );
+        assert!(old_batch.semantic_outcomes.iter().all(|outcome| {
+            outcome.order.attachment_epoch == PlayerAttachmentEpoch::new(1)
+                && match &outcome.outcome {
+                    PlayerSemanticOutcome::Command(command) => {
+                        command.attachment_epoch == PlayerAttachmentEpoch::new(1)
+                    }
+                    PlayerSemanticOutcome::LoadAttempt(attempt) => {
+                        attempt.attachment_epoch == PlayerAttachmentEpoch::new(1)
+                    }
+                }
+        }));
+        assert!(old_batch.semantic_outcomes.iter().any(|outcome| matches!(
+            &outcome.outcome,
+            PlayerSemanticOutcome::Command(command)
+                if command.result == PlayerCommandSemanticResult::TransportDisconnected
+        )));
+        assert!(
+            state.acknowledge_event_batch(old_batch.acknowledgement_token),
+            "old epoch must acknowledge before the successor is visible"
+        );
+
+        let new_batch = state
+            .peek_event_batch()
+            .expect("new-epoch replacement batch");
+        assert_eq!(new_batch.attachment_epoch, PlayerAttachmentEpoch::new(2));
+        assert!(
+            new_batch
+                .events
+                .iter()
+                .all(|event| { event.order.attachment_epoch == PlayerAttachmentEpoch::new(2) })
+        );
+        assert!(
+            new_batch
+                .semantic_outcomes
+                .iter()
+                .all(|outcome| { outcome.order.attachment_epoch == PlayerAttachmentEpoch::new(2) })
+        );
+        assert!(new_batch.events.iter().any(|event| matches!(
+            event.event,
+            PlayerEvent::AttachmentReplaced {
+                previous_epoch
+            } if previous_epoch == PlayerAttachmentEpoch::new(1)
+        )));
+        assert_eq!(
+            new_batch
+                .authoritative_snapshot
+                .as_ref()
+                .and_then(|snapshot| match snapshot.active_load {
+                    SnapshotField::Known(active) => Some(active),
+                    SnapshotField::KnownAbsent | SnapshotField::Unavailable => None,
+                })
+                .map(|active| (active.media_generation, active.playlist_entry_id)),
+            Some((PlayerMediaGeneration::new(2), Some(1)))
+        );
+    }
+
+    #[test]
+    fn cached_old_epoch_batch_replays_before_terminal_handoff_and_replacement_epoch() {
+        let mut state = PlayerLifecycleState::default();
+        submit(&mut state, 1, 1, "old", &[]);
+        accept(&mut state, 1);
+        bind_with_snapshot(&mut state, 10, "old", true);
+        let cached = state.peek_event_batch().expect("initial cached batch");
+
+        reduce(&mut state, PlayerLifecycleInput::AttachmentReplaced);
+        assert_eq!(
+            state.peek_event_batch(),
+            Some(cached.clone()),
+            "replacement must not mutate an already returned batch"
+        );
+        assert!(state.acknowledge_event_batch(cached.acknowledgement_token));
+
+        let terminal_handoff = state.peek_event_batch().expect("terminal handoff");
+        assert_eq!(
+            terminal_handoff.attachment_epoch,
+            PlayerAttachmentEpoch::new(1)
+        );
+        assert!(terminal_handoff.semantic_outcomes.iter().any(|outcome| {
+            matches!(
+                &outcome.outcome,
+                PlayerSemanticOutcome::Command(command)
+                    if command.result
+                        == PlayerCommandSemanticResult::TransportDisconnected
+            )
+        }));
+        assert!(state.acknowledge_event_batch(terminal_handoff.acknowledgement_token));
+
+        let replacement = state.peek_event_batch().expect("replacement epoch");
+        assert_eq!(replacement.attachment_epoch, PlayerAttachmentEpoch::new(2));
+        assert!(
+            replacement
+                .events
+                .iter()
+                .any(|event| matches!(event.event, PlayerEvent::AttachmentReplaced { .. }))
+        );
+    }
+
+    #[test]
+    fn retiring_epoch_with_gap_freezes_snapshot_before_terminal_outcomes() {
+        let mut state = PlayerLifecycleState::default();
+        submit(&mut state, 1, 1, "old", &[]);
+        accept(&mut state, 1);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::EventGapDetected {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+            },
+        );
+        reduce(&mut state, PlayerLifecycleInput::AttachmentReplaced);
+
+        let handoff = state.peek_event_batch().expect("gap-closing handoff");
+        let snapshot = handoff
+            .authoritative_snapshot
+            .as_ref()
+            .expect("retiring gap must have a closing snapshot");
+        assert_eq!(snapshot.attachment_epoch, PlayerAttachmentEpoch::new(1));
+        assert!(handoff.semantic_outcomes.iter().all(|outcome| {
+            outcome.order.sequence > snapshot.sequence_boundary.through_sequence
+        }));
+        assert!(handoff.semantic_outcomes.iter().any(|outcome| matches!(
+            &outcome.outcome,
+            PlayerSemanticOutcome::LoadAttempt(attempt)
+                if attempt.result == PlayerLoadAttemptResult::TransportDisconnected
+        )));
+    }
+
+    #[test]
+    fn acknowledged_gap_marker_waits_for_snapshot_without_emitting_empty_batches() {
+        let mut state = PlayerLifecycleState::default();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::EventGapDetected {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+            },
+        );
+
+        let gap_batch = state.peek_event_batch().expect("gap marker batch");
+        assert!(gap_batch.authoritative_snapshot.is_none());
+        assert!(
+            gap_batch
+                .events
+                .iter()
+                .any(|event| { matches!(event.event, PlayerEvent::EventGapDetected) })
+        );
+        assert!(state.acknowledge_event_batch(gap_batch.acknowledgement_token));
+        assert!(state.requires_authoritative_snapshot());
+        assert_eq!(
+            state.peek_event_batch(),
+            None,
+            "a pending snapshot latch has no deliverable payload of its own"
+        );
+
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot),
+        );
+        let snapshot_batch = state.peek_event_batch().expect("snapshot batch");
+        assert!(snapshot_batch.authoritative_snapshot.is_some());
+        assert!(state.acknowledge_event_batch(snapshot_batch.acknowledgement_token));
+        assert!(!state.requires_authoritative_snapshot());
+        assert_eq!(state.peek_event_batch(), None);
     }
 
     #[test]
@@ -2785,6 +3804,7 @@ mod tests {
         let repeated = state.peek_event_batch().expect("repeated batch");
         assert_eq!(first, repeated);
         assert!(!first.semantic_outcomes.is_empty());
+        assert!(state.load_attempts.contains_key(&attempt_id));
         assert!(
             !state.acknowledge_event_batch(PlayerEventAcknowledgementToken::new(
                 state.attachment_epoch,
@@ -2792,8 +3812,217 @@ mod tests {
             ))
         );
         assert_eq!(state.peek_event_batch(), Some(first.clone()));
+        assert!(state.load_attempts.contains_key(&attempt_id));
         assert!(state.acknowledge_event_batch(first.acknowledgement_token));
         assert_eq!(state.pending_semantic_outcome_count(), 0);
+        assert!(!state.load_attempts.contains_key(&attempt_id));
+    }
+
+    #[test]
+    fn acknowledged_timed_out_seek_compacts_to_bounded_late_ownership() {
+        let mut state = PlayerLifecycleState::default();
+        let command_id = PlayerCommandId::new(9);
+        let generation = PlayerMediaGeneration::new(3);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::SeekCommandSubmitted {
+                command_id,
+                media_generation: generation,
+                raw_player_target_seconds: 42.0,
+                effective_room_target_seconds: 42.0,
+                dispatch_sequence_boundary: 0,
+            },
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::SeekCommandAccepted {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                command_id,
+            },
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::SeekCommandCompletionNotObserved {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                command_id,
+            },
+        );
+        let batch = state.peek_event_batch().expect("seek timeout batch");
+        assert!(state.acknowledge_event_batch(batch.acknowledgement_token));
+        assert!(!state.commands.contains_key(&command_id));
+        assert!(!state.seek_ownership.contains_key(&command_id));
+        assert_eq!(state.retired_seek_tombstones.len(), 1);
+
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::SeekingObserved {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                media_generation: generation,
+                observed_sequence: 1,
+                seeking: true,
+            },
+        );
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::PositionObserved {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                media_generation: generation,
+                observed_sequence: 2,
+                position_seconds: 42.0,
+            },
+        );
+        state = next;
+        state.assert_invariants().expect("late seek invariants");
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::ConsumeSystemSeek {
+                command_id: observed,
+                ..
+            } if *observed == command_id
+        )));
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, PlayerLifecycleEffect::NativeSeekCandidate { .. }))
+        );
+        assert!(state.retired_seek_tombstones.is_empty());
+    }
+
+    #[test]
+    fn acknowledged_lifecycle_history_compacts_under_one_hundred_thousand_operations() {
+        let mut state = PlayerLifecycleState::default();
+        let first_private_target = "https://media.invalid/private-token-first";
+
+        for operation in 0_u64..100_000 {
+            let command_id = PlayerCommandId::new(operation + 1);
+            let generation = PlayerMediaGeneration::new(operation + 1);
+            let attachment_epoch = state.attachment_epoch;
+            match operation % 4 {
+                0 | 1 => {
+                    let kind = if operation % 4 == 0 {
+                        LifecycleCommandKind::Pause
+                    } else {
+                        LifecycleCommandKind::Play
+                    };
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::CommandSubmitted {
+                            command_id,
+                            media_generation: Some(generation),
+                            kind,
+                        },
+                    );
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::CommandAccepted {
+                            attachment_epoch,
+                            command_id,
+                        },
+                    );
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::CommandCompleted {
+                            attachment_epoch,
+                            command_id,
+                        },
+                    );
+                }
+                2 => {
+                    let dispatch_sequence_boundary = state.last_event_sequence();
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::SeekCommandSubmitted {
+                            command_id,
+                            media_generation: generation,
+                            raw_player_target_seconds: operation as f64,
+                            effective_room_target_seconds: operation as f64,
+                            dispatch_sequence_boundary,
+                        },
+                    );
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::SeekCommandAccepted {
+                            attachment_epoch,
+                            command_id,
+                        },
+                    );
+                    let observed_sequence = state.last_event_sequence().saturating_add(1);
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::PositionObserved {
+                            attachment_epoch,
+                            media_generation: generation,
+                            observed_sequence,
+                            position_seconds: operation as f64,
+                        },
+                    );
+                }
+                _ => {
+                    let target = if operation == 3 {
+                        first_private_target.to_owned()
+                    } else {
+                        format!("target-{operation}")
+                    };
+                    let attempt_id =
+                        submit(&mut state, command_id.get(), generation.get(), &target, &[]);
+                    accept(&mut state, command_id.get());
+                    let playlist_entry_id =
+                        i64::try_from(operation + 1).expect("stress ID fits i64");
+                    bind_with_snapshot(&mut state, playlist_entry_id, &target, true);
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::FileLoaded {
+                            attachment_epoch,
+                            playlist_entry_id: Some(playlist_entry_id),
+                            loaded_target: Some(target),
+                        },
+                    );
+                    reduce(
+                        &mut state,
+                        PlayerLifecycleInput::EndFile {
+                            attachment_epoch,
+                            playlist_entry_id,
+                            outcome: PlayerPhysicalLoadOutcome::Ended,
+                        },
+                    );
+                    assert_ne!(
+                        state.load_attempts[&attempt_id].physical_terminal_sequence,
+                        None
+                    );
+                }
+            }
+
+            let batch = state.peek_event_batch().expect("operation delivery batch");
+            assert!(state.acknowledge_event_batch(batch.acknowledgement_token));
+            assert!(state.load_attempts.len() <= 1);
+            assert!(state.commands.len() <= 1);
+            assert!(state.seek_ownership.len() <= 1);
+            assert!(state.terminal_attempt_tombstones.len() <= MAX_TERMINAL_ATTEMPT_TOMBSTONES);
+            assert!(state.retired_command_tombstones.len() <= MAX_RETIRED_COMMAND_TOMBSTONES);
+        }
+
+        assert!(state.load_attempts.is_empty());
+        assert!(state.commands.is_empty());
+        assert!(state.seek_ownership.is_empty());
+        assert!(
+            !format!("{state:?}").contains(first_private_target),
+            "acknowledged compaction must not retain the retired target anywhere"
+        );
+        let last_entry_id = 100_000_i64;
+        let before = state.clone();
+        let attachment_epoch = state.attachment_epoch;
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::ExternalLoadObserved {
+                attachment_epoch,
+                media_generation: PlayerMediaGeneration::new(200_000),
+                playlist_entry_id: last_entry_id,
+                observed_target: "duplicate-must-not-revive".to_owned(),
+                file_loaded: true,
+            },
+        );
+        assert_eq!(state, before);
     }
 
     #[test]

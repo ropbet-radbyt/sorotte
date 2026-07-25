@@ -51,6 +51,7 @@ pub(crate) struct OrderedPlayerEventConsumer {
     transport: PlayerTransportSnapshot,
     attempts: BTreeMap<LoadAttemptId, OrderedLoadBinding>,
     active_attempt: Option<LoadAttemptId>,
+    acknowledged_semantic_sequence: u64,
     applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
     applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
 }
@@ -99,6 +100,7 @@ impl OrderedPlayerEventConsumer {
         self.transport = PlayerTransportSnapshot::default();
         self.attempts.clear();
         self.active_attempt = None;
+        self.acknowledged_semantic_sequence = 0;
         self.applied_semantic_outcomes.clear();
         self.applied_unacknowledged_token = None;
     }
@@ -339,12 +341,31 @@ impl OrderedPlayerEventConsumer {
     }
 
     fn semantic_outcome_was_applied(&self, order: PlayerEventOrder) -> bool {
-        self.applied_semantic_outcomes.contains(&order)
+        order.sequence <= self.acknowledged_semantic_sequence
+            || self.applied_semantic_outcomes.contains(&order)
     }
 
     fn record_semantic_outcome(&mut self, order: PlayerEventOrder) {
         self.applied_semantic_outcomes.insert(order);
         self.record_order(order);
+    }
+
+    fn compact_acknowledged_delivery(
+        &mut self,
+        acknowledgement_token: PlayerEventAcknowledgementToken,
+        sequence_boundary: PlayerSequenceBoundary,
+    ) {
+        if self.applied_unacknowledged_token != Some(acknowledgement_token) {
+            return;
+        }
+        self.acknowledged_semantic_sequence = self
+            .acknowledged_semantic_sequence
+            .max(sequence_boundary.through_sequence);
+        self.applied_semantic_outcomes.clear();
+        let active_attempt = self.active_attempt;
+        self.attempts
+            .retain(|attempt_id, binding| !binding.terminal || Some(*attempt_id) == active_attempt);
+        self.applied_unacknowledged_token = None;
     }
 }
 
@@ -4383,7 +4404,10 @@ where
             let application_error = self.apply_ordered_player_event_batch(&batch, now_seconds)?;
             self.player
                 .acknowledge_player_event_batch(batch.acknowledgement_token)?;
-            self.ordered_player_events.applied_unacknowledged_token = None;
+            self.ordered_player_events.compact_acknowledged_delivery(
+                batch.acknowledgement_token,
+                batch.sequence_boundary,
+            );
             if let Some(error) = application_error {
                 return Err(error);
             }
@@ -5817,7 +5841,8 @@ mod tests {
                 .ordered_player_events
                 .applied_semantic_outcomes
                 .len(),
-            1
+            1,
+            "failed acknowledgement must retain replay-only outcome identity"
         );
         runtime.drain_player_transport_coordination(2.0).unwrap();
         assert_eq!(runtime.ordered_player_events.last_sequence, 2);
@@ -5827,10 +5852,55 @@ mod tests {
                 .ordered_player_events
                 .applied_semantic_outcomes
                 .len(),
-            1
+            0,
+            "successful acknowledgement should compact replay-only outcome identity"
         );
         assert_eq!(runtime.player.acknowledged_batches.len(), 1);
         assert!(runtime.player.ordered_batches.is_empty());
+    }
+
+    #[test]
+    fn acknowledged_terminal_batch_compacts_consumer_replay_state() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            12,
+            None,
+            Vec::new(),
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 1),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: None,
+                        requested_target: "retired-private-target".to_owned(),
+                        loaded_target: None,
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert!(runtime.ordered_player_events.attempts.is_empty());
+        assert!(
+            runtime
+                .ordered_player_events
+                .applied_semantic_outcomes
+                .is_empty()
+        );
+        assert_eq!(
+            runtime.ordered_player_events.acknowledged_semantic_sequence,
+            1
+        );
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
     }
 
     #[test]

@@ -94,6 +94,7 @@ pub(super) struct GuiOrderedPlayerEventConsumer {
     transport: PlayerTransportSnapshot,
     attempts: BTreeMap<LoadAttemptId, GuiOrderedLoadBinding>,
     active_attempt: Option<LoadAttemptId>,
+    acknowledged_semantic_sequence: u64,
     applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
     applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
 }

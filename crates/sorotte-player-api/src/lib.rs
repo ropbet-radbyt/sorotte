@@ -1329,6 +1329,13 @@ impl PlayerEventAcknowledgementToken {
 }
 
 /// Ordered player delivery unit with explicit recovery and acknowledgement.
+///
+/// A batch is closed over exactly one attachment epoch: its header, sequence
+/// boundary, acknowledgement token, snapshot, events, semantic orders, and
+/// semantic payloads all belong to `attachment_epoch`. During attachment
+/// replacement, producers must retain and deliver any old-epoch terminal
+/// handoff batches before exposing the replacement epoch. Consumers may
+/// therefore reject mixed-epoch batches without losing handoff liveness.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerEventBatch {
     pub attachment_epoch: PlayerAttachmentEpoch,

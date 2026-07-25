@@ -570,6 +570,7 @@ impl GuiOrderedPlayerEventConsumer {
         self.transport = PlayerTransportSnapshot::default();
         self.attempts.clear();
         self.active_attempt = None;
+        self.acknowledged_semantic_sequence = 0;
         self.applied_semantic_outcomes.clear();
         self.applied_unacknowledged_token = None;
     }
@@ -887,12 +888,31 @@ impl GuiOrderedPlayerEventConsumer {
     }
 
     fn semantic_outcome_was_applied(&self, order: PlayerEventOrder) -> bool {
-        self.applied_semantic_outcomes.contains(&order)
+        order.sequence <= self.acknowledged_semantic_sequence
+            || self.applied_semantic_outcomes.contains(&order)
     }
 
     fn record_semantic_outcome(&mut self, order: PlayerEventOrder) {
         self.applied_semantic_outcomes.insert(order);
         self.record_order(order);
+    }
+
+    fn compact_acknowledged_delivery(
+        &mut self,
+        acknowledgement_token: PlayerEventAcknowledgementToken,
+        sequence_boundary: PlayerSequenceBoundary,
+    ) {
+        if self.applied_unacknowledged_token != Some(acknowledgement_token) {
+            return;
+        }
+        self.acknowledged_semantic_sequence = self
+            .acknowledged_semantic_sequence
+            .max(sequence_boundary.through_sequence);
+        self.applied_semantic_outcomes.clear();
+        let active_attempt = self.active_attempt;
+        self.attempts
+            .retain(|attempt_id, binding| !binding.terminal || Some(*attempt_id) == active_attempt);
+        self.applied_unacknowledged_token = None;
     }
 }
 
@@ -2564,11 +2584,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 .map(|player| player.acknowledge_player_event_batch(batch.acknowledgement_token));
             match acknowledgement {
                 Some(Ok(())) => {
-                    if self.ordered_player_events.applied_unacknowledged_token
-                        == Some(batch.acknowledgement_token)
-                    {
-                        self.ordered_player_events.applied_unacknowledged_token = None;
-                    }
+                    self.ordered_player_events.compact_acknowledged_delivery(
+                        batch.acknowledgement_token,
+                        batch.sequence_boundary,
+                    );
                 }
                 Some(Err(error)) => {
                     eprintln!("warning: failed to acknowledge ordered player event batch: {error}");
@@ -3242,10 +3261,14 @@ mod transport_timeline_tests {
 mod ordered_delivery_tests {
     use super::*;
     use crate::app::runtime_stack::GuiSessionRuntimeAdapter;
+    use sorotte_player_mpv::lifecycle::{
+        AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput,
+        PlayerLifecycleState, SystemSeekOwnershipState, reduce_player_lifecycle,
+    };
     use std::{
-        collections::VecDeque,
+        collections::{BTreeSet, VecDeque},
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
     };
@@ -3299,6 +3322,59 @@ mod ordered_delivery_tests {
         ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
             self.legacy_drain_calls.fetch_add(1, Ordering::SeqCst);
             None
+        }
+    }
+
+    struct LifecycleBatchPlayer {
+        state: PlayerLifecycleState,
+        acknowledged_epochs: Arc<Mutex<Vec<PlayerAttachmentEpoch>>>,
+    }
+
+    impl PlayerAdapter for LifecycleBatchPlayer {
+        fn name(&self) -> &'static str {
+            "lifecycle-batch-test"
+        }
+
+        fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+            PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        }
+
+        fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+            let batch = self.state.peek_event_batch()?;
+            assert!(
+                batch
+                    .events
+                    .iter()
+                    .all(|event| { event.order.attachment_epoch == batch.attachment_epoch })
+            );
+            assert!(batch.semantic_outcomes.iter().all(|outcome| {
+                outcome.order.attachment_epoch == batch.attachment_epoch
+                    && match &outcome.outcome {
+                        PlayerSemanticOutcome::Command(command) => {
+                            command.attachment_epoch == batch.attachment_epoch
+                        }
+                        PlayerSemanticOutcome::LoadAttempt(attempt) => {
+                            attempt.attachment_epoch == batch.attachment_epoch
+                        }
+                    }
+            }));
+            Some(batch)
+        }
+
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            if !self.state.acknowledge_event_batch(token) {
+                return Err(sorotte_player_api::PlayerError::OperationFailed(
+                    "lifecycle batch acknowledgement failed".to_owned(),
+                ));
+            }
+            self.acknowledged_epochs
+                .lock()
+                .expect("acknowledgement epoch lock")
+                .push(token.attachment_epoch());
+            Ok(())
         }
     }
 
@@ -3435,6 +3511,30 @@ mod ordered_delivery_tests {
         })));
         owner.session = Some(Box::new(CountingSession { transport_updates }));
         owner
+    }
+
+    fn reduce_lifecycle(state: &mut PlayerLifecycleState, input: PlayerLifecycleInput) {
+        let _ = reduce_lifecycle_with_effects(state, input);
+    }
+
+    fn reduce_lifecycle_with_effects(
+        state: &mut PlayerLifecycleState,
+        input: PlayerLifecycleInput,
+    ) -> Vec<PlayerLifecycleEffect> {
+        let current = std::mem::take(state);
+        let (next, effects) = reduce_player_lifecycle(current, input);
+        next.assert_invariants().expect("lifecycle invariants");
+        *state = next;
+        effects
+    }
+
+    fn acknowledge_all_lifecycle_batches(state: &mut PlayerLifecycleState) {
+        while let Some(batch) = state.peek_event_batch() {
+            assert!(
+                state.acknowledge_event_batch(batch.acknowledgement_token),
+                "generated lifecycle batch should acknowledge"
+            );
+        }
     }
 
     #[test]
@@ -3597,5 +3697,365 @@ mod ordered_delivery_tests {
             partitioned.player_cache_buffering_percent
         );
         assert_eq!(combined.player_local_file, partitioned.player_local_file);
+    }
+
+    #[test]
+    fn attachment_replacement_drains_old_terminals_before_new_epoch_snapshot() {
+        let mut state = PlayerLifecycleState::default();
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptSubmitted {
+                command_id: Some(PlayerCommandId::new(1)),
+                media_generation: PlayerMediaGeneration::new(1),
+                requested_target: "old-core.mkv".to_owned(),
+                baseline_playlist_entry_ids: BTreeSet::new(),
+            },
+        );
+        let old_attempt_id = state
+            .attempt_for_command(PlayerCommandId::new(1))
+            .expect("old load attempt");
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptAccepted {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                attempt_id: old_attempt_id,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    77,
+                    Some("old-core.mkv".to_owned()),
+                    true,
+                )],
+                current_path: Some("old-core.mkv".to_owned()),
+            },
+        );
+        let seek_dispatch_boundary = state.last_event_sequence();
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::SeekCommandSubmitted {
+                command_id: PlayerCommandId::new(2),
+                media_generation: PlayerMediaGeneration::new(1),
+                raw_player_target_seconds: 12.0,
+                effective_room_target_seconds: 12.0,
+                dispatch_sequence_boundary: seek_dispatch_boundary,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::SeekCommandAccepted {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                command_id: PlayerCommandId::new(2),
+            },
+        );
+        reduce_lifecycle(&mut state, PlayerLifecycleInput::AttachmentReplaced);
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::ExternalLoadObserved {
+                attachment_epoch: PlayerAttachmentEpoch::new(2),
+                media_generation: PlayerMediaGeneration::new(2),
+                playlist_entry_id: 77,
+                observed_target: "new-core.mkv".to_owned(),
+                file_loaded: true,
+            },
+        );
+        let new_attempt_id = state.active_load_attempt.expect("new active attempt");
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(PlayerAuthoritativeSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(2),
+                sequence_boundary: PlayerSequenceBoundary::new(PlayerAttachmentEpoch::new(2), 0),
+                transport: PlayerTransportSnapshot {
+                    load_attempt_id: SnapshotField::Known(new_attempt_id),
+                    media_generation: SnapshotField::Known(PlayerMediaGeneration::new(2)),
+                    phase: SnapshotField::Known(PlayerTransportPhase::ReadyPaused),
+                    logical_pause: SnapshotField::Known(true),
+                    ..PlayerTransportSnapshot::default()
+                },
+                active_load: SnapshotField::Known(PlayerActiveLoadSnapshot {
+                    attempt_id: new_attempt_id,
+                    media_generation: PlayerMediaGeneration::new(2),
+                    command_id: None,
+                    playlist_entry_id: Some(77),
+                }),
+                current_playlist_entry_id: SnapshotField::Known(77),
+                current_path: SnapshotField::Known("new-core.mkv".to_owned()),
+            }),
+        );
+
+        let old_batch = state.peek_event_batch().expect("old handoff batch");
+        assert_eq!(old_batch.attachment_epoch, PlayerAttachmentEpoch::new(1));
+        let old_command_disconnects = old_batch
+            .semantic_outcomes
+            .iter()
+            .filter(|outcome| {
+                matches!(
+                    &outcome.outcome,
+                    PlayerSemanticOutcome::Command(command)
+                        if command.result
+                            == PlayerCommandSemanticResult::TransportDisconnected
+                )
+            })
+            .count();
+        let old_attempt_disconnects = old_batch
+            .semantic_outcomes
+            .iter()
+            .filter(|outcome| {
+                matches!(
+                    &outcome.outcome,
+                    PlayerSemanticOutcome::LoadAttempt(attempt)
+                        if attempt.result == PlayerLoadAttemptResult::TransportDisconnected
+                )
+            })
+            .count();
+        assert_eq!(old_command_disconnects, 2);
+        assert_eq!(old_attempt_disconnects, 1);
+
+        let acknowledged_epochs = Arc::new(Mutex::new(Vec::new()));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(LifecycleBatchPlayer {
+            state,
+            acknowledged_epochs: acknowledged_epochs.clone(),
+        })));
+        owner.session = Some(Box::new(CountingSession {
+            transport_updates: Arc::new(AtomicUsize::new(0)),
+        }));
+
+        owner.refresh_player_state_impl();
+        assert_eq!(
+            *acknowledged_epochs
+                .lock()
+                .expect("acknowledgement epoch lock"),
+            vec![PlayerAttachmentEpoch::new(1), PlayerAttachmentEpoch::new(2)]
+        );
+        assert_eq!(
+            owner.ordered_player_events.attachment_epoch,
+            Some(PlayerAttachmentEpoch::new(2))
+        );
+        assert_eq!(
+            owner.ordered_player_events.active_attempt,
+            Some(new_attempt_id)
+        );
+        assert_eq!(
+            owner
+                .ordered_player_events
+                .attempts
+                .get(&new_attempt_id)
+                .map(|binding| (binding.media_generation, binding.playlist_entry_id)),
+            Some((PlayerMediaGeneration::new(2), Some(77)))
+        );
+        assert!(
+            !owner
+                .ordered_player_events
+                .attempts
+                .contains_key(&old_attempt_id)
+        );
+        assert_eq!(
+            snapshot_known_clone(&owner.ordered_player_events.transport.phase),
+            Some(PlayerTransportPhase::ReadyPaused)
+        );
+        assert!(
+            owner
+                .ordered_player_events
+                .applied_semantic_outcomes
+                .is_empty(),
+            "successful acknowledgements must compact replay-only semantic identity"
+        );
+    }
+
+    #[test]
+    fn generated_ordered_seek_histories_keep_reducer_and_gui_legacy_decisions_equal() {
+        const SEEDS: [u64; 4] = [0x00dd_5eed, 0xc0ff_ee42, 0xdec0_de01, 0x51a7_e123];
+        const GENERATION: PlayerMediaGeneration = PlayerMediaGeneration::new(7);
+
+        fn next_random(random: &mut u64) -> u64 {
+            *random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *random
+        }
+
+        for seed in SEEDS {
+            let mut random = seed;
+            let mut state = PlayerLifecycleState::default();
+            let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+            owner.player_attachment_epoch = state.attachment_epoch.get();
+            owner.attached_native_seek_tracker.media_generation = Some(GENERATION.get());
+            let mut next_command = 1_u64;
+            let mut observed_sequence = 0_u64;
+
+            for step in 0..1_024_u64 {
+                let choice = next_random(&mut random) % 8;
+                match choice {
+                    0 | 1 => {
+                        let command_id = PlayerCommandId::new(next_command);
+                        next_command += 1;
+                        let raw_target = (next_random(&mut random) % 120) as f64 + 0.25;
+                        let room_target =
+                            raw_target + ((next_random(&mut random) % 21) as f64 - 10.0);
+
+                        reduce_lifecycle(
+                            &mut state,
+                            PlayerLifecycleInput::SeekCommandSubmitted {
+                                command_id,
+                                media_generation: GENERATION,
+                                raw_player_target_seconds: raw_target,
+                                effective_room_target_seconds: room_target,
+                                dispatch_sequence_boundary: observed_sequence,
+                            },
+                        );
+                        owner.note_attached_runtime_position_dispatched(
+                            Some(command_id),
+                            room_target,
+                            raw_target,
+                        );
+                        let attachment_epoch = state.attachment_epoch;
+                        reduce_lifecycle(
+                            &mut state,
+                            PlayerLifecycleInput::SeekCommandAccepted {
+                                attachment_epoch,
+                                command_id,
+                            },
+                        );
+                        owner.reconcile_attached_system_seek_command_progress(
+                            PlayerCommandProgress::accepted(command_id, Some(GENERATION), None),
+                        );
+                    }
+                    2 => {
+                        if let Some(command_id) =
+                            state.seek_ownership.values().find_map(|ownership| {
+                                matches!(
+                                    ownership.state,
+                                    SystemSeekOwnershipState::Accepted
+                                        | SystemSeekOwnershipState::Submitted
+                                )
+                                .then_some(ownership.command_id)
+                            })
+                        {
+                            let attachment_epoch = state.attachment_epoch;
+                            reduce_lifecycle(
+                                &mut state,
+                                PlayerLifecycleInput::SeekCommandCompletionNotObserved {
+                                    attachment_epoch,
+                                    command_id,
+                                },
+                            );
+                            owner.reconcile_attached_system_seek_command_progress(
+                                PlayerCommandProgress::finished(
+                                    command_id,
+                                    Some(GENERATION),
+                                    None,
+                                    None,
+                                    PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+                                ),
+                            );
+                        }
+                    }
+                    3..=6 => {
+                        let expected_gui_command = owner
+                            .attached_system_seek_ownership
+                            .front()
+                            .map(|ownership| ownership.adapter_player_command_id);
+                        let position_seconds =
+                            owner.attached_system_seek_ownership.front().map_or_else(
+                                || (next_random(&mut random) % 120) as f64 + 0.75,
+                                |ownership| ownership.player_target_position_seconds,
+                            );
+
+                        observed_sequence += 1;
+                        let attachment_epoch = state.attachment_epoch;
+                        let seeking_effects = reduce_lifecycle_with_effects(
+                            &mut state,
+                            PlayerLifecycleInput::SeekingObserved {
+                                attachment_epoch,
+                                media_generation: GENERATION,
+                                observed_sequence,
+                                seeking: true,
+                            },
+                        );
+                        assert!(
+                            seeking_effects.iter().all(|effect| !matches!(
+                                effect,
+                                PlayerLifecycleEffect::ConsumeSystemSeek { .. }
+                                    | PlayerLifecycleEffect::NativeSeekCandidate { .. }
+                            )),
+                            "seeking evidence alone must not classify a seek"
+                        );
+
+                        observed_sequence += 1;
+                        let attachment_epoch = state.attachment_epoch;
+                        let reducer_effects = reduce_lifecycle_with_effects(
+                            &mut state,
+                            PlayerLifecycleInput::PositionObserved {
+                                attachment_epoch,
+                                media_generation: GENERATION,
+                                observed_sequence,
+                                position_seconds,
+                            },
+                        );
+                        let reducer_system_command =
+                            reducer_effects.iter().find_map(|effect| match effect {
+                                PlayerLifecycleEffect::ConsumeSystemSeek { command_id, .. } => {
+                                    Some(*command_id)
+                                }
+                                _ => None,
+                            });
+                        let reducer_native = reducer_effects.iter().any(|effect| {
+                            matches!(effect, PlayerLifecycleEffect::NativeSeekCandidate { .. })
+                        });
+                        assert!(
+                            reducer_system_command.is_none() || !reducer_native,
+                            "one position cannot be both a system and native seek"
+                        );
+
+                        let observed_at = Some(PlayerObservationTimestamp::from_adapter_start(
+                            Duration::from_millis(observed_sequence.saturating_mul(10)),
+                        ));
+                        let gui_system = owner.consume_matching_attached_system_seek(
+                            Some(GENERATION),
+                            observed_at,
+                            position_seconds,
+                        );
+                        let gui_fail_closed = owner
+                            .attached_system_seek_classification_is_fail_closed(Some(GENERATION));
+                        let gui_native = !gui_system && !gui_fail_closed;
+
+                        assert_eq!(
+                            reducer_system_command.is_some(),
+                            gui_system,
+                            "system-seek divergence for seed {seed:#x}, step {step}, \
+                             position {position_seconds}"
+                        );
+                        assert_eq!(
+                            reducer_system_command.map(Some),
+                            expected_gui_command.filter(|_| gui_system),
+                            "system-seek owner divergence for seed {seed:#x}, step {step}"
+                        );
+                        assert_eq!(
+                            reducer_native, gui_native,
+                            "native-seek divergence for seed {seed:#x}, step {step}, \
+                             position {position_seconds}"
+                        );
+                    }
+                    _ => {
+                        reduce_lifecycle(&mut state, PlayerLifecycleInput::AttachmentReplaced);
+                        owner.player_attachment_epoch = state.attachment_epoch.get();
+                        owner.reset_attached_media_boundary_state();
+                        owner.attached_native_seek_tracker.media_generation =
+                            Some(GENERATION.get());
+                    }
+                }
+
+                acknowledge_all_lifecycle_batches(&mut state);
+                assert!(
+                    owner.attached_system_seek_ownership.len()
+                        <= ATTACHED_SYSTEM_SEEK_OWNERSHIP_LIMIT,
+                    "generated GUI ownership must remain bounded"
+                );
+            }
+        }
     }
 }

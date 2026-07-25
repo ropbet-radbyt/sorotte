@@ -13,6 +13,16 @@ impl MpvAdapter {
         crate::ipc::is_sorotte_control_event(event)
     }
 
+    fn invalidate_nonblocking_runtime_commands_after_control_gap(&mut self) {
+        // A control-queue overflow can replace any completion that was still
+        // waiting to be correlated. None of these single-flight command IDs
+        // may remain authoritative after that gap.
+        self.pending_ipc_event_fence_command_id = None;
+        self.last_ipc_event_fence_at = Some(Instant::now());
+        self.invalidate_network_media_options_hook_delivery();
+        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
+    }
+
     pub(super) fn drain_runtime_lease_events_nonblocking(&mut self) -> bool {
         let items = self
             .ipc_client
@@ -134,13 +144,12 @@ impl MpvAdapter {
                     self.apply_lifecycle_input(PlayerLifecycleInput::EventGapDetected {
                         attachment_epoch: lifecycle_epoch,
                     });
-                    self.invalidate_network_media_options_hook_delivery();
+                    self.invalidate_nonblocking_runtime_commands_after_control_gap();
                     self.set_network_media_policy_state(MpvNetworkMediaPolicyState::Unknown);
                     self.queue_network_media_options_hook_degraded(PlayerError::OperationFailed(
                         "Sorotte's mpv IPC control queue overflowed; hook state must be reacquired"
                             .to_owned(),
                     ));
-                    self.legacy_syncplayintf_pending_heartbeat_command_id = None;
                     self.begin_sorotte_bridge_runtime_recovery(
                         SorotteBridgeFailureKind::IpcCommand,
                         "Sorotte's mpv IPC control queue overflowed; bridge state must be reacquired",
@@ -1318,9 +1327,10 @@ impl PlayerAdapter for MpvAdapter {
 #[cfg(test)]
 mod nonblocking_maintenance_tests {
     use super::*;
+    use crate::lifecycle::LoadAttemptState;
     use sorotte_player_api::PlayerCommandProgressState;
     use std::{
-        collections::VecDeque,
+        collections::{BTreeSet, VecDeque},
         io,
         sync::{
             Arc,
@@ -2529,6 +2539,107 @@ mod nonblocking_maintenance_tests {
                 .test_runtime_queue_sizes(),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn control_overflow_rearms_event_fence_and_harvests_pre_response_lifecycle_event() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            DelayedSuccessTransport {
+                responses: VecDeque::new(),
+                first_response_delay: Some(Duration::from_millis(50)),
+            },
+            Duration::from_millis(250),
+        );
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id =
+            adapter.submit_lifecycle_load(None, generation, "local.mkv", BTreeSet::new());
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id,
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch,
+            entries: vec![AuthoritativePlaylistEntry::new(
+                77,
+                Some("local.mkv".to_owned()),
+                true,
+            )],
+            current_path: Some("local.mkv".to_owned()),
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::FileLoaded {
+            attachment_epoch,
+            playlist_entry_id: Some(77),
+            loaded_target: Some("local.mkv".to_owned()),
+        });
+        adapter.active_media_generation = Some(generation);
+        adapter.active_playlist_entry_id = Some(77);
+        adapter.active_file_loaded = true;
+
+        adapter.pending_ipc_event_fence_command_id = Some(42);
+        let (_, control_capacity) = MpvJsonIpcClient::test_runtime_queue_capacities();
+        let client = adapter
+            .ipc_client
+            .as_mut()
+            .expect("test adapter should remain attached");
+        client.inject_test_nonblocking_completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                command_id: 42,
+                token: IPC_EVENT_FENCE_COMMAND_TOKEN,
+            },
+        );
+        for command_id in 100..=100 + u64::try_from(control_capacity).expect("capacity fits u64") {
+            client.inject_test_nonblocking_completion(
+                crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                    command_id,
+                    token: IPC_EVENT_FENCE_COMMAND_TOKEN,
+                },
+            );
+        }
+
+        adapter.drain_runtime_lease_events_nonblocking();
+        assert_eq!(
+            adapter.pending_ipc_event_fence_command_id, None,
+            "the overflow must invalidate a completion correlation that may have been evicted"
+        );
+
+        adapter.last_ipc_event_fence_at = Some(Instant::now() - IPC_EVENT_FENCE_ACTIVE_INTERVAL);
+        adapter.maintain_ipc_event_fence_nonblocking();
+        let replacement_fence_id = adapter
+            .pending_ipc_event_fence_command_id
+            .expect("a replacement fence should be submitted");
+        adapter
+            .ipc_client
+            .as_mut()
+            .expect("test adapter should remain attached")
+            .inject_test_event(json!({
+                "event": "end-file",
+                "playlist_entry_id": 77,
+                "reason": "eof",
+            }));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            adapter.drain_ipc_events_if_attached();
+            adapter.drain_runtime_lease_events_nonblocking();
+            if adapter
+                .player_lifecycle
+                .load_attempts
+                .get(&attempt_id)
+                .is_some_and(|attempt| attempt.state.is_terminal())
+                && adapter.pending_ipc_event_fence_command_id.is_none()
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+
+        assert!(replacement_fence_id > 0);
+        assert!(matches!(
+            adapter.player_lifecycle.load_attempts[&attempt_id].state,
+            LoadAttemptState::Terminal(PlayerPhysicalLoadOutcome::Ended)
+        ));
+        assert_eq!(adapter.pending_ipc_event_fence_command_id, None);
     }
 
     #[test]

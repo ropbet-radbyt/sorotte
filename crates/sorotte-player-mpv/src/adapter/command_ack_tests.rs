@@ -1,7 +1,181 @@
 use super::*;
 use crate::ipc::MpvJsonIpcTransport;
-use sorotte_player_api::PlayerCommandProgressState;
-use std::io;
+use crate::lifecycle::LoadAttemptState;
+use sorotte_player_api::{
+    PlayerCommandProgressState, PlayerLoadAttemptResult, PlayerSemanticOutcome,
+};
+use std::{collections::BTreeSet, io};
+
+#[test]
+fn timed_out_unbound_load_clears_pending_ui_and_stops_property_query_scheduling() {
+    let generation = PlayerMediaGeneration::new(1);
+    let target = "https://media.invalid/never-observed";
+    let mut adapter = MpvAdapter::default();
+    let command_id = adapter.register_tracked_command(
+        Some(generation),
+        TrackedCommandKind::Load {
+            file_loaded: false,
+            ready: false,
+        },
+    );
+    adapter.accept_tracked_command(command_id);
+    let attempt_id =
+        adapter.submit_lifecycle_load(Some(command_id), generation, target, BTreeSet::new());
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id,
+    });
+    adapter.pending_load_request = Some(target.to_owned());
+    adapter.pending_load_generation = Some(generation);
+    adapter.transport_phase = PlayerTransportPhase::Loading;
+    adapter.lifecycle_reconciliation_due = true;
+
+    adapter.finish_tracked_command(
+        command_id,
+        PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+    );
+
+    assert_eq!(adapter.pending_load_request(), None);
+    assert_eq!(adapter.pending_load_generation(), None);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(!adapter.player_lifecycle.reconciliation_required);
+    assert!(
+        adapter
+            .pending_load_transition_generations_for_test()
+            .is_empty()
+    );
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
+
+    let mut reconciliation_requests = 0;
+    for now_tick in [100, 250, 500, 1_000, 2_000, 10_000, 60_000] {
+        reconciliation_requests += adapter
+            .apply_lifecycle_input(PlayerLifecycleInput::TimerAdvanced { now_tick })
+            .iter()
+            .filter(|effect| {
+                matches!(
+                    effect,
+                    PlayerLifecycleEffect::RequestLifecycleReconciliation
+                )
+            })
+            .count();
+    }
+    assert_eq!(
+        reconciliation_requests, 0,
+        "quiescent ownership must not schedule another synchronous property-query group"
+    );
+
+    let batch = adapter
+        .player_lifecycle
+        .peek_event_batch()
+        .expect("timeout outcomes should remain acknowledged delivery");
+    assert!(batch.semantic_outcomes.iter().any(|outcome| matches!(
+        &outcome.outcome,
+        PlayerSemanticOutcome::LoadAttempt(attempt)
+            if attempt.attempt_id == attempt_id
+                && attempt.result == PlayerLoadAttemptResult::Indeterminate
+    )));
+}
+
+#[test]
+fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() {
+    let generation = PlayerMediaGeneration::new(9);
+    let mut adapter = MpvAdapter::default();
+    let attempt_id = adapter.submit_lifecycle_load(
+        None,
+        generation,
+        "https://media.invalid/recovery",
+        BTreeSet::from([77]),
+    );
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id,
+    });
+    adapter.interrupted_network_stream_recovery = Some(InterruptedNetworkStreamRecovery {
+        media_generation: generation,
+        latest_attempt_id: attempt_id,
+        resume_position_seconds: 42.0,
+        consecutive_attempts: 1,
+        total_attempts: 1,
+    });
+    adapter.transport_phase = PlayerTransportPhase::Loading;
+    adapter.active_file_loaded = false;
+    adapter.active_media_generation = Some(generation);
+    adapter.active_playlist_entry_id = Some(77);
+    adapter.current_path = Some("https://media.invalid/recovery".to_owned());
+    adapter.observed_state.path = adapter.current_path.clone();
+    adapter.lifecycle_reconciliation_due = true;
+    let accepted_at_tick = adapter.player_lifecycle.now_tick;
+
+    let effects = adapter.apply_lifecycle_input(PlayerLifecycleInput::TimerAdvanced {
+        now_tick: accepted_at_tick.saturating_add(60_000),
+    });
+
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        PlayerLifecycleEffect::EmitSemanticOutcome(outcome)
+            if matches!(
+                outcome.outcome,
+                PlayerSemanticOutcome::LoadAttempt(ref load)
+                    if load.attempt_id == attempt_id
+                        && load.result == PlayerLoadAttemptResult::Indeterminate
+            )
+    )));
+    assert_eq!(adapter.interrupted_network_stream_recovery, None);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert_eq!(adapter.current_path, None);
+    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(!adapter.player_lifecycle.reconciliation_required);
+}
+
+#[test]
+fn accepted_load_deadline_is_anchored_when_the_command_is_accepted() {
+    let generation = PlayerMediaGeneration::new(4);
+    let mut adapter = MpvAdapter {
+        observation_clock_origin: Instant::now() - Duration::from_secs(120),
+        ..MpvAdapter::default()
+    };
+    let attempt_id = adapter.submit_lifecycle_load(
+        None,
+        generation,
+        "https://media.invalid/fresh-acceptance",
+        BTreeSet::new(),
+    );
+    let attachment_epoch = adapter.lifecycle_epoch();
+
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id,
+    });
+    let accepted_at_tick = adapter.player_lifecycle.now_tick;
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::TimerAdvanced {
+        now_tick: accepted_at_tick.saturating_add(59_999),
+    });
+    assert_eq!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::AcceptedUnbound,
+        "an adapter that was idle before dispatch must still grant a fresh reconciliation window"
+    );
+
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::TimerAdvanced {
+        now_tick: accepted_at_tick.saturating_add(60_000),
+    });
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
+}
 
 #[test]
 fn stale_generation_observations_cannot_complete_a_tracked_seek() {
