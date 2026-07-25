@@ -49,9 +49,6 @@ fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
         r#"{"request_id":9,"error":"success","data":"C:/media/movie.mkv"}"#,
         r#"{"request_id":10,"error":"success","data":1439.5}"#,
         r#"{"request_id":11,"error":"success","data":123456}"#,
-        r#"{"request_id":12,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":13,"error":"success","data":1439.5}"#,
-        r#"{"request_id":14,"error":"success","data":123456}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -70,7 +67,7 @@ fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
     );
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 14);
+    assert_eq!(writes.len(), 11);
     let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
     let third_payload: Value = serde_json::from_str(writes[2].trim_end()).expect("valid json");
@@ -435,10 +432,22 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         .media_generation()
         .expect("start-file should establish a media generation");
     assert_eq!(generation.get(), 1);
+    let restart_index = updates
+        .iter()
+        .position(|update| update.playback_restart_sequence == Some(1))
+        .expect("playback-restart should establish strict physical ownership");
     assert!(
-        updates
+        updates[restart_index..]
             .iter()
-            .all(|update| update.media_generation == Some(generation))
+            .all(|update| update.media_generation == Some(generation)),
+        "transport updates after strict ownership must remain correlated: {updates:#?}"
+    );
+    assert!(
+        updates[..restart_index]
+            .iter()
+            .all(|update| update.media_generation.is_none()
+                || update.media_generation == Some(generation)),
+        "pre-binding observations must remain unowned rather than being assigned by a pending-generation guess: {updates:#?}"
     );
     assert!(updates.iter().all(|update| update.observed_at.is_some()));
     assert!(updates.windows(2).all(|window| {
@@ -450,10 +459,7 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
             .iter()
             .any(|update| update.phase == Some(PlayerTransportPhase::Loading))
     );
-    let restarted = updates
-        .iter()
-        .find(|update| update.playback_restart_sequence == Some(1))
-        .expect("playback-restart should be preserved as a lifecycle boundary");
+    let restarted = &updates[restart_index];
     assert_eq!(restarted.phase, Some(PlayerTransportPhase::Playing));
     let rebuffering = updates
         .iter()
@@ -520,41 +526,41 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     assert_eq!(resumed.phase, Some(PlayerTransportPhase::Playing));
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 20);
+    assert_eq!(writes.len(), 19);
     let seeking_observer: Value =
-        serde_json::from_str(writes[10].trim_end()).expect("valid seeking observer json");
+        serde_json::from_str(writes[9].trim_end()).expect("valid seeking observer json");
     let cache_state_observer: Value =
-        serde_json::from_str(writes[13].trim_end()).expect("valid cache observer json");
+        serde_json::from_str(writes[12].trim_end()).expect("valid cache observer json");
     let ytdl_live_observer: Value =
-        serde_json::from_str(writes[15].trim_end()).expect("valid ytdl live observer json");
+        serde_json::from_str(writes[14].trim_end()).expect("valid ytdl live observer json");
     let metadata_observer: Value =
-        serde_json::from_str(writes[16].trim_end()).expect("valid metadata observer json");
+        serde_json::from_str(writes[15].trim_end()).expect("valid metadata observer json");
     assert_eq!(
         seeking_observer,
         json!({
             "command": ["observe_property", 9, "seeking"],
-            "request_id": 11
+            "request_id": 10
         })
     );
     assert_eq!(
         cache_state_observer,
         json!({
             "command": ["observe_property", 12, "demuxer-cache-state"],
-            "request_id": 14
+            "request_id": 13
         })
     );
     assert_eq!(
         ytdl_live_observer,
         json!({
             "command": ["observe_property", 15, "metadata/by-key/ytdl_is_live"],
-            "request_id": 16
+            "request_id": 15
         })
     );
     assert_eq!(
         metadata_observer,
         json!({
             "command": ["observe_property", 16, "metadata"],
-            "request_id": 17
+            "request_id": 16
         })
     );
 }

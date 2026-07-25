@@ -102,24 +102,19 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("pending_chat_requests", &self.pending_chat_requests)
             .field(
-                "load_attempt_targets",
-                &self
-                    .load_attempts
-                    .values()
-                    .map(|_| sorotte_secret::REDACTED_SECRET)
-                    .collect::<Vec<_>>(),
+                "player_lifecycle",
+                &self.player_lifecycle.redacted_debug_dump(),
             )
             .field(
-                "load_lifecycle_reacquisition_required",
-                &self.load_lifecycle_reacquisition_required,
+                "pending_load_request",
+                &self
+                    .pending_load_request
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
             )
             .field(
                 "interrupted_network_stream_recovery",
                 &self.interrupted_network_stream_recovery,
-            )
-            .field(
-                "provisional_eof_observation",
-                &self.provisional_eof_observation,
             )
             .field("network_cache_stall", &self.network_cache_stall)
             .field(
@@ -138,7 +133,7 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("next_media_generation", &self.next_media_generation)
             .field("active_media_generation", &self.active_media_generation)
-            .field("pending_load_generation", &self.pending_load_generation())
+            .field("pending_load_generation", &self.pending_load_generation)
             .field("active_playlist_entry_id", &self.active_playlist_entry_id)
             .field("transport_phase", &self.transport_phase)
             .field("active_file_loaded", &self.active_file_loaded)
@@ -289,17 +284,8 @@ impl Default for MpvAdapter {
             unacknowledged_terminal_command_progress: BTreeMap::new(),
             unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
-            load_attempts: BTreeMap::new(),
-            next_load_attempt_id: 1,
-            attachment_id: PlayerAttachmentId(0),
-            next_attachment_id: 1,
-            active_load_attempt: None,
-            load_lifecycle_reacquisition_required: false,
-            load_lifecycle_next_reacquisition_at: None,
-            load_lifecycle_reacquisition_backoff: LOAD_LIFECYCLE_REACQUISITION_INITIAL_BACKOFF,
-            provisional_eof_observation: None,
-            interrupted_network_stream_recovery: None,
-            network_cache_stall: None,
+            pending_load_request: None,
+            pending_load_generation: None,
             last_polled_local_file_update: None,
             last_paused_position_poll_at: None,
             observed_state: MpvObservedState::default(),
@@ -308,9 +294,12 @@ impl Default for MpvAdapter {
             observation_clock_origin: Instant::now(),
             current_ipc_event_observed_at: None,
             next_media_generation: 1,
+            player_lifecycle: PlayerLifecycleState::default(),
+            lifecycle_reconciliation_due: false,
+            interrupted_network_stream_recovery: None,
+            network_cache_stall: None,
             active_media_generation: None,
             active_playlist_entry_id: None,
-            playlist_entry_attempts: HashMap::new(),
             transport_phase: PlayerTransportPhase::Empty,
             active_file_loaded: false,
             active_generation_has_restarted: false,
@@ -450,7 +439,7 @@ mod credential_debug_tests {
             ..MpvAdapter::default()
         };
         let generation = adapter.allocate_media_generation();
-        adapter.insert_load_transition(generation, target.clone());
+        adapter.submit_lifecycle_load(None, generation, &target, std::collections::BTreeSet::new());
         adapter.pending_local_file_update =
             Some(sorotte_player_api::LocalFileUpdate::new(target.clone()).with_path(target));
 

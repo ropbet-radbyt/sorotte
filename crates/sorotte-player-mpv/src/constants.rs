@@ -42,6 +42,7 @@ pub(crate) const MPV_PROPERTY_WINDOW_MINIMIZED: &str = "window-minimized";
 pub(crate) const MPV_PROPERTY_OSD_ALIGN_Y: &str = "osd-align-y";
 pub(crate) const MPV_PROPERTY_OSD_MARGIN_Y: &str = "osd-margin-y";
 pub(crate) const MPV_PROPERTY_PATH: &str = "path";
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) const MPV_PROPERTY_PLAYLIST: &str = "playlist";
 pub(crate) const MPV_PROPERTY_DURATION: &str = "duration";
 pub(crate) const MPV_PROPERTY_FILE_SIZE: &str = "file-size";

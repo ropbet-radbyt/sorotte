@@ -520,7 +520,7 @@ and log their seed on failure.
 
 ## Design deviations
 
-The brief's preferred reducer is adopted. Two compatibility accommodations are
+The brief's preferred reducer is adopted. Three compatibility accommodations are
 intentional:
 
 1. Existing per-type getters remain with default trait behavior so independent
@@ -531,6 +531,14 @@ intentional:
    URL would contain a renewable signature or user-specific identifier. Real
    mpv capture tooling can record a private trace for local diagnosis, while
    only the redacted normalized trace is committed.
+3. A small set of pre-existing scripted adapter tests do not expose mpv's
+   authoritative playlist response. Exact-target compatibility shims therefore
+   remain under `cfg(test)` so those transports can establish their historical
+   setup state. Production builds never bind an attempt from a sole pending
+   generation, a path match, or a single candidate: they require the reducer's
+   `(attachment_epoch, load_attempt_id)` ownership and an authoritative
+   playlist-entry binding. The strict production check and the test-only shim
+   are both covered by focused adapter tests.
 
 ### Source-baseline discovery
 

@@ -194,9 +194,16 @@ fn early_tracked_load_failure_survives_reacquisition_without_an_active_generatio
         },
     );
     adapter.accept_tracked_command(command_id);
+    let target = "https://media.invalid/fail";
     let attempt_id =
-        adapter.insert_load_transition(generation, "https://media.invalid/fail".to_owned());
-    adapter.mark_load_transition_accepted(attempt_id);
+        adapter.submit_lifecycle_load(Some(command_id), generation, target, BTreeSet::new());
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch,
+        attempt_id,
+    });
+    adapter.pending_load_request = Some(target.to_owned());
+    adapter.pending_load_generation = Some(generation);
 
     adapter.handle_end_file_event(&serde_json::json!({
         "reason": "error",
@@ -358,6 +365,14 @@ fn unhealthy_ipc_emits_one_generation_scoped_transport_failure() {
         ipc_client: Some(ipc_client),
         ..MpvAdapter::default()
     };
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+        attachment_epoch,
+        media_generation: generation,
+        playlist_entry_id: 1,
+        observed_target: "test://unhealthy-transport".to_owned(),
+        file_loaded: true,
+    });
     adapter.observe_unhealthy_ipc_transport();
     adapter.observe_unhealthy_ipc_transport();
 

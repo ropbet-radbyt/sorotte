@@ -263,6 +263,34 @@ impl PlayerLifecycleState {
             .map(|attempt| attempt.media_generation)
     }
 
+    /// Returns the logical generation owned by the accepted successor chain.
+    ///
+    /// This is a projection of explicit reducer relationships, not an event
+    /// ownership heuristic: physical lifecycle events still require a bound
+    /// playlist-entry ID before they may mutate an attempt.
+    pub fn current_media_generation(&self) -> Option<PlayerMediaGeneration> {
+        let mut attempt_id = self.active_load_attempt;
+        while let Some(current_id) = attempt_id {
+            let attempt = self.load_attempts.get(&current_id)?;
+            let Some(successor_id) = attempt.superseded_by else {
+                return (!attempt.state.is_terminal()).then_some(attempt.media_generation);
+            };
+            attempt_id = Some(successor_id);
+        }
+        self.load_attempts
+            .values()
+            .rev()
+            .find(|attempt| {
+                !attempt.state.is_terminal()
+                    && attempt.superseded_by.is_none()
+                    && matches!(
+                        attempt.state,
+                        LoadAttemptState::Submitting | LoadAttemptState::AcceptedUnbound
+                    )
+            })
+            .map(|attempt| attempt.media_generation)
+    }
+
     pub fn attempt_for_playlist_entry(&self, playlist_entry_id: i64) -> Option<LoadAttemptId> {
         self.playlist_entry_attempts
             .get(&playlist_entry_id)

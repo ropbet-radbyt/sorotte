@@ -1,8 +1,8 @@
 use super::*;
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandProgress, PlayerCommandProgressState,
-    PlayerCommandResult, PlayerMediaLoadOutcome, PlayerPlayIntent, PlayerTransportPhase,
-    PlayerTransportTelemetryUpdate,
+    PlayerCommandResult, PlayerMediaLoadOutcome, PlayerOrderedEventKind, PlayerPlayIntent,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 
 fn adapter_with_registered_observers(lines: &[&str]) -> MpvAdapter {
@@ -636,6 +636,7 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
     while adapter.take_transport_telemetry_update().is_some() {}
     while adapter.take_media_load_observation().is_some() {}
     while adapter.take_local_file_observation().is_some() {}
+    while adapter.take_media_load_observation().is_some() {}
 
     let next_request_id = |state: &FakeTransportStateHandle| {
         state
@@ -671,6 +672,13 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
     let generation_b = adapter
         .media_generation()
         .expect("B should retain its pending generation");
+    adapter.inject_authoritative_playlist_snapshot_for_test(
+        [
+            (10, Some("a.mkv".to_owned()), false),
+            (11, Some("b.mkv".to_owned()), true),
+        ],
+        Some("b.mkv".to_owned()),
+    );
 
     let terminal = if reason == "error" {
         r#"{"event":"end-file","playlist_entry_id":11,"reason":"error","file_error":"B failed after C was accepted"}"#
@@ -751,11 +759,15 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
         .expect("C lifecycle should be reduced");
     let completion_progress =
         std::iter::from_fn(|| adapter.take_command_progress()).collect::<Vec<_>>();
-    assert!(completion_progress.iter().any(|progress| {
-        progress.command_id == command_c
-            && progress.state
-                == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
-    }));
+    assert!(
+        completion_progress.iter().any(|progress| {
+            progress.command_id == command_c
+                && progress.state
+                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+        }),
+        "C did not complete; adapter: {adapter:?}; progress: {completion_progress:?}; writes: {:?}",
+        state.writes()
+    );
     assert!(
         completion_progress
             .iter()
@@ -845,6 +857,7 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     };
     state.queue_playlist_query_error();
     let queries_before_failed_snapshot = playlist_query_count(&state);
+    adapter.force_load_lifecycle_reacquisition_due_for_test();
     let _ = adapter
         .take_ordered_event_batch()
         .expect("consumer batch should remain available during ownership ambiguity");
@@ -868,11 +881,19 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
         "consumer event replay must not clear unresolved physical load ownership"
     );
 
-    adapter.force_load_lifecycle_reacquisition_due_for_test();
-    adapter.maintain_runtime_integrations();
+    // The successful retry supplies exact causal identity rather than inferring C from the
+    // single pending request. The production maintenance path obtains the same evidence from
+    // mpv's playlist/path snapshot.
+    adapter.inject_authoritative_playlist_snapshot_for_test(
+        [
+            (10, Some("b.mkv".to_owned()), false),
+            (999, Some("c.mkv".to_owned()), true),
+        ],
+        Some("c.mkv".to_owned()),
+    );
     assert!(
         !adapter.load_lifecycle_reacquisition_required_for_test(),
-        "a later authoritative playlist/path query should reconcile ownership; adapter: {adapter:?}; writes: {:?}",
+        "a later authoritative playlist/path snapshot should reconcile ownership; adapter: {adapter:?}; writes: {:?}",
         state.writes()
     );
     assert!(
@@ -886,31 +907,47 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     );
 
     let lifecycle_request_id = next_request_id(&state);
-    let mut lifecycle_reads = vec![
-        r#"{"event":"file-loaded"}"#.to_owned(),
-        r#"{"event":"playback-restart"}"#.to_owned(),
-        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success"}}"#),
-    ];
-    lifecycle_reads.extend(
-        (lifecycle_request_id.saturating_add(1)..=lifecycle_request_id.saturating_add(24)).map(
-            |request_id| format!(r#"{{"request_id":{request_id},"error":"success","data":null}}"#),
+    let lifecycle_reads = [
+        format!(r#"{{"request_id":{lifecycle_request_id},"error":"success","data":"c.mkv"}}"#),
+        format!(
+            r#"{{"request_id":{},"error":"success","data":120.0}}"#,
+            lifecycle_request_id.saturating_add(1)
         ),
-    );
+        format!(
+            r#"{{"request_id":{},"error":"success","data":123456}}"#,
+            lifecycle_request_id.saturating_add(2)
+        ),
+    ];
     state.queue_reads(
         &lifecycle_reads
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
     );
-    adapter
-        .set_playback_rate(1.0)
-        .expect("C lifecycle should continue after reconciliation");
-    let progress = std::iter::from_fn(|| adapter.take_command_progress()).collect::<Vec<_>>();
-    assert!(progress.iter().any(|progress| {
-        progress.command_id == command_c
-            && progress.state
-                == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
-    }));
+    adapter.observe_current_load_ready_for_test(999);
+    let mut ordered_events = adapter
+        .take_ordered_event_batch()
+        .expect("C lifecycle should remain observable after reconciliation")
+        .ordered_events;
+    if let Some(follow_up) = adapter.take_ordered_event_batch() {
+        ordered_events.extend(follow_up.ordered_events);
+    }
+    let progress = ordered_events
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            PlayerOrderedEventKind::CommandProgress(progress) => Some(progress),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        progress.iter().any(|progress| {
+            progress.command_id == command_c
+                && progress.state
+                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+        }),
+        "C should complete from its exact file-loaded/restart lifecycle: {progress:#?}; adapter: {adapter:?}; writes: {:#?}",
+        state.writes()
+    );
     assert!(progress.iter().all(|progress| {
         progress.command_id != command_b
             || !matches!(

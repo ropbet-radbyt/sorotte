@@ -1974,7 +1974,7 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
         .expect("attached mpv transport should accept network loadfile");
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 2);
+    assert_eq!(writes.len(), 1);
     let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     assert_eq!(
         payload,
@@ -1990,15 +1990,6 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
                 }
             ],
             "request_id": 1
-        })
-    );
-    let playlist_query: Value =
-        serde_json::from_str(writes[1].trim_end()).expect("valid playlist query");
-    assert_eq!(
-        playlist_query,
-        json!({
-            "command": ["get_property", "playlist"],
-            "request_id": 2
         })
     );
 }
@@ -2036,16 +2027,8 @@ fn open_local_file_preserves_user_cache_options_when_network_options_are_configu
                 "request_id": 1
             }),
             json!({
-                "command": ["get_property", "playlist"],
-                "request_id": 2
-            }),
-            json!({
                 "command": ["loadfile", "file:///C:/Media/movie.mkv", "replace"],
-                "request_id": 3
-            }),
-            json!({
-                "command": ["get_property", "playlist"],
-                "request_id": 4
+                "request_id": 2
             }),
         ]
     );
@@ -2086,20 +2069,16 @@ fn active_network_option_reapply_uses_authoritative_network_path_over_stale_loca
                 "request_id": 1
             }),
             json!({
-                "command": ["get_property", "playlist"],
+                "command": ["get_property", "path"],
                 "request_id": 2
             }),
             json!({
-                "command": ["get_property", "path"],
+                "command": ["set_property", "file-local-options/cache-pause-wait", "5"],
                 "request_id": 3
             }),
             json!({
-                "command": ["set_property", "file-local-options/cache-pause-wait", "5"],
-                "request_id": 4
-            }),
-            json!({
                 "command": ["set_property", "file-local-options/cache-secs", "75"],
-                "request_id": 5
+                "request_id": 4
             }),
         ]
     );
@@ -2126,7 +2105,7 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
     assert!(adapter.is_connected());
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 3);
+    assert_eq!(writes.len(), 2);
     let load_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid load json");
     assert_eq!(
         load_payload,
@@ -2136,12 +2115,12 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
         })
     );
     let path_payload: Value =
-        serde_json::from_str(writes[2].trim_end()).expect("valid path query json");
+        serde_json::from_str(writes[1].trim_end()).expect("valid path query json");
     assert_eq!(
         path_payload,
         json!({
             "command": ["get_property", "path"],
-            "request_id": 3
+            "request_id": 2
         })
     );
 }
