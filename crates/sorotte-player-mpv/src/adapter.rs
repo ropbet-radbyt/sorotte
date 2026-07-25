@@ -284,6 +284,29 @@ struct InterruptedNetworkStreamRecovery {
     total_attempts: usize,
 }
 
+#[derive(Clone, PartialEq)]
+struct NetworkStreamRecoveryEvidence {
+    attachment_epoch: PlayerAttachmentEpoch,
+    media_generation: PlayerMediaGeneration,
+    load_attempt_id: LoadAttemptId,
+    path: String,
+    duration_seconds: f64,
+    position_seconds: f64,
+}
+
+impl fmt::Debug for NetworkStreamRecoveryEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NetworkStreamRecoveryEvidence")
+            .field("attachment_epoch", &self.attachment_epoch)
+            .field("media_generation", &self.media_generation)
+            .field("load_attempt_id", &self.load_attempt_id)
+            .field("path", &sorotte_secret::REDACTED_SECRET)
+            .field("duration_seconds", &self.duration_seconds)
+            .field("position_seconds", &self.position_seconds)
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NetworkCacheStall {
     media_generation: PlayerMediaGeneration,
@@ -735,6 +758,7 @@ pub struct MpvAdapter {
     player_lifecycle: PlayerLifecycleState,
     lifecycle_reconciliation_due: bool,
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
+    network_stream_recovery_evidence: Option<NetworkStreamRecoveryEvidence>,
     network_cache_stall: Option<NetworkCacheStall>,
     active_media_generation: Option<PlayerMediaGeneration>,
     active_playlist_entry_id: Option<u64>,
@@ -858,6 +882,7 @@ impl MpvAdapter {
         self.pending_load_request = None;
         self.pending_load_generation = None;
         self.interrupted_network_stream_recovery = None;
+        self.network_stream_recovery_evidence = None;
         self.network_cache_stall = None;
         self.active_media_generation = None;
         self.active_playlist_entry_id = None;
@@ -934,6 +959,7 @@ impl MpvAdapter {
         self.deferred_file_loaded_observation = None;
         self.active_media_generation = None;
         self.interrupted_network_stream_recovery = None;
+        self.network_stream_recovery_evidence = None;
         self.network_cache_stall = None;
         self.current_path = None;
         self.last_polled_local_file_update = None;
@@ -4544,6 +4570,7 @@ impl MpvAdapter {
             .is_some_and(|recovery| recovery.latest_attempt_id == attempt_id)
         {
             self.interrupted_network_stream_recovery = None;
+            self.network_stream_recovery_evidence = None;
             self.network_cache_stall = None;
             self.transport_phase = PlayerTransportPhase::Empty;
             self.active_file_loaded = false;
@@ -4835,6 +4862,7 @@ impl MpvAdapter {
         self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
         self.observed_state.eof_reached = eof_reached;
         self.current_path = path.clone();
+        self.refresh_network_stream_recovery_evidence();
         // File-loaded is the semantic load boundary, while readiness is a
         // transport observation. Re-publish the authoritative post-start
         // properties after every retained/buffered event has reduced so the
@@ -5037,6 +5065,88 @@ impl MpvAdapter {
         }
     }
 
+    fn refresh_network_stream_recovery_evidence(&mut self) {
+        let attachment_epoch = self.lifecycle_epoch();
+        let Some(active_attempt) = self.player_lifecycle.active_attempt().cloned() else {
+            self.network_stream_recovery_evidence = None;
+            return;
+        };
+        let media_generation = active_attempt.media_generation;
+        let identity_matches =
+            self.network_stream_recovery_evidence
+                .as_ref()
+                .is_some_and(|evidence| {
+                    evidence.attachment_epoch == attachment_epoch
+                        && evidence.media_generation == media_generation
+                        && evidence.load_attempt_id == active_attempt.id
+                });
+        if !identity_matches {
+            self.network_stream_recovery_evidence = None;
+        }
+        if active_attempt.attachment_epoch != attachment_epoch
+            || active_attempt.state.is_terminal()
+            || active_attempt.superseded_by.is_some()
+        {
+            self.network_stream_recovery_evidence = None;
+            return;
+        }
+        if self.timeline_kind == PlayerTimelineKind::SlidingLive
+            || (self.ytdl_is_live
+                && self.ytdl_is_live_metadata_generation == Some(media_generation))
+        {
+            self.network_stream_recovery_evidence = None;
+            return;
+        }
+        if !self.active_file_loaded {
+            return;
+        }
+
+        let position_seconds = self
+            .observed_state
+            .position_seconds
+            .filter(|position| position.is_finite() && *position >= 0.0);
+        if let Some(position_seconds) = position_seconds
+            && let Some(evidence) =
+                self.network_stream_recovery_evidence
+                    .as_mut()
+                    .filter(|evidence| {
+                        evidence.attachment_epoch == attachment_epoch
+                            && evidence.media_generation == media_generation
+                            && evidence.load_attempt_id == active_attempt.id
+                    })
+        {
+            evidence.position_seconds = position_seconds;
+        }
+
+        let Some(path) = self.current_path.clone() else {
+            // mpv commonly clears path immediately before end-file. Keep the
+            // last coherent evidence until that causal terminal is classified.
+            return;
+        };
+        if !uses_network_media_options(&path) {
+            self.network_stream_recovery_evidence = None;
+            return;
+        }
+        let Some(duration_seconds) = self
+            .observed_state
+            .duration_seconds
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+        else {
+            return;
+        };
+        let Some(position_seconds) = position_seconds else {
+            return;
+        };
+        self.network_stream_recovery_evidence = Some(NetworkStreamRecoveryEvidence {
+            attachment_epoch,
+            media_generation,
+            load_attempt_id: active_attempt.id,
+            path,
+            duration_seconds,
+            position_seconds,
+        });
+    }
+
     fn try_recover_interrupted_network_stream(
         &mut self,
         generation: PlayerMediaGeneration,
@@ -5061,9 +5171,6 @@ impl MpvAdapter {
         generation: PlayerMediaGeneration,
         minimum_remaining_seconds: f64,
     ) -> bool {
-        if self.timeline_kind != PlayerTimelineKind::Vod {
-            return false;
-        }
         let Some(active_attempt) = self.player_lifecycle.active_attempt().cloned() else {
             return false;
         };
@@ -5073,27 +5180,25 @@ impl MpvAdapter {
         {
             return false;
         }
-        let Some(path) = self
-            .current_path
-            .clone()
-            .filter(|path| uses_network_media_options(path))
+        self.refresh_network_stream_recovery_evidence();
+        let Some(evidence) = self
+            .network_stream_recovery_evidence
+            .as_ref()
+            .filter(|evidence| {
+                evidence.attachment_epoch == self.lifecycle_epoch()
+                    && evidence.media_generation == generation
+                    && evidence.load_attempt_id == active_attempt.id
+            })
+            .cloned()
         else {
             return false;
         };
-        let Some(duration_seconds) = self
-            .observed_state
-            .duration_seconds
-            .filter(|duration| duration.is_finite() && *duration > 0.0)
-        else {
-            return false;
-        };
-        let Some(position_seconds) = self
-            .observed_state
-            .position_seconds
-            .filter(|position| position.is_finite() && *position >= 0.0)
-        else {
-            return false;
-        };
+        let NetworkStreamRecoveryEvidence {
+            path,
+            duration_seconds,
+            position_seconds,
+            ..
+        } = evidence;
         if duration_seconds - position_seconds <= minimum_remaining_seconds {
             return false;
         }
@@ -6678,9 +6783,11 @@ impl MpvAdapter {
                 AuthoritativePathObservationOrigin::PathEvent,
             );
         }
+        self.refresh_network_stream_recovery_evidence();
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
+        self.network_stream_recovery_evidence = None;
         let Some(playlist_entry_id) = event.get("playlist_entry_id").and_then(Value::as_u64) else {
             self.lifecycle_reconciliation_due = true;
             return;
@@ -6689,6 +6796,7 @@ impl MpvAdapter {
     }
 
     fn handle_start_file_observation(&mut self, playlist_entry_id: u64) {
+        self.network_stream_recovery_evidence = None;
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
         // change when an already-paused player begins a new file, so retain
@@ -7277,6 +7385,7 @@ impl MpvAdapter {
         let affects_current_generation = logical_terminal;
         if affects_current_generation {
             self.interrupted_network_stream_recovery = None;
+            self.network_stream_recovery_evidence = None;
             self.network_cache_stall = None;
             if self
                 .network_media_options_expected_transition
@@ -9569,6 +9678,55 @@ mod interrupted_network_stream_recovery_tests {
                         && update.eof_reached != Some(true)
                 })
         );
+    }
+
+    #[test]
+    fn null_terminal_properties_do_not_erase_premature_eof_recovery_evidence() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        let generation = adapter
+            .active_media_generation
+            .expect("fixture should have an active generation");
+        adapter.refresh_network_stream_recovery_evidence();
+        assert!(adapter.network_stream_recovery_evidence.is_some());
+
+        // mpv is allowed to clear these observed properties before it emits
+        // the causal end-file event. Recovery must use the last coherent
+        // snapshot for this exact attachment, generation, and physical attempt.
+        for property in [
+            MPV_PROPERTY_PATH,
+            MPV_PROPERTY_DURATION,
+            MPV_PROPERTY_TIME_POS,
+        ] {
+            adapter.handle_ipc_event(&json!({
+                "event": MPV_EVENT_PROPERTY_CHANGE,
+                "name": property,
+                "data": null,
+            }));
+        }
+        assert_eq!(adapter.current_path, None);
+        assert_eq!(adapter.observed_state.duration_seconds, None);
+        assert_eq!(adapter.observed_state.position_seconds, None);
+
+        adapter.handle_end_file_event(&json!({
+            "reason": "eof",
+            "playlist_entry_id": 10,
+        }));
+
+        assert_eq!(adapter.network_stream_recovery_attempt_count(), 1);
+        assert_eq!(adapter.active_media_generation, Some(generation));
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+    }
+
+    #[test]
+    fn new_start_file_clears_recovery_evidence_before_identity_resolution() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.refresh_network_stream_recovery_evidence();
+        assert!(adapter.network_stream_recovery_evidence.is_some());
+
+        adapter.handle_start_file_observation(u64::MAX);
+
+        assert_eq!(adapter.network_stream_recovery_evidence, None);
+        assert!(adapter.lifecycle_reconciliation_due);
     }
 
     #[test]

@@ -120,6 +120,10 @@ impl fmt::Debug for MpvAdapter {
                 "interrupted_network_stream_recovery",
                 &self.interrupted_network_stream_recovery,
             )
+            .field(
+                "network_stream_recovery_evidence",
+                &self.network_stream_recovery_evidence,
+            )
             .field("network_cache_stall", &self.network_cache_stall)
             .field(
                 "last_polled_local_file_update",
@@ -330,6 +334,7 @@ impl Default for MpvAdapter {
             player_lifecycle: PlayerLifecycleState::default(),
             lifecycle_reconciliation_due: false,
             interrupted_network_stream_recovery: None,
+            network_stream_recovery_evidence: None,
             network_cache_stall: None,
             active_media_generation: None,
             active_playlist_entry_id: None,
@@ -451,7 +456,7 @@ impl std::fmt::Debug for MpvObservedState {
 
 #[cfg(test)]
 mod credential_debug_tests {
-    use super::{MpvAdapter, MpvObservedState};
+    use super::{MpvAdapter, MpvObservedState, NetworkStreamRecoveryEvidence};
 
     #[test]
     fn observed_path_debug_redacts_tokenized_urls() {
@@ -475,7 +480,20 @@ mod credential_debug_tests {
             ..MpvAdapter::default()
         };
         let generation = adapter.allocate_media_generation();
-        adapter.submit_lifecycle_load(None, generation, &target, std::collections::BTreeSet::new());
+        let attempt_id = adapter.submit_lifecycle_load(
+            None,
+            generation,
+            &target,
+            std::collections::BTreeSet::new(),
+        );
+        adapter.network_stream_recovery_evidence = Some(NetworkStreamRecoveryEvidence {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            media_generation: generation,
+            load_attempt_id: attempt_id,
+            path: target.clone(),
+            duration_seconds: 120.0,
+            position_seconds: 30.0,
+        });
         adapter.pending_local_file_update =
             Some(sorotte_player_api::LocalFileUpdate::new(target.clone()).with_path(target));
 
