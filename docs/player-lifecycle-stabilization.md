@@ -461,6 +461,7 @@ Debug assertions cover cheap map/active-attempt relationships in production.
 | generation 7 attempt A; recovery B accepted; A ends | A only | No logical failure/end; B can start and load |
 | Unknown `start-file` ID with multiple accepted attempts | none | Defer and reconcile; no guessed mutation |
 | `start-file` and `file-loaded` arrive before the accepted entry appears in an authoritative snapshot | none until the snapshot binds the entry | Retain both ingress observations; replay identity-dependent start state and `file-loaded` exactly once after binding |
+| Mutating-command response precedes its property events and no later command reads the socket | exact event-bound command/attempt after harvest | A central, rate-limited nonblocking fence harvests the events; the response itself never completes the command |
 | Accepted C absent from one stale playlist snapshot | none | C remains accepted/unbound |
 | Empty playlist and absent path | authoritative idle | Idle or accepted-unobserved, bounded query count |
 | Empty playlist and present path | incomplete | Backoff and retry; no terminal guess |
@@ -521,6 +522,7 @@ replayer are deterministic.
 | Same-generation recovery | old end before/after successor start and old error variants |
 | Strict binding/reconciliation | stale playlist, external current item, later causal entry, and empty-player tests |
 | Fast load before binding | deferred `start-file`/`file-loaded` adapter regression plus required real-mpv pause/seek/resume semantics |
+| Post-response event harvesting | pending Play completes without an unrelated command; active media delivers `end-file` after its load command is already terminal |
 | Command/effect lifetime separation | timeout/supersession plus late load and seek effects |
 | Epoch isolation | reattachment with reused playlist ID and pending commands |
 | EOF evidence | restart, progress, seeking, matched end, duplicate end, and recovery successor tests |
@@ -593,6 +595,45 @@ duplicate terminal command outcomes idempotent. The
 `ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance`
 adapter regression now delivers `file-loaded` before binding and proves that
 the later exact snapshot completes only the owning command exactly once.
+
+### Post-response real-mpv event-harvest discovery
+
+The replacement CI run then exposed a second ordered trace:
+
+1. The owning `file-loaded` completed `OpenFile`, and the adapter's coherent
+   metadata poll reached its stable quiescent state.
+2. Sorotte sent `set_property pause false` for
+   `Play(StartAfterLoad)`, and mpv returned a successful command response.
+3. mpv changed `pause` to false, but the corresponding property events arrived
+   after that response.
+4. No later metadata command was required, so the IPC worker stopped reading
+   the socket. The adapter remained `ReadyPaused` and the accepted Play timed
+   out even though an immediate authoritative diagnostic read reported
+   `pause=false`.
+
+The false assumption was that a normal event getter drove the IPC transport.
+Getters only drained events that the worker had already harvested, while the
+worker read mpv's stream only until the response for an active command.
+Previously, repeated metadata queries accidentally kept the stream moving;
+correctly consuming the load request removed that incidental behavior.
+
+The replacement adds a central nonblocking event fence using a harmless
+`get_property pause`. It is single-flight and shared by all maintenance/getter
+paths, runs at most every 100 ms while a command or media attempt is active,
+and backs off to 500 ms while attached and idle so an external manual mpv load
+can still be observed. The fence response has no semantic meaning. It only
+causes the worker to harvest every earlier event, which then enters the same
+sequenced reducer path as every other observation. It does not issue the
+playlist/path/duration/file-size reconciliation group.
+
+Delayed and duplicate events therefore keep their original identity and
+idempotence rules. Superseded and timed-out commands are not revived by the
+fence; only still-owned observations can complete a command. Attachment
+replacement clears both the cadence and in-flight identity, and a fence
+transport failure follows the existing disconnect path. Deterministic adapter
+regressions prove that a Play completes from post-response pause/position
+events without an unrelated mutation and that active media still delivers its
+generation-scoped `end-file` after the load command has already completed.
 
 ### Source-baseline discovery
 

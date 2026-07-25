@@ -125,6 +125,11 @@ impl fmt::Debug for MpvAdapter {
                 "last_paused_position_poll_at",
                 &self.last_paused_position_poll_at,
             )
+            .field("last_ipc_event_fence_at", &self.last_ipc_event_fence_at)
+            .field(
+                "pending_ipc_event_fence_command_id",
+                &self.pending_ipc_event_fence_command_id,
+            )
             .field("observed_state", &self.observed_state)
             .field("observers_registered", &self.observers_registered)
             .field(
@@ -307,6 +312,8 @@ impl Default for MpvAdapter {
             pending_load_generation: None,
             last_polled_local_file_update: None,
             last_paused_position_poll_at: None,
+            last_ipc_event_fence_at: None,
+            pending_ipc_event_fence_command_id: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
             transport_observers_registered: false,

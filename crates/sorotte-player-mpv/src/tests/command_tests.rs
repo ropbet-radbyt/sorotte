@@ -341,6 +341,84 @@ fn tracked_resume_completes_without_playback_restart_after_fresh_advancement() {
 }
 
 #[test]
+fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":18}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"core-idle","data":true}"#,
+        r#"{"event":"property-change","name":"time-pos","data":40.0}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("ready-paused setup observations should be drained");
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::Resume))
+        .expect("resume should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
+        command_id,
+    );
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "the command response is not semantic completion"
+    );
+
+    // mpv can emit these observations just after the set_property response. They therefore
+    // enter the socket only after the synchronous command has stopped reading it.
+    state.queue_reads(&[
+        r#"{"event":"property-change","name":"pause","data":false}"#,
+        r#"{"event":"property-change","name":"core-idle","data":false}"#,
+        r#"{"event":"property-change","name":"time-pos","data":40.02}"#,
+        r#"{"request_id":3,"error":"success","data":false}"#,
+    ]);
+    adapter.force_ipc_event_fence_due_for_test();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let completed = loop {
+        if let Some(progress) = adapter.take_command_progress() {
+            break progress;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "event fence did not harvest the queued resume observations; writes: {:?}",
+            state.writes()
+        );
+        std::thread::yield_now();
+    };
+    assert_completed(completed, command_id);
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "one accepted command must have exactly one semantic terminal"
+    );
+
+    let writes = state.writes();
+    let property_queries = writes
+        .iter()
+        .filter_map(|write| serde_json::from_str::<Value>(write).ok())
+        .filter_map(|value| value.get("command").cloned())
+        .filter_map(|command| command.as_array().cloned())
+        .filter(|command| command.first().and_then(Value::as_str) == Some("get_property"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        property_queries.len(),
+        1,
+        "repeated progress getters must share one rate-limited event fence"
+    );
+    assert_eq!(
+        property_queries[0].get(1).and_then(Value::as_str),
+        Some("pause")
+    );
+}
+
+#[test]
 fn tracked_start_after_load_honors_restart_observed_before_later_play_command() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"event":"start-file","playlist_entry_id":9}"#,
@@ -389,7 +467,7 @@ fn tracked_start_after_load_honors_restart_observed_before_later_play_command() 
 }
 
 #[test]
-fn tracked_load_waits_for_file_loaded_and_ready_phase() {
+fn tracked_load_completes_on_owning_file_loaded_before_ready_phase() {
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"event":"start-file","playlist_entry_id":5}"#,
         r#"{"event":"file-loaded"}"#,
@@ -410,18 +488,82 @@ fn tracked_load_waits_for_file_loaded_and_ready_phase() {
         adapter.take_command_progress().expect("accepted progress"),
         command_id,
     );
-    assert_eq!(
-        adapter.take_command_progress(),
-        None,
-        "file-loaded alone must not complete an unready network load"
+    assert_completed(
+        adapter
+            .take_command_progress()
+            .expect("owning file-loaded should complete the semantic load"),
+        command_id,
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("playback restart should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "later readiness must not emit a duplicate load terminal"
+    );
+}
+
+#[test]
+fn active_media_harvests_end_file_without_a_pending_command() {
+    let target = "https://media.invalid/active";
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":25}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.invalid/active"}"#,
+        r#"{"request_id":3,"error":"success","data":120.0}"#,
+        r#"{"request_id":4,"error":"success","data":4096}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::OpenFile(target.to_owned()))
+        .expect("load should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
         command_id,
+    );
+    assert_completed(
+        adapter
+            .take_command_progress()
+            .expect("owning file-loaded should complete the command"),
+        command_id,
+    );
+    let generation = adapter
+        .media_generation()
+        .expect("the loaded file should remain the active physical attempt");
+    while adapter.take_transport_telemetry_update().is_some() {}
+    let writes_before_fence = state.writes().len();
+
+    // With no tracked command left, an external end-file still has to leave the worker's socket
+    // and terminate its exact active attempt.
+    state.queue_reads(&[
+        r#"{"event":"end-file","playlist_entry_id":25,"reason":"eof"}"#,
+        r#"{"request_id":5,"error":"success","data":false}"#,
+    ]);
+    adapter.force_ipc_event_fence_due_for_test();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let terminal = loop {
+        if let Some(update) = adapter.take_transport_telemetry_update()
+            && update.media_generation == Some(generation)
+            && update.phase == Some(PlayerTransportPhase::Ended)
+        {
+            break update;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "active-media event fence did not harvest end-file; adapter: {adapter:?}; writes: {:?}",
+            state.writes()
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(terminal.eof_reached, Some(true));
+    assert_eq!(
+        state.writes().len(),
+        writes_before_fence + 1,
+        "one active-media maintenance fence should harvest the terminal event"
     );
 }
 

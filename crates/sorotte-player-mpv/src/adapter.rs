@@ -48,6 +48,8 @@ use crate::lifecycle::{
 use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder};
 
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const IPC_EVENT_FENCE_ACTIVE_INTERVAL: Duration = Duration::from_millis(100);
+const IPC_EVENT_FENCE_IDLE_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
 const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
 const MAX_PENDING_ORDERED_PLAYER_EVENTS: usize = 256;
@@ -558,7 +560,7 @@ impl TrackedCommandKind {
 
     fn completed(&self) -> bool {
         match self {
-            Self::Load { file_loaded, ready } => *file_loaded && *ready,
+            Self::Load { file_loaded, .. } => *file_loaded,
             Self::Seek {
                 seeking_finished,
                 position_in_tolerance,
@@ -712,6 +714,8 @@ pub struct MpvAdapter {
     pending_load_generation: Option<PlayerMediaGeneration>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     last_paused_position_poll_at: Option<Instant>,
+    last_ipc_event_fence_at: Option<Instant>,
+    pending_ipc_event_fence_command_id: Option<u64>,
     observed_state: MpvObservedState,
     observers_registered: bool,
     transport_observers_registered: bool,
@@ -856,6 +860,8 @@ impl MpvAdapter {
         self.current_path = None;
         self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
+        self.last_ipc_event_fence_at = None;
+        self.pending_ipc_event_fence_command_id = None;
         self.pending_playback_telemetry_update = None;
         self.pending_transport_telemetry_updates.clear();
         self.pending_cache_telemetry_updates.clear();
@@ -934,6 +940,8 @@ impl MpvAdapter {
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.last_paused_position_poll_at = None;
+        self.last_ipc_event_fence_at = None;
+        self.pending_ipc_event_fence_command_id = None;
         self.playback_restart_sequence = 0;
         self.reset_timeline_metadata();
         self.ordered_player_event_reacquisition_required = true;
@@ -1635,9 +1643,11 @@ impl MpvAdapter {
         self.maintain_network_cache_stall_recovery();
         self.maintain_network_media_options_hook_lease();
         self.maintain_legacy_syncplayintf_lease();
+        self.maintain_ipc_event_fence_nonblocking();
         // Synchronous heartbeat commands can themselves harvest a bounded batch of events. Flush
-        // their control faults and ordinary observations, then recover an ownership loss in the
-        // same pump so a transient lease expiry never reaches the GUI as incomplete setup.
+        // their control faults and ordinary observations. The nonblocking event fence above also
+        // gives the worker a bounded opportunity to harvest property/lifecycle events that mpv
+        // emitted just after an earlier command response.
         self.drain_ipc_events_if_attached();
         self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_cache_stall_recovery();
@@ -6861,9 +6871,8 @@ impl MpvAdapter {
         self.transport_phase = phase;
         let update = self.transport_update().with_phase(phase);
         self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
-        let media_generation = self.observation_media_generation();
-        self.observe_tracked_commands(media_generation, TrackedCommandObservation::FileLoaded);
-        self.observe_tracked_commands(media_generation, TrackedCommandObservation::Phase(phase));
+        self.observe_tracked_commands(Some(generation), TrackedCommandObservation::FileLoaded);
+        self.observe_tracked_commands(Some(generation), TrackedCommandObservation::Phase(phase));
 
         if self.pending_load_generation != Some(generation) {
             return;
@@ -8119,6 +8128,13 @@ impl MpvAdapter {
         self.transport_observers_registered = false;
         self.reset_network_media_options_attachment_state();
         self.legacy_syncplay_osd_placement_restore = None;
+        self.last_ipc_event_fence_at = None;
+        self.pending_ipc_event_fence_command_id = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_ipc_event_fence_due_for_test(&mut self) {
+        self.last_ipc_event_fence_at = Some(Instant::now() - IPC_EVENT_FENCE_IDLE_INTERVAL);
     }
 
     #[cfg(test)]

@@ -6,6 +6,7 @@ use sorotte_player_api::{
 const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
 const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
 const LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN: u64 = 3;
+const IPC_EVENT_FENCE_COMMAND_TOKEN: u64 = 4;
 
 impl MpvAdapter {
     fn is_nonblocking_runtime_lease_event(event: &Value) -> bool {
@@ -79,6 +80,12 @@ impl MpvAdapter {
                         {
                             self.network_media_options_hook_pending_event_poll_command_id = None;
                         }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
+                            command_id,
+                            token: IPC_EVENT_FENCE_COMMAND_TOKEN,
+                        } if self.pending_ipc_event_fence_command_id == Some(command_id) => {
+                            self.pending_ipc_event_fence_command_id = None;
+                        }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { .. } => {}
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
                             command_id,
@@ -111,6 +118,13 @@ impl MpvAdapter {
                                 format!("failed to renew Sorotte's mpv bridge lease: {message}"),
                                 true,
                             );
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                            command_id,
+                            token: IPC_EVENT_FENCE_COMMAND_TOKEN,
+                            ..
+                        } if self.pending_ipc_event_fence_command_id == Some(command_id) => {
+                            self.pending_ipc_event_fence_command_id = None;
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed { .. } => {}
                     }
@@ -156,6 +170,58 @@ impl MpvAdapter {
             }
         }
         processed_any
+    }
+
+    pub(super) fn maintain_ipc_event_fence_nonblocking(&mut self) {
+        if self.ipc_client.is_none() {
+            self.last_ipc_event_fence_at = None;
+            self.pending_ipc_event_fence_command_id = None;
+            return;
+        }
+        if self.pending_ipc_event_fence_command_id.is_some() {
+            return;
+        }
+
+        let has_accepted_command = self
+            .pending_tracked_commands
+            .iter()
+            .any(|command| command.accepted_at.is_some());
+        let active_interval = has_accepted_command
+            || self.active_media_generation.is_some()
+            || self.pending_load_generation.is_some();
+        let interval = if active_interval {
+            IPC_EVENT_FENCE_ACTIVE_INTERVAL
+        } else {
+            IPC_EVENT_FENCE_IDLE_INTERVAL
+        };
+        let now = Instant::now();
+        let Some(last_fence) = self.last_ipc_event_fence_at else {
+            self.last_ipc_event_fence_at = Some(now);
+            return;
+        };
+        if now.duration_since(last_fence) < interval {
+            return;
+        }
+
+        // The worker harvests all earlier mpv events before it receives this response. Keep the
+        // fence single-flight and centrally rate-limited so every getter can share one event
+        // pump without issuing synchronous property or playlist query groups of its own.
+        self.last_ipc_event_fence_at = Some(now);
+        match self.ipc_client.as_mut().map(|client| {
+            client.try_send_command_expect_success_nonblocking(
+                json!([MPV_COMMAND_GET_PROPERTY, MPV_PROPERTY_PAUSE]),
+                IPC_EVENT_FENCE_COMMAND_TOKEN,
+            )
+        }) {
+            Some(Ok(Some(command_id))) => {
+                self.pending_ipc_event_fence_command_id = Some(command_id);
+            }
+            Some(Ok(None)) | None => {}
+            Some(Err(_)) => {
+                // The client records the classified transport failure. The ordinary adapter
+                // health path converts it into generation-scoped command/transport terminals.
+            }
+        }
     }
 
     fn maintain_network_options_hook_lease_nonblocking(&mut self) {
