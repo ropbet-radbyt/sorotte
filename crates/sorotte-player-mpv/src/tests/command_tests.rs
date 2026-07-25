@@ -1,4 +1,5 @@
 use super::*;
+use crate::constants::MPV_PROPERTY_PAUSED_FOR_CACHE;
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandProgress, PlayerCommandProgressState,
     PlayerCommandResult, PlayerMediaLoadOutcome, PlayerOrderedEventKind, PlayerPlayIntent,
@@ -220,6 +221,69 @@ fn tracked_start_after_load_waits_for_logical_play_cache_release_restart_and_adv
     assert_completed(
         adapter.take_command_progress().expect("completed progress"),
         command_id,
+    );
+}
+
+#[test]
+fn tracked_start_after_load_reacquires_unchanged_cache_release_after_transient_null() {
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":19}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"event":"property-change","name":"core-idle","data":true}"#,
+        r#"{"event":"property-change","name":"time-pos","data":12.0}"#,
+        r#"{"event":"property-change","name":"paused-for-cache","data":null}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success","data":false}"#,
+        r#"{"event":"property-change","name":"pause","data":false}"#,
+        r#"{"event":"playback-restart"}"#,
+        r#"{"event":"property-change","name":"time-pos","data":12.02}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("ready-paused setup observations should be drained");
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::StartAfterLoad {
+            baseline_restart_sequence: 0,
+        }))
+        .expect("start after load should be accepted");
+    assert_accepted(
+        adapter.take_command_progress().expect("accepted progress"),
+        command_id,
+    );
+    assert_eq!(
+        adapter.take_command_progress(),
+        None,
+        "authoritative cache release still requires restart and advancement"
+    );
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("post-command playback evidence should be drained");
+    assert_completed(
+        adapter.take_command_progress().expect("completed progress"),
+        command_id,
+    );
+
+    let writes = state.writes();
+    let cache_pause_reads = writes
+        .iter()
+        .filter_map(|write| serde_json::from_str::<Value>(write).ok())
+        .filter_map(|value| value.get("command").cloned())
+        .filter_map(|command| command.as_array().cloned())
+        .filter(|command| {
+            command.first().and_then(Value::as_str) == Some(MPV_COMMAND_GET_PROPERTY)
+                && command.get(1).and_then(Value::as_str) == Some(MPV_PROPERTY_PAUSED_FOR_CACHE)
+        })
+        .count();
+    assert_eq!(
+        cache_pause_reads, 1,
+        "missing cache evidence should cause one bounded authoritative read"
     );
 }
 

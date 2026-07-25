@@ -23,6 +23,31 @@ impl MpvAdapter {
         self.legacy_syncplayintf_pending_heartbeat_command_id = None;
     }
 
+    fn reacquire_missing_cache_pause_after_tracked_play(&mut self) {
+        if self.simulation_mode || self.observed_state.paused_for_cache.is_some() {
+            return;
+        }
+        let paused_for_cache = self
+            .ipc_client
+            .as_mut()
+            .and_then(|client| {
+                client
+                    .get_property(MPV_PROPERTY_PAUSED_FOR_CACHE)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| value.as_bool());
+        // The synchronous response is ordered after the Play command. Reduce every event the
+        // worker harvested first, then use the readback only if none of those events restored
+        // generation-scoped cache evidence.
+        self.drain_ipc_events_if_attached();
+        if self.observed_state.paused_for_cache.is_none()
+            && let Some(paused_for_cache) = paused_for_cache
+        {
+            self.apply_paused_for_cache_observation(paused_for_cache);
+        }
+    }
+
     pub(super) fn drain_runtime_lease_events_nonblocking(&mut self) -> bool {
         let items = self
             .ipc_client
@@ -538,6 +563,13 @@ impl PlayerAdapter for MpvAdapter {
                     MPV_PROPERTY_PAUSE,
                     false
                 ]));
+                if result.is_ok() {
+                    // `paused-for-cache` can transiently become unavailable after file-loaded,
+                    // and mpv may then omit a new `false` property-change because its scalar
+                    // value did not change. One targeted post-command read preserves the strict
+                    // cache-release acknowledgement without polling or accepting stale evidence.
+                    self.reacquire_missing_cache_pause_after_tracked_play();
+                }
                 if result.is_ok() && self.simulation_mode {
                     self.paused = false;
                 }

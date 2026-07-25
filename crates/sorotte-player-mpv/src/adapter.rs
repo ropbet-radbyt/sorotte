@@ -6376,6 +6376,43 @@ impl MpvAdapter {
         }
     }
 
+    fn apply_paused_for_cache_observation(&mut self, paused_for_cache: bool) {
+        self.paused_for_cache = paused_for_cache;
+        self.observed_state.paused_for_cache = Some(paused_for_cache);
+        self.observe_network_cache_pause_for_recovery(paused_for_cache);
+        let logical_pause = match self.observed_state.paused {
+            Some(true) if paused_for_cache => None,
+            Some(true) if self.logical_pause_explicit => Some(true),
+            Some(true) => None,
+            paused => paused,
+        };
+        self.observed_state.logical_pause = logical_pause;
+        self.queue_playback_telemetry_update(
+            PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(paused_for_cache),
+        );
+        let phase = self.inferred_transport_phase();
+        self.transport_phase = phase;
+        let mut update = self.transport_update().with_phase(phase);
+        update.paused_for_cache = Some(paused_for_cache);
+        update.logical_pause = logical_pause;
+        self.observed_state.cache_metrics_observed_at = update.observed_at;
+        self.queue_transport_telemetry_update(update);
+        self.observe_tracked_commands(
+            self.observation_media_generation(),
+            TrackedCommandObservation::CachePause(paused_for_cache),
+        );
+        if let Some(logical_pause) = logical_pause {
+            self.observe_tracked_commands(
+                self.observation_media_generation(),
+                TrackedCommandObservation::LogicalPause(logical_pause),
+            );
+        }
+        self.observe_tracked_commands(
+            self.observation_media_generation(),
+            TrackedCommandObservation::Phase(phase),
+        );
+    }
+
     fn handle_ipc_event(&mut self, event: &Value) {
         // This is the first adapter-owned boundary after mpv's JSON stream has
         // been decoded. Capture before classification so ignored or malformed
@@ -6594,41 +6631,7 @@ impl MpvAdapter {
             }
             MPV_PROPERTY_PAUSED_FOR_CACHE => {
                 if let Some(paused_for_cache) = data.and_then(Value::as_bool) {
-                    self.paused_for_cache = paused_for_cache;
-                    self.observed_state.paused_for_cache = Some(paused_for_cache);
-                    self.observe_network_cache_pause_for_recovery(paused_for_cache);
-                    let logical_pause = match self.observed_state.paused {
-                        Some(true) if paused_for_cache => None,
-                        Some(true) if self.logical_pause_explicit => Some(true),
-                        Some(true) => None,
-                        paused => paused,
-                    };
-                    self.observed_state.logical_pause = logical_pause;
-                    self.queue_playback_telemetry_update(
-                        PlayerPlaybackTelemetryUpdate::default()
-                            .with_paused_for_cache(paused_for_cache),
-                    );
-                    let phase = self.inferred_transport_phase();
-                    self.transport_phase = phase;
-                    let mut update = self.transport_update().with_phase(phase);
-                    update.paused_for_cache = Some(paused_for_cache);
-                    update.logical_pause = logical_pause;
-                    self.observed_state.cache_metrics_observed_at = update.observed_at;
-                    self.queue_transport_telemetry_update(update);
-                    self.observe_tracked_commands(
-                        self.observation_media_generation(),
-                        TrackedCommandObservation::CachePause(paused_for_cache),
-                    );
-                    if let Some(logical_pause) = logical_pause {
-                        self.observe_tracked_commands(
-                            self.observation_media_generation(),
-                            TrackedCommandObservation::LogicalPause(logical_pause),
-                        );
-                    }
-                    self.observe_tracked_commands(
-                        self.observation_media_generation(),
-                        TrackedCommandObservation::Phase(phase),
-                    );
+                    self.apply_paused_for_cache_observation(paused_for_cache);
                 } else {
                     self.observed_state.paused_for_cache = None;
                 }
