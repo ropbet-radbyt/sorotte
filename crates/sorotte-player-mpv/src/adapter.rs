@@ -4864,8 +4864,57 @@ impl MpvAdapter {
             .transport_update_for(active_attempt.media_generation)
             .with_phase(phase);
         self.queue_transport_telemetry_update_for_attempt(update, Some(active_attempt.id));
+        self.observe_tracked_commands_from_authoritative_state(
+            active_attempt.media_generation,
+            phase,
+        );
+    }
+
+    fn observe_tracked_commands_from_authoritative_state(
+        &mut self,
+        media_generation: PlayerMediaGeneration,
+        phase: PlayerTransportPhase,
+    ) {
+        let logical_pause = self.observed_state.logical_pause;
+        let paused_for_cache = self.observed_state.paused_for_cache;
+        let seeking = self.observed_state.seeking;
+        let position_seconds = self.observed_state.position_seconds;
+        let playback_restart_sequence = self
+            .active_generation_has_restarted
+            .then_some(self.playback_restart_sequence);
+
+        if let Some(logical_pause) = logical_pause {
+            self.observe_tracked_commands(
+                Some(media_generation),
+                TrackedCommandObservation::LogicalPause(logical_pause),
+            );
+        }
+        if let Some(paused_for_cache) = paused_for_cache {
+            self.observe_tracked_commands(
+                Some(media_generation),
+                TrackedCommandObservation::CachePause(paused_for_cache),
+            );
+        }
+        if let Some(playback_restart_sequence) = playback_restart_sequence {
+            self.observe_tracked_commands(
+                Some(media_generation),
+                TrackedCommandObservation::PlaybackRestart(playback_restart_sequence),
+            );
+        }
+        if let Some(seeking) = seeking {
+            self.observe_tracked_commands(
+                Some(media_generation),
+                TrackedCommandObservation::Seeking(seeking),
+            );
+        }
+        if let Some(position_seconds) = position_seconds {
+            self.observe_tracked_commands(
+                Some(media_generation),
+                TrackedCommandObservation::Position(position_seconds),
+            );
+        }
         self.observe_tracked_commands(
-            Some(active_attempt.media_generation),
+            Some(media_generation),
             TrackedCommandObservation::Phase(phase),
         );
     }

@@ -1587,6 +1587,84 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
+    fn authoritative_reconciliation_replays_tracked_play_evidence_after_generation_gap() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(10);
+        let attempt_id =
+            adapter.submit_lifecycle_load(None, generation, "reconciled.mkv", BTreeSet::new());
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            attempt_id,
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            entries: vec![AuthoritativePlaylistEntry::new(
+                10,
+                Some("reconciled.mkv".to_owned()),
+                true,
+            )],
+            current_path: Some("reconciled.mkv".to_owned()),
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::FileLoaded {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            playlist_entry_id: Some(10),
+            loaded_target: Some("reconciled.mkv".to_owned()),
+        });
+        adapter.active_file_loaded = true;
+        adapter.observed_state.paused = Some(true);
+        adapter.observed_state.logical_pause = Some(true);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.observed_state.seeking = Some(false);
+        adapter.observed_state.position_seconds = Some(10.0);
+
+        let command_id = adapter.register_tracked_command(
+            Some(generation),
+            TrackedCommandKind::Play {
+                intent: PlayerPlayIntent::StartAfterLoad {
+                    baseline_restart_sequence: 0,
+                },
+                restart_sequence_baseline: 0,
+                position_baseline: Some(10.0),
+                logical_play_observed: false,
+                cache_clear_observed: true,
+                restart_observed: false,
+                forward_advancement_observed: false,
+            },
+        );
+        adapter.accept_tracked_command(command_id);
+        assert!(matches!(
+            adapter.pending_command_progress_updates.pop_front(),
+            Some(PlayerCommandProgress {
+                command_id: accepted_id,
+                state: PlayerCommandProgressState::Accepted,
+                ..
+            }) if accepted_id == command_id
+        ));
+
+        // These values represent a coherent post-command snapshot obtained after lifecycle
+        // ownership was reacquired. Individual property events observed during the gap could not
+        // safely complete a generation-scoped command, so reconciliation must replay the evidence.
+        adapter.observed_state.paused = Some(false);
+        adapter.observed_state.logical_pause = Some(false);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.observed_state.seeking = Some(false);
+        adapter.observed_state.position_seconds = Some(10.02);
+        adapter.playback_restart_sequence = 1;
+        adapter.active_generation_has_restarted = true;
+        adapter.publish_reconciled_transport_state();
+
+        assert!(adapter.pending_tracked_commands.is_empty());
+        assert!(matches!(
+            adapter.pending_command_progress_updates.pop_front(),
+            Some(PlayerCommandProgress {
+                command_id: completed_id,
+                state: PlayerCommandProgressState::Finished(PlayerCommandResult::Completed),
+                ..
+            }) if completed_id == command_id
+        ));
+    }
+
+    #[test]
     fn player_batch_acknowledgement_compacts_only_matching_epoch_compatibility_state() {
         let mut adapter = MpvAdapter::simulated();
         let generation = PlayerMediaGeneration::new(11);
