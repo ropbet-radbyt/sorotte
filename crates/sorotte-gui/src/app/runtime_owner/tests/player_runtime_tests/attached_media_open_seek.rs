@@ -109,6 +109,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             state: player_state.clone(),
         }))),
         player_attachment_epoch: 0,
+        ordered_player_events: Default::default(),
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
         player_apply_state: Default::default(),
         managed_mpv_process: None,

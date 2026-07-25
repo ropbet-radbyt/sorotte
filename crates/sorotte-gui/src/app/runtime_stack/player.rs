@@ -4,7 +4,8 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
+    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
     PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
@@ -350,6 +351,36 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.take_media_load_outcome(),
             #[cfg(test)]
             Self::Custom(player) => player.take_media_load_outcome(),
+        }
+    }
+
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        match self {
+            Self::Test(player) => player.take_player_event_batch(),
+            Self::Mpv(player) => player.take_player_event_batch(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_player_event_batch(),
+        }
+    }
+
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        match self {
+            Self::Test(player) => player.player_event_delivery_mode(),
+            Self::Mpv(player) => player.player_event_delivery_mode(),
+            #[cfg(test)]
+            Self::Custom(player) => player.player_event_delivery_mode(),
+        }
+    }
+
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        match self {
+            Self::Test(player) => player.acknowledge_player_event_batch(token),
+            Self::Mpv(player) => player.acknowledge_player_event_batch(token),
+            #[cfg(test)]
+            Self::Custom(player) => player.acknowledge_player_event_batch(token),
         }
     }
 

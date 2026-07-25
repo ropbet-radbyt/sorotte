@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -18,9 +18,13 @@ use sorotte_client_core::{
     PlaybackBarrierTimeoutAction, PlayerCommandCause, logical_media_id_for_local_file_update,
 };
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCommandFailureKind, PlayerCommandId,
-    PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult, PlayerMediaGeneration,
-    PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+    LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
+    PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
+    PlayerCommandProgressState, PlayerCommandResult, PlayerCommandSemanticResult, PlayerEvent,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventDeliveryMode, PlayerEventOrder,
+    PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadOutcome, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta,
+    PlayerTransportSnapshot, SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 use sorotte_player_mpv::LegacySyncplayOsdKind;
 
@@ -73,6 +77,26 @@ use super::{
     GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
     GuiUserMediaTargetResolutionSource,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiOrderedLoadBinding {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    terminal: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct GuiOrderedPlayerEventConsumer {
+    attachment_epoch: Option<PlayerAttachmentEpoch>,
+    last_sequence: u64,
+    last_snapshot_boundary: Option<PlayerSequenceBoundary>,
+    transport: PlayerTransportSnapshot,
+    attempts: BTreeMap<LoadAttemptId, GuiOrderedLoadBinding>,
+    active_attempt: Option<LoadAttemptId>,
+    applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
+    applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectedPlaylistMediaSyncOutcome {

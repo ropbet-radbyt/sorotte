@@ -568,7 +568,17 @@ where
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<bool, PlayerError> {
-        let Some(local_file_update) = self.player.take_local_file_update() else {
+        let ordered_delivery = self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches;
+        let local_file_update = if ordered_delivery {
+            self.drain_player_transport_coordination(
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            )?;
+            self.pending_ordered_local_file_updates.front().cloned()
+        } else {
+            self.player.take_local_file_update()
+        };
+        let Some(local_file_update) = local_file_update else {
             return Ok(false);
         };
 
@@ -599,6 +609,9 @@ where
             MediaLoadIntent::TransportRefresh,
             unix_wall_clock_time_seconds_legacy_compatible(),
         );
+        if ordered_delivery {
+            self.pending_ordered_local_file_updates.acknowledge_front();
+        }
         Ok(true)
     }
 
@@ -621,6 +634,11 @@ where
     }
 
     pub(crate) fn sync_player_playback_telemetry_into_session_and_buffer(&mut self) {
+        if self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            return;
+        }
         while let Some(update) = self.player.take_playback_telemetry_update() {
             self.session.apply_player_playback_telemetry_update(&update);
             // Telemetry is a coalescible state effect: keep one pending snapshot

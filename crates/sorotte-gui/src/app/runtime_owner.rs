@@ -349,6 +349,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_attachment_epoch: u64,
+    ordered_player_events: player::GuiOrderedPlayerEventConsumer,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
@@ -461,6 +462,7 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct GuiAttachedMediaObservationCursor {
     pub(super) media_generation: Option<u64>,
     pub(super) last_observed_at_seconds: Option<f64>,

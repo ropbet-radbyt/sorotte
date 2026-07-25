@@ -30,6 +30,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_stream_helper_probe_rx: None,
             player: None,
             player_attachment_epoch: 0,
+            ordered_player_events: player::GuiOrderedPlayerEventConsumer::default(),
             player_launch_state: GuiPlayerLaunchRuntimeState::None,
             player_apply_state: GuiPlayerApplyState::default(),
             managed_mpv_process: None,
@@ -303,6 +304,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if attachment_ended {
             self.player_attachment_epoch = self.player_attachment_epoch.wrapping_add(1);
         }
+        self.ordered_player_events = player::GuiOrderedPlayerEventConsumer::default();
         self.network_options_hook_failure_reason = None;
         self.network_options_runtime_health_revision = None;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
