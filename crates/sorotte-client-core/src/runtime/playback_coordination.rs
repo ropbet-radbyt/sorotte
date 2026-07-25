@@ -11765,6 +11765,40 @@ mod tests {
     }
 
     #[test]
+    fn completion_not_observed_outcome_terminally_removes_client_core_command_binding() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        let player_command_id = PlayerCommandId::new(81);
+        runtime.bind_player_command(
+            player_command_id,
+            CoordinatorCommandId::new(17),
+            PlayerCommandCause::RemoteRoomSynchronization,
+            None,
+            0.0,
+        );
+        assert!(
+            runtime
+                .player_command_bindings
+                .contains_key(&player_command_id)
+        );
+
+        runtime.apply_player_command_outcome(
+            sorotte_player_api::PlayerCommandOutcome {
+                attachment_epoch: sorotte_player_api::PlayerAttachmentEpoch::new(1),
+                command_id: player_command_id,
+                media_generation: Some(PlayerMediaGeneration::new(3)),
+                result: sorotte_player_api::PlayerCommandSemanticResult::CompletionNotObserved,
+            },
+            1.0,
+        );
+
+        assert!(
+            !runtime
+                .player_command_bindings
+                .contains_key(&player_command_id)
+        );
+    }
+
+    #[test]
     fn attached_user_command_result_owns_following_player_edge() {
         for succeeded in [true, false] {
             let mut runtime = RuntimePlaybackCoordination::default();

@@ -119,6 +119,7 @@ pub struct LoadAttempt {
     pub baseline_playlist_entry_ids: BTreeSet<i64>,
     pub replaced_attempt: Option<LoadAttemptId>,
     pub superseded_by: Option<LoadAttemptId>,
+    pub logical_ownership_revoked: bool,
     pub state: LoadAttemptState,
     pub semantic_outcome_emitted: bool,
     reconcile_until_tick: Option<u64>,
@@ -212,6 +213,14 @@ struct CachedBatch {
     batch: PlayerEventBatch,
     event_count: usize,
     outcome_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcknowledgedPlayerDelivery {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub through_sequence: u64,
+    pub command_ids: Vec<PlayerCommandId>,
+    pub load_attempt_ids: Vec<LoadAttemptId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -354,7 +363,8 @@ impl PlayerLifecycleState {
         while let Some(current_id) = attempt_id {
             let attempt = self.load_attempts.get(&current_id)?;
             let Some(successor_id) = attempt.superseded_by else {
-                return (!attempt.state.is_terminal()).then_some(attempt.media_generation);
+                return (!attempt.state.is_terminal() && !attempt.logical_ownership_revoked)
+                    .then_some(attempt.media_generation);
             };
             attempt_id = Some(successor_id);
         }
@@ -364,6 +374,7 @@ impl PlayerLifecycleState {
             .find(|attempt| {
                 !attempt.state.is_terminal()
                     && attempt.superseded_by.is_none()
+                    && !attempt.logical_ownership_revoked
                     && matches!(
                         attempt.state,
                         LoadAttemptState::Submitting | LoadAttemptState::AcceptedUnbound
@@ -448,7 +459,7 @@ impl PlayerLifecycleState {
                 "active"
             } else if attempt.state.is_terminal() {
                 "terminal"
-            } else if attempt.superseded_by.is_some() {
+            } else if attempt.logical_ownership_revoked {
                 "superseded"
             } else if attempt.playlist_entry_id.is_some() {
                 "bound"
@@ -565,15 +576,38 @@ impl PlayerLifecycleState {
     }
 
     pub fn acknowledge_event_batch(&mut self, token: PlayerEventAcknowledgementToken) -> bool {
-        let Some(cached) = self.cached_batch.take() else {
-            return false;
-        };
+        self.acknowledge_event_batch_with_summary(token).is_some()
+    }
+
+    pub fn acknowledge_event_batch_with_summary(
+        &mut self,
+        token: PlayerEventAcknowledgementToken,
+    ) -> Option<AcknowledgedPlayerDelivery> {
+        let cached = self.cached_batch.take()?;
         if cached.batch.acknowledgement_token != token {
             self.cached_batch = Some(cached);
-            return false;
+            return None;
+        }
+        let mut command_ids = BTreeSet::new();
+        let mut load_attempt_ids = BTreeSet::new();
+        for outcome in &cached.batch.semantic_outcomes {
+            match &outcome.outcome {
+                PlayerSemanticOutcome::Command(command) => {
+                    command_ids.insert(command.command_id);
+                }
+                PlayerSemanticOutcome::LoadAttempt(attempt) => {
+                    load_attempt_ids.insert(attempt.attempt_id);
+                }
+            }
         }
         let acknowledged_current_epoch = cached.batch.attachment_epoch == self.attachment_epoch;
         let acknowledged_through_sequence = cached.batch.sequence_boundary.through_sequence;
+        let acknowledgement = AcknowledgedPlayerDelivery {
+            attachment_epoch: cached.batch.attachment_epoch,
+            through_sequence: acknowledged_through_sequence,
+            command_ids: command_ids.into_iter().collect(),
+            load_attempt_ids: load_attempt_ids.into_iter().collect(),
+        };
         if self
             .retired_epoch_deliveries
             .front()
@@ -610,13 +644,13 @@ impl PlayerLifecycleState {
             }
         } else {
             self.cached_batch = Some(cached);
-            return false;
+            return None;
         }
         self.prune_snapshot_covered_events();
         if acknowledged_current_epoch {
             self.compact_acknowledged_lifecycle(acknowledged_through_sequence);
         }
-        true
+        Some(acknowledgement)
     }
 
     fn prune_snapshot_covered_events(&mut self) {
@@ -743,6 +777,13 @@ impl PlayerLifecycleState {
                 && predecessor.superseded_by == Some(attempt_id)
             {
                 predecessor.superseded_by = None;
+                if predecessor.state
+                    == (LoadAttemptState::SupersededMayStillEmit {
+                        successor: attempt_id,
+                    })
+                {
+                    predecessor.state = LoadAttemptState::MayStillEmit;
+                }
             }
             let terminal_sequence = attempt
                 .physical_terminal_sequence
@@ -951,6 +992,17 @@ impl PlayerLifecycleState {
                 }
                 if successor.replaced_attempt != Some(attempt.id) {
                     return Err("attempt successor does not point back to predecessor".to_owned());
+                }
+                if !attempt.logical_ownership_revoked {
+                    return Err("attempt successor did not revoke logical ownership".to_owned());
+                }
+            }
+            if let LoadAttemptState::SupersededMayStillEmit { successor } = attempt.state {
+                if attempt.superseded_by != Some(successor) {
+                    return Err("superseded attempt state and successor link disagree".to_owned());
+                }
+                if !attempt.logical_ownership_revoked {
+                    return Err("superseded attempt retained logical ownership".to_owned());
                 }
             }
             if let Some(predecessor) = attempt.replaced_attempt {
@@ -1446,6 +1498,15 @@ impl PlayerLifecycleState {
         if attempt.state.is_terminal() {
             return;
         }
+        if attempt.logical_ownership_revoked {
+            if !matches!(
+                attempt.state,
+                LoadAttemptState::Starting | LoadAttemptState::Active
+            ) {
+                attempt.state = LoadAttemptState::Starting;
+            }
+            return;
+        }
         if matches!(
             attempt.state,
             LoadAttemptState::Starting | LoadAttemptState::Active
@@ -1567,7 +1628,8 @@ impl PlayerLifecycleState {
         }
         let logical_terminal_allowed = self.active_load_attempt == Some(attempt_id)
             && !self.accepted_successor_exists(attempt_id)
-            && before.superseded_by.is_none();
+            && before.superseded_by.is_none()
+            && !before.logical_ownership_revoked;
         if let Some(entry_id) = before.playlist_entry_id {
             self.playlist_entry_attempts.remove(&entry_id);
         }
@@ -2003,6 +2065,7 @@ pub fn reduce_player_lifecycle(
                         baseline_playlist_entry_ids,
                         replaced_attempt,
                         superseded_by: None,
+                        logical_ownership_revoked: false,
                         state: LoadAttemptState::Submitting,
                         semantic_outcome_emitted: false,
                         reconcile_until_tick: None,
@@ -2063,6 +2126,7 @@ pub fn reduce_player_lifecycle(
                         .collect(),
                     replaced_attempt: predecessor_id,
                     superseded_by: None,
+                    logical_ownership_revoked: false,
                     state: if file_loaded {
                         LoadAttemptState::Active
                     } else {
@@ -2079,6 +2143,7 @@ pub fn reduce_player_lifecycle(
                 && !predecessor.state.is_terminal()
             {
                 predecessor.superseded_by = Some(attempt_id);
+                predecessor.logical_ownership_revoked = true;
                 predecessor.state = LoadAttemptState::SupersededMayStillEmit {
                     successor: attempt_id,
                 };
@@ -2177,6 +2242,7 @@ pub fn reduce_player_lifecycle(
                     && !predecessor.state.is_terminal()
                 {
                     predecessor.superseded_by = Some(attempt_id);
+                    predecessor.logical_ownership_revoked = true;
                     predecessor.state = LoadAttemptState::SupersededMayStillEmit {
                         successor: attempt_id,
                     };
@@ -2445,6 +2511,10 @@ pub fn reduce_player_lifecycle(
                 let attempt_id = playlist_entry_id
                     .and_then(|entry_id| state.playlist_entry_attempts.get(&entry_id).copied());
                 if let Some(attempt_id) = attempt_id {
+                    let logical_ownership_revoked = state
+                        .load_attempts
+                        .get(&attempt_id)
+                        .is_some_and(|attempt| attempt.logical_ownership_revoked);
                     let entry_id = state
                         .load_attempts
                         .get(&attempt_id)
@@ -2456,11 +2526,13 @@ pub fn reduce_player_lifecycle(
                                 LoadAttemptState::Bound | LoadAttemptState::Starting
                             )
                         });
-                    if transitioned && let Some(attempt) = state.load_attempts.get_mut(&attempt_id)
+                    if transitioned
+                        && !logical_ownership_revoked
+                        && let Some(attempt) = state.load_attempts.get_mut(&attempt_id)
                     {
                         attempt.state = LoadAttemptState::Active;
                     }
-                    if transitioned {
+                    if transitioned && !logical_ownership_revoked {
                         if let Some(previous_id) = state.active_load_attempt
                             && previous_id != attempt_id
                             && let Some(previous) = state.load_attempts.get_mut(&previous_id)
@@ -2474,7 +2546,10 @@ pub fn reduce_player_lifecycle(
                         }
                         state.active_load_attempt = Some(attempt_id);
                     }
-                    if transitioned && let Some(entry_id) = entry_id {
+                    if transitioned
+                        && !logical_ownership_revoked
+                        && let Some(entry_id) = entry_id
+                    {
                         state.queue_event(
                             PlayerEvent::LoadAttemptActive {
                                 attempt_id,
@@ -3208,6 +3283,111 @@ mod tests {
             );
             assert_eq!(state.logical_terminal, None);
         }
+    }
+
+    #[test]
+    fn compacted_successor_never_restores_predecessor_logical_ownership() {
+        let mut state = PlayerLifecycleState::default();
+        let predecessor = submit(&mut state, 1, 1, "A", &[]);
+        accept(&mut state, 1);
+        let successor = submit(&mut state, 2, 2, "B", &[]);
+        accept(&mut state, 2);
+        bind_with_snapshot(&mut state, 20, "B", true);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::FileLoaded {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                playlist_entry_id: Some(20),
+                loaded_target: Some("B".to_owned()),
+            },
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::EndFile {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                playlist_entry_id: 20,
+                outcome: PlayerPhysicalLoadOutcome::Ended,
+            },
+        );
+        let committed_logical_terminal = state.logical_terminal;
+        assert_eq!(
+            committed_logical_terminal,
+            Some((
+                PlayerMediaGeneration::new(2),
+                PlayerPhysicalLoadOutcome::Ended
+            ))
+        );
+
+        while let Some(batch) = state.peek_event_batch() {
+            assert!(state.acknowledge_event_batch(batch.acknowledgement_token));
+        }
+        assert!(!state.load_attempts.contains_key(&successor));
+        assert!(state.load_attempts[&predecessor].logical_ownership_revoked);
+        assert_eq!(state.load_attempts[&predecessor].superseded_by, None);
+        assert_eq!(
+            state.load_attempts[&predecessor].state,
+            LoadAttemptState::MayStillEmit
+        );
+
+        bind_with_snapshot(&mut state, 10, "A", false);
+        let (next, start_effects) = reduce_player_lifecycle(
+            state,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                playlist_entry_id: 10,
+            },
+        );
+        next.assert_invariants().expect("late start invariants");
+        state = next;
+        assert_eq!(state.active_load_attempt, None);
+        assert!(!start_effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                event: PlayerEvent::LoadAttemptStarting { attempt_id, .. }
+                    | PlayerEvent::LoadAttemptActive { attempt_id, .. },
+                ..
+            }) if *attempt_id == predecessor
+        )));
+
+        let (next, loaded_effects) = reduce_player_lifecycle(
+            state,
+            PlayerLifecycleInput::FileLoaded {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                playlist_entry_id: Some(10),
+                loaded_target: Some("A".to_owned()),
+            },
+        );
+        next.assert_invariants()
+            .expect("late file-loaded invariants");
+        state = next;
+        assert_eq!(state.active_load_attempt, None);
+        assert!(!loaded_effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                event: PlayerEvent::LoadAttemptStarting { attempt_id, .. }
+                    | PlayerEvent::LoadAttemptActive { attempt_id, .. },
+                ..
+            }) if *attempt_id == predecessor
+        )));
+
+        let (next, terminal_effects) = reduce_player_lifecycle(
+            state,
+            PlayerLifecycleInput::EndFile {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                playlist_entry_id: 10,
+                outcome: PlayerPhysicalLoadOutcome::Ended,
+            },
+        );
+        next.assert_invariants().expect("late end-file invariants");
+        state = next;
+        assert_eq!(state.logical_terminal, committed_logical_terminal);
+        assert!(!terminal_effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::LogicalPlaybackTerminal {
+                attempt_id,
+                ..
+            } if *attempt_id == predecessor
+        )));
     }
 
     #[test]

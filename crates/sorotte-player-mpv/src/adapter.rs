@@ -526,6 +526,12 @@ struct PendingTrackedCommand {
     kind: TrackedCommandKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnacknowledgedMediaLoadOutcome {
+    attempt_id: Option<LoadAttemptId>,
+    observation: PlayerMediaLoadObservation,
+}
+
 #[derive(Debug)]
 enum TrackedCommandKind {
     Load {
@@ -709,7 +715,7 @@ pub struct MpvAdapter {
     last_delivered_ordered_command_progress: Vec<PlayerCommandProgress>,
     last_delivered_ordered_media_load_outcomes: Vec<PlayerMediaLoadObservation>,
     unacknowledged_terminal_command_progress: BTreeMap<PlayerCommandId, PlayerCommandProgress>,
-    unacknowledged_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
+    unacknowledged_media_load_outcomes: VecDeque<UnacknowledgedMediaLoadOutcome>,
     pending_chat_requests: VecDeque<String>,
     pending_load_request: Option<String>,
     pending_load_generation: Option<PlayerMediaGeneration>,
@@ -909,8 +915,6 @@ impl MpvAdapter {
         self.pending_ordered_player_events.clear();
         self.last_delivered_ordered_command_progress.clear();
         self.last_delivered_ordered_media_load_outcomes.clear();
-        self.unacknowledged_terminal_command_progress.clear();
-        self.unacknowledged_media_load_outcomes.clear();
         self.pending_local_file_update = None;
         self.pending_local_file_generation = None;
         self.pending_local_file_observed_at = None;
@@ -1640,6 +1644,9 @@ impl MpvAdapter {
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
         self.drain_ipc_events_if_attached();
+        // Every delivery mode shares this pump. Let already-buffered observations complete
+        // commands before applying their semantic deadline, then expire anything still pending.
+        self.expire_tracked_commands();
         self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_cache_stall_recovery();
         self.maintain_network_media_options_hook_lease();
@@ -3067,8 +3074,8 @@ impl MpvAdapter {
                 self.unacknowledged_media_load_outcomes
                     .iter()
                     .position(|pending| {
-                        pending.media_generation == observation.media_generation
-                            && pending.outcome == observation.outcome
+                        pending.observation.media_generation == observation.media_generation
+                            && pending.observation.outcome == observation.outcome
                     })
             {
                 self.unacknowledged_media_load_outcomes.remove(index);
@@ -3112,22 +3119,41 @@ impl MpvAdapter {
         outcome: PlayerMediaLoadOutcome,
         media_generation: Option<PlayerMediaGeneration>,
     ) {
+        let attempt_id = media_generation.and_then(|media_generation| {
+            self.player_lifecycle
+                .load_attempts
+                .values()
+                .rev()
+                .find(|attempt| {
+                    attempt.media_generation == media_generation
+                        && attempt.requested_target == outcome.requested_target
+                        && attempt.semantic_outcome_emitted
+                })
+                .map(|attempt| attempt.id)
+        });
         let observation = PlayerMediaLoadObservation::new(
             outcome,
             media_generation,
             Some(self.observation_timestamp()),
         );
-        self.queue_media_load_observation(observation);
+        self.queue_media_load_observation(attempt_id, observation);
     }
 
-    fn queue_media_load_observation(&mut self, observation: PlayerMediaLoadObservation) {
+    fn queue_media_load_observation(
+        &mut self,
+        attempt_id: Option<LoadAttemptId>,
+        observation: PlayerMediaLoadObservation,
+    ) {
         self.queue_ordered_player_event(PlayerOrderedEventKind::MediaLoad(observation.clone()));
+        if self.pending_media_load_outcomes.len() >= MAX_UNACKNOWLEDGED_MEDIA_LOAD_OUTCOMES {
+            self.pending_media_load_outcomes.pop_front();
+        }
         self.pending_media_load_outcomes
             .push_back(observation.clone());
         if !self
             .unacknowledged_media_load_outcomes
             .iter()
-            .any(|pending| pending == &observation)
+            .any(|pending| pending.attempt_id == attempt_id && pending.observation == observation)
         {
             if self.unacknowledged_media_load_outcomes.len()
                 >= MAX_UNACKNOWLEDGED_MEDIA_LOAD_OUTCOMES
@@ -3135,7 +3161,10 @@ impl MpvAdapter {
                 self.unacknowledged_media_load_outcomes.pop_front();
             }
             self.unacknowledged_media_load_outcomes
-                .push_back(observation);
+                .push_back(UnacknowledgedMediaLoadOutcome {
+                    attempt_id,
+                    observation,
+                });
         }
     }
 

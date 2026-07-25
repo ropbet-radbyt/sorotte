@@ -3261,6 +3261,7 @@ mod transport_timeline_tests {
 mod ordered_delivery_tests {
     use super::*;
     use crate::app::runtime_stack::GuiSessionRuntimeAdapter;
+    use sorotte_player_api::PlayerPhysicalLoadOutcome;
     use sorotte_player_mpv::lifecycle::{
         AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput,
         PlayerLifecycleState, SystemSeekOwnershipState, reduce_player_lifecycle,
@@ -3863,6 +3864,152 @@ mod ordered_delivery_tests {
                 .applied_semantic_outcomes
                 .is_empty(),
             "successful acknowledgements must compact replay-only semantic identity"
+        );
+    }
+
+    #[test]
+    fn gui_consumer_never_reactivates_predecessor_after_successor_compaction() {
+        let mut state = PlayerLifecycleState::default();
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptSubmitted {
+                command_id: Some(PlayerCommandId::new(1)),
+                media_generation: PlayerMediaGeneration::new(1),
+                requested_target: "A".to_owned(),
+                baseline_playlist_entry_ids: BTreeSet::new(),
+            },
+        );
+        let predecessor = state
+            .attempt_for_command(PlayerCommandId::new(1))
+            .expect("predecessor");
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptAccepted {
+                attachment_epoch: epoch(),
+                attempt_id: predecessor,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptSubmitted {
+                command_id: Some(PlayerCommandId::new(2)),
+                media_generation: PlayerMediaGeneration::new(2),
+                requested_target: "B".to_owned(),
+                baseline_playlist_entry_ids: BTreeSet::new(),
+            },
+        );
+        let successor = state
+            .attempt_for_command(PlayerCommandId::new(2))
+            .expect("successor");
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::LoadAttemptAccepted {
+                attachment_epoch: epoch(),
+                attempt_id: successor,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: epoch(),
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    20,
+                    Some("B".to_owned()),
+                    true,
+                )],
+                current_path: Some("B".to_owned()),
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::FileLoaded {
+                attachment_epoch: epoch(),
+                playlist_entry_id: Some(20),
+                loaded_target: Some("B".to_owned()),
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::EndFile {
+                attachment_epoch: epoch(),
+                playlist_entry_id: 20,
+                outcome: PlayerPhysicalLoadOutcome::Ended,
+            },
+        );
+        let successor_batch = state.peek_event_batch().expect("successor batch");
+        assert!(
+            state.acknowledge_event_batch(successor_batch.acknowledgement_token),
+            "successor batch should compact"
+        );
+        assert!(!state.load_attempts.contains_key(&successor));
+        assert!(state.load_attempts[&predecessor].logical_ownership_revoked);
+
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: epoch(),
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    10,
+                    Some("A".to_owned()),
+                    false,
+                )],
+                current_path: None,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch: epoch(),
+                playlist_entry_id: 10,
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::FileLoaded {
+                attachment_epoch: epoch(),
+                playlist_entry_id: Some(10),
+                loaded_target: Some("A".to_owned()),
+            },
+        );
+        reduce_lifecycle(
+            &mut state,
+            PlayerLifecycleInput::EndFile {
+                attachment_epoch: epoch(),
+                playlist_entry_id: 10,
+                outcome: PlayerPhysicalLoadOutcome::Ended,
+            },
+        );
+        let late_predecessor_batch = state.peek_event_batch().expect("late predecessor batch");
+        assert!(late_predecessor_batch.events.iter().all(|event| {
+            !matches!(
+                event.event,
+                PlayerEvent::LoadAttemptStarting { attempt_id, .. }
+                    | PlayerEvent::LoadAttemptActive { attempt_id, .. }
+                    | PlayerEvent::LogicalPlaybackTerminal { attempt_id, .. }
+                    if attempt_id == predecessor
+            )
+        }));
+
+        let acknowledgement_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_drain_calls = Arc::new(AtomicUsize::new(0));
+        let transport_updates = Arc::new(AtomicUsize::new(0));
+        let mut owner = owner_with_batches(
+            vec![successor_batch, late_predecessor_batch],
+            false,
+            acknowledgement_calls.clone(),
+            legacy_drain_calls.clone(),
+            transport_updates,
+        );
+        owner.refresh_player_state_impl();
+
+        assert_eq!(acknowledgement_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(legacy_drain_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(owner.ordered_player_events.active_attempt, None);
+        assert!(
+            !owner
+                .ordered_player_events
+                .attempts
+                .contains_key(&predecessor)
         );
     }
 
