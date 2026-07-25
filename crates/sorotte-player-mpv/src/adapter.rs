@@ -7041,6 +7041,12 @@ impl MpvAdapter {
         });
         self.active_media_generation = Some(generation);
         self.active_file_loaded = true;
+        // `start-file` clears generation-scoped transport observations, but mpv does not
+        // necessarily emit a fresh property-change when a scalar value (notably
+        // `paused-for-cache=false`) is unchanged across the boundary. Reacquire one coherent
+        // post-file-loaded snapshot so tracked commands cannot wait forever for an event that
+        // mpv is entitled to omit.
+        self.lifecycle_reconciliation_due = true;
         if self.refresh_timeline_kind_from_metadata() {
             let update = self.transport_update();
             self.queue_transport_telemetry_update(update);

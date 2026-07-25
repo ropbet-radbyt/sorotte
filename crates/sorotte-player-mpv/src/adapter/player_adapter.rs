@@ -1665,6 +1665,43 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
+    fn file_loaded_requests_one_generation_scoped_transport_reconciliation() {
+        let mut adapter = MpvAdapter::simulated();
+        let generation = PlayerMediaGeneration::new(10);
+        let attempt_id =
+            adapter.submit_lifecycle_load(None, generation, "reconciled.mkv", BTreeSet::new());
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            attempt_id,
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            entries: vec![AuthoritativePlaylistEntry::new(
+                10,
+                Some("reconciled.mkv".to_owned()),
+                true,
+            )],
+            current_path: Some("reconciled.mkv".to_owned()),
+        });
+
+        // mpv may report `paused-for-cache=false` before start-file and then omit a duplicate
+        // property-change for the new file. The start boundary must reject the old evidence.
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.handle_start_file_observation(10);
+        assert_eq!(adapter.observed_state.paused_for_cache, None);
+        adapter.lifecycle_reconciliation_due = false;
+
+        adapter.handle_file_loaded_observation(Some("reconciled.mkv".to_owned()));
+
+        assert!(adapter.active_file_loaded);
+        assert_eq!(adapter.active_media_generation, Some(generation));
+        assert!(
+            adapter.lifecycle_reconciliation_due,
+            "file-loaded must schedule one authoritative snapshot for unchanged properties"
+        );
+    }
+
+    #[test]
     fn player_batch_acknowledgement_compacts_only_matching_epoch_compatibility_state() {
         let mut adapter = MpvAdapter::simulated();
         let generation = PlayerMediaGeneration::new(11);
