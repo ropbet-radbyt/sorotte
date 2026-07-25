@@ -1169,7 +1169,6 @@ fn wait_for_completed_command(
     let deadline = Instant::now() + SEMANTICS_TIMEOUT;
     let mut accepted = false;
     loop {
-        let prior_player_state = format!("{player:?}");
         drain_transport_updates(player, observed);
         while let Some(progress) = player.take_command_progress() {
             if progress.command_id != command_id {
@@ -1185,7 +1184,7 @@ fn wait_for_completed_command(
                     panic!(
                         "{description}: tracked command {command_id:?} failed with {result:?}; \
                          latest transport observation: {observed:?}; \
-                         player state before the terminal pump: {prior_player_state}"
+                         player state after the terminal pump: {player:?}"
                     );
                 }
             }

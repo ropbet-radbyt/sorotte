@@ -706,6 +706,7 @@ pub struct MpvAdapter {
     pending_transport_telemetry_updates: VecDeque<PlayerTransportTelemetryUpdate>,
     pending_cache_telemetry_updates: VecDeque<PlayerCacheTelemetryUpdate>,
     pending_tracked_commands: VecDeque<PendingTrackedCommand>,
+    last_finished_tracked_command_debug: Option<String>,
     pending_command_progress_updates: VecDeque<PlayerCommandProgress>,
     pending_media_load_outcomes: VecDeque<PlayerMediaLoadObservation>,
     next_ordered_player_event_sequence: u64,
@@ -853,6 +854,7 @@ impl MpvAdapter {
         self.next_lifecycle_transcript_ingress_sequence = 1;
         self.fail_all_accepted_tracked_commands(PlayerCommandFailureKind::TransportDisconnected);
         self.pending_tracked_commands.clear();
+        self.last_finished_tracked_command_debug = None;
         self.pending_load_request = None;
         self.pending_load_generation = None;
         self.interrupted_network_stream_recovery = None;
@@ -910,6 +912,7 @@ impl MpvAdapter {
             .collect::<Vec<_>>();
 
         self.pending_tracked_commands.clear();
+        self.last_finished_tracked_command_debug = None;
         self.pending_command_progress_updates.clear();
         self.pending_media_load_outcomes.clear();
         self.pending_ordered_player_events.clear();
@@ -5434,6 +5437,7 @@ impl MpvAdapter {
             .pending_tracked_commands
             .remove(index)
             .expect("tracked command index should remain valid");
+        self.last_finished_tracked_command_debug = Some(format!("{command:?} => {result:?}"));
         let lifecycle_epoch = self.lifecycle_epoch();
         match result {
             PlayerCommandResult::Completed => {

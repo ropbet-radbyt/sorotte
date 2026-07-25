@@ -77,6 +77,10 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("pending_tracked_commands", &self.pending_tracked_commands)
             .field(
+                "last_finished_tracked_command",
+                &self.last_finished_tracked_command_debug,
+            )
+            .field(
                 "pending_command_progress_updates",
                 &self.pending_command_progress_updates,
             )
@@ -297,6 +301,7 @@ impl Default for MpvAdapter {
             pending_transport_telemetry_updates: VecDeque::new(),
             pending_cache_telemetry_updates: VecDeque::new(),
             pending_tracked_commands: VecDeque::new(),
+            last_finished_tracked_command_debug: None,
             pending_command_progress_updates: VecDeque::new(),
             pending_media_load_outcomes: VecDeque::new(),
             next_ordered_player_event_sequence: 1,
