@@ -1529,6 +1529,25 @@ pub trait PlayerAdapter: Send + Sync {
     /// Legacy adapters may ignore this request. Ordered adapters should make the next batch carry
     /// `dropped_events_through` and current file/transport observations.
     fn request_ordered_event_reacquisition(&mut self) {}
+
+    /// Returns the next ordered batch without consuming it.
+    ///
+    /// Repeated calls before acknowledgement may return the same batch. The
+    /// default keeps adapters that expose only the legacy getters compatible.
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        None
+    }
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        PlayerEventDeliveryMode::LegacyTypedQueues
+    }
+    /// Acknowledges a batch only after the consumer has successfully applied
+    /// it.
+    fn acknowledge_player_event_batch(
+        &mut self,
+        _token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        Err(PlayerError::Unsupported("acknowledge_player_event_batch"))
+    }
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
     }

@@ -1212,6 +1212,28 @@ impl PlayerAdapter for MpvAdapter {
         self.ordered_player_event_reacquisition_required = true;
     }
 
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+        self.maintain_runtime_integrations();
+        self.player_lifecycle.peek_event_batch()
+    }
+
+    fn player_event_delivery_mode(&self) -> sorotte_player_api::PlayerEventDeliveryMode {
+        sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+    }
+
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        if self.player_lifecycle.acknowledge_event_batch(token) {
+            Ok(())
+        } else {
+            Err(PlayerError::OperationFailed(
+                "player event acknowledgement did not match the in-flight batch".to_owned(),
+            ))
+        }
+    }
+
     fn take_pending_chat_request(&mut self) -> Option<String> {
         self.maintain_runtime_integrations();
         self.try_send_legacy_syncplayintf_options_if_pending();
