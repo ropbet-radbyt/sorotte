@@ -1,0 +1,12 @@
+{"attachment_epoch":1,"ingress_sequence":1,"monotonic_receipt_tick":0,"command_id":21,"playlist_entry_id":80,"raw_json":{"event":"start-file","playlist_entry_id":80}}
+{"attachment_epoch":1,"ingress_sequence":2,"monotonic_receipt_tick":1,"command_id":21,"playlist_entry_id":80,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":3,"monotonic_receipt_tick":2,"command_id":null,"playlist_entry_id":80,"raw_json":{"event":"property-change","name":"duration","data":1200.0}}
+{"attachment_epoch":1,"ingress_sequence":4,"monotonic_receipt_tick":3,"command_id":null,"playlist_entry_id":80,"raw_json":{"event":"property-change","name":"time-pos","data":257.25}}
+{"attachment_epoch":1,"ingress_sequence":5,"monotonic_receipt_tick":4,"command_id":null,"playlist_entry_id":80,"raw_json":{"event":"property-change","name":"eof-reached","data":true}}
+{"attachment_epoch":1,"ingress_sequence":6,"monotonic_receipt_tick":5,"command_id":22,"playlist_entry_id":null,"raw_json":{"command":["loadfile","https://media.invalid/interrupted/video.mkv","replace",-1,{"start":"257.25"}],"request_id":22}}
+{"attachment_epoch":1,"ingress_sequence":7,"monotonic_receipt_tick":6,"command_id":22,"playlist_entry_id":null,"raw_json":{"request_id":22,"error":"success","data":[{"id":81,"filename":"https://media.invalid/interrupted/video.mkv","current":true}]}}
+{"attachment_epoch":1,"ingress_sequence":8,"monotonic_receipt_tick":7,"command_id":null,"playlist_entry_id":80,"raw_json":{"event":"end-file","playlist_entry_id":80,"reason":"eof"}}
+{"attachment_epoch":1,"ingress_sequence":9,"monotonic_receipt_tick":8,"command_id":null,"playlist_entry_id":81,"raw_json":{"event":"start-file","playlist_entry_id":81}}
+{"attachment_epoch":1,"ingress_sequence":10,"monotonic_receipt_tick":9,"command_id":22,"playlist_entry_id":81,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":11,"monotonic_receipt_tick":10,"command_id":null,"playlist_entry_id":81,"raw_json":{"event":"playback-restart"}}
+{"attachment_epoch":1,"ingress_sequence":12,"monotonic_receipt_tick":11,"command_id":null,"playlist_entry_id":81,"raw_json":{"event":"property-change","name":"time-pos","data":259.75}}

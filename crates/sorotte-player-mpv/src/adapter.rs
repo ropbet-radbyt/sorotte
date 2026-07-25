@@ -45,6 +45,7 @@ use crate::lifecycle::{
     AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput, PlayerLifecycleState,
     reduce_player_lifecycle,
 };
+use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder};
 
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
@@ -699,6 +700,8 @@ pub struct MpvAdapter {
     transport_observers_registered: bool,
     observation_clock_origin: Instant,
     current_ipc_event_observed_at: Option<PlayerObservationTimestamp>,
+    lifecycle_transcript_recorder: Option<MpvTranscriptRecorder>,
+    next_lifecycle_transcript_ingress_sequence: u64,
     next_media_generation: u64,
     player_lifecycle: PlayerLifecycleState,
     lifecycle_reconciliation_due: bool,
@@ -748,6 +751,49 @@ pub struct MpvAdapter {
 }
 
 impl MpvAdapter {
+    /// Enables sanitized raw mpv lifecycle transcript capture for debugging or
+    /// deterministic regression-fixture generation.
+    pub fn enable_lifecycle_transcript_capture(&mut self) {
+        self.lifecycle_transcript_recorder = Some(MpvTranscriptRecorder::new());
+        self.next_lifecycle_transcript_ingress_sequence = 1;
+    }
+
+    /// Records one decoded raw mpv IPC item at the adapter ingress boundary.
+    ///
+    /// Adapter-polled events call this automatically when capture is enabled.
+    /// Debug transports may call it for synchronous command responses, which
+    /// are consumed below the ordinary event pump.
+    pub fn record_lifecycle_transcript_input(
+        &mut self,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: Option<i64>,
+        raw_json: Value,
+    ) -> Result<(), MpvTranscriptError> {
+        let Some(recorder) = self.lifecycle_transcript_recorder.as_mut() else {
+            return Ok(());
+        };
+        let ingress_sequence = self.next_lifecycle_transcript_ingress_sequence.max(1);
+        let monotonic_receipt_tick =
+            u64::try_from(self.observation_clock_origin.elapsed().as_millis()).unwrap_or(u64::MAX);
+        recorder.record(
+            self.player_lifecycle.attachment_epoch,
+            ingress_sequence,
+            monotonic_receipt_tick,
+            command_id,
+            playlist_entry_id,
+            raw_json,
+        )?;
+        self.next_lifecycle_transcript_ingress_sequence = ingress_sequence.saturating_add(1).max(1);
+        Ok(())
+    }
+
+    /// Stops capture and returns the validated sanitized transcript.
+    pub fn take_lifecycle_transcript(&mut self) -> Option<MpvTranscript> {
+        self.lifecycle_transcript_recorder
+            .take()
+            .map(MpvTranscriptRecorder::finish)
+    }
+
     pub fn with_json_ipc(path: impl AsRef<Path>) -> Result<Self, PlayerError> {
         let mut adapter = Self::default();
         adapter.connect_json_ipc(path)?;
@@ -773,6 +819,7 @@ impl MpvAdapter {
             self.reset_player_state_for_new_attachment();
         }
         self.apply_lifecycle_input(PlayerLifecycleInput::AttachmentReplaced);
+        self.next_lifecycle_transcript_ingress_sequence = 1;
         self.fail_all_accepted_tracked_commands(PlayerCommandFailureKind::TransportDisconnected);
         self.pending_tracked_commands.clear();
         self.pending_load_request = None;
@@ -5979,6 +6026,17 @@ impl MpvAdapter {
     }
 
     fn handle_ipc_event(&mut self, event: &Value) {
+        // This is the first adapter-owned boundary after mpv's JSON stream has
+        // been decoded. Capture before classification so ignored or malformed
+        // lifecycle input remains available to deterministic replay.
+        let command_id = event
+            .get("request_id")
+            .and_then(Value::as_u64)
+            .map(PlayerCommandId::new);
+        let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_i64);
+        let _ =
+            self.record_lifecycle_transcript_input(command_id, playlist_entry_id, event.clone());
+
         let Some(event_name) = event.get("event").and_then(Value::as_str) else {
             return;
         };
@@ -8242,6 +8300,53 @@ impl MpvAdapter {
 
 // Pre-reducer load-registry and recovery fixtures were removed after their unique
 // ownership, provisional-EOF, and watchdog cases were ported to reducer-backed suites.
+
+#[cfg(test)]
+mod lifecycle_transcript_capture_tests {
+    use super::*;
+
+    #[test]
+    fn opt_in_capture_records_manual_responses_and_automatic_event_ingress() {
+        let mut adapter = MpvAdapter::default();
+        adapter.enable_lifecycle_transcript_capture();
+
+        adapter
+            .record_lifecycle_transcript_input(
+                Some(PlayerCommandId::new(7)),
+                None,
+                json!({
+                    "request_id": 7,
+                    "error": "success",
+                    "data": "https://media.invalid/video?token=private-value",
+                }),
+            )
+            .expect("manual command response capture");
+        adapter.handle_ipc_event(&json!({
+            "event": "client-message",
+            "playlist_entry_id": 19,
+            "args": ["synthetic"],
+        }));
+
+        let transcript = adapter
+            .take_lifecycle_transcript()
+            .expect("enabled capture should return a transcript");
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript.records()[0].ingress_sequence, 1);
+        assert_eq!(transcript.records()[1].ingress_sequence, 2);
+        assert_eq!(
+            transcript.records()[0].command_id,
+            Some(PlayerCommandId::new(7))
+        );
+        assert_eq!(transcript.records()[1].playlist_entry_id, Some(19));
+        assert!(
+            !transcript
+                .to_json_lines()
+                .expect("transcript JSON")
+                .contains("private-value")
+        );
+        assert!(adapter.take_lifecycle_transcript().is_none());
+    }
+}
 
 #[cfg(test)]
 mod version_policy_tests {

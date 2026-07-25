@@ -293,6 +293,8 @@ impl Default for MpvAdapter {
             transport_observers_registered: false,
             observation_clock_origin: Instant::now(),
             current_ipc_event_observed_at: None,
+            lifecycle_transcript_recorder: None,
+            next_lifecycle_transcript_ingress_sequence: 1,
             next_media_generation: 1,
             player_lifecycle: PlayerLifecycleState::default(),
             lifecycle_reconciliation_due: false,

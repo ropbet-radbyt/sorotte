@@ -1,0 +1,9 @@
+{"attachment_epoch":1,"ingress_sequence":1,"monotonic_receipt_tick":0,"command_id":60,"playlist_entry_id":1,"raw_json":{"event":"start-file","playlist_entry_id":1}}
+{"attachment_epoch":1,"ingress_sequence":2,"monotonic_receipt_tick":1,"command_id":60,"playlist_entry_id":1,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":3,"monotonic_receipt_tick":2,"command_id":61,"playlist_entry_id":1,"raw_json":{"command":["set_property","time-pos",30.0],"request_id":61}}
+{"attachment_epoch":1,"ingress_sequence":4,"monotonic_receipt_tick":3,"command_id":null,"playlist_entry_id":1,"raw_json":{"event":"shutdown"}}
+{"attachment_epoch":2,"ingress_sequence":1,"monotonic_receipt_tick":10,"command_id":70,"playlist_entry_id":null,"raw_json":{"command":["get_property","playlist"],"request_id":70}}
+{"attachment_epoch":2,"ingress_sequence":2,"monotonic_receipt_tick":11,"command_id":70,"playlist_entry_id":1,"raw_json":{"request_id":70,"error":"success","data":[{"id":1,"filename":"C:/fixtures/new-core-video.mkv","current":true,"playing":true}]}}
+{"attachment_epoch":2,"ingress_sequence":3,"monotonic_receipt_tick":12,"command_id":null,"playlist_entry_id":1,"raw_json":{"event":"start-file","playlist_entry_id":1}}
+{"attachment_epoch":2,"ingress_sequence":4,"monotonic_receipt_tick":13,"command_id":null,"playlist_entry_id":1,"raw_json":{"event":"property-change","name":"path","data":"C:/fixtures/new-core-video.mkv"}}
+{"attachment_epoch":2,"ingress_sequence":5,"monotonic_receipt_tick":14,"command_id":null,"playlist_entry_id":1,"raw_json":{"event":"file-loaded"}}

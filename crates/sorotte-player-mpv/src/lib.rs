@@ -8,6 +8,7 @@ pub mod lifecycle;
 mod players;
 #[cfg(feature = "test-support")]
 mod test_support;
+pub mod transcript;
 
 use sorotte_player_api::PlayerError;
 

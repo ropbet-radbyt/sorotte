@@ -1,0 +1,11 @@
+{"attachment_epoch":1,"ingress_sequence":1,"monotonic_receipt_tick":0,"command_id":40,"playlist_entry_id":10,"raw_json":{"event":"start-file","playlist_entry_id":10}}
+{"attachment_epoch":1,"ingress_sequence":2,"monotonic_receipt_tick":1,"command_id":40,"playlist_entry_id":10,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":3,"monotonic_receipt_tick":2,"command_id":41,"playlist_entry_id":null,"raw_json":{"command":["loadfile","https://media.invalid/b.mkv","replace"],"request_id":41}}
+{"attachment_epoch":1,"ingress_sequence":4,"monotonic_receipt_tick":3,"command_id":41,"playlist_entry_id":null,"raw_json":{"request_id":41,"error":"success","data":[{"id":20,"filename":"https://media.invalid/b.mkv","current":true}]}}
+{"attachment_epoch":1,"ingress_sequence":5,"monotonic_receipt_tick":4,"command_id":42,"playlist_entry_id":null,"raw_json":{"command":["loadfile","https://media.invalid/c.mkv","replace"],"request_id":42}}
+{"attachment_epoch":1,"ingress_sequence":6,"monotonic_receipt_tick":5,"command_id":42,"playlist_entry_id":null,"raw_json":{"request_id":42,"error":"success","data":[{"id":30,"filename":"https://media.invalid/c.mkv","current":true}]}}
+{"attachment_epoch":1,"ingress_sequence":7,"monotonic_receipt_tick":6,"command_id":41,"playlist_entry_id":20,"raw_json":{"event":"start-file","playlist_entry_id":20}}
+{"attachment_epoch":1,"ingress_sequence":8,"monotonic_receipt_tick":7,"command_id":41,"playlist_entry_id":20,"raw_json":{"event":"end-file","playlist_entry_id":20,"reason":"error","file_error":"synthetic transport failure"}}
+{"attachment_epoch":1,"ingress_sequence":9,"monotonic_receipt_tick":8,"command_id":42,"playlist_entry_id":30,"raw_json":{"event":"start-file","playlist_entry_id":30}}
+{"attachment_epoch":1,"ingress_sequence":10,"monotonic_receipt_tick":9,"command_id":42,"playlist_entry_id":30,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":11,"monotonic_receipt_tick":10,"command_id":null,"playlist_entry_id":30,"raw_json":{"event":"playback-restart"}}

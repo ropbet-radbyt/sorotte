@@ -1,0 +1,7 @@
+{"attachment_epoch":1,"ingress_sequence":1,"monotonic_receipt_tick":0,"command_id":2,"playlist_entry_id":null,"raw_json":{"command":["loadfile","https://media.invalid/http/video.mkv","replace"],"request_id":2}}
+{"attachment_epoch":1,"ingress_sequence":2,"monotonic_receipt_tick":1,"command_id":2,"playlist_entry_id":null,"raw_json":{"request_id":2,"error":"success"}}
+{"attachment_epoch":1,"ingress_sequence":3,"monotonic_receipt_tick":2,"command_id":null,"playlist_entry_id":20,"raw_json":{"event":"start-file","playlist_entry_id":20}}
+{"attachment_epoch":1,"ingress_sequence":4,"monotonic_receipt_tick":3,"command_id":null,"playlist_entry_id":20,"raw_json":{"event":"property-change","name":"path","data":"https://media.invalid/http/video.mkv"}}
+{"attachment_epoch":1,"ingress_sequence":5,"monotonic_receipt_tick":4,"command_id":2,"playlist_entry_id":20,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":6,"monotonic_receipt_tick":5,"command_id":null,"playlist_entry_id":20,"raw_json":{"event":"property-change","name":"paused-for-cache","data":false}}
+{"attachment_epoch":1,"ingress_sequence":7,"monotonic_receipt_tick":6,"command_id":null,"playlist_entry_id":20,"raw_json":{"event":"playback-restart"}}
