@@ -11,9 +11,10 @@ use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
     PlayerCommandSemanticResult, PlayerEvent, PlayerEventAcknowledgementToken, PlayerEventBatch,
     PlayerEventDeliveryMode, PlayerEventOrder, PlayerLoadAttemptResult, PlayerMediaGeneration,
-    PlayerPlaybackTelemetryUpdate, PlayerSemanticOutcome, PlayerSequenceBoundary,
-    PlayerTransportDelta, PlayerTransportSnapshot, PlayerTransportTelemetryUpdate,
-    SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
+    PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSemanticOutcome,
+    PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportSnapshot,
+    PlayerTransportTelemetryUpdate, SequencedPlayerEvent, SequencedPlayerSemanticOutcome,
+    SnapshotField,
 };
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
@@ -1823,10 +1824,10 @@ impl RuntimePlaybackCoordination {
 
     fn map_observation_time(
         &self,
-        update: &PlayerTransportTelemetryUpdate,
+        observed_at: Option<PlayerObservationTimestamp>,
         external_now_seconds: f64,
     ) -> (f64, Option<f64>, f64) {
-        match update.observed_at {
+        match observed_at {
             Some(timestamp) => {
                 let raw_seconds = timestamp.elapsed_since_adapter_start().as_secs_f64();
                 let delivery_reference_seconds = timestamp
@@ -1883,6 +1884,107 @@ impl RuntimePlaybackCoordination {
         );
     }
 
+    fn update_latest_position_observation(
+        &mut self,
+        update: &PlayerTransportObservation,
+        replace_previous_state: bool,
+    ) {
+        let reported_or_retained_playback_rate = update.playback_rate.or_else(|| {
+            (!replace_previous_state)
+                .then(|| {
+                    self.latest_observation
+                        .as_ref()
+                        .and_then(|current| current.playback_rate)
+                })
+                .flatten()
+        });
+        let motion_regime_transition = !replace_previous_state
+            && self.latest_observation.as_ref().is_some_and(|current| {
+                update
+                    .phase
+                    .is_some_and(|phase| current.phase != Some(phase))
+                    || update
+                        .playback_rate
+                        .is_some_and(|rate| current.playback_rate != Some(rate))
+                    || update
+                        .logical_pause
+                        .is_some_and(|paused| current.logical_pause != Some(paused))
+                    || update
+                        .paused_for_cache
+                        .is_some_and(|paused| current.paused_for_cache != Some(paused))
+                    || update
+                        .seeking
+                        .is_some_and(|seeking| current.seeking != Some(seeking))
+                    || update
+                        .core_idle
+                        .is_some_and(|core_idle| current.core_idle != Some(core_idle))
+            });
+        let invalid_playback_rate =
+            reported_or_retained_playback_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0);
+        let effective_playback_rate = reported_or_retained_playback_rate
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+            .unwrap_or(NORMAL_PLAYBACK_RATE);
+        if invalid_playback_rate {
+            self.latest_position_observation = None;
+        } else if update.position_seconds.is_some() {
+            self.latest_position_observation = update
+                .position_seconds
+                .filter(|position| position.is_finite())
+                .map(|position_seconds| LocalPositionObservation {
+                    media_generation: update.media_generation,
+                    observed_at_seconds: update.observed_at_seconds,
+                    last_actual_position_observed_at_seconds: update.observed_at_seconds,
+                    position_seconds,
+                    playback_rate: effective_playback_rate,
+                });
+        } else if replace_previous_state {
+            self.latest_position_observation = None;
+        } else if motion_regime_transition {
+            self.latest_position_observation = self
+                .project_position_observation_to(update.observed_at_seconds)
+                .map(|mut position| {
+                    if update.playback_rate.is_some() {
+                        position.playback_rate = effective_playback_rate;
+                    }
+                    position
+                });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_mapped_transport_observation(
+        &mut self,
+        observation: PlayerTransportObservation,
+        position_update: &PlayerTransportObservation,
+        external_now_seconds: f64,
+        delivery_reference_seconds: f64,
+        candidate_offset_seconds: Option<f64>,
+        replace_latest_observation: bool,
+        replace_position_state: bool,
+    ) -> bool {
+        if self.coordinator.current_media_generation() != Some(observation.media_generation)
+            || !self.observation_timestamp_is_accepted(
+                observation.media_generation,
+                observation.observed_at_seconds,
+            )
+        {
+            return false;
+        }
+        self.commit_observation_clock(
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+        );
+        self.transport_telemetry_observed = true;
+        self.update_latest_position_observation(position_update, replace_position_state);
+        if replace_latest_observation {
+            self.latest_observation = Some(observation);
+        } else {
+            self.merge_latest_observation(observation);
+        }
+        true
+    }
+
     pub(crate) fn observe_transport(
         &mut self,
         update: PlayerTransportTelemetryUpdate,
@@ -1918,10 +2020,8 @@ impl RuntimePlaybackCoordination {
         else {
             return Vec::new();
         };
-        let owns_current_media =
-            self.coordinator.current_media_generation() == Some(media_generation);
         let (observed_at_seconds, candidate_offset_seconds, delivery_reference_seconds) =
-            self.map_observation_time(&update, external_now_seconds);
+            self.map_observation_time(update.observed_at, external_now_seconds);
         let observation = PlayerTransportObservation {
             media_generation,
             observed_at_seconds,
@@ -1941,81 +2041,16 @@ impl RuntimePlaybackCoordination {
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         };
-        let timestamp_accepted =
-            self.observation_timestamp_is_accepted(media_generation, observed_at_seconds);
-        if owns_current_media && timestamp_accepted {
-            self.commit_observation_clock(
-                external_now_seconds,
-                delivery_reference_seconds,
-                candidate_offset_seconds,
-            );
-            self.transport_telemetry_observed = true;
-            let reported_or_retained_playback_rate = observation.playback_rate.or_else(|| {
-                (!replace_previous_state)
-                    .then(|| {
-                        self.latest_observation
-                            .as_ref()
-                            .and_then(|current| current.playback_rate)
-                    })
-                    .flatten()
-            });
-            let motion_regime_transition = !replace_previous_state
-                && self.latest_observation.as_ref().is_some_and(|current| {
-                    observation
-                        .phase
-                        .is_some_and(|phase| current.phase != Some(phase))
-                        || observation
-                            .playback_rate
-                            .is_some_and(|rate| current.playback_rate != Some(rate))
-                        || observation
-                            .logical_pause
-                            .is_some_and(|paused| current.logical_pause != Some(paused))
-                        || observation
-                            .paused_for_cache
-                            .is_some_and(|paused| current.paused_for_cache != Some(paused))
-                        || observation
-                            .seeking
-                            .is_some_and(|seeking| current.seeking != Some(seeking))
-                        || observation
-                            .core_idle
-                            .is_some_and(|core_idle| current.core_idle != Some(core_idle))
-                });
-            let invalid_playback_rate = reported_or_retained_playback_rate
-                .is_some_and(|rate| !rate.is_finite() || rate <= 0.0);
-            let effective_playback_rate = reported_or_retained_playback_rate
-                .filter(|rate| rate.is_finite() && *rate > 0.0)
-                .unwrap_or(NORMAL_PLAYBACK_RATE);
-            if invalid_playback_rate {
-                self.latest_position_observation = None;
-            } else if observation.position_seconds.is_some() {
-                self.latest_position_observation = observation
-                    .position_seconds
-                    .filter(|position| position.is_finite())
-                    .map(|position_seconds| LocalPositionObservation {
-                        media_generation,
-                        observed_at_seconds,
-                        last_actual_position_observed_at_seconds: observed_at_seconds,
-                        position_seconds,
-                        playback_rate: effective_playback_rate,
-                    });
-            } else if replace_previous_state {
-                self.latest_position_observation = None;
-            } else if motion_regime_transition {
-                self.latest_position_observation = self
-                    .project_position_observation_to(observed_at_seconds)
-                    .map(|mut position| {
-                        if observation.playback_rate.is_some() {
-                            position.playback_rate = effective_playback_rate;
-                        }
-                        position
-                    });
-            }
-            if replace_previous_state {
-                self.latest_observation = Some(observation.clone());
-            } else {
-                self.merge_latest_observation(observation.clone());
-            }
-        }
+        let position_update = observation.clone();
+        self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+            replace_previous_state,
+            replace_previous_state,
+        );
         let actions = if replace_previous_state {
             self.coordinator.rebase_observation(observation)
         } else {
@@ -2026,25 +2061,18 @@ impl RuntimePlaybackCoordination {
     }
 
     fn observation_from_ordered_transport(
-        &self,
+        &mut self,
         transport: &PlayerTransportSnapshot,
         external_now_seconds: f64,
-    ) -> Option<(PlayerTransportObservation, Option<f64>)> {
-        let media_generation = snapshot_known_copy(&transport.media_generation)?.get();
-        if self.coordinator.current_media_generation() != Some(media_generation) {
-            return None;
-        }
-        let raw_seconds = snapshot_known_copy(&transport.observed_at)
-            .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64());
-        let (observed_at_seconds, candidate_offset_seconds) = match raw_seconds {
-            Some(raw_seconds) => {
-                let offset = self
-                    .adapter_clock_offset_seconds
-                    .unwrap_or(external_now_seconds - raw_seconds);
-                (raw_seconds + offset, Some(offset))
-            }
-            None => (self.coordinator_now(external_now_seconds), None),
-        };
+    ) -> Option<(PlayerTransportObservation, Option<f64>, f64)> {
+        let adapter_generation = snapshot_known_copy(&transport.media_generation)?;
+        let media_generation =
+            self.bind_adapter_generation(adapter_generation, external_now_seconds)?;
+        let (observed_at_seconds, candidate_offset_seconds, delivery_reference_seconds) = self
+            .map_observation_time(
+                snapshot_known_copy(&transport.observed_at),
+                external_now_seconds,
+            );
         Some((
             PlayerTransportObservation {
                 media_generation,
@@ -2072,7 +2100,33 @@ impl RuntimePlaybackCoordination {
                 ),
             },
             candidate_offset_seconds,
+            delivery_reference_seconds,
         ))
+    }
+
+    fn position_update_from_ordered_delta(
+        delta: &PlayerTransportDelta,
+        mapped_observation: &PlayerTransportObservation,
+    ) -> PlayerTransportObservation {
+        PlayerTransportObservation {
+            media_generation: mapped_observation.media_generation,
+            observed_at_seconds: mapped_observation.observed_at_seconds,
+            phase: delta.phase,
+            position_seconds: delta.position_seconds,
+            playback_rate: delta.playback_rate,
+            logical_pause: delta.logical_pause,
+            paused_for_cache: delta.paused_for_cache,
+            seeking: delta.seeking,
+            seekable: None,
+            timeline_kind: None,
+            seekable_ranges: None,
+            known_live_seekable_window: None,
+            core_idle: delta.core_idle,
+            playback_restart_sequence: None,
+            cache_buffering_percent: None,
+            buffered_ahead_seconds: None,
+            input_rate_bytes_per_second: None,
+        }
     }
 
     pub(crate) fn rebase_ordered_transport_snapshot(
@@ -2082,19 +2136,25 @@ impl RuntimePlaybackCoordination {
     ) -> Vec<PlaybackCoordinatorAction> {
         self.transport_telemetry_available = true;
         self.latest_observation = None;
+        self.latest_position_observation = None;
         self.transport_telemetry_observed = false;
-        let Some((observation, candidate_offset_seconds)) =
+        let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
             self.observation_from_ordered_transport(transport, external_now_seconds)
         else {
             return Vec::new();
         };
-        self.commit_observation_clock(
+        let position_update = observation.clone();
+        if !self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
             external_now_seconds,
-            observation.observed_at_seconds,
+            delivery_reference_seconds,
             candidate_offset_seconds,
-        );
-        self.transport_telemetry_observed = true;
-        self.latest_observation = Some(observation.clone());
+            true,
+            true,
+        ) {
+            return Vec::new();
+        }
         let actions = self.coordinator.observe(observation);
         self.record_observation_outcomes(&actions);
         actions
@@ -2103,27 +2163,27 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn observe_ordered_transport_delta(
         &mut self,
         transport: &PlayerTransportSnapshot,
+        delta: &PlayerTransportDelta,
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
         self.transport_telemetry_available = true;
-        let Some((observation, candidate_offset_seconds)) =
+        let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
             self.observation_from_ordered_transport(transport, external_now_seconds)
         else {
             return Vec::new();
         };
-        if !self.observation_timestamp_is_accepted(
-            observation.media_generation,
-            observation.observed_at_seconds,
+        let position_update = Self::position_update_from_ordered_delta(delta, &observation);
+        if !self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+            true,
+            false,
         ) {
             return Vec::new();
         }
-        self.commit_observation_clock(
-            external_now_seconds,
-            observation.observed_at_seconds,
-            candidate_offset_seconds,
-        );
-        self.transport_telemetry_observed = true;
-        self.latest_observation = Some(observation.clone());
         let actions = self.coordinator.observe(observation);
         self.record_observation_outcomes(&actions);
         actions
@@ -4458,9 +4518,11 @@ where
                 };
                 self.record_ordered_playback_projection(&accepted);
                 let transport = self.ordered_player_events.transport.clone();
-                let actions = self
-                    .playback_coordination
-                    .observe_ordered_transport_delta(&transport, now_seconds);
+                let actions = self.playback_coordination.observe_ordered_transport_delta(
+                    &transport,
+                    &accepted,
+                    now_seconds,
+                );
                 self.apply_ordered_coordination_actions(actions, now_seconds, first_error);
             }
             PlayerEvent::LoadAttemptBound {
@@ -4545,13 +4607,7 @@ where
                     .attempts
                     .get(&attempt_id)
                     .is_some_and(|binding| binding.media_generation == media_generation);
-                if terminal_is_owned
-                    && self
-                        .playback_coordination
-                        .coordinator
-                        .current_media_generation()
-                        == Some(media_generation.get())
-                {
+                if terminal_is_owned {
                     let mut terminal = self.ordered_player_events.transport.clone();
                     terminal.load_attempt_id = SnapshotField::Known(attempt_id);
                     terminal.media_generation = SnapshotField::Known(media_generation);
@@ -4559,9 +4615,18 @@ where
                         SnapshotField::Known(sorotte_player_api::PlayerTransportPhase::Ended);
                     terminal.logical_pause = SnapshotField::Known(true);
                     self.ordered_player_events.transport = terminal.clone();
-                    let actions = self
-                        .playback_coordination
-                        .observe_ordered_transport_delta(&terminal, now_seconds);
+                    let terminal_delta = PlayerTransportDelta {
+                        load_attempt_id: Some(attempt_id),
+                        media_generation: Some(media_generation),
+                        phase: Some(sorotte_player_api::PlayerTransportPhase::Ended),
+                        logical_pause: Some(true),
+                        ..PlayerTransportDelta::default()
+                    };
+                    let actions = self.playback_coordination.observe_ordered_transport_delta(
+                        &terminal,
+                        &terminal_delta,
+                        now_seconds,
+                    );
                     self.apply_ordered_coordination_actions(actions, now_seconds, first_error);
                 }
             }
@@ -5745,6 +5810,222 @@ mod tests {
             semantic_outcomes,
             acknowledgement_token: PlayerEventAcknowledgementToken::new(epoch, token),
         }
+    }
+
+    fn ordered_playing_transport(
+        media_generation: PlayerMediaGeneration,
+        observed_at: PlayerObservationTimestamp,
+        position_seconds: f64,
+    ) -> PlayerTransportSnapshot {
+        PlayerTransportSnapshot {
+            load_attempt_id: SnapshotField::Known(LoadAttemptId::new(1)),
+            media_generation: SnapshotField::Known(media_generation),
+            observed_at: SnapshotField::Known(observed_at),
+            phase: SnapshotField::Known(PlayerTransportPhase::Playing),
+            position_seconds: SnapshotField::Known(position_seconds),
+            playback_rate: SnapshotField::Known(1.0),
+            logical_pause: SnapshotField::Known(false),
+            paused_for_cache: SnapshotField::Known(false),
+            seeking: SnapshotField::Known(false),
+            core_idle: SnapshotField::Known(false),
+            ..PlayerTransportSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn ordered_playing_snapshot_seeds_fresh_position_projection() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-position-projection").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        assert_eq!(plan.media_generation, media_generation.get());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("ordered snapshot should drain");
+
+        assert_eq!(
+            runtime.projected_local_position_at(1.0),
+            Some(42.0),
+            "a fresh ordered playing snapshot must seed the steady-state desync position projection"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs_f64(1.5),
+                    )),
+                    playback_rate: Some(2.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.5)
+            .expect("ordered sparse rate transition should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(1.75),
+            Some(43.0),
+            "an ordered sparse rate transition must close the old motion segment and project the new rate"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            3,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs(2),
+                    )),
+                    cache_percentage: Some(75.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("ordered non-position delta should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(3.1),
+            None,
+            "a retained snapshot position must not be relabelled as a fresh actual sample by an unrelated ordered delta"
+        );
+    }
+
+    #[test]
+    fn ordered_transport_maps_adapter_generation_to_pending_logical_media() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let adapter_generation = PlayerMediaGeneration::new(2);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("logical-generation-one-after-failed-physical-load").unwrap(),
+            MediaTransportKind::NetworkVod,
+            2.0,
+        );
+        assert_eq!(plan.media_generation, 1);
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                adapter_generation,
+                ordered_playing_transport(
+                    adapter_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                    20.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("ordered snapshot should drain");
+
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .transport_telemetry_observed,
+            "physical adapter generation 2 must bind to pending logical generation 1 instead of being discarded by numeric comparison"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .latest_observation
+                .as_ref()
+                .map(|observation| observation.media_generation),
+            Some(plan.media_generation),
+            "accepted ordered telemetry must be projected into the logical media generation"
+        );
+    }
+
+    #[test]
+    fn ordered_transport_timestamp_preserves_queue_dwell() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-queue-dwell").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        assert_eq!(plan.media_generation, media_generation.get());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_observation(
+                        Duration::from_secs(1),
+                        Duration::from_secs(5),
+                    ),
+                    10.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(105.0)
+            .expect("ordered snapshot should drain");
+
+        let mapped_observation_time = runtime
+            .playback_coordination
+            .latest_observation
+            .as_ref()
+            .expect("matching ordered telemetry should be retained")
+            .observed_at_seconds;
+        assert!(
+            (mapped_observation_time - 101.0).abs() <= 0.000_001,
+            "an observation sampled at adapter t=1 and delivered at adapter t=5/external t=105 must map to external t=101, got {mapped_observation_time}"
+        );
     }
 
     #[test]
