@@ -32,6 +32,136 @@ fn assert_completed(
     assert!(progress.observed_at.is_some());
 }
 
+fn assert_transcript_does_not_retain_canary(
+    transcript: &crate::transcript::MpvTranscript,
+    canary: &str,
+) {
+    let retained = transcript
+        .records()
+        .iter()
+        .any(|record| record.raw_json.to_string().contains(canary));
+    let exported = transcript
+        .to_json_lines()
+        .expect("captured transcript should serialize");
+    assert!(
+        !retained && !exported.contains(canary),
+        "sanitized lifecycle transcript retained the private canary"
+    );
+}
+
+#[test]
+fn actual_ipc_capture_redacts_json_encoded_client_message_payload() {
+    let canary = "SOROTTE_PRIVATE_CLIENT_MESSAGE_CANARY_4f1a";
+    let chat_event = format!(
+        r#"{{"event":"client-message","args":["third-party-chat","{{\"text\":\"{canary}\"}}"]}}"#
+    );
+    let mut adapter = adapter_with_registered_observers(&[
+        chat_event.as_str(),
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    adapter.enable_lifecycle_transcript_capture();
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("scripted IPC command should pump the captured chat event");
+    let _ = adapter.take_playback_telemetry_update();
+
+    let transcript = adapter
+        .take_lifecycle_transcript()
+        .expect("enabled capture should return a transcript");
+    assert!(
+        transcript
+            .records()
+            .iter()
+            .any(|record| record.event_name() == Some("client-message")),
+        "the actual IPC event was not captured: {:?}",
+        transcript.records()
+    );
+    assert_transcript_does_not_retain_canary(&transcript, canary);
+}
+
+#[test]
+fn actual_ipc_capture_redacts_header_credentials_inside_event_arrays() {
+    let canary = "SOROTTE_AUTH_HEADER_CANARY_b821";
+    let header_event = format!(
+        r#"{{"event":"client-message","args":["third-party-script","Authorization: Bearer {canary}"]}}"#
+    );
+    let mut adapter = adapter_with_registered_observers(&[
+        header_event.as_str(),
+        r#"{"request_id":1,"error":"success"}"#,
+    ]);
+    adapter.enable_lifecycle_transcript_capture();
+
+    adapter
+        .set_playback_rate(1.0)
+        .expect("scripted IPC command should pump the captured header event");
+    let _ = adapter.take_playback_telemetry_update();
+
+    let transcript = adapter
+        .take_lifecycle_transcript()
+        .expect("enabled capture should return a transcript");
+    assert!(
+        transcript
+            .records()
+            .iter()
+            .any(|record| record.event_name() == Some("client-message")),
+        "the actual IPC event was not captured: {:?}",
+        transcript.records()
+    );
+    assert_transcript_does_not_retain_canary(&transcript, canary);
+}
+
+#[test]
+fn actual_tracked_load_capture_is_explicitly_event_only() {
+    let mut adapter = adapter_with_registered_observers(&[
+        r#"{"event":"start-file","playlist_entry_id":5}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.invalid/capture"}"#,
+        r#"{"request_id":3,"error":"success","data":120.0}"#,
+        r#"{"request_id":4,"error":"success","data":4096}"#,
+    ]);
+    adapter.enable_lifecycle_transcript_capture();
+
+    let command_id = adapter
+        .execute_tracked(PlayerCommand::OpenFile(
+            "https://media.invalid/capture".to_owned(),
+        ))
+        .expect("scripted tracked load should be accepted");
+    let transcript = adapter
+        .take_lifecycle_transcript()
+        .expect("enabled capture should return a transcript");
+
+    assert!(
+        transcript
+            .records()
+            .iter()
+            .any(|record| record.event_name() == Some("start-file"))
+    );
+    assert!(
+        transcript
+            .records()
+            .iter()
+            .any(|record| record.event_name() == Some("file-loaded"))
+    );
+    assert!(
+        transcript.records().iter().all(|record| {
+            record.raw_json.get("command").is_none()
+                && !(record.raw_json.get("event").is_none()
+                    && record.raw_json.get("request_id").is_some())
+        }),
+        "event capture must not imply outgoing-command or synchronous-response coverage: {:?}",
+        transcript.records()
+    );
+    assert!(
+        transcript
+            .records()
+            .iter()
+            .all(|record| record.command_id != Some(command_id)),
+        "the tracked command ID belongs to the uncaptured command/response boundary"
+    );
+}
+
 #[test]
 fn tracked_ipc_success_is_accepted_but_not_completed() {
     let mut adapter = adapter_with_registered_observers(&[r#"{"request_id":1,"error":"success"}"#]);

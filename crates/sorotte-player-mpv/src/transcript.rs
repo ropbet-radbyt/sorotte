@@ -14,11 +14,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sorotte_player_api::{PlayerAttachmentEpoch, PlayerCommandId};
+use url::Url;
+
+use crate::constants::{
+    LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
+    LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
+    MPV_EVENT_CLIENT_MESSAGE, SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT,
+    SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED,
+    SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT,
+    SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP,
+    SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT,
+};
 
 const REDACTED: &str = "<redacted>";
+const ANONYMIZED_PREFIX: &str = "anon_";
 
-/// One sanitized raw mpv JSON IPC item at the earliest reliable ingress
-/// boundary.
+/// One sanitized decoded mpv event or synthetic lifecycle-model input.
+///
+/// The opt-in adapter capture supplies decoded event-pump items only. Tests and
+/// fixture tooling may construct other model inputs explicitly.
 #[derive(Clone, PartialEq)]
 pub struct MpvTranscriptRecord {
     pub attachment_epoch: PlayerAttachmentEpoch,
@@ -29,8 +43,9 @@ pub struct MpvTranscriptRecord {
     pub monotonic_receipt_tick: u64,
     pub command_id: Option<PlayerCommandId>,
     pub playlist_entry_id: Option<i64>,
-    /// Sanitized raw JSON. Sensitive keys and URL query credentials are
-    /// redacted before this value enters the transcript.
+    /// Sanitized raw JSON. Sensitive keys, opaque third-party payloads, media
+    /// paths, headers, and URL credentials are removed before this value enters
+    /// the transcript.
     pub raw_json: Value,
 }
 
@@ -244,7 +259,7 @@ pub trait MpvTranscriptReplaySink {
     fn consume_batch(&mut self, records: &[MpvTranscriptRecord]);
 }
 
-/// Incremental recorder that validates attachment-scoped ingress order and
+/// Incremental model/test recorder that validates attachment-scoped order and
 /// global monotonic receipt ticks.
 #[derive(Debug, Default)]
 pub struct MpvTranscriptRecorder {
@@ -371,29 +386,109 @@ fn validate_record(record: &MpvTranscriptRecord) -> Result<(), MpvTranscriptErro
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SanitizationContext {
+    Structured,
+    Opaque,
+    SorotteControl,
+}
+
 fn sanitize_json(value: Value) -> Value {
+    sanitize_value(value, SanitizationContext::Structured)
+}
+
+fn sanitize_value(value: Value, context: SanitizationContext) -> Value {
     match value {
-        Value::Object(object) => Value::Object(
-            object
+        Value::Object(object) => sanitize_object(object, context),
+        Value::Array(values) => Value::Array(
+            values
                 .into_iter()
-                .map(|(key, value)| {
-                    let sanitized = if sensitive_key(&key) {
-                        Value::String(REDACTED.to_owned())
-                    } else {
-                        sanitize_json(value)
-                    };
-                    (key, sanitized)
-                })
-                .collect::<Map<_, _>>(),
+                .map(|value| sanitize_value(value, context))
+                .collect(),
         ),
-        Value::Array(values) => Value::Array(values.into_iter().map(sanitize_json).collect()),
-        Value::String(value) => Value::String(sanitize_string(&value)),
+        Value::String(value) => Value::String(sanitize_string(&value, context)),
         other => other,
     }
 }
 
+fn sanitize_object(object: Map<String, Value>, context: SanitizationContext) -> Value {
+    let is_client_message =
+        object.get("event").and_then(Value::as_str) == Some(MPV_EVENT_CLIENT_MESSAGE);
+    Value::Object(
+        object
+            .into_iter()
+            .map(|(key, value)| {
+                let sanitized = if sensitive_key(&key) {
+                    Value::String(REDACTED.to_owned())
+                } else if is_client_message && key == "args" {
+                    sanitize_client_message_args(value)
+                } else if location_key(&key) {
+                    sanitize_location_value(value, context)
+                } else {
+                    sanitize_value(value, context)
+                };
+                (key, sanitized)
+            })
+            .collect::<Map<_, _>>(),
+    )
+}
+
+fn sanitize_client_message_args(value: Value) -> Value {
+    let Value::Array(values) = value else {
+        return sanitize_value(value, SanitizationContext::Opaque);
+    };
+    let Some(message_name) = values.first().and_then(Value::as_str) else {
+        return Value::Array(
+            values
+                .into_iter()
+                .map(|value| sanitize_value(value, SanitizationContext::Opaque))
+                .collect(),
+        );
+    };
+    let Some(payload_context) = sorotte_client_message_context(message_name) else {
+        return Value::Array(
+            values
+                .into_iter()
+                .map(|value| sanitize_value(value, SanitizationContext::Opaque))
+                .collect(),
+        );
+    };
+
+    Value::Array(
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                if index == 0 {
+                    value
+                } else {
+                    sanitize_value(value, payload_context)
+                }
+            })
+            .collect(),
+    )
+}
+
+fn sorotte_client_message_context(message_name: &str) -> Option<SanitizationContext> {
+    match message_name {
+        LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT => Some(SanitizationContext::Opaque),
+        LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED
+        | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG
+        | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED
+        | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED
+        | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP
+        | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT
+        | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT
+        | SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT => {
+            Some(SanitizationContext::SorotteControl)
+        }
+        _ => None,
+    }
+}
+
 fn sensitive_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase().replace('-', "_");
+    let normalized = normalized_key(key);
+    let compact = normalized.replace('_', "");
     matches!(
         normalized.as_str(),
         "authorization"
@@ -411,51 +506,282 @@ fn sensitive_key(key: &str) -> bool {
     ) || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
+        || matches!(
+            compact.as_str(),
+            "accesstoken" | "refreshtoken" | "apikey" | "httpheaderfields" | "proxyauthorization"
+        )
+        || compact.ends_with("token")
+        || compact.ends_with("secret")
+        || compact.ends_with("password")
 }
 
-fn sanitize_string(value: &str) -> String {
+fn location_key(key: &str) -> bool {
+    let normalized = normalized_key(key);
+    matches!(
+        normalized.as_str(),
+        "path"
+            | "filename"
+            | "file_name"
+            | "file"
+            | "directory"
+            | "dir"
+            | "cwd"
+            | "working_directory"
+            | "url"
+            | "uri"
+            | "target"
+            | "media_path"
+            | "media_url"
+            | "stream_url"
+    ) || normalized.ends_with("_path")
+        || normalized.ends_with("_filename")
+        || normalized.ends_with("_directory")
+        || normalized.ends_with("_url")
+        || normalized.ends_with("_uri")
+}
+
+fn normalized_key(key: &str) -> String {
+    key.to_ascii_lowercase().replace('-', "_")
+}
+
+fn sanitize_location_value(value: Value, context: SanitizationContext) -> Value {
+    match value {
+        Value::String(value) => Value::String(sanitize_location_string(&value)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| sanitize_location_value(value, context))
+                .collect(),
+        ),
+        Value::Object(object) => sanitize_object(object, context),
+        other => other,
+    }
+}
+
+fn sanitize_location_string(value: &str) -> String {
+    if is_sanitized_marker(value) {
+        return value.to_owned();
+    }
+    if looks_like_url(value) {
+        return sanitize_url(value).unwrap_or_else(|| anonymize(value));
+    }
+    if value.is_empty() {
+        return String::new();
+    }
+    anonymize(value)
+}
+
+fn sanitize_string(value: &str, context: SanitizationContext) -> String {
+    if is_sanitized_marker(value) {
+        return value.to_owned();
+    }
+    if let Some(embedded) = parse_embedded_json(value) {
+        let embedded_context = match context {
+            SanitizationContext::SorotteControl => SanitizationContext::SorotteControl,
+            SanitizationContext::Structured | SanitizationContext::Opaque => {
+                SanitizationContext::Opaque
+            }
+        };
+        return serde_json::to_string(&sanitize_value(embedded, embedded_context))
+            .expect("a sanitized serde_json::Value should always serialize");
+    }
+    if looks_like_url(value)
+        && let Some(sanitized) = sanitize_url(value)
+    {
+        return sanitized;
+    }
+    if let Some(sanitized) = sanitize_header(value, context == SanitizationContext::Opaque) {
+        return sanitized;
+    }
+    if looks_like_filesystem_path(value) {
+        return anonymize(value);
+    }
+    if context == SanitizationContext::Opaque && !value.is_empty() {
+        return anonymize(value);
+    }
+    value.to_owned()
+}
+
+fn parse_embedded_json(value: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with(['{', '[']) {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
+fn looks_like_url(value: &str) -> bool {
     let trimmed = value.trim();
     let Some(scheme_end) = trimmed.find("://") else {
-        return value.to_owned();
+        return false;
     };
-    let authority_start = scheme_end + 3;
-    let path_start = trimmed[authority_start..]
-        .find(['/', '?', '#'])
-        .map(|index| authority_start + index)
-        .unwrap_or(trimmed.len());
-    let mut sanitized = trimmed.to_owned();
-    if let Some(userinfo_end) = trimmed[authority_start..path_start].rfind('@') {
-        sanitized.replace_range(authority_start..authority_start + userinfo_end, REDACTED);
-    }
-    redact_sensitive_query_values(&sanitized)
+    scheme_end > 0
+        && trimmed[..scheme_end].chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
 }
 
-fn redact_sensitive_query_values(value: &str) -> String {
-    let Some(query_start) = value.find('?') else {
-        return value.to_owned();
-    };
-    let fragment_start = value[query_start..]
-        .find('#')
-        .map(|index| query_start + index)
-        .unwrap_or(value.len());
-    let query = &value[query_start + 1..fragment_start];
-    let mut pairs = Vec::new();
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            pairs.push(pair.to_owned());
-            continue;
-        };
-        if sensitive_key(key) || key.eq_ignore_ascii_case("sig") {
-            pairs.push(format!("{key}={REDACTED}"));
-        } else {
-            pairs.push(format!("{key}={value}"));
+fn sanitize_url(value: &str) -> Option<String> {
+    let mut parsed = Url::parse(value.trim()).ok()?;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        parsed.set_username(REDACTED).ok()?;
+        parsed.set_password(None).ok()?;
+    }
+    if let Some(host) = parsed.host_str().map(str::to_owned)
+        && !is_anonymized_host(&host)
+    {
+        parsed.set_host(Some(&anonymize_host(&host))).ok()?;
+    }
+    parsed.set_port(None).ok()?;
+
+    let sanitized_path = parsed
+        .path()
+        .split('/')
+        .map(|segment| {
+            if segment.is_empty() || is_sanitized_marker(segment) {
+                segment.to_owned()
+            } else {
+                anonymize(segment)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    parsed.set_path(&sanitized_path);
+
+    if parsed.query().is_some() {
+        let query_pairs = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+        parsed.set_query(None);
+        {
+            let mut output = parsed.query_pairs_mut();
+            for (key, value) in query_pairs {
+                let key = if value.is_empty() && looks_like_opaque_identifier(&key) {
+                    anonymize(&key)
+                } else {
+                    key
+                };
+                let value = if value.is_empty() {
+                    value
+                } else {
+                    anonymize(&value)
+                };
+                output.append_pair(&key, &value);
+            }
         }
     }
-    let mut sanitized = String::with_capacity(value.len());
-    sanitized.push_str(&value[..query_start + 1]);
-    sanitized.push_str(&pairs.join("&"));
-    sanitized.push_str(&value[fragment_start..]);
-    sanitized
+
+    if let Some(fragment) = parsed.fragment().map(str::to_owned)
+        && !fragment.is_empty()
+    {
+        parsed.set_fragment(Some(&anonymize(&fragment)));
+    }
+    Some(parsed.into())
+}
+
+fn sanitize_header(value: &str, redact_all: bool) -> Option<String> {
+    let (name, raw_value) = value.split_once(':')?;
+    let name = name.trim();
+    let normalized = normalized_key(name);
+    let valid_name = !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-');
+    let sensitive = matches!(
+        normalized.as_str(),
+        "authorization"
+            | "proxy_authorization"
+            | "cookie"
+            | "set_cookie"
+            | "x_api_key"
+            | "x_auth_token"
+            | "x_amz_security_token"
+    ) || normalized.contains("credential")
+        || normalized.ends_with("_token");
+    if !valid_name || (!redact_all && !sensitive) {
+        return None;
+    }
+
+    let trimmed = raw_value.trim();
+    if trimmed.is_empty() {
+        return Some(format!("{name}:"));
+    }
+    Some(format!("{name}: {}", anonymize(trimmed)))
+}
+
+fn looks_like_filesystem_path(value: &str) -> bool {
+    let value = value.trim();
+    let relative_forward_path = !value.chars().any(char::is_whitespace)
+        && value.rsplit_once('/').is_some_and(|(parent, filename)| {
+            !parent.is_empty()
+                && !filename.is_empty()
+                && (parent.contains('/') || filename.contains('.'))
+        });
+    value.starts_with('/')
+        || value.starts_with("\\\\")
+        || value.starts_with("~/")
+        || value.starts_with("~\\")
+        || value.starts_with("./")
+        || value.starts_with(".\\")
+        || value.contains('\\')
+        || relative_forward_path
+        || (value.len() >= 3
+            && value.as_bytes()[0].is_ascii_alphabetic()
+            && value.as_bytes()[1] == b':'
+            && matches!(value.as_bytes()[2], b'/' | b'\\'))
+}
+
+fn looks_like_opaque_identifier(value: &str) -> bool {
+    value.len() >= 24
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn is_anonymized_host(value: &str) -> bool {
+    let Some(digest) = value
+        .strip_prefix("anon-")
+        .and_then(|value| value.strip_suffix(".invalid"))
+    else {
+        return false;
+    };
+    digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn anonymize_host(value: &str) -> String {
+    if is_anonymized_host(value) {
+        return value.to_owned();
+    }
+    let pseudonym = anonymize(value);
+    format!(
+        "anon-{}.invalid",
+        pseudonym
+            .strip_prefix(ANONYMIZED_PREFIX)
+            .expect("an anonymized value must carry its prefix")
+    )
+}
+
+fn is_sanitized_marker(value: &str) -> bool {
+    if value == REDACTED {
+        return true;
+    }
+    let Some(digest) = value.strip_prefix(ANONYMIZED_PREFIX) else {
+        return false;
+    };
+    digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn anonymize(value: &str) -> String {
+    if is_sanitized_marker(value) {
+        return value.to_owned();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"sorotte-transcript-anonymization-v1\0");
+    hasher.update(value.as_bytes());
+    let digest = hex_digest(hasher.finalize());
+    format!("{ANONYMIZED_PREFIX}{}", &digest[..16])
 }
 
 fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
@@ -1065,6 +1391,8 @@ mod tests {
 
         assert!(!exported.contains(secret));
         assert!(!exported.contains("user:password"));
+        assert!(!exported.contains("media.invalid"));
+        assert!(!exported.contains("private/video.mkv"));
         assert!(exported.contains(REDACTED));
         assert!(!dump.contains(secret));
         assert!(!dump.contains("private/video.mkv"));
@@ -1073,6 +1401,186 @@ mod tests {
         assert!(dump.contains("kind=start-file"));
         assert!(dump.contains("json_sha256="));
         assert!(!format!("{:?}", transcript.records()[0]).contains(secret));
+    }
+
+    #[test]
+    fn third_party_client_messages_anonymize_embedded_json_headers_paths_and_signed_urls() {
+        let private_text = "private-chat-canary-4f1a";
+        let private_header = "Bearer private-header-canary-b821";
+        let private_path = r"C:\Users\Yuuki\Videos\private-episode.mkv";
+        let private_signature = "renewable-signature-canary-c309";
+        let private_url = format!(
+            "https://viewer:password@private-media.example:8443/users/yuuki/episode.mkv?X-Amz-Signature={private_signature}&quality=1080p#private-fragment"
+        );
+        let embedded = json!({
+            "text": private_text,
+            "path": private_path,
+            "url": private_url,
+            "details": [
+                format!("Authorization: {private_header}"),
+                private_path,
+            ],
+        })
+        .to_string();
+        let input = json!({
+            "event": MPV_EVENT_CLIENT_MESSAGE,
+            "args": [
+                "third-party-chat",
+                embedded,
+                private_text,
+                format!("Cookie: session={private_signature}"),
+                private_url,
+            ],
+        });
+
+        let sanitized = sanitize_json(input);
+        assert_eq!(
+            sanitize_json(sanitized.clone()),
+            sanitized,
+            "sanitization must be idempotent so fixture round trips stay stable"
+        );
+        let exported = sanitized.to_string();
+        for private in [
+            private_text,
+            private_header,
+            private_path,
+            private_signature,
+            "viewer:password",
+            "private-media.example",
+            "users/yuuki/episode.mkv",
+            "private-fragment",
+        ] {
+            assert!(
+                !exported.contains(private),
+                "sanitized third-party payload retained {private}"
+            );
+        }
+
+        let args = sanitized["args"]
+            .as_array()
+            .expect("client-message args should remain an array");
+        assert!(is_sanitized_marker(
+            args[0].as_str().expect("message name pseudonym")
+        ));
+        assert_eq!(
+            args[2].as_str(),
+            Some(anonymize(private_text).as_str()),
+            "equal private strings should retain a useful deterministic pseudonym"
+        );
+        assert!(
+            args[3]
+                .as_str()
+                .expect("header pseudonym")
+                .starts_with("Cookie: anon_")
+        );
+
+        let sanitized_embedded: Value =
+            serde_json::from_str(args[1].as_str().expect("embedded JSON string"))
+                .expect("embedded JSON should remain valid");
+        assert_eq!(
+            sanitized_embedded["text"].as_str(),
+            Some(anonymize(private_text).as_str())
+        );
+        assert_eq!(
+            sanitized_embedded["path"].as_str(),
+            Some(anonymize(private_path).as_str())
+        );
+        assert!(
+            sanitized_embedded["details"][0]
+                .as_str()
+                .expect("embedded header")
+                .starts_with("Authorization: anon_")
+        );
+        assert!(
+            sanitized_embedded["url"]
+                .as_str()
+                .expect("embedded URL")
+                .contains("anon-")
+        );
+    }
+
+    #[test]
+    fn recognized_sorotte_client_messages_keep_routing_and_control_payload_shape() {
+        let control_messages = [
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED,
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
+            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED,
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP,
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT,
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT,
+            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT,
+        ];
+        let private_path = r"C:\Users\Shaun\private-network-options.json";
+        for message_name in control_messages {
+            let sanitized = sanitize_json(json!({
+                "event": MPV_EVENT_CLIENT_MESSAGE,
+                "args": [
+                    message_name,
+                    json!({
+                        "protocol": "sorotte-network-options-v3",
+                        "status": "ready",
+                        "heartbeatNonce": 551,
+                        "path": private_path,
+                    }).to_string(),
+                ],
+            }));
+            let args = sanitized["args"]
+                .as_array()
+                .expect("control message args should remain an array");
+            assert_eq!(
+                args[0].as_str(),
+                Some(message_name),
+                "Sorotte routing name must remain recognizable"
+            );
+            let payload: Value = serde_json::from_str(
+                args[1]
+                    .as_str()
+                    .expect("control payload should remain encoded JSON"),
+            )
+            .expect("control payload should remain valid JSON");
+            assert_eq!(payload["protocol"], "sorotte-network-options-v3");
+            assert_eq!(payload["status"], "ready");
+            assert_eq!(payload["heartbeatNonce"], 551);
+            assert_eq!(payload["path"], anonymize(private_path));
+        }
+
+        let private_chat = "private-syncplay-chat-canary";
+        let sanitized_chat = sanitize_json(json!({
+            "event": MPV_EVENT_CLIENT_MESSAGE,
+            "args": [LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT, private_chat],
+        }));
+        assert_eq!(
+            sanitized_chat["args"][0], LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT,
+            "recognized chat routing must remain intact"
+        );
+        assert_eq!(
+            sanitized_chat["args"][1],
+            anonymize(private_chat),
+            "chat contents must still be anonymized"
+        );
+    }
+
+    #[test]
+    fn generic_event_arrays_anonymize_relative_paths_and_header_credentials() {
+        let private_path = "private/show.mkv";
+        let private_header = "Bearer generic-array-canary";
+        let sanitized = sanitize_json(json!({
+            "event": "property-change",
+            "name": "third-party-metadata",
+            "data": [
+                private_path,
+                format!(" Authorization: {private_header}"),
+            ],
+        }));
+
+        assert_eq!(sanitized["data"][0], anonymize(private_path));
+        assert_eq!(
+            sanitized["data"][1],
+            format!("Authorization: {}", anonymize(private_header))
+        );
+        assert!(!sanitized.to_string().contains(private_path));
+        assert!(!sanitized.to_string().contains(private_header));
     }
 
     #[test]

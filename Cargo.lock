@@ -3674,6 +3674,7 @@ dependencies = [
  "sorotte-client-core",
  "sorotte-player-api",
  "sorotte-secret",
+ "url",
  "windows-sys 0.61.2",
 ]
 

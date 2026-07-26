@@ -835,27 +835,27 @@ pub struct MpvAdapter {
 }
 
 impl MpvAdapter {
-    /// Enables sanitized raw mpv lifecycle transcript capture for debugging or
-    /// deterministic regression-fixture generation.
+    /// Enables sanitized decoded mpv event capture for lifecycle debugging.
+    ///
+    /// This observes the adapter's event pump. Outgoing commands and
+    /// synchronous command responses are intentionally outside this recorder.
     pub fn enable_lifecycle_transcript_capture(&mut self) {
         self.lifecycle_transcript_recorder = Some(MpvTranscriptRecorder::new());
         self.next_lifecycle_transcript_ingress_sequence = 1;
     }
 
-    /// Records one decoded raw mpv IPC item at the adapter ingress boundary.
-    ///
-    /// Adapter-polled events call this automatically when capture is enabled.
-    /// Debug transports may call it for synchronous command responses, which
-    /// are consumed below the ordinary event pump.
-    pub fn record_lifecycle_transcript_input(
+    fn record_lifecycle_transcript_event(
         &mut self,
-        command_id: Option<PlayerCommandId>,
-        playlist_entry_id: Option<i64>,
         raw_json: Value,
     ) -> Result<(), MpvTranscriptError> {
         let Some(recorder) = self.lifecycle_transcript_recorder.as_mut() else {
             return Ok(());
         };
+        let command_id = raw_json
+            .get("request_id")
+            .and_then(Value::as_u64)
+            .map(PlayerCommandId::new);
+        let playlist_entry_id = raw_json.get("playlist_entry_id").and_then(Value::as_i64);
         let ingress_sequence = self.next_lifecycle_transcript_ingress_sequence.max(1);
         let monotonic_receipt_tick =
             u64::try_from(self.observation_clock_origin.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -6688,16 +6688,9 @@ impl MpvAdapter {
     }
 
     fn handle_ipc_event(&mut self, event: &Value) {
-        // This is the first adapter-owned boundary after mpv's JSON stream has
-        // been decoded. Capture before classification so ignored or malformed
-        // lifecycle input remains available to deterministic replay.
-        let command_id = event
-            .get("request_id")
-            .and_then(Value::as_u64)
-            .map(PlayerCommandId::new);
-        let playlist_entry_id = event.get("playlist_entry_id").and_then(Value::as_i64);
-        let _ =
-            self.record_lifecycle_transcript_input(command_id, playlist_entry_id, event.clone());
+        // Capture decoded event-pump input before classification so ignored or
+        // malformed events remain available to deterministic replay.
+        let _ = self.record_lifecycle_transcript_event(event.clone());
 
         let Some(event_name) = event.get("event").and_then(Value::as_str) else {
             return;
@@ -9227,38 +9220,23 @@ mod lifecycle_transcript_capture_tests {
     use super::*;
 
     #[test]
-    fn opt_in_capture_records_manual_responses_and_automatic_event_ingress() {
+    fn opt_in_capture_records_decoded_event_pump_input() {
         let mut adapter = MpvAdapter::default();
         adapter.enable_lifecycle_transcript_capture();
 
-        adapter
-            .record_lifecycle_transcript_input(
-                Some(PlayerCommandId::new(7)),
-                None,
-                json!({
-                    "request_id": 7,
-                    "error": "success",
-                    "data": "https://media.invalid/video?token=private-value",
-                }),
-            )
-            .expect("manual command response capture");
         adapter.handle_ipc_event(&json!({
             "event": "client-message",
             "playlist_entry_id": 19,
-            "args": ["synthetic"],
+            "args": ["synthetic", "private-value"],
         }));
 
         let transcript = adapter
             .take_lifecycle_transcript()
             .expect("enabled capture should return a transcript");
-        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript.len(), 1);
         assert_eq!(transcript.records()[0].ingress_sequence, 1);
-        assert_eq!(transcript.records()[1].ingress_sequence, 2);
-        assert_eq!(
-            transcript.records()[0].command_id,
-            Some(PlayerCommandId::new(7))
-        );
-        assert_eq!(transcript.records()[1].playlist_entry_id, Some(19));
+        assert_eq!(transcript.records()[0].command_id, None);
+        assert_eq!(transcript.records()[0].playlist_entry_id, Some(19));
         assert!(
             !transcript
                 .to_json_lines()

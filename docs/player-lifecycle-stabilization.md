@@ -607,7 +607,7 @@ media generation, load attempt, playlist entry, command, redacted target kind,
 state before/after, ownership decision, and reconciliation reason. Targets use
 the existing credential/URL redaction policy.
 
-A test/debug transcript record contains:
+A synthetic model-input or event-capture transcript record contains:
 
 ```text
 attachment_epoch
@@ -618,9 +618,12 @@ playlist_entry_id
 raw_json
 ```
 
-Committed transcript fixtures use synthetic local/HTTP/YouTube-like targets and
-contain no credentials or private media URLs. The lifecycle dump and transcript
-replayer are deterministic.
+Committed transcript fixtures are authored synthetic lifecycle-model inputs.
+They use local/HTTP/YouTube-like placeholders, contain no credentials or
+private media URLs, and are not evidence that command or synchronous-response
+boundaries were captured. The adapter's opt-in recorder covers decoded
+event-pump items only. The lifecycle dump and transcript replayer are
+deterministic.
 
 ## Verification map
 
@@ -645,7 +648,7 @@ replayer are deterministic.
 | Outcome retention | overflow, repeated batch, acknowledgement, and invalid-token tests |
 | Native seek ownership | overlapping system seeks, offset change, gap, and late landing tests |
 | Generated histories | seeded load/recovery/reject/duplicate/gap/disconnect/reattach histories with invariants after every input |
-| Real ingress | sanitized transcript replay for local, HTTP, YouTube-like, recovery, buffering seek, rapid replacement, keep-open, and reattachment traces |
+| Synthetic lifecycle model input | sanitized transcript replay for local, HTTP, YouTube-like, recovery, buffering seek, rapid replacement, keep-open, and reattachment traces |
 
 The deterministic scheduler supports delayed, grouped, duplicated, dropped,
 and overflowed inputs; command-response loss; old events after successor
@@ -661,10 +664,11 @@ intentional:
    third-party player adapters remain source-compatible. Sorotte's mpv-to-GUI
    and mpv-to-client-core paths use the ordered batch contract, preserving the
    ordered-event invariants.
-2. Transcript fixtures use sanitized synthetic equivalents when a real service
-   URL would contain a renewable signature or user-specific identifier. Real
-   mpv capture tooling can record a private trace for local diagnosis, while
-   only the redacted normalized trace is committed.
+2. Transcript fixtures are synthetic model inputs, including sanitized
+   equivalents for service URLs that would otherwise contain renewable
+   signatures or user-specific identifiers. The adapter's optional diagnostic
+   recorder captures decoded event-pump input only; outgoing commands and
+   synchronous responses are outside its contract.
 3. A small set of pre-existing scripted adapter tests do not expose mpv's
    authoritative playlist response. Exact-target compatibility shims therefore
    remain under `cfg(test)` so those transports can establish their historical
