@@ -1767,7 +1767,16 @@ impl PlayerLifecycleState {
     }
 
     fn stop_reconciliation_without_proactive_work(&mut self) {
-        if self.has_proactive_unbound_load_attempt() || !self.deferred_start_files.is_empty() {
+        if self.has_proactive_unbound_load_attempt()
+            || !self.deferred_start_files.is_empty()
+            || matches!(
+                self.last_reconciliation,
+                Some(
+                    LoadLifecycleReconciliation::IncompleteSnapshot
+                        | LoadLifecycleReconciliation::TransportFailure
+                )
+            )
+        {
             return;
         }
         self.reconciliation_required = false;
@@ -3923,6 +3932,37 @@ mod tests {
             },
         );
         assert!(state.next_reconciliation_tick.expect("bounded next retry") > first_deadline);
+    }
+
+    #[test]
+    fn incomplete_snapshot_remains_scheduled_without_an_unbound_attempt() {
+        let mut state = PlayerLifecycleState::default();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: Vec::new(),
+                current_path: Some("C:/media/current.mkv".to_owned()),
+            },
+        );
+        let retry_at = state.next_reconciliation_tick.expect("scheduled retry");
+
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::TimerAdvanced { now_tick: retry_at },
+        );
+        state = next;
+
+        assert!(state.reconciliation_required);
+        assert_eq!(
+            state.last_reconciliation,
+            Some(LoadLifecycleReconciliation::IncompleteSnapshot)
+        );
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::RequestLifecycleReconciliation
+        )));
     }
 
     #[test]

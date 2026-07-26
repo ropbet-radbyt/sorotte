@@ -4902,78 +4902,70 @@ impl MpvAdapter {
     }
 
     #[cfg_attr(test, allow(dead_code))]
+    fn read_authoritative_property_at_response_boundary(
+        &mut self,
+        attachment_epoch: PlayerAttachmentEpoch,
+        property_name: &str,
+    ) -> Result<Option<Value>, ()> {
+        let response = match self.ipc_client.as_mut() {
+            Some(client) => client.get_property_classified(property_name),
+            None => {
+                self.apply_lifecycle_input(PlayerLifecycleInput::LifecycleReconciliationFailed {
+                    attachment_epoch,
+                });
+                return Err(());
+            }
+        };
+
+        // The worker encountered every queued event before it returned this
+        // response. Reduce that causal prefix before applying the response;
+        // events harvested by a later property query can then supersede it.
+        self.drain_ipc_events_if_attached();
+
+        match response {
+            Ok(value) => Ok(value),
+            Err(error) if error.is_property_unavailable() => Ok(None),
+            Err(_) => {
+                self.apply_lifecycle_input(PlayerLifecycleInput::LifecycleReconciliationFailed {
+                    attachment_epoch,
+                });
+                self.observe_unhealthy_ipc_transport();
+                Err(())
+            }
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
     fn reconcile_lifecycle_from_authority(&mut self) {
         let epoch = self.lifecycle_epoch();
-        let Some(client) = self.ipc_client.as_mut() else {
-            return;
-        };
-        if !client.is_healthy() {
+        if self
+            .ipc_client
+            .as_ref()
+            .is_none_or(|client| !client.is_healthy())
+        {
             self.apply_lifecycle_input(PlayerLifecycleInput::LifecycleReconciliationFailed {
                 attachment_epoch: epoch,
             });
+            self.observe_unhealthy_ipc_transport();
             return;
         }
-        let Some(playlist) = client.get_property(MPV_PROPERTY_PLAYLIST).ok().flatten() else {
-            self.apply_lifecycle_input(PlayerLifecycleInput::LifecycleReconciliationFailed {
-                attachment_epoch: epoch,
-            });
-            return;
+        let playlist = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PLAYLIST)
+        {
+            Ok(Some(playlist)) => playlist,
+            Ok(None) => {
+                self.apply_lifecycle_input(PlayerLifecycleInput::LifecycleReconciliationFailed {
+                    attachment_epoch: epoch,
+                });
+                return;
+            }
+            Err(()) => return,
         };
-        let path = client
-            .get_property(MPV_PROPERTY_PATH)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_str().map(ToOwned::to_owned));
-        let paused = client
-            .get_property(MPV_PROPERTY_PAUSE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let position_seconds = client
-            .get_property(MPV_PROPERTY_TIME_POS)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_f64());
-        let playback_rate = client
-            .get_property(MPV_PROPERTY_SPEED)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_f64());
-        let paused_for_cache = client
-            .get_property(MPV_PROPERTY_PAUSED_FOR_CACHE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let cache_buffering_percent = client
-            .get_property(MPV_PROPERTY_CACHE_BUFFERING_STATE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_f64());
-        let seeking = client
-            .get_property(MPV_PROPERTY_SEEKING)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let seekable = client
-            .get_property(MPV_PROPERTY_SEEKABLE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let core_idle = client
-            .get_property(MPV_PROPERTY_CORE_IDLE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let demuxer_cache_idle = client
-            .get_property(MPV_PROPERTY_DEMUXER_CACHE_IDLE)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
-        let eof_reached = client
-            .get_property(MPV_PROPERTY_EOF_REACHED)
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_bool());
+        let path =
+            match self.read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PATH) {
+                Ok(path) => path.and_then(|value| value.as_str().map(ToOwned::to_owned)),
+                Err(()) => return,
+            };
         let entries = Self::authoritative_playlist_entries(&playlist);
         let authoritative_current_entry_id = entries
             .iter()
@@ -4986,30 +4978,101 @@ impl MpvAdapter {
         });
         self.observe_external_current_from_authority(&entries, path.as_deref());
         // Reapply identity-dependent ingress only after the authoritative
-        // playlist has bound the physical attempt. Retained observations were
-        // consumed before this query group and therefore precede any events
-        // still buffered by the IPC client.
+        // playlist has bound the physical attempt. Both retained observations
+        // precede the path response, which is applied immediately afterwards.
         self.replay_deferred_start_file_if_bound();
         self.replay_deferred_file_loaded_if_bound();
-        self.drain_ipc_events_if_attached();
-        self.observed_state.path = path.clone();
+        self.observed_state.path = path;
+
+        let paused = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PAUSE)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.paused = paused;
-        self.observed_state.logical_pause =
-            paused.map(|paused| paused && paused_for_cache != Some(true));
+
+        let position_seconds = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_TIME_POS)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_f64),
+            Err(()) => return,
+        };
         self.observed_state.position_seconds = position_seconds;
+
+        let playback_rate = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_SPEED)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_f64),
+            Err(()) => return,
+        };
         self.observed_state.playback_rate = playback_rate;
+
+        let paused_for_cache = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PAUSED_FOR_CACHE)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.paused_for_cache = paused_for_cache;
+        self.observed_state.logical_pause = self
+            .observed_state
+            .paused
+            .map(|paused| paused && paused_for_cache != Some(true));
+
+        let cache_buffering_percent = match self.read_authoritative_property_at_response_boundary(
+            epoch,
+            MPV_PROPERTY_CACHE_BUFFERING_STATE,
+        ) {
+            Ok(value) => value.as_ref().and_then(Value::as_f64),
+            Err(()) => return,
+        };
         self.observed_state.cache_buffering_percent = cache_buffering_percent;
+
+        let seeking = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_SEEKING)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.seeking = seeking;
+
+        let seekable = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_SEEKABLE)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.seekable = seekable;
+
+        let core_idle = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_CORE_IDLE)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.core_idle = core_idle;
+
+        let demuxer_cache_idle = match self.read_authoritative_property_at_response_boundary(
+            epoch,
+            MPV_PROPERTY_DEMUXER_CACHE_IDLE,
+        ) {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
+
+        let eof_reached = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_EOF_REACHED)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
         self.observed_state.eof_reached = eof_reached;
         self.refresh_network_stream_recovery_evidence();
         // File-loaded is the semantic load boundary, while readiness is a
-        // transport observation. Re-publish the authoritative post-start
-        // properties after every retained/buffered event has reduced so the
-        // legacy progress bridge and ordered lifecycle stream converge.
+        // transport observation. Every property above was applied at its own
+        // response boundary, so later-query events remain authoritative.
         self.publish_reconciled_transport_state(authoritative_current_entry_id);
         if entries.iter().all(|entry| !entry.current) {
             self.lifecycle_reconciliation_due = false;
@@ -9319,6 +9382,16 @@ mod version_policy_tests {
             r#"{"request_id":1,"error":"success","data":"0.41.1"}"#,
             r#"{"request_id":2,"error":"success","data":[{"id":1,"filename":"C:/new-core.mkv","current":true,"playing":true}]}"#,
             r#"{"request_id":3,"error":"success","data":"C:/new-core.mkv"}"#,
+            r#"{"request_id":4,"error":"success","data":false}"#,
+            r#"{"request_id":5,"error":"success","data":0.0}"#,
+            r#"{"request_id":6,"error":"success","data":1.0}"#,
+            r#"{"request_id":7,"error":"success","data":false}"#,
+            r#"{"request_id":8,"error":"success","data":100.0}"#,
+            r#"{"request_id":9,"error":"success","data":false}"#,
+            r#"{"request_id":10,"error":"success","data":true}"#,
+            r#"{"request_id":11,"error":"success","data":false}"#,
+            r#"{"request_id":12,"error":"success","data":false}"#,
+            r#"{"request_id":13,"error":"success","data":false}"#,
         ])));
         adapter
             .initialize_json_ipc_attachment(PathBuf::from("supported-replacement"), replacement)
@@ -10360,5 +10433,166 @@ mod interrupted_network_stream_recovery_tests {
 
         assert!(exhausted.network_cache_stall.is_some());
         assert_eq!(exhausted.transport_phase, PlayerTransportPhase::Playing);
+    }
+}
+
+#[cfg(test)]
+mod authoritative_reconciliation_regression_tests {
+    use super::*;
+    use crate::lifecycle::LoadLifecycleReconciliation;
+    use std::{collections::VecDeque, io};
+
+    #[derive(Debug, Default)]
+    struct InterleavedAuthorityTransport {
+        pending_lines: VecDeque<String>,
+    }
+
+    impl InterleavedAuthorityTransport {
+        fn response_data(property: &str) -> Value {
+            match property {
+                MPV_PROPERTY_PLAYLIST => json!([{
+                    "id": 41,
+                    "filename": "C:/media/current.mkv",
+                    "current": true,
+                    "playing": true,
+                }]),
+                MPV_PROPERTY_PATH => json!("C:/media/current.mkv"),
+                MPV_PROPERTY_PAUSE => json!(false),
+                MPV_PROPERTY_TIME_POS => json!(12.0),
+                MPV_PROPERTY_SPEED => json!(1.0),
+                MPV_PROPERTY_PAUSED_FOR_CACHE => json!(false),
+                MPV_PROPERTY_CACHE_BUFFERING_STATE => json!(100.0),
+                MPV_PROPERTY_SEEKING => json!(false),
+                MPV_PROPERTY_SEEKABLE => json!(true),
+                MPV_PROPERTY_CORE_IDLE => json!(false),
+                MPV_PROPERTY_DEMUXER_CACHE_IDLE => json!(false),
+                MPV_PROPERTY_EOF_REACHED => json!(false),
+                _ => Value::Null,
+            }
+        }
+    }
+
+    impl MpvJsonIpcTransport for InterleavedAuthorityTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim()).expect("valid IPC request");
+            let request_id = request["request_id"].as_u64().expect("request id");
+            let property = request["command"][1].as_str().expect("get-property name");
+            self.pending_lines.push_back(format!(
+                "{}\n",
+                json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": Self::response_data(property),
+                })
+            ));
+            if property == MPV_PROPERTY_PAUSE {
+                // Emitted after the pause response; the worker consumes this
+                // while waiting for the following time-pos response.
+                self.pending_lines.push_back(format!(
+                    "{}\n",
+                    json!({
+                        "event": MPV_EVENT_PROPERTY_CHANGE,
+                        "name": MPV_PROPERTY_PAUSE,
+                        "data": true,
+                    })
+                ));
+            }
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let next = self.pending_lines.pop_front().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted response")
+            })?;
+            line.clear();
+            line.push_str(&next);
+            Ok(line.len())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct PlaylistThenDisconnectTransport {
+        pending_lines: VecDeque<String>,
+    }
+
+    impl MpvJsonIpcTransport for PlaylistThenDisconnectTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim()).expect("valid IPC request");
+            let request_id = request["request_id"].as_u64().expect("request id");
+            let property = request["command"][1].as_str().expect("get-property name");
+            if property == MPV_PROPERTY_PLAYLIST {
+                self.pending_lines.push_back(format!(
+                    "{}\n",
+                    json!({
+                        "request_id": request_id,
+                        "error": "success",
+                        "data": [{
+                            "id": 41,
+                            "filename": "C:/media/current.mkv",
+                            "current": true,
+                            "playing": true,
+                        }],
+                    })
+                ));
+            }
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            if let Some(next) = self.pending_lines.pop_front() {
+                line.clear();
+                line.push_str(&next);
+                return Ok(line.len());
+            }
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "scripted disconnect after playlist response",
+            ))
+        }
+    }
+
+    #[test]
+    fn authoritative_reconciliation_does_not_overwrite_newer_buffered_pause_event() {
+        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport::default());
+
+        adapter.reconcile_lifecycle_from_authority();
+
+        assert_eq!(
+            adapter.observed_state.paused,
+            Some(true),
+            "the pause event emitted after the pause response must remain authoritative"
+        );
+    }
+
+    #[test]
+    fn fatal_post_playlist_read_does_not_resolve_partial_authority_snapshot() {
+        let mut adapter =
+            MpvAdapter::with_test_transport(PlaylistThenDisconnectTransport::default());
+
+        adapter.reconcile_lifecycle_from_authority();
+        assert!(
+            adapter
+                .ipc_client
+                .as_ref()
+                .is_some_and(|client| !client.is_healthy()),
+            "the scripted path read must fatally disconnect the IPC client"
+        );
+        // Exercise the normal adjacent pump as well: it currently does not
+        // convert the unhealthy client into lifecycle failure/terminal state.
+        adapter.maintain_runtime_integrations();
+
+        assert!(
+            adapter.player_lifecycle.active_load_attempt.is_none(),
+            "a playlist-only partial read must not manufacture active ownership"
+        );
+        assert_eq!(
+            adapter.player_lifecycle.last_reconciliation,
+            Some(LoadLifecycleReconciliation::TransportFailure),
+            "a fatal path read must not be erased as an unavailable property"
+        );
+        assert!(
+            adapter.player_lifecycle.reconciliation_required,
+            "fatal authority acquisition must remain scheduled for reconciliation"
+        );
     }
 }

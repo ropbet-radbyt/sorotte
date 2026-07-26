@@ -274,6 +274,22 @@ impl MpvJsonIpcClient {
             .filter(|value| !value.is_null()))
     }
 
+    /// Queries a property without erasing mpv's response classification.
+    ///
+    /// Callers that need to distinguish an unavailable property from a fatal
+    /// transport or protocol failure should use this method.
+    pub(crate) fn get_property_classified(
+        &mut self,
+        property_name: &str,
+    ) -> Result<Option<Value>, MpvIpcCommandFailure> {
+        let response =
+            self.send_command_classified(json!([MPV_COMMAND_GET_PROPERTY, property_name]), true)?;
+        Ok(response
+            .get("data")
+            .cloned()
+            .filter(|value| !value.is_null()))
+    }
+
     pub(crate) fn get_property_string(
         &mut self,
         property_name: &str,
@@ -294,16 +310,9 @@ impl MpvJsonIpcClient {
         &mut self,
         property_name: &str,
     ) -> Result<Option<String>, MpvIpcCommandFailure> {
-        // The caller receives ordinary server rejections directly and can
-        // classify an expected unavailable property. Do not also enqueue a
-        // misleading connection-failure event for that handled response.
-        // Fatal transport/protocol failures are still recorded regardless of
-        // this suppression flag.
-        let response =
-            self.send_command_classified(json!([MPV_COMMAND_GET_PROPERTY, property_name]), true)?;
-        Ok(response
-            .get("data")
-            .filter(|value| !value.is_null())
+        Ok(self
+            .get_property_classified(property_name)?
+            .as_ref()
             .and_then(Value::as_str)
             .map(ToOwned::to_owned))
     }
