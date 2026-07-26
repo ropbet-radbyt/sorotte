@@ -13,6 +13,7 @@ use sorotte_player_mpv::{
     LifecycleVerificationPlaylistEntry, MpvLifecycleVerificationHarness, SimulatedPlayer,
 };
 
+mod trace_delivery;
 mod trace_load_matrix;
 mod trace_resolution;
 

@@ -151,6 +151,9 @@ fn authoritative_snapshot(
                 media_generation: attempt.media_generation,
                 command_id: attempt.command_id,
                 playlist_entry_id: attempt.playlist_entry_id,
+                physical_file_loaded: attempt.physical_file_loaded(),
+                semantic_load_result: attempt.semantic_load_result,
+                logical_ownership_revoked: attempt.logical_ownership_revoked,
             })
         }),
         current_playlist_entry_id: active
@@ -435,6 +438,7 @@ impl ConsumerState {
             }
             PlayerEvent::LocalFileChanged { .. }
             | PlayerEvent::LoadAttemptBound { .. }
+            | PlayerEvent::LoadAttemptLogicalOwnershipRevoked { .. }
             | PlayerEvent::EventGapDetected => {}
         }
     }
@@ -449,7 +453,7 @@ impl ConsumerState {
             }
             PlayerSemanticOutcome::LoadAttempt(attempt) => {
                 let key = (attempt.attachment_epoch, attempt.attempt_id);
-                if let Some(existing) = self.load_outcomes.insert(key, attempt.result.clone()) {
+                if let Some(existing) = self.load_outcomes.insert(key, attempt.result) {
                     assert_eq!(existing, attempt.result);
                 }
             }
