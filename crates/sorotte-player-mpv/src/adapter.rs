@@ -7026,11 +7026,12 @@ impl MpvAdapter {
             }
             MPV_PROPERTY_SEEKING => {
                 if let Some(seeking) = data.and_then(Value::as_bool) {
-                    self.observed_state.seeking = Some(seeking);
+                    let transport_seeking = self.normalize_transport_seeking_observation(seeking);
+                    self.observed_state.seeking = Some(transport_seeking);
                     let phase = self.inferred_transport_phase();
                     self.transport_phase = phase;
                     let mut update = self.transport_update().with_phase(phase);
-                    update.seeking = Some(seeking);
+                    update.seeking = Some(transport_seeking);
                     self.queue_transport_telemetry_update(update);
                     if let Some(media_generation) = self.player_lifecycle.active_media_generation()
                     {
@@ -7045,13 +7046,13 @@ impl MpvAdapter {
                     }
                     self.observe_tracked_commands(
                         self.observation_media_generation(),
-                        TrackedCommandObservation::Seeking(seeking),
+                        TrackedCommandObservation::Seeking(transport_seeking),
                     );
                     self.observe_tracked_commands(
                         self.observation_media_generation(),
                         TrackedCommandObservation::Phase(phase),
                     );
-                    if !seeking {
+                    if !transport_seeking {
                         // mpv need not re-emit an unchanged paused-for-cache
                         // property after a seek. Treat seek completion as the
                         // fresh boundary from which an ongoing cache stall may
@@ -7396,15 +7397,36 @@ impl MpvAdapter {
         }
     }
 
+    fn normalize_transport_seeking_observation(&self, seeking: bool) -> bool {
+        if !seeking {
+            return false;
+        }
+        let tracked_seek_is_pending = self
+            .pending_tracked_commands
+            .iter()
+            .any(|command| matches!(command.kind, TrackedCommandKind::Seek { .. }));
+        let settled_intentional_pause = self.active_file_loaded
+            && self.active_generation_has_restarted
+            && self.observed_state.logical_pause == Some(true)
+            && self.observed_state.paused_for_cache == Some(false)
+            && self.observed_state.core_idle == Some(true);
+        // mpv documents that both the seek event and `seeking=true` can
+        // represent an internal playback resync. Preserve the raw edge for
+        // lifecycle/native-seek ownership, but do not let it indefinitely
+        // replace a settled intentional pause when Sorotte has no seek command
+        // awaiting completion.
+        !(settled_intentional_pause && !tracked_seek_is_pending)
+    }
+
     fn handle_seek_event(&mut self) {
         self.network_cache_stall = None;
         self.begin_seek_cache_evidence_epoch();
-        self.observed_state.seeking = Some(true);
-        self.transport_phase = PlayerTransportPhase::Seeking;
-        let mut update = self
-            .transport_update()
-            .with_phase(PlayerTransportPhase::Seeking);
-        update.seeking = Some(true);
+        let transport_seeking = self.normalize_transport_seeking_observation(true);
+        self.observed_state.seeking = Some(transport_seeking);
+        let phase = self.inferred_transport_phase();
+        self.transport_phase = phase;
+        let mut update = self.transport_update().with_phase(phase);
+        update.seeking = Some(transport_seeking);
         self.queue_transport_telemetry_update(update);
         if let Some(media_generation) = self.player_lifecycle.active_media_generation() {
             let lifecycle_epoch = self.lifecycle_epoch();
@@ -7418,7 +7440,7 @@ impl MpvAdapter {
         }
         self.observe_tracked_commands(
             self.observation_media_generation(),
-            TrackedCommandObservation::Seeking(true),
+            TrackedCommandObservation::Seeking(transport_seeking),
         );
     }
 
@@ -9651,6 +9673,79 @@ mod timeline_kind_tests {
             "name": MPV_PROPERTY_METADATA,
             "data": data,
         }));
+    }
+
+    #[test]
+    fn paused_core_idle_internal_seek_does_not_latch_transport_in_seeking() {
+        let mut adapter = loaded_adapter("C:/media/paused.wav", Some(8.0));
+        adapter.logical_pause_explicit = true;
+        adapter.paused = true;
+        adapter.observed_state.paused = Some(true);
+        adapter.observed_state.logical_pause = Some(true);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.observed_state.core_idle = Some(true);
+        adapter.active_generation_has_restarted = true;
+        adapter.playback_restart_sequence = 1;
+        adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_SEEK,
+        }));
+        assert_eq!(
+            adapter.transport_phase,
+            PlayerTransportPhase::ReadyPaused,
+            "an internal resync edge must not displace settled intentional pause"
+        );
+        assert_eq!(adapter.observed_state.seeking, Some(false));
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_SEEKING,
+            "data": true,
+        }));
+        assert_eq!(
+            adapter.transport_phase,
+            PlayerTransportPhase::ReadyPaused,
+            "mpv documents that seeking can remain true while it internally restarts playback"
+        );
+        assert_eq!(adapter.observed_state.seeking, Some(false));
+    }
+
+    #[test]
+    fn paused_core_idle_tracked_seek_remains_in_seeking_until_completion() {
+        let mut adapter = loaded_adapter("C:/media/paused.wav", Some(8.0));
+        adapter.logical_pause_explicit = true;
+        adapter.paused = true;
+        adapter.observed_state.paused = Some(true);
+        adapter.observed_state.logical_pause = Some(true);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.observed_state.core_idle = Some(true);
+        adapter.active_generation_has_restarted = true;
+        adapter.playback_restart_sequence = 1;
+        adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
+        let command_id = adapter.register_tracked_command(
+            adapter.active_media_generation,
+            TrackedCommandKind::Seek {
+                target_seconds: 4.0,
+                seeking_finished: false,
+                position_in_tolerance: false,
+            },
+        );
+        adapter.accept_tracked_command(command_id);
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_SEEK,
+        }));
+
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Seeking);
+        assert_eq!(adapter.observed_state.seeking, Some(true));
+        assert!(
+            adapter
+                .pending_tracked_commands
+                .iter()
+                .any(|command| command.id == command_id),
+            "the paused resync exception must not complete a Sorotte-owned seek"
+        );
     }
 
     #[test]
