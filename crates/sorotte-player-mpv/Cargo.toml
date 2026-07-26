@@ -25,4 +25,9 @@ windows-sys.workspace = true
 
 [dev-dependencies]
 mlua.workspace = true
-sorotte-client-core = { path = "../sorotte-client-core" }
+sorotte-client-core = { path = "../sorotte-client-core", features = ["test-support"] }
+
+[[test]]
+name = "repro_acknowledged_cache_pause"
+path = "tests/repro_acknowledged_cache_pause.rs"
+required-features = ["test-support"]

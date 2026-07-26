@@ -4412,7 +4412,8 @@ where
         if update == PlayerPlaybackTelemetryUpdate::default() {
             return;
         }
-        self.session.apply_player_playback_telemetry_update(&update);
+        self.session
+            .apply_ordered_player_playback_telemetry_update(&update);
         if let Some(pending) = self.pending_player_playback_telemetry_updates.back_mut() {
             pending.paused = update.paused.or(pending.paused);
             pending.position_seconds = update.position_seconds.or(pending.position_seconds);

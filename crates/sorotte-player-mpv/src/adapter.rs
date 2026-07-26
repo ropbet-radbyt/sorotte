@@ -6102,6 +6102,19 @@ impl MpvAdapter {
         update
     }
 
+    fn ordered_logical_pause(
+        &self,
+        logical_pause: Option<bool>,
+        paused_for_cache: Option<bool>,
+    ) -> Option<bool> {
+        // Ordered consumers merge sparse fields. Classify an unowned physical
+        // cache stop as logical playing so an earlier transient pause cannot
+        // remain authoritative.
+        logical_pause.or_else(|| {
+            (paused_for_cache == Some(true) && !self.logical_pause_explicit).then_some(false)
+        })
+    }
+
     fn queue_transport_telemetry_update(&mut self, update: PlayerTransportTelemetryUpdate) {
         self.queue_transport_telemetry_update_for_attempt(update, None);
     }
@@ -6118,6 +6131,8 @@ impl MpvAdapter {
             update.observed_at = Some(self.observation_timestamp());
         }
         let mut ordered_delta = PlayerTransportDelta::from(update.clone());
+        ordered_delta.logical_pause =
+            self.ordered_logical_pause(ordered_delta.logical_pause, ordered_delta.paused_for_cache);
         ordered_delta.load_attempt_id = owning_attempt_id.or_else(|| {
             update.media_generation.and_then(|generation| {
                 self.player_lifecycle
@@ -6840,9 +6855,12 @@ impl MpvAdapter {
                     {
                         self.logical_pause_explicit = true;
                     }
-                    let logical_pause = (!paused
-                        || self.observed_state.paused_for_cache != Some(true))
-                    .then_some(paused);
+                    let logical_pause = if paused && self.logical_pause_explicit {
+                        Some(true)
+                    } else {
+                        (!paused || self.observed_state.paused_for_cache != Some(true))
+                            .then_some(paused)
+                    };
                     self.observed_state.logical_pause = logical_pause;
                     self.queue_playback_telemetry_update(
                         PlayerPlaybackTelemetryUpdate::default().with_paused(paused),

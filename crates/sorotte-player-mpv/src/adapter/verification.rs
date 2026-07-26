@@ -135,6 +135,17 @@ impl MpvLifecycleVerificationHarness {
         attempt_id
     }
 
+    pub fn accept_tracked_pause(&mut self) -> PlayerCommandId {
+        let command_id = self.adapter.register_tracked_command(
+            self.adapter.media_generation(),
+            TrackedCommandKind::Pause {
+                logical_pause_observed: false,
+            },
+        );
+        self.adapter.accept_tracked_command(command_id);
+        command_id
+    }
+
     pub fn apply_authoritative_snapshot(
         &mut self,
         entries: impl IntoIterator<Item = LifecycleVerificationPlaylistEntry>,

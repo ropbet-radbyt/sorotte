@@ -253,6 +253,23 @@ impl ClientSession {
         changed
     }
 
+    /// Applies an ordered logical-pause classification, which is already
+    /// distinct from mpv's physical cache-induced pause state.
+    pub(crate) fn apply_ordered_player_playback_telemetry_update(
+        &mut self,
+        update: &PlayerPlaybackTelemetryUpdate,
+    ) -> bool {
+        let logical_pause = update.paused;
+        let mut changed = self.apply_player_playback_telemetry_update(update);
+        if let Some(logical_pause) = logical_pause
+            && self.model.playback.local_paused != Some(logical_pause)
+        {
+            self.model.playback.local_paused = Some(logical_pause);
+            changed = true;
+        }
+        changed
+    }
+
     pub fn initialize_local_identity(&mut self, username: String, room: String) {
         self.model.connection.username = Some(username.clone());
         self.update_local_room(room.clone());
