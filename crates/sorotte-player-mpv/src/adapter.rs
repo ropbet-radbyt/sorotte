@@ -4991,6 +4991,9 @@ impl MpvAdapter {
             Err(()) => return,
         };
         self.observed_state.paused = paused;
+        if paused == Some(false) {
+            self.logical_pause_explicit = false;
+        }
 
         let position_seconds = match self
             .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_TIME_POS)
@@ -5015,10 +5018,9 @@ impl MpvAdapter {
             Err(()) => return,
         };
         self.observed_state.paused_for_cache = paused_for_cache;
-        self.observed_state.logical_pause = self
-            .observed_state
-            .paused
-            .map(|paused| paused && paused_for_cache != Some(true));
+        self.observed_state.logical_pause = self.observed_state.paused.map(|paused| {
+            paused && (paused_for_cache != Some(true) || self.logical_pause_explicit)
+        });
 
         let cache_buffering_percent = match self.read_authoritative_property_at_response_boundary(
             epoch,
@@ -10441,10 +10443,13 @@ mod authoritative_reconciliation_regression_tests {
     #[derive(Debug, Default)]
     struct InterleavedAuthorityTransport {
         pending_lines: VecDeque<String>,
+        pause_response: bool,
+        paused_for_cache_response: bool,
+        pause_event_after_response: Option<bool>,
     }
 
     impl InterleavedAuthorityTransport {
-        fn response_data(property: &str) -> Value {
+        fn response_data(&self, property: &str) -> Value {
             match property {
                 MPV_PROPERTY_PLAYLIST => json!([{
                     "id": 41,
@@ -10453,10 +10458,10 @@ mod authoritative_reconciliation_regression_tests {
                     "playing": true,
                 }]),
                 MPV_PROPERTY_PATH => json!("C:/media/current.mkv"),
-                MPV_PROPERTY_PAUSE => json!(false),
+                MPV_PROPERTY_PAUSE => json!(self.pause_response),
                 MPV_PROPERTY_TIME_POS => json!(12.0),
                 MPV_PROPERTY_SPEED => json!(1.0),
-                MPV_PROPERTY_PAUSED_FOR_CACHE => json!(false),
+                MPV_PROPERTY_PAUSED_FOR_CACHE => json!(self.paused_for_cache_response),
                 MPV_PROPERTY_CACHE_BUFFERING_STATE => json!(100.0),
                 MPV_PROPERTY_SEEKING => json!(false),
                 MPV_PROPERTY_SEEKABLE => json!(true),
@@ -10478,10 +10483,12 @@ mod authoritative_reconciliation_regression_tests {
                 json!({
                     "request_id": request_id,
                     "error": "success",
-                    "data": Self::response_data(property),
+                    "data": self.response_data(property),
                 })
             ));
-            if property == MPV_PROPERTY_PAUSE {
+            if property == MPV_PROPERTY_PAUSE
+                && let Some(paused) = self.pause_event_after_response
+            {
                 // Emitted after the pause response; the worker consumes this
                 // while waiting for the following time-pos response.
                 self.pending_lines.push_back(format!(
@@ -10489,7 +10496,7 @@ mod authoritative_reconciliation_regression_tests {
                     json!({
                         "event": MPV_EVENT_PROPERTY_CHANGE,
                         "name": MPV_PROPERTY_PAUSE,
-                        "data": true,
+                        "data": paused,
                     })
                 ));
             }
@@ -10549,7 +10556,10 @@ mod authoritative_reconciliation_regression_tests {
 
     #[test]
     fn authoritative_reconciliation_does_not_overwrite_newer_buffered_pause_event() {
-        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport::default());
+        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport {
+            pause_event_after_response: Some(true),
+            ..InterleavedAuthorityTransport::default()
+        });
 
         adapter.reconcile_lifecycle_from_authority();
 
@@ -10557,6 +10567,40 @@ mod authoritative_reconciliation_regression_tests {
             adapter.observed_state.paused,
             Some(true),
             "the pause event emitted after the pause response must remain authoritative"
+        );
+    }
+
+    #[test]
+    fn authoritative_reconciliation_preserves_explicit_pause_during_cache_stall() {
+        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport {
+            pause_response: true,
+            paused_for_cache_response: true,
+            ..InterleavedAuthorityTransport::default()
+        });
+        adapter.logical_pause_explicit = true;
+
+        adapter.reconcile_lifecycle_from_authority();
+
+        assert_eq!(adapter.observed_state.paused, Some(true));
+        assert_eq!(adapter.observed_state.paused_for_cache, Some(true));
+        assert_eq!(
+            adapter.observed_state.logical_pause,
+            Some(true),
+            "an authoritative refresh must not reclassify an explicitly owned pause as cache-only"
+        );
+    }
+
+    #[test]
+    fn authoritative_unpause_clears_explicit_pause_ownership() {
+        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport::default());
+        adapter.logical_pause_explicit = true;
+
+        adapter.reconcile_lifecycle_from_authority();
+
+        assert_eq!(adapter.observed_state.paused, Some(false));
+        assert!(
+            !adapter.logical_pause_explicit,
+            "an authoritative unpause must retire stale explicit-pause ownership before a later cache-only pause"
         );
     }
 

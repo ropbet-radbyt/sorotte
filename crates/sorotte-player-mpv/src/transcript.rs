@@ -517,6 +517,7 @@ fn sensitive_key(key: &str) -> bool {
 
 fn location_key(key: &str) -> bool {
     let normalized = normalized_key(key);
+    let compact = normalized.replace('_', "");
     matches!(
         normalized.as_str(),
         "path"
@@ -538,6 +539,11 @@ fn location_key(key: &str) -> bool {
         || normalized.ends_with("_directory")
         || normalized.ends_with("_url")
         || normalized.ends_with("_uri")
+        || compact.ends_with("path")
+        || compact.ends_with("filename")
+        || compact.ends_with("directory")
+        || compact.ends_with("url")
+        || compact.ends_with("uri")
 }
 
 fn normalized_key(key: &str) -> String {
@@ -1564,6 +1570,7 @@ mod tests {
     #[test]
     fn generic_event_arrays_anonymize_relative_paths_and_header_credentials() {
         let private_path = "private/show.mkv";
+        let private_bare_filename = "private-episode-canary.mkv";
         let private_header = "Bearer generic-array-canary";
         let sanitized = sanitize_json(json!({
             "event": "property-change",
@@ -1571,6 +1578,7 @@ mod tests {
             "data": [
                 private_path,
                 format!(" Authorization: {private_header}"),
+                {"mediaPath": private_bare_filename},
             ],
         }));
 
@@ -1579,7 +1587,12 @@ mod tests {
             sanitized["data"][1],
             format!("Authorization: {}", anonymize(private_header))
         );
+        assert_eq!(
+            sanitized["data"][2]["mediaPath"],
+            anonymize(private_bare_filename)
+        );
         assert!(!sanitized.to_string().contains(private_path));
+        assert!(!sanitized.to_string().contains(private_bare_filename));
         assert!(!sanitized.to_string().contains(private_header));
     }
 
