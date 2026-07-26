@@ -137,8 +137,20 @@ impl MpvAdapter {
             })
             .unwrap_or_default();
         let processed_any = !items.is_empty();
+        // A generation-bound control result may pull its earlier structural
+        // events into this fast pump. Reduce their lifecycle effects now, but
+        // retain potentially blocking network-option work for the ordinary
+        // full flush.
+        self.network_media_options_event_batch_depth += 1;
         for item in items {
             match item {
+                crate::ipc::MpvIpcNonblockingRuntimeItem::CausalEvent(event) => {
+                    let previous_observed_at = self
+                        .current_ipc_event_observed_at
+                        .replace(self.observation_timestamp_for(event.received_at));
+                    self.handle_ipc_event(&event.value);
+                    self.current_ipc_event_observed_at = previous_observed_at;
+                }
                 crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) => {
                     let is_transition_result = event
                         .value
@@ -157,9 +169,16 @@ impl MpvAdapter {
                             .deferred_network_media_options_hook_transition_result
                             .take()
                     {
-                        // Commit the earlier policy result before a later selected ownership,
-                        // lease, or command-completion item mutates hook state. Path/property
-                        // events can remain queued for the ordinary full pump.
+                        // The IPC queue has reduced every earlier ordinary
+                        // event before yielding this generation-bound result.
+                        // Later media events remain queued, so neither the
+                        // predecessor nor a successor can consume it.
+                        //
+                        // Do not bind acknowledgement acceptance to the raw
+                        // deferred path here. mpv may rewrite a logically
+                        // equivalent URL, and the generation barrier already
+                        // supplies the lifecycle identity needed to reject
+                        // stale results.
                         self.apply_network_options_hook_transition_result(result, None);
                     }
                 }
@@ -311,6 +330,9 @@ impl MpvAdapter {
                 }
             }
         }
+        self.network_media_options_event_batch_depth = self
+            .network_media_options_event_batch_depth
+            .saturating_sub(1);
         processed_any
     }
 
@@ -2934,6 +2956,56 @@ mod nonblocking_maintenance_tests {
         );
     }
 
+    #[test]
+    fn repro_synchronous_heartbeat_starts_ack_timeout_after_command_delivery() {
+        let response_delay = NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
+            .checked_add(Duration::from_millis(100))
+            .expect("test delay should fit in Duration");
+        let command_timeout = response_delay
+            .checked_add(Duration::from_secs(1))
+            .expect("test timeout should fit in Duration");
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            DelayedSuccessTransport {
+                responses: VecDeque::new(),
+                first_response_delay: Some(response_delay),
+            },
+            command_timeout,
+        );
+        adapter.network_media_options_hook_enabled = true;
+        adapter.network_media_options_hook_loaded = true;
+        adapter.network_media_options_hook_instance_id = Some("sync-hook".to_owned());
+        adapter.network_media_options_hook_configured_generation =
+            Some(adapter.network_media_options_generation);
+        adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
+        adapter.network_media_options_hook_last_heartbeat_at =
+            Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
+
+        adapter.maintain_network_media_options_hook_lease();
+        assert!(
+            adapter
+                .network_media_options_hook_pending_heartbeat
+                .is_some(),
+            "the asynchronous Lua acknowledgement has not arrived yet"
+        );
+
+        // This is the first tick after mpv accepted the script-message. The
+        // full acknowledgement window must still remain, even though delivery
+        // of the IPC command itself took longer than that window.
+        adapter.maintain_network_media_options_hook_lease();
+
+        assert_eq!(
+            adapter.network_media_options_hook_health,
+            MpvNetworkOptionsHookHealth::Ready,
+            "command delivery time must not be charged against the later Lua acknowledgement"
+        );
+        assert!(
+            adapter
+                .network_media_options_hook_pending_heartbeat
+                .is_some(),
+            "the adapter should keep waiting for the asynchronous acknowledgement"
+        );
+    }
+
     fn assert_ordinary_event_order_does_not_block_hook_ack(
         ordering: HeartbeatEventOrdering,
         expected_event_names: &[&str],
@@ -3674,5 +3746,123 @@ mod nonblocking_maintenance_tests {
                 .map(|event| &event.value),
             Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
         ));
+    }
+
+    #[test]
+    fn repro_control_lane_transition_does_not_leapfrog_earlier_start_file() {
+        let old_target = "https://media.example.test/old.m3u8";
+        let new_target = "https://media.example.test/new.m3u8";
+        let mut adapter =
+            MpvAdapter::with_network_options_hook_test_transport(RejectingHeartbeatTransport {
+                responses: VecDeque::new(),
+            });
+        adapter.legacy_syncplayintf_owner_id = "causal-owner".to_owned();
+        adapter.legacy_syncplayintf_attachment_id = "causal-attachment".to_owned();
+        adapter.configure_network_media_options([("cache-secs", "60")]);
+        adapter.prepare_test_network_options_hook_v3_reducer();
+        // The hook can advance its global sequence for work that does not
+        // produce a Rust-side start-file observation. The next visible
+        // transition therefore establishes a floor, not an exact successor.
+        adapter.network_media_options_hook_last_accepted_load_sequence = Some(0);
+        adapter.network_media_options_hook_latest_started_load_sequence = Some(0);
+        adapter
+            .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
+
+        let old_generation = PlayerMediaGeneration::new(70);
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch,
+            media_generation: old_generation,
+            playlist_entry_id: 70,
+            observed_target: old_target.to_owned(),
+            file_loaded: true,
+        });
+        let old_attempt_id = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("old active attempt");
+        adapter.install_physical_projection(
+            old_attempt_id,
+            old_generation,
+            Some(70),
+            Some(old_target.to_owned()),
+            true,
+        );
+        adapter.observed_state.path = Some(old_target.to_owned());
+        adapter.transport_phase = PlayerTransportPhase::Playing;
+
+        let transition_payload = json!({
+            "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+            "ownerId": "causal-owner",
+            "attachmentId": "causal-attachment",
+            "hookInstanceId": "test-hook-instance",
+            "configurationGeneration": adapter.network_media_options_generation,
+            "loadSequence": 2,
+            "sourcePath": new_target,
+            "streamOpenFilename": new_target,
+            "status": "network-updated",
+            "applicationState": "applied",
+            "verification": "complete",
+            "optionResults": [{
+                "name": "cache-secs",
+                "status": "applied",
+            }],
+            "effectiveOptions": {
+                "cache-secs": "60",
+            },
+        });
+        let client = adapter
+            .ipc_client
+            .as_mut()
+            .expect("test adapter should remain attached");
+        client.inject_test_event(json!({
+            "event": MPV_EVENT_START_FILE,
+            "playlist_entry_id": 71,
+        }));
+        client.inject_test_event(json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PATH,
+            "data": new_target,
+        }));
+        client.inject_test_event(json!({
+            "event": MPV_EVENT_CLIENT_MESSAGE,
+            "args": [
+                SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT,
+                transition_payload.to_string(),
+            ],
+        }));
+
+        adapter.drain_runtime_lease_events_nonblocking();
+        assert_eq!(
+            adapter
+                .ipc_client
+                .as_ref()
+                .expect("test adapter should remain attached")
+                .test_runtime_queue_sizes(),
+            (0, 0),
+            "the generation-bound result must carry its earlier structural events through the nonblocking causal barrier"
+        );
+        adapter.drain_ipc_events_if_attached();
+
+        let new_generation = adapter
+            .active_media_generation
+            .expect("start-file should establish the replacement generation");
+        assert_ne!(new_generation, old_generation);
+        let diagnostics = adapter.network_media_diagnostic_snapshot();
+        assert_eq!(diagnostics.media_generation, Some(new_generation));
+        assert_eq!(
+            diagnostics.load_sequence,
+            Some(2),
+            "the hook result must bind to the replacement start-file rather than be consumed against the predecessor"
+        );
+        assert_eq!(
+            diagnostics.application_state,
+            Some(MpvNetworkMediaPolicyApplicationState::Applied)
+        );
+        assert!(diagnostics.verification_complete);
+        assert!(
+            adapter.network_media_options_expected_transition.is_none(),
+            "the accepted transition must clear the replacement generation's expectation"
+        );
     }
 }

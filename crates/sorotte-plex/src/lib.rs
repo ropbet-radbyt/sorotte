@@ -1317,18 +1317,32 @@ impl PlexHttpClient {
         }
         let base = server_url.trim_end_matches('/');
         let part_key = part.key.trim();
-        let mut url = if part_key.starts_with("http://") || part_key.starts_with("https://") {
+        let server_origin = reqwest::Url::parse(server_url.trim()).map_err(|_| {
+            PlexError::InvalidResponse("configured Plex server URL is invalid".to_owned())
+        })?;
+        let absolute_part = part_key.starts_with("http://") || part_key.starts_with("https://");
+        let candidate = if absolute_part {
             part_key.to_owned()
         } else if part_key.starts_with('/') {
             format!("{base}{part_key}")
         } else {
             format!("{base}/{part_key}")
         };
-        let delimiter = if url.contains('?') { '&' } else { '?' };
-        url.push(delimiter);
-        url.push_str("X-Plex-Token=");
-        url.push_str(&percent_encode_query_value(token));
-        Ok(SecretPlexPlaybackUrl::new(url))
+        let mut url = reqwest::Url::parse(&candidate).map_err(|_| {
+            PlexError::InvalidResponse("metadata part included an invalid stream URL".to_owned())
+        })?;
+        if absolute_part
+            && (url.scheme() != server_origin.scheme()
+                || url.host_str().map(str::to_ascii_lowercase)
+                    != server_origin.host_str().map(str::to_ascii_lowercase)
+                || url.port_or_known_default() != server_origin.port_or_known_default())
+        {
+            return Err(PlexError::InvalidResponse(
+                "metadata part stream URL is outside the configured Plex server origin".to_owned(),
+            ));
+        }
+        url.query_pairs_mut().append_pair("X-Plex-Token", token);
+        Ok(SecretPlexPlaybackUrl::new(url.to_string()))
     }
 
     fn plex_headers(&self, token: Option<&str>) -> reqwest::header::HeaderMap {
@@ -4394,6 +4408,57 @@ mod tests {
         let debug = format!("{url:?}");
         assert!(debug.contains(sorotte_secret::REDACTED_SECRET));
         assert!(!debug.contains("secret-token"));
+    }
+
+    #[test]
+    fn repro_stream_url_does_not_project_token_to_cross_origin_part() {
+        let client =
+            PlexHttpClient::new("stream-url-origin-test").expect("Plex client should construct");
+        let result = client.build_part_stream_url(
+            "https://plex.example.test:32400",
+            "cross-origin-token-canary",
+            &PlexPlayablePart {
+                id: "1".to_owned(),
+                key: "https://untrusted.example.test/video.mkv".to_owned(),
+                file_name: Some("Example.mkv".to_owned()),
+                duration_millis: None,
+                size_bytes: None,
+                container: None,
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "an absolute metadata part on another origin must not receive the configured Plex token; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stream_url_allows_same_origin_absolute_part_and_preserves_query() {
+        let client = PlexHttpClient::new("stream-url-same-origin-test")
+            .expect("Plex client should construct");
+        let url = client
+            .build_part_stream_url(
+                "https://plex.example.test:32400",
+                "token with spaces",
+                &PlexPlayablePart {
+                    id: "1".to_owned(),
+                    key: "https://PLEX.example.test:32400/video.mkv?download=1".to_owned(),
+                    file_name: Some("Example.mkv".to_owned()),
+                    duration_millis: None,
+                    size_bytes: None,
+                    container: None,
+                },
+            )
+            .expect("same-origin absolute stream URL should build");
+        let parsed = reqwest::Url::parse(url.as_str()).expect("stream URL should remain valid");
+        let query = parsed.query_pairs().collect::<BTreeMap<_, _>>();
+
+        assert_eq!(query.get("download").map(|value| value.as_ref()), Some("1"));
+        assert_eq!(
+            query.get("X-Plex-Token").map(|value| value.as_ref()),
+            Some("token with spaces")
+        );
     }
 
     #[test]

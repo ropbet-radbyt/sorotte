@@ -734,6 +734,36 @@ async fn server_network_sustained_full_queue_signals_explicit_overload_close() {
 }
 
 #[tokio::test]
+async fn server_network_full_queue_drops_periodic_state_without_disconnect() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, _event_rx) = crate::network::client_event_queue(metrics.clone());
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("client-1".to_owned(), event_tx);
+    }
+    fill_reliable_outbound_queue(&client_event_senders).await;
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![test_outbound_line(
+            "periodic-state",
+            ServerOutboundDelivery::CoalesciblePeriodicState,
+        )],
+    )
+    .await;
+
+    assert!(
+        client_event_senders.lock().await.contains_key("client-1"),
+        "a disposable periodic state must not overload-disconnect a client whose reliable lane is full"
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
 async fn server_network_closed_queue_is_not_reported_as_overload() {
     let metrics = crate::ServerOutboundBackpressureMetrics::default();
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));

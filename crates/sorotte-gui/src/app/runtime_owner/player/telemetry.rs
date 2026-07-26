@@ -2317,9 +2317,24 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_local_attached_pause_override = None;
         match snapshot.active_load {
             SnapshotField::Known(active) if active.physical_file_loaded => {
-                self.player_local_file = snapshot_known_clone(&snapshot.current_path)
-                    .map(|path| local_file_update_for_player_path(&path));
-                self.player_local_file_placeholder = false;
+                if let Some(path) = snapshot_known_clone(&snapshot.current_path) {
+                    let sequence =
+                        PlayerEventSequence::new(snapshot.sequence_boundary.through_sequence);
+                    self.attached_media_observation_cursor
+                        .last_ordered_event_sequence = Some(sequence);
+                    let _ = self.process_attached_local_file_observation(
+                        PlayerLocalFileObservation::new(
+                            local_file_update_for_player_path(&path),
+                            Some(active.media_generation),
+                            snapshot_known_copy(&snapshot.transport.observed_at),
+                        ),
+                        Some(sequence),
+                        true,
+                    );
+                } else {
+                    self.player_local_file = None;
+                    self.player_local_file_placeholder = false;
+                }
             }
             SnapshotField::Known(_) => {
                 if !self.player_local_file_placeholder {
@@ -3856,6 +3871,38 @@ mod ordered_delivery_tests {
             ),
             (Some("episode.mkv"), true),
             "snapshot recovery must retain a basename display identity that matches a basename-only shared-playlist target"
+        );
+    }
+
+    #[test]
+    fn repro_authoritative_snapshot_media_boundary_prepares_client_core() {
+        let attempt_id = LoadAttemptId::new(24);
+        let media_generation = PlayerMediaGeneration::new(24);
+        let prepared_media = Arc::new(AtomicUsize::new(0));
+        let interrupted_recovery = Arc::new(AtomicUsize::new(0));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player_local_file =
+            Some(LocalFileUpdate::new("old.mkv").with_path("C:\\media\\old.mkv"));
+        owner.session = Some(Box::new(MediaBoundaryRecordingSession {
+            prepared_media: prepared_media.clone(),
+            interrupted_recovery: interrupted_recovery.clone(),
+        }));
+        let mut snapshot = active_snapshot(2, attempt_id, media_generation, 0.0);
+        snapshot.current_path = SnapshotField::Known("C:\\media\\new.mkv".to_owned());
+
+        owner
+            .apply_ordered_player_event_batch(&batch(2, 1, Some(snapshot), Vec::new()), 0.0)
+            .expect("valid authoritative reacquisition batch");
+
+        assert_eq!(
+            prepared_media.load(Ordering::SeqCst),
+            1,
+            "a snapshot-only authoritative media boundary must prepare client-core for the newly recovered logical media"
+        );
+        assert_eq!(
+            interrupted_recovery.load(Ordering::SeqCst),
+            1,
+            "a snapshot-only authoritative media boundary must retire recovery for the previous media"
         );
     }
 

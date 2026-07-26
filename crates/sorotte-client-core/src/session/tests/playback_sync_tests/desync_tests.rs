@@ -479,6 +479,118 @@ fn disabling_slow_on_desync_restores_speed_and_failed_restore_retains_ownership(
 }
 
 #[test]
+fn reconnect_restores_desync_owned_rate_before_forgetting_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)
+                .with_playback_rate(1.0),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+    assert!(runtime.session().model.playback.speed_changed);
+
+    runtime
+        .run_disconnect(0.1)
+        .expect("disconnect cleanup should succeed");
+    runtime
+        .run_reconnect_retry(0)
+        .expect("reconnect reset should succeed");
+
+    assert_eq!(
+        runtime.player().playback_rate,
+        Some(1.0),
+        "network reconnect retains the player, so it must neutralize Sorotte's 0.95 correction before clearing its ownership"
+    );
+    assert!(!runtime.session().model.playback.speed_changed);
+}
+
+#[test]
+fn reconnect_retries_failed_desync_owned_rate_restore_before_resetting_session() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+
+    runtime
+        .run_reconnect_retry(0)
+        .expect("player cleanup failure must not block network reconnect scheduling");
+    assert!(
+        !runtime.session().model.playback.speed_changed,
+        "session reconnect state should reset independently of the retained player cleanup"
+    );
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+
+    runtime
+        .run_reconnect_retry(1)
+        .expect("the retained cleanup should succeed on retry");
+    assert_eq!(runtime.player().playback_rate, Some(1.0));
+    assert!(!runtime.session().model.playback.speed_changed);
+}
+
+#[test]
+fn failed_reconnect_rate_restore_never_overwrites_new_session_speed_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("first-session slowdown should apply");
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+    runtime
+        .run_reconnect_retry(0)
+        .expect("failed cleanup must not block reconnect");
+
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+    runtime.player_mut_for_test().playback_rate = Some(0.95);
+    runtime.session_mut_for_test().model.playback.speed_changed = true;
+    runtime
+        .session_mut_for_test()
+        .model
+        .playback
+        .speed_correction_rate = Some(0.95);
+
+    runtime
+        .run_reconnect_transition_if_needed()
+        .expect("new-session transition should remain healthy");
+
+    assert_eq!(
+        runtime.player().playback_rate,
+        Some(0.95),
+        "retained cleanup from the disconnected session must not overwrite the new session's owned correction"
+    );
+    assert!(runtime.session().model.playback.speed_changed);
+}
+
+#[test]
 fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_is_observed() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {

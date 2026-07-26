@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::client_effect_player_error;
+use sorotte_player_api::PlayerCommand;
 
 impl<P, C> ClientRuntime<P, C>
 where
@@ -77,6 +78,13 @@ where
     }
 
     pub fn run_reconnect_retry(&mut self, retries: u32) -> Result<(), PlayerError> {
+        // The transport reconnect keeps the same player process. Neutralize a
+        // Sorotte-owned desync correction before the session reset forgets
+        // that ownership. A player error must not prevent the network
+        // reconnect from being scheduled, so retain a separate obligation and
+        // retry it on later reconnect/telemetry boundaries.
+        self.pending_reconnect_rate_reset |= self.session.model.playback.speed_changed;
+        self.retry_pending_reconnect_rate_reset(true);
         self.begin_protocol_connection_generation();
         let actions = self.session.runtime_actions_for_reconnect_retry(retries);
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -146,10 +154,40 @@ where
     }
 
     pub fn run_reconnect_transition_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.retry_pending_reconnect_rate_reset(false);
         let actions = self
             .session
             .runtime_actions_for_reconnect_transition_if_needed();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+    }
+
+    fn retry_pending_reconnect_rate_reset(&mut self, resetting_disconnected_session: bool) {
+        if self.pending_reconnect_rate_reset
+            && !resetting_disconnected_session
+            && self.session.model.playback.speed_changed
+        {
+            // A newly connected session has taken speed ownership. Its
+            // correction supersedes the retained cleanup obligation from the
+            // disconnected session and must not be overwritten by it.
+            self.pending_reconnect_rate_reset = false;
+            return;
+        }
+        if self.pending_reconnect_rate_reset
+            && self
+                .player
+                .execute(PlayerCommand::SetPlaybackRate(NORMAL_PLAYBACK_RATE))
+                .is_ok()
+        {
+            self.pending_reconnect_rate_reset = false;
+        }
+    }
+
+    pub(super) fn observe_pending_reconnect_rate_reset(&mut self, playback_rate: Option<f64>) {
+        if self.pending_reconnect_rate_reset
+            && playback_rate.is_some_and(|rate| (rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001)
+        {
+            self.pending_reconnect_rate_reset = false;
+        }
     }
 
     pub fn run_reconnect_state_restore_if_needed(&mut self) -> Result<(), PlayerError> {

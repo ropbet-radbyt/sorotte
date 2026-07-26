@@ -1965,7 +1965,11 @@ impl MpvAdapter {
             Some(PendingNetworkOptionsHookHeartbeat {
                 nonce,
                 command_id: None,
-                sent_at: Some(Instant::now()),
+                // Synchronous command delivery can itself take longer than the
+                // Lua acknowledgement window. Start that window only after mpv
+                // has accepted the script-message, matching the nonblocking
+                // maintenance path.
+                sent_at: None,
             });
         let command = json!([
             MPV_COMMAND_SCRIPT_MESSAGE_TO,
@@ -1974,7 +1978,13 @@ impl MpvAdapter {
             payload.to_string(),
         ]);
         match self.send_ipc_command_if_attached(command) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(pending) = self.network_media_options_hook_pending_heartbeat.as_mut()
+                    && pending.nonce == nonce
+                {
+                    pending.sent_at = Some(Instant::now());
+                }
+            }
             Err(error) => {
                 self.invalidate_network_media_options_hook_delivery();
                 self.queue_network_media_options_hook_degraded(error);
@@ -7031,6 +7041,15 @@ impl MpvAdapter {
                         self.observation_media_generation(),
                         TrackedCommandObservation::Phase(phase),
                     );
+                    if !seeking {
+                        // mpv need not re-emit an unchanged paused-for-cache
+                        // property after a seek. Treat seek completion as the
+                        // fresh boundary from which an ongoing cache stall may
+                        // safely arm recovery again.
+                        self.observe_network_cache_pause_for_recovery(
+                            self.observed_state.paused_for_cache == Some(true),
+                        );
+                    }
                 } else {
                     self.observed_state.seeking = None;
                 }
@@ -8292,7 +8311,7 @@ impl MpvAdapter {
             .network_media_options_expected_transition
             .is_some_and(|expected| {
                 self.active_media_generation != Some(expected.media_generation)
-                    || load_sequence != expected.load_sequence
+                    || load_sequence < expected.load_sequence
             })
         {
             return;
@@ -8339,7 +8358,7 @@ impl MpvAdapter {
         }
         if let Some(expected) = self.network_media_options_expected_transition {
             if self.active_media_generation != Some(expected.media_generation)
-                || result.load_sequence != expected.load_sequence
+                || result.load_sequence < expected.load_sequence
             {
                 return;
             }
@@ -8352,6 +8371,12 @@ impl MpvAdapter {
             }
             self.network_media_options_expected_transition = None;
         }
+        self.network_media_options_hook_latest_started_load_sequence = Some(
+            self.network_media_options_hook_latest_started_load_sequence
+                .map_or(result.load_sequence, |started| {
+                    started.max(result.load_sequence)
+                }),
+        );
         self.network_media_options_hook_last_accepted_load_sequence = Some(result.load_sequence);
         self.queue_network_media_options_hook_recovered();
 
@@ -10437,6 +10462,43 @@ mod interrupted_network_stream_recovery_tests {
         adapter.observed_state.paused_for_cache = Some(false);
         adapter.observe_network_cache_pause_for_recovery(false);
         assert!(adapter.network_cache_stall.is_none());
+    }
+
+    #[test]
+    fn repro_cache_watchdog_rearms_when_seek_finishes_still_cache_paused() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": true,
+        }));
+        assert!(
+            adapter.network_cache_stall.is_some(),
+            "the initial rebuffer should arm the watchdog"
+        );
+
+        adapter.handle_seek_event();
+        assert_eq!(adapter.observed_state.paused_for_cache, Some(true));
+        assert!(
+            adapter.network_cache_stall.is_none(),
+            "an active seek should temporarily disarm recovery"
+        );
+
+        // `paused-for-cache` did not change across the seek, so mpv is not
+        // required to emit that property again. The seeking=false edge is the
+        // only new observation proving that the watchdog may safely rearm.
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_SEEKING,
+            "data": false,
+        }));
+
+        assert_eq!(adapter.observed_state.seeking, Some(false));
+        assert_eq!(adapter.observed_state.paused_for_cache, Some(true));
+        assert!(
+            adapter.network_cache_stall.is_some(),
+            "a dead stream that remains cache-paused after seeking must not lose recovery forever"
+        );
     }
 
     #[test]

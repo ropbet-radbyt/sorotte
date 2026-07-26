@@ -6,9 +6,9 @@ use super::super::shell_state::{
     GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot,
     GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPendingOperationKind,
-    GuiPersistedSettingsPatch, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
-    GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
-    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
+    GuiPersistedSettingsPatch, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
+    GuiPlayerSetupRuntimeSnapshot, GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot,
+    GuiPlexServerRow, GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
     GuiSavedServerConnectIntent, GuiSeekPreparationRuntimeSnapshot, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
@@ -218,6 +218,7 @@ impl SorotteGuiShellAppState {
         {
             self.open_modal = None;
         } else if next_issue_kind.is_some()
+            && next_issue_kind != Some(GuiPlayerSetupIssueKind::PlayerSettingsDegraded)
             && next_issue_kind != previous_issue_kind
             && self.open_modal.is_none()
         {

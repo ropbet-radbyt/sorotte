@@ -64,38 +64,43 @@ impl std::fmt::Debug for PeriodicStateUpdate {
 }
 
 #[derive(Debug, Default)]
-struct PeriodicStateQueueState {
-    latest_sent_generation: u64,
-    latest_delivered_generation: u64,
+struct ProtocolLineQueueState {
+    latest_periodic_generation: u64,
+    tail_periodic: Option<Arc<StdMutex<PeriodicStateUpdate>>>,
+    closed: bool,
+}
+
+enum QueuedProtocolLine {
+    Reliable(String),
+    Periodic(Arc<StdMutex<PeriodicStateUpdate>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientEventSendOutcome {
     Sent,
     Coalesced,
+    DroppedPeriodic,
     Closed,
     Overloaded,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClientEventSender {
-    // Protocol control lines are bounded and reliable until an explicit
-    // overload disconnect. Rare transport actions use their own reliable lane,
-    // while periodic state uses a single replaceable watch slot.
-    reliable_lines: Sender<String>,
+    // Every protocol line shares one causal lane. A periodic state remains
+    // replaceable only while its marker is the queue tail; a later reliable
+    // line seals it so no older state can arrive after that reliable line.
+    protocol_lines: Sender<QueuedProtocolLine>,
+    protocol_line_queue: Arc<Mutex<ProtocolLineQueueState>>,
     transport_actions: UnboundedSender<ServerTransportAction>,
-    periodic_state: watch::Sender<Option<PeriodicStateUpdate>>,
-    periodic_state_queue: Arc<StdMutex<PeriodicStateQueueState>>,
     overload_close: watch::Sender<Option<usize>>,
     overload_signalled: Arc<AtomicBool>,
     metrics: ServerOutboundBackpressureMetrics,
 }
 
 pub(crate) struct ClientEventReceiver {
-    reliable_lines: Receiver<String>,
+    protocol_lines: Receiver<QueuedProtocolLine>,
+    protocol_line_queue: Arc<Mutex<ProtocolLineQueueState>>,
     transport_actions: tokio::sync::mpsc::UnboundedReceiver<ServerTransportAction>,
-    periodic_state: watch::Receiver<Option<PeriodicStateUpdate>>,
-    periodic_state_queue: Arc<StdMutex<PeriodicStateQueueState>>,
     overload_close: watch::Receiver<Option<usize>>,
     metrics: ServerOutboundBackpressureMetrics,
 }
@@ -105,26 +110,23 @@ pub(crate) type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEven
 pub(crate) fn client_event_queue(
     metrics: ServerOutboundBackpressureMetrics,
 ) -> (ClientEventSender, ClientEventReceiver) {
-    let (reliable_tx, reliable_rx) = channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let (protocol_tx, protocol_rx) = channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
     let (transport_tx, transport_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (periodic_tx, periodic_rx) = watch::channel(None);
     let (overload_tx, overload_rx) = watch::channel(None);
-    let periodic_state_queue = Arc::new(StdMutex::new(PeriodicStateQueueState::default()));
+    let protocol_line_queue = Arc::new(Mutex::new(ProtocolLineQueueState::default()));
     (
         ClientEventSender {
-            reliable_lines: reliable_tx,
+            protocol_lines: protocol_tx,
+            protocol_line_queue: protocol_line_queue.clone(),
             transport_actions: transport_tx,
-            periodic_state: periodic_tx,
-            periodic_state_queue: periodic_state_queue.clone(),
             overload_close: overload_tx,
             overload_signalled: Arc::new(AtomicBool::new(false)),
             metrics: metrics.clone(),
         },
         ClientEventReceiver {
-            reliable_lines: reliable_rx,
+            protocol_lines: protocol_rx,
+            protocol_line_queue,
             transport_actions: transport_rx,
-            periodic_state: periodic_rx,
-            periodic_state_queue,
             overload_close: overload_rx,
             metrics,
         },
@@ -139,31 +141,43 @@ impl ClientEventSender {
         }
         match event {
             ClientOutboundEvent::ReliableLine(line) => self.send_reliable_line(line).await,
-            ClientOutboundEvent::PeriodicStateLine(line) => self.send_periodic_state(line),
+            ClientOutboundEvent::PeriodicStateLine(line) => self.send_periodic_state(line).await,
             ClientOutboundEvent::TransportAction(action) => self.send_transport_action(action),
         }
     }
 
     async fn send_reliable_line(&self, line: String) -> ClientEventSendOutcome {
-        match self.reliable_lines.try_send(line) {
+        let mut queue = self.protocol_line_queue.lock().await;
+        if queue.closed || self.protocol_lines.is_closed() {
+            queue.closed = true;
+            self.metrics.closed();
+            self.metrics.dropped();
+            return ClientEventSendOutcome::Closed;
+        }
+        let item = QueuedProtocolLine::Reliable(line);
+        match self.protocol_lines.try_send(item) {
             Ok(()) => {
+                queue.tail_periodic = None;
                 self.metrics.enqueued();
                 ClientEventSendOutcome::Sent
             }
-            Err(TrySendError::Closed(_line)) => {
+            Err(TrySendError::Closed(_item)) => {
+                queue.closed = true;
                 self.metrics.closed();
                 self.metrics.dropped();
                 ClientEventSendOutcome::Closed
             }
-            Err(TrySendError::Full(line)) => {
+            Err(TrySendError::Full(item)) => {
                 self.metrics.full();
                 let grace = std::time::Duration::from_millis(CLIENT_OUTBOUND_OVERLOAD_GRACE_MILLIS);
-                match time::timeout(grace, self.reliable_lines.send(line)).await {
+                match time::timeout(grace, self.protocol_lines.send(item)).await {
                     Ok(Ok(())) => {
+                        queue.tail_periodic = None;
                         self.metrics.enqueued();
                         ClientEventSendOutcome::Sent
                     }
                     Ok(Err(_closed)) => {
+                        queue.closed = true;
                         self.metrics.closed();
                         self.metrics.dropped();
                         ClientEventSendOutcome::Closed
@@ -178,26 +192,44 @@ impl ClientEventSender {
         }
     }
 
-    fn send_periodic_state(&self, line: String) -> ClientEventSendOutcome {
-        let mut queue = self
-            .periodic_state_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let generation = queue.latest_sent_generation.saturating_add(1);
-        let was_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
-        let update = PeriodicStateUpdate { generation, line };
-        if self.periodic_state.send(Some(update)).is_err() {
+    async fn send_periodic_state(&self, line: String) -> ClientEventSendOutcome {
+        let mut queue = self.protocol_line_queue.lock().await;
+        if queue.closed || self.protocol_lines.is_closed() {
+            queue.closed = true;
             self.metrics.closed();
             self.metrics.dropped();
             return ClientEventSendOutcome::Closed;
         }
-        queue.latest_sent_generation = generation;
-        if was_pending {
+        let generation = queue.latest_periodic_generation.saturating_add(1);
+        queue.latest_periodic_generation = generation;
+        if let Some(tail_periodic) = queue.tail_periodic.as_ref() {
+            *tail_periodic
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                PeriodicStateUpdate { generation, line };
             self.metrics.coalesced();
-            ClientEventSendOutcome::Coalesced
-        } else {
-            self.metrics.enqueued();
-            ClientEventSendOutcome::Sent
+            return ClientEventSendOutcome::Coalesced;
+        }
+
+        let update = Arc::new(StdMutex::new(PeriodicStateUpdate { generation, line }));
+        let item = QueuedProtocolLine::Periodic(update.clone());
+        match self.protocol_lines.try_send(item) {
+            Ok(()) => {
+                queue.tail_periodic = Some(update);
+                self.metrics.enqueued();
+                ClientEventSendOutcome::Sent
+            }
+            Err(TrySendError::Closed(_item)) => {
+                queue.closed = true;
+                self.metrics.closed();
+                self.metrics.dropped();
+                ClientEventSendOutcome::Closed
+            }
+            Err(TrySendError::Full(_item)) => {
+                self.metrics.full();
+                self.metrics.dropped();
+                ClientEventSendOutcome::DroppedPeriodic
+            }
         }
     }
 
@@ -219,56 +251,62 @@ impl ClientEventSender {
         if !self.overload_signalled.swap(true, Ordering::AcqRel) {
             self.metrics.overload_disconnect();
             let queue_depth =
-                CLIENT_OUTBOUND_QUEUE_CAPACITY.saturating_sub(self.reliable_lines.capacity());
+                CLIENT_OUTBOUND_QUEUE_CAPACITY.saturating_sub(self.protocol_lines.capacity());
             let _ = self.overload_close.send(Some(queue_depth));
         }
     }
 }
 
 impl ClientEventReceiver {
-    fn periodic_state_delivered(&self, generation: u64) {
-        let mut queue = self
-            .periodic_state_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let was_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
-        queue.latest_delivered_generation = queue.latest_delivered_generation.max(generation);
-        let is_pending = queue.latest_sent_generation > queue.latest_delivered_generation;
-        if was_pending && !is_pending {
-            self.metrics.dequeued();
-        }
+    async fn resolve_protocol_line(&self, item: QueuedProtocolLine) -> String {
+        let line = match item {
+            QueuedProtocolLine::Reliable(line) => line,
+            QueuedProtocolLine::Periodic(update) => {
+                let mut queue = self.protocol_line_queue.lock().await;
+                if queue
+                    .tail_periodic
+                    .as_ref()
+                    .is_some_and(|tail| Arc::ptr_eq(tail, &update))
+                {
+                    queue.tail_periodic = None;
+                }
+                update
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .line
+                    .clone()
+            }
+        };
+        self.metrics.dequeued();
+        line
     }
 
-    fn close_and_record_discarded(&mut self) {
-        self.reliable_lines.close();
-        self.transport_actions.close();
-        let mut discarded = self.reliable_lines.len() + self.transport_actions.len();
-        let mut periodic_queue = self
-            .periodic_state_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if periodic_queue.latest_sent_generation > periodic_queue.latest_delivered_generation {
-            discarded += 1;
-            periodic_queue.latest_delivered_generation = periodic_queue.latest_sent_generation;
+    #[cfg(test)]
+    async fn receive_protocol_line(&mut self) -> Option<String> {
+        let item = self.protocol_lines.recv().await?;
+        Some(self.resolve_protocol_line(item).await)
+    }
+
+    async fn close_and_record_discarded(&mut self) {
+        {
+            let mut queue = self.protocol_line_queue.lock().await;
+            queue.closed = true;
+            queue.tail_periodic = None;
+            self.protocol_lines.close();
         }
+        self.transport_actions.close();
+        let discarded = self.protocol_lines.len() + self.transport_actions.len();
         self.metrics.discarded(discarded);
     }
 
     #[cfg(test)]
     pub(crate) async fn receive_reliable_line_for_test(&mut self) -> Option<String> {
-        let line = self.reliable_lines.recv().await;
-        if line.is_some() {
-            self.metrics.dequeued();
-        }
-        line
+        self.receive_protocol_line().await
     }
 
     #[cfg(test)]
     pub(crate) async fn receive_periodic_state_for_test(&mut self) -> Option<String> {
-        self.periodic_state.changed().await.ok()?;
-        let update = self.periodic_state.borrow_and_update().clone()?;
-        self.periodic_state_delivered(update.generation);
-        Some(update.line)
+        self.receive_protocol_line().await
     }
 
     #[cfg(test)]
@@ -339,7 +377,9 @@ async fn dispatch_client_event(
         return;
     };
     match event_sender.send(event).await {
-        ClientEventSendOutcome::Sent | ClientEventSendOutcome::Coalesced => {}
+        ClientEventSendOutcome::Sent
+        | ClientEventSendOutcome::Coalesced
+        | ClientEventSendOutcome::DroppedPeriodic => {}
         ClientEventSendOutcome::Closed | ClientEventSendOutcome::Overloaded => {
             let mut senders = client_event_senders.lock().await;
             senders.remove(client_id);
@@ -913,11 +953,11 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                     break;
                 }
             }
-            outbound_line = event_rx.reliable_lines.recv() => {
-                let Some(outbound_line) = outbound_line else {
+            outbound_item = event_rx.protocol_lines.recv() => {
+                let Some(outbound_item) = outbound_item else {
                     break;
                 };
-                event_rx.metrics.dequeued();
+                let outbound_line = event_rx.resolve_protocol_line(outbound_item).await;
                 let Some(write_result) = run_until_shutdown(
                     &mut shutdown_rx,
                     transport.write_line_with_timeout(&outbound_line, timeouts.write),
@@ -968,29 +1008,6 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                     }
                 }
             }
-            periodic_state_changed = event_rx.periodic_state.changed() => {
-                if periodic_state_changed.is_err() {
-                    break;
-                }
-                let update = event_rx.periodic_state.borrow_and_update().clone();
-                let Some(update) = update else {
-                    continue;
-                };
-                event_rx.periodic_state_delivered(update.generation);
-                let Some(write_result) = run_until_shutdown(
-                    &mut shutdown_rx,
-                    transport.write_line_with_timeout(&update.line, timeouts.write),
-                )
-                .await
-                else {
-                    shutdown_requested = true;
-                    break;
-                };
-                if let Err(source) = write_result {
-                    session_error = Some(ServerNetworkError::Io(source));
-                    break;
-                }
-            }
             overload_changed = event_rx.overload_close.changed() => {
                 if overload_changed.is_err() {
                     break;
@@ -1011,7 +1028,7 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
         let mut senders = client_event_senders.lock().await;
         senders.remove(&client_id);
     }
-    event_rx.close_and_record_discarded();
+    event_rx.close_and_record_discarded().await;
     let transport_shutdown_timeout = timeouts.write.min(std::time::Duration::from_secs(1));
     match time::timeout(transport_shutdown_timeout, transport.shutdown()).await {
         Ok(Ok(())) => {}
@@ -1589,6 +1606,89 @@ mod credential_debug_tests {
         time::timeout(std::time::Duration::from_secs(1), tasks.shutdown())
             .await
             .expect("aborted task should be joinable after the bounded deadline");
+    }
+
+    #[tokio::test]
+    async fn repro_pending_periodic_state_never_follows_newer_reliable_state() {
+        let (sender, mut receiver) =
+            client_event_queue(ServerOutboundBackpressureMetrics::default());
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::PeriodicStateLine(
+                    "old-periodic-state".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::ReliableLine(
+                    "new-forced-state".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+
+        assert_eq!(
+            receiver.receive_protocol_line().await.as_deref(),
+            Some("old-periodic-state")
+        );
+        assert_eq!(
+            receiver.receive_protocol_line().await.as_deref(),
+            Some("new-forced-state")
+        );
+    }
+
+    #[tokio::test]
+    async fn periodic_state_coalescing_is_scoped_to_the_protocol_queue_tail() {
+        let metrics = ServerOutboundBackpressureMetrics::default();
+        let (sender, mut receiver) = client_event_queue(metrics.clone());
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::PeriodicStateLine(
+                    "periodic-before-reliable".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::ReliableLine("reliable".to_owned()))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::PeriodicStateLine(
+                    "periodic-after-reliable-1".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::PeriodicStateLine(
+                    "periodic-after-reliable-2".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Coalesced
+        );
+
+        assert_eq!(
+            receiver.receive_protocol_line().await.as_deref(),
+            Some("periodic-before-reliable")
+        );
+        assert_eq!(
+            receiver.receive_protocol_line().await.as_deref(),
+            Some("reliable")
+        );
+        assert_eq!(
+            receiver.receive_protocol_line().await.as_deref(),
+            Some("periodic-after-reliable-2")
+        );
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.coalesced_state_updates, 1);
+        assert_eq!(snapshot.queue_depth, 0);
     }
 
     #[tokio::test]

@@ -223,6 +223,33 @@ fn gui_native_app_routes_player_setup_modal_retry_through_runtime_dispatch() {
 }
 
 #[test]
+fn repro_retryable_streaming_hook_warning_does_not_interrupt_playback_with_setup_modal() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+            GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::PlayerSettingsDegraded,
+                    message: "mpv playback remains available, but Sorotte's core streaming-settings hook needs retry: operation failed: hook lease expired".to_owned(),
+                    retry_available: true,
+                }),
+            },
+        ))
+    );
+
+    assert!(
+        state.player_setup_issue.is_some(),
+        "the retryable warning should remain available from the non-modal setup status"
+    );
+    assert_eq!(
+        state.open_modal, None,
+        "a retryable hook-health warning that explicitly leaves playback available must not seize focus with the setup-required modal"
+    );
+}
+
+#[test]
 fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("C:/totally-missing/mpv.exe".to_owned()),

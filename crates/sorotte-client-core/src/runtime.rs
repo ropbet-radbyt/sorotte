@@ -24,6 +24,7 @@ pub struct ClientRuntime<P, C> {
     pending_player_playback_telemetry_updates: EffectOutbox<PlayerPlaybackTelemetryUpdate>,
     pending_ordered_local_file_updates: EffectOutbox<LocalFileUpdate>,
     last_local_file_update: Option<LocalFileUpdate>,
+    pending_reconnect_rate_reset: bool,
     playback_coordination: RuntimePlaybackCoordination,
     ordered_player_events: OrderedPlayerEventConsumer,
 }

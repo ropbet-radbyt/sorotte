@@ -55,6 +55,10 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      - name: Package path boundary regressions
+        shell: pwsh
+        run: ./scripts/package-path-boundary-tests.ps1
+
       # This is intentionally a compilation-only gate. Packaging, artifact
       # upload, tag mutation, and GitHub Release writes remain owned by the
       # dedicated release workflow.

@@ -1281,9 +1281,16 @@ impl MpvIpcRuntimeQueues {
     ) -> Vec<MpvIpcNonblockingRuntimeItem> {
         let mut selected = Vec::new();
         let mut retained = VecDeque::with_capacity(self.control_items.len());
+        let mut causal_event_barrier = None;
         while let Some(item) = self.control_items.pop_front() {
             match item.value {
                 MpvIpcControlItem::Event(event) if predicate(&event.value) => {
+                    if is_causally_ordered_sorotte_control_event(&event.value) {
+                        causal_event_barrier = Some(
+                            causal_event_barrier
+                                .map_or(item.sequence, |barrier: u64| barrier.max(item.sequence)),
+                        );
+                    }
                     selected.push((item.sequence, MpvIpcNonblockingRuntimeItem::Event(event)))
                 }
                 MpvIpcControlItem::Completion(completion) => selected.push((
@@ -1305,6 +1312,23 @@ impl MpvIpcRuntimeQueues {
             }
         }
         self.control_items = retained;
+        if let Some(causal_event_barrier) = causal_event_barrier {
+            let mut ordinary_retained = VecDeque::with_capacity(self.ordinary_events.len());
+            while let Some(event) = self.ordinary_events.pop_front() {
+                if event.sequence < causal_event_barrier {
+                    selected.push((
+                        event.sequence,
+                        MpvIpcNonblockingRuntimeItem::CausalEvent(MpvIpcEvent {
+                            value: event.value,
+                            received_at: event.received_at,
+                        }),
+                    ));
+                } else {
+                    ordinary_retained.push_back(event);
+                }
+            }
+            self.ordinary_events = ordinary_retained;
+        }
         selected.sort_unstable_by_key(|(sequence, _)| *sequence);
         selected.into_iter().map(|(_, item)| item).collect()
     }
@@ -1328,6 +1352,9 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
 }
 
 pub(crate) enum MpvIpcNonblockingRuntimeItem {
+    /// An ordinary event that causally precedes a generation-bound control
+    /// result selected by the nonblocking lane.
+    CausalEvent(MpvIpcEvent),
     Event(MpvIpcEvent),
     Completion(MpvIpcNonblockingCommandCompletion),
     ControlQueueOverflow,
@@ -1365,6 +1392,16 @@ pub(crate) fn is_sorotte_control_event(event: &Value) -> bool {
                 | LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT
         )
     )
+}
+
+fn is_causally_ordered_sorotte_control_event(event: &Value) -> bool {
+    event.get("event").and_then(Value::as_str) == Some("client-message")
+        && event
+            .get("args")
+            .and_then(Value::as_array)
+            .and_then(|args| args.first())
+            .and_then(Value::as_str)
+            == Some(SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT)
 }
 
 fn is_structural_mpv_event(event: &Value) -> bool {

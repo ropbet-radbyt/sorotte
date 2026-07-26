@@ -640,6 +640,7 @@ where
             return;
         }
         while let Some(update) = self.player.take_playback_telemetry_update() {
+            self.observe_pending_reconnect_rate_reset(update.playback_rate);
             self.session.apply_player_playback_telemetry_update(&update);
             // Telemetry is a coalescible state effect: keep one pending snapshot
             // and let newer fields supersede older values before delivery.

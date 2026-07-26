@@ -19,7 +19,8 @@ use url::Url;
 use crate::constants::{
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
     LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
-    MPV_EVENT_CLIENT_MESSAGE, SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT,
+    MPV_EVENT_CLIENT_MESSAGE, MPV_EVENT_PROPERTY_CHANGE,
+    SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_ACTIVE_RESULT,
     SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_CONFIGURED,
     SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT,
     SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_OWNERSHIP,
@@ -414,6 +415,8 @@ fn sanitize_value(value: Value, context: SanitizationContext) -> Value {
 fn sanitize_object(object: Map<String, Value>, context: SanitizationContext) -> Value {
     let is_client_message =
         object.get("event").and_then(Value::as_str) == Some(MPV_EVENT_CLIENT_MESSAGE);
+    let is_property_change =
+        object.get("event").and_then(Value::as_str) == Some(MPV_EVENT_PROPERTY_CHANGE);
     Value::Object(
         object
             .into_iter()
@@ -422,6 +425,12 @@ fn sanitize_object(object: Map<String, Value>, context: SanitizationContext) -> 
                     Value::String(REDACTED.to_owned())
                 } else if is_client_message && key == "args" {
                     sanitize_client_message_args(value)
+                } else if is_property_change && key == "data" {
+                    // mpv properties are extensible and third-party scripts
+                    // can publish arbitrary user text. Preserve scalar
+                    // telemetry while treating every string below `data` as
+                    // opaque unless a structural sanitizer recognizes it.
+                    sanitize_value(value, SanitizationContext::Opaque)
                 } else if location_key(&key) {
                     sanitize_location_value(value, context)
                 } else {
@@ -1594,6 +1603,43 @@ mod tests {
         assert!(!sanitized.to_string().contains(private_path));
         assert!(!sanitized.to_string().contains(private_bare_filename));
         assert!(!sanitized.to_string().contains(private_header));
+    }
+
+    #[test]
+    fn recorder_anonymizes_unknown_property_change_payload_text() {
+        let private_title = "Yuuki private watch-history title canary";
+        let private_account = "yuuki@example.invalid";
+        let mut recorder = MpvTranscriptRecorder::new();
+        recorder
+            .record(
+                PlayerAttachmentEpoch::new(1),
+                1,
+                10,
+                None,
+                None,
+                json!({
+                    "event": "property-change",
+                    "name": "user-data/third-party-watch-state",
+                    "data": {
+                        "title": private_title,
+                        "account": private_account,
+                    },
+                }),
+            )
+            .expect("decoded property-change event should be recordable");
+
+        let exported = recorder
+            .finish()
+            .to_json_lines()
+            .expect("transcript should serialize");
+        assert!(
+            !exported.contains(private_title),
+            "privacy-safe transcript retained arbitrary third-party title: {exported}"
+        );
+        assert!(
+            !exported.contains(private_account),
+            "privacy-safe transcript retained arbitrary third-party account: {exported}"
+        );
     }
 
     #[test]

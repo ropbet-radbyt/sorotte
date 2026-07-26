@@ -4463,6 +4463,9 @@ where
         first_error: &mut Option<PlayerError>,
     ) {
         self.ordered_player_events.rebase_snapshot(snapshot);
+        self.observe_pending_reconnect_rate_reset(snapshot_known_copy(
+            &snapshot.transport.playback_rate,
+        ));
         self.pending_player_playback_telemetry_updates = EffectOutbox::default();
         self.pending_ordered_local_file_updates = EffectOutbox::default();
         self.session
@@ -4517,6 +4520,7 @@ where
                 let Some(accepted) = self.ordered_player_events.apply_delta_if_owned(delta) else {
                     return;
                 };
+                self.observe_pending_reconnect_rate_reset(accepted.playback_rate);
                 self.record_ordered_playback_projection(&accepted);
                 let transport = self.ordered_player_events.transport.clone();
                 let actions = self.playback_coordination.observe_ordered_transport_delta(

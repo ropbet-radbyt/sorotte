@@ -5,8 +5,45 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 fn cli_connect_timeout() -> Duration {
     env_non_negative_f64("SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS")
         .filter(|seconds| *seconds > 0.0)
-        .map(Duration::from_secs_f64)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .unwrap_or(DEFAULT_CONNECT_TIMEOUT)
+}
+
+#[cfg(test)]
+mod connect_timeout_overflow_regression {
+    use super::*;
+    use std::{ffi::OsString, sync::Mutex};
+
+    const KEY: &str = "SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS";
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct RestoreEnv(Option<OsString>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            // SAFETY: every mutation of this key in the module is serialized
+            // by ENV_LOCK, which remains held until this restore guard drops.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var(KEY, value),
+                    None => std::env::remove_var(KEY),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_finite_connect_timeout_falls_back_without_panicking() {
+        let _lock = ENV_LOCK.lock().expect("environment lock");
+        let _restore = RestoreEnv(std::env::var_os(KEY));
+        // SAFETY: ENV_LOCK serializes this process-global mutation, and
+        // RestoreEnv restores the prior value before the lock is released.
+        unsafe {
+            std::env::set_var(KEY, f64::MAX.to_string());
+        }
+
+        assert_eq!(cli_connect_timeout(), DEFAULT_CONNECT_TIMEOUT);
+    }
 }
 
 fn ensure_application_command_succeeded(events: Vec<ClientEvent>) -> anyhow::Result<()> {
