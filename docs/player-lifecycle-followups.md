@@ -77,3 +77,43 @@ security risk.
   session transport.
 - Disposition: fixed here because it blocked the mandatory workspace gate. The
   server now drains the peer after announcing EOF, with a bounded timeout.
+
+## Verification-only lifecycle authority questions
+
+- Severity: unclassified; static possibilities only.
+- Baseline:
+  `a47b6e035608bb03f1a1dd59986375653963b39a`
+  (`Separate physical player lifecycle ownership`).
+- Reachability: not observed in real use, real mpv, a captured transcript, the
+  vertical deterministic harness, or a reducer/model failure at the time of
+  inventory.
+- Origin classification: defensive audit only.
+- Disposition: do not change production behavior unless an executable
+  adapter-to-consumer trace proves divergence.
+
+The independent assignment audit originally recorded six questions. Full-stack
+tests have since proved and corrected snapshot semantic inference,
+`LocalFileChanged` duplicate authority, physical `LoadAttemptActive` semantic
+inference, pre-file-loaded snapshot path confirmation, command-timeout physical
+ownership loss, and missing logical-revocation delivery. Their exact failures
+and authority corrections are recorded in
+`docs/player-lifecycle-verification.md`.
+
+The remaining static-only questions are:
+
+1. Both consumers mark a binding physically terminal for semantic failure
+   outcomes as well as for an explicit `LoadAttemptTerminal` event.
+2. The GUI mirrors ordered command outcomes into its legacy
+   playlist-resolution command-progress handler, which can update resolution
+   state without a `LoadAttemptId`.
+3. The GUI's attempt-fenced ordered media-outcome bridge delegates failure
+   presentation to target-string-keyed legacy handling; no stale
+   same-target failure divergence is currently executable.
+4. The acknowledged-mode no-legacy-drain test instruments one representative
+   legacy getter rather than all compatibility getters.
+5. GUI refresh assumes `PlayerEventDeliveryMode` stays stable for an
+   attachment; production mpv does, but the public adapter contract does not
+   state that invariant explicitly.
+
+The authority inventory and evidence gate for these questions are maintained in
+`docs/player-lifecycle-verification.md`.
