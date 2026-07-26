@@ -140,6 +140,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
             state: player_state.clone(),
         }))),
         player_attachment_epoch: 0,
+        ordered_player_events: Default::default(),
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
         player_apply_state: Default::default(),
         managed_mpv_process: None,
@@ -232,6 +233,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(false),
+        // This test asserts exact player-projection actions. Keep unrelated
+        // asynchronous public-server hydration out of that action stream.
+        public_servers: Some(Vec::new()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -492,7 +496,7 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
 #[test]
 fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_context() {
     struct ReacquiredFailurePlayer {
-        batch: Option<sorotte_player_api::PlayerEventBatch>,
+        batch: Option<sorotte_player_api::PlayerObservationBatch>,
     }
 
     impl PlayerAdapter for ReacquiredFailurePlayer {
@@ -500,7 +504,9 @@ fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_contex
             "reacquired-failure"
         }
 
-        fn take_ordered_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+        fn take_ordered_event_batch(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerObservationBatch> {
             self.batch.take()
         }
     }
@@ -517,7 +523,7 @@ fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_contex
         Some(generation),
         None,
     );
-    let batch = sorotte_player_api::PlayerEventBatch {
+    let batch = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(10)),
         ordered_events: vec![
             sorotte_player_api::PlayerOrderedEvent::new(

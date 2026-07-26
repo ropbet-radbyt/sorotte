@@ -9,7 +9,7 @@ mod playback_coordination;
 mod queued_control;
 
 pub use accessors::{ClientPlayerIo, ClientSessionUpdate};
-use playback_coordination::RuntimePlaybackCoordination;
+use playback_coordination::{OrderedPlayerEventConsumer, RuntimePlaybackCoordination};
 pub use playback_coordination::{
     PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
     PlaybackCoordinationSnapshot,
@@ -22,6 +22,8 @@ pub struct ClientRuntime<P, C> {
     control: C,
     pub(crate) ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible,
     pending_player_playback_telemetry_updates: EffectOutbox<PlayerPlaybackTelemetryUpdate>,
+    pending_ordered_local_file_updates: EffectOutbox<LocalFileUpdate>,
     last_local_file_update: Option<LocalFileUpdate>,
     playback_coordination: RuntimePlaybackCoordination,
+    ordered_player_events: OrderedPlayerEventConsumer,
 }

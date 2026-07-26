@@ -511,8 +511,10 @@ where
             control,
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
+            pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
             playback_coordination: RuntimePlaybackCoordination::default(),
+            ordered_player_events: OrderedPlayerEventConsumer::default(),
         }
     }
 

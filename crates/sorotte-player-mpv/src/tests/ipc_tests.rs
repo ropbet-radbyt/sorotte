@@ -1020,6 +1020,77 @@ fn each_nonblocking_command_receives_a_unique_completion_identity() {
 }
 
 #[test]
+fn nonblocking_property_read_retains_its_response_for_scoped_consumers() {
+    let response = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                command_id: 1,
+                token: 5,
+                response: observed,
+            }
+        )] if observed == &response
+    ));
+}
+
+#[test]
+fn unavailable_nonblocking_property_read_emits_no_connection_failure() {
+    let response = json!({
+        "request_id": 1,
+        "error": crate::constants::MPV_RESPONSE_PROPERTY_UNAVAILABLE,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert!(matches!(
+        client.take_connection_events().as_slice(),
+        [MpvIpcConnectionEvent::Connected { .. }]
+    ));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                command_id: 1,
+                token: 5,
+                ..
+            }
+        )]
+    ));
+    assert!(client.take_connection_events().is_empty());
+    assert!(client.is_healthy());
+}
+
+#[test]
 fn unrelated_client_message_stays_on_the_ordinary_full_pump_lane() {
     let unrelated = json!({
         "event": "client-message",
@@ -1974,7 +2045,7 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
         .expect("attached mpv transport should accept network loadfile");
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 2);
+    assert_eq!(writes.len(), 1);
     let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     assert_eq!(
         payload,
@@ -1990,15 +2061,6 @@ fn open_network_file_scopes_configured_cache_options_to_the_load() {
                 }
             ],
             "request_id": 1
-        })
-    );
-    let playlist_query: Value =
-        serde_json::from_str(writes[1].trim_end()).expect("valid playlist query");
-    assert_eq!(
-        playlist_query,
-        json!({
-            "command": ["get_property", "playlist"],
-            "request_id": 2
         })
     );
 }
@@ -2036,16 +2098,8 @@ fn open_local_file_preserves_user_cache_options_when_network_options_are_configu
                 "request_id": 1
             }),
             json!({
-                "command": ["get_property", "playlist"],
-                "request_id": 2
-            }),
-            json!({
                 "command": ["loadfile", "file:///C:/Media/movie.mkv", "replace"],
-                "request_id": 3
-            }),
-            json!({
-                "command": ["get_property", "playlist"],
-                "request_id": 4
+                "request_id": 2
             }),
         ]
     );
@@ -2086,20 +2140,16 @@ fn active_network_option_reapply_uses_authoritative_network_path_over_stale_loca
                 "request_id": 1
             }),
             json!({
-                "command": ["get_property", "playlist"],
+                "command": ["get_property", "path"],
                 "request_id": 2
             }),
             json!({
-                "command": ["get_property", "path"],
+                "command": ["set_property", "file-local-options/cache-pause-wait", "5"],
                 "request_id": 3
             }),
             json!({
-                "command": ["set_property", "file-local-options/cache-pause-wait", "5"],
-                "request_id": 4
-            }),
-            json!({
                 "command": ["set_property", "file-local-options/cache-secs", "75"],
-                "request_id": 5
+                "request_id": 4
             }),
         ]
     );
@@ -2126,7 +2176,7 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
     assert!(adapter.is_connected());
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 3);
+    assert_eq!(writes.len(), 2);
     let load_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid load json");
     assert_eq!(
         load_payload,
@@ -2136,12 +2186,12 @@ fn active_network_option_reapply_uses_authoritative_local_path_over_stale_networ
         })
     );
     let path_payload: Value =
-        serde_json::from_str(writes[2].trim_end()).expect("valid path query json");
+        serde_json::from_str(writes[1].trim_end()).expect("valid path query json");
     assert_eq!(
         path_payload,
         json!({
             "command": ["get_property", "path"],
-            "request_id": 3
+            "request_id": 2
         })
     );
 }
@@ -4301,7 +4351,6 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
 #[test]
 fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_marker() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
-    let polled_external_target = "https://media.example.test/external-b.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"event":"start-file","playlist_entry_id":701}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
@@ -4333,7 +4382,11 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
         None,
         "the mismatched poll must not complete Sorotte's pending A load"
     );
-    assert_eq!(adapter.current_path(), Some(polled_external_target));
+    assert_eq!(
+        adapter.current_path(),
+        None,
+        "an uncorrelated authoritative path must not be mixed into the pending attempt's physical projection"
+    );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),

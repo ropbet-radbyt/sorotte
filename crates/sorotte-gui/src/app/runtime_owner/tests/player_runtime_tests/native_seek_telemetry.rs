@@ -197,8 +197,8 @@ impl GuiSessionRuntimeAdapter for AlternateRoomPositionSession {
 
 #[derive(Default)]
 struct PositionTelemetryPlayer {
-    ordered_batches: std::collections::VecDeque<sorotte_player_api::PlayerEventBatch>,
-    ordered_reacquisition_batch: Option<sorotte_player_api::PlayerEventBatch>,
+    ordered_batches: std::collections::VecDeque<sorotte_player_api::PlayerObservationBatch>,
+    ordered_reacquisition_batch: Option<sorotte_player_api::PlayerObservationBatch>,
     ordered_reacquisition_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     updates: std::collections::VecDeque<sorotte_player_api::PlayerTransportTelemetryUpdate>,
     playback_updates: std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
@@ -274,7 +274,7 @@ impl PlayerAdapter for PositionTelemetryPlayer {
         self.media_load_observations.pop_front()
     }
 
-    fn take_ordered_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+    fn take_ordered_event_batch(&mut self) -> Option<sorotte_player_api::PlayerObservationBatch> {
         self.ordered_batches.pop_front()
     }
 
@@ -2166,7 +2166,7 @@ fn ordered_sequence_accepts_media_derived_after_newer_interleaved_transport_time
     .with_position_seconds(12.0)
     .with_logical_pause(false);
     transport.playback_rate = Some(1.0);
-    let batch = sorotte_player_api::PlayerEventBatch {
+    let batch = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![
             sorotte_player_api::PlayerOrderedEvent::new(
@@ -2231,7 +2231,7 @@ fn generation_advancing_loading_discards_old_file_and_generationless_playback() 
         ),
     )
     .with_phase(sorotte_player_api::PlayerTransportPhase::Loading);
-    let batch = sorotte_player_api::PlayerEventBatch {
+    let batch = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(1),
@@ -2280,7 +2280,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
             ),
         )
     };
-    let initial = sorotte_player_api::PlayerEventBatch {
+    let initial = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(1),
@@ -2294,7 +2294,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
         )],
         legacy_playback_telemetry: None,
     };
-    let gap = sorotte_player_api::PlayerEventBatch {
+    let gap = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(3),
@@ -2308,7 +2308,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
         )],
         legacy_playback_telemetry: None,
     };
-    let reacquired = sorotte_player_api::PlayerEventBatch {
+    let reacquired = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(3)),
         ordered_events: vec![
             sorotte_player_api::PlayerOrderedEvent::new(
@@ -2393,7 +2393,7 @@ fn contiguous_same_generation_recovery_does_not_trigger_reacquisition_or_drop_fi
             ),
         )
     };
-    let initial = sorotte_player_api::PlayerEventBatch {
+    let initial = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![
             sorotte_player_api::PlayerOrderedEvent::new(
@@ -2426,7 +2426,7 @@ fn contiguous_same_generation_recovery_does_not_trigger_reacquisition_or_drop_fi
             sorotte_player_api::PlayerOrderedEventKind::Transport(update),
         )
     };
-    let recovery = sorotte_player_api::PlayerEventBatch {
+    let recovery = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![loading(102), loading(103)],
         legacy_playback_telemetry: None,
@@ -2469,7 +2469,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
             ),
         )
     };
-    let baseline = sorotte_player_api::PlayerEventBatch {
+    let baseline = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(1),
@@ -2478,7 +2478,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
         legacy_playback_telemetry: None,
     };
     let command_id = sorotte_player_api::PlayerCommandId::new(77);
-    let snapshot = sorotte_player_api::PlayerEventBatch {
+    let snapshot = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(2)),
         ordered_events: vec![
             sorotte_player_api::PlayerOrderedEvent::new(
@@ -2512,7 +2512,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
         ],
         legacy_playback_telemetry: None,
     };
-    let late_seek = sorotte_player_api::PlayerEventBatch {
+    let late_seek = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(6),
@@ -2583,7 +2583,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
 
 #[test]
 fn sequenced_generationless_file_change_preserves_the_ordered_watermark() {
-    let generationless_file = sorotte_player_api::PlayerEventBatch {
+    let generationless_file = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(10),
@@ -2597,7 +2597,7 @@ fn sequenced_generationless_file_change_preserves_the_ordered_watermark() {
         )],
         legacy_playback_telemetry: None,
     };
-    let gap = sorotte_player_api::PlayerEventBatch {
+    let gap = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![sorotte_player_api::PlayerOrderedEvent::new(
             sorotte_player_api::PlayerEventSequence::new(12),

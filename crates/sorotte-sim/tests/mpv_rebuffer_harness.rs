@@ -1126,7 +1126,7 @@ fn wait_for_real_mpv_client(
 }
 
 fn pause_and_wait(
-    player: &mut impl PlayerAdapter,
+    player: &mut (impl PlayerAdapter + std::fmt::Debug),
     observed: &mut PlayerTransportTelemetryUpdate,
     description: &str,
 ) {
@@ -1143,7 +1143,7 @@ fn pause_and_wait(
 }
 
 fn seek_and_wait(
-    player: &mut impl PlayerAdapter,
+    player: &mut (impl PlayerAdapter + std::fmt::Debug),
     observed: &mut PlayerTransportTelemetryUpdate,
     target_seconds: f64,
     description: &str,
@@ -1161,7 +1161,7 @@ fn seek_and_wait(
 }
 
 fn wait_for_completed_command(
-    player: &mut impl PlayerAdapter,
+    player: &mut (impl PlayerAdapter + std::fmt::Debug),
     observed: &mut PlayerTransportTelemetryUpdate,
     command_id: PlayerCommandId,
     description: &str,
@@ -1183,7 +1183,8 @@ fn wait_for_completed_command(
                 PlayerCommandProgressState::Finished(result) => {
                     panic!(
                         "{description}: tracked command {command_id:?} failed with {result:?}; \
-                         latest transport observation: {observed:?}"
+                         latest transport observation: {observed:?}; \
+                         player state after the terminal pump: {player:?}"
                     );
                 }
             }
@@ -1191,7 +1192,8 @@ fn wait_for_completed_command(
         assert!(
             Instant::now() < deadline,
             "{description}: tracked command {command_id:?} timed out (accepted={accepted}); \
-             latest transport observation: {observed:?}"
+             latest transport observation: {observed:?}; \
+             latest player state: {player:?}"
         );
         sleep(POLL_INTERVAL);
     }

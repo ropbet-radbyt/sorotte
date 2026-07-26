@@ -4,8 +4,9 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerEventBatch, PlayerLocalFileObservation,
-    PlayerMediaGeneration, PlayerMediaLoadObservation, PlayerMediaLoadOutcome,
+    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
+    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
@@ -67,7 +68,10 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
             .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
         self.playback_updates.push_back(
             PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
+                // Managed mpv is launched with `--pause`; reporting an
+                // unpaused open here invents a native Play gesture and can
+                // incorrectly promote the local user to Ready.
+                .with_paused(true)
                 .with_position_seconds(0.0),
         );
         Ok(())
@@ -290,7 +294,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerEventBatch> {
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         match self {
             Self::Test(player) => player.take_ordered_event_batch(),
             Self::Mpv(player) => player.take_ordered_event_batch(),
@@ -350,6 +354,36 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.take_media_load_outcome(),
             #[cfg(test)]
             Self::Custom(player) => player.take_media_load_outcome(),
+        }
+    }
+
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        match self {
+            Self::Test(player) => player.take_player_event_batch(),
+            Self::Mpv(player) => player.take_player_event_batch(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_player_event_batch(),
+        }
+    }
+
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        match self {
+            Self::Test(player) => player.player_event_delivery_mode(),
+            Self::Mpv(player) => player.player_event_delivery_mode(),
+            #[cfg(test)]
+            Self::Custom(player) => player.player_event_delivery_mode(),
+        }
+    }
+
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        match self {
+            Self::Test(player) => player.acknowledge_player_event_batch(token),
+            Self::Mpv(player) => player.acknowledge_player_event_batch(token),
+            #[cfg(test)]
+            Self::Custom(player) => player.acknowledge_player_event_batch(token),
         }
     }
 
