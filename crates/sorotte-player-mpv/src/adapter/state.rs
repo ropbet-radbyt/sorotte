@@ -338,6 +338,7 @@ impl Default for MpvAdapter {
             interrupted_network_stream_recovery: None,
             network_stream_recovery_evidence: None,
             network_cache_stall: None,
+            active_load_attempt_id: None,
             active_media_generation: None,
             active_playlist_entry_id: None,
             latest_start_file_observation: None,

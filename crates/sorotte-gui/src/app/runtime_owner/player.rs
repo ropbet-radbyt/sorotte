@@ -83,7 +83,10 @@ struct GuiOrderedLoadBinding {
     media_generation: PlayerMediaGeneration,
     command_id: Option<PlayerCommandId>,
     playlist_entry_id: Option<i64>,
-    terminal: bool,
+    owns_transport: bool,
+    semantic_load_completed: bool,
+    physical_terminal: bool,
+    logical_ownership_revoked: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -93,7 +96,7 @@ pub(super) struct GuiOrderedPlayerEventConsumer {
     last_snapshot_boundary: Option<PlayerSequenceBoundary>,
     transport: PlayerTransportSnapshot,
     attempts: BTreeMap<LoadAttemptId, GuiOrderedLoadBinding>,
-    active_attempt: Option<LoadAttemptId>,
+    transport_owner_attempt: Option<LoadAttemptId>,
     acknowledged_semantic_sequence: u64,
     applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
     applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
@@ -127,6 +130,7 @@ pub(super) struct StartedMediaLoad {
 pub(super) enum PlaylistResolutionAttemptState {
     Resolving,
     Loading,
+    Indeterminate,
     Active,
     Failed,
     Superseded,
@@ -205,6 +209,7 @@ pub(super) struct PlaylistResolutionAttempt {
     pub(super) candidate_plex_operation_context: Option<GuiPlexOperationContext>,
     pub(super) player_command_id: Option<PlayerCommandId>,
     pub(super) player_media_generation: Option<PlayerMediaGeneration>,
+    pub(super) load_attempt_id: Option<LoadAttemptId>,
     pub(super) state: PlaylistResolutionAttemptState,
     pub(super) candidate_failures: Vec<PlaylistResolutionCandidateFailure>,
     pub(super) fallback_pending: bool,
@@ -227,6 +232,7 @@ impl std::fmt::Debug for PlaylistResolutionAttempt {
             )
             .field("player_command_id", &self.player_command_id)
             .field("player_media_generation", &self.player_media_generation)
+            .field("load_attempt_id", &self.load_attempt_id)
             .field("state", &self.state)
             .field("failed_candidate_count", &self.candidate_failures.len())
             .field(
@@ -259,6 +265,7 @@ impl PlaylistResolutionAttempt {
             candidate_plex_operation_context: None,
             player_command_id: None,
             player_media_generation: None,
+            load_attempt_id: None,
             state: PlaylistResolutionAttemptState::Resolving,
             candidate_failures: Vec::new(),
             fallback_pending: false,

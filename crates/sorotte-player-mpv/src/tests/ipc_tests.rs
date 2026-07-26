@@ -4351,7 +4351,6 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
 #[test]
 fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_marker() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
-    let polled_external_target = "https://media.example.test/external-b.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"event":"start-file","playlist_entry_id":701}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
@@ -4383,7 +4382,11 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
         None,
         "the mismatched poll must not complete Sorotte's pending A load"
     );
-    assert_eq!(adapter.current_path(), Some(polled_external_target));
+    assert_eq!(
+        adapter.current_path(),
+        None,
+        "an uncorrelated authoritative path must not be mixed into the pending attempt's physical projection"
+    );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),

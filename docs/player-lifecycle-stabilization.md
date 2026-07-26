@@ -163,6 +163,14 @@ observed `file-loaded` may transition to `MayStillEmitQuiescent` when semantic
 completion is not observed, even after strict playlist binding or
 `start-file`. Supersession never deletes an attempt.
 
+`LoadAttemptStarting` carries an explicit `owns_transport` bit. A normal
+`start-file` sets it and is the physical transport handoff, so Loading,
+Prebuffering, cache, pause, position, and seekability deltas are consumable
+before `file-loaded`. A quiescent late `start-file` remains correlated but
+reports `owns_transport=false`; consumers stay fail-closed until a later
+correlated `file-loaded` emits `LoadAttemptActive`. Semantic `Loaded` and
+physical transport ownership are independent facts.
+
 ### Submission
 
 The adapter acquires the authoritative playlist baseline before submission when
@@ -235,13 +243,27 @@ supersession or observational timeout. An accepted load that has not observed
 `file-loaded` by its semantic deadline becomes `MayStillEmitQuiescent`,
 including when it is already `Bound` or `Starting`: it emits one
 `Indeterminate` attempt outcome, clears adapter-facing pending/active load
-projection, and stops proactive property-query reconciliation. A later unknown
+projection only when that projection belongs to the timed-out attempt, and
+stops proactive property-query reconciliation. A different predecessor may
+remain the physical projection even though its logical ownership was revoked.
+A later unknown
 `start-file` may rearm one strict reconciliation, and a correlated late
 `start-file` is retained as physical evidence without restoring logical
 activity. Only a later correlated `file-loaded` may reactivate a still-owned
 quiescent attempt. The deadline belongs to the physical attempt rather than its
 optional tracked command, so commandless same-generation recovery loads cannot
 poll forever either.
+
+GUI playlist resolution retains the correlated `LoadAttemptId` after
+`CompletionNotObserved`. Its state becomes `Indeterminate`, which may request a
+fallback but does not create a permanent candidate failure or discard a Plex
+logical placeholder. A matching late `LoadAttemptActive` returns the attempt to
+`Active`, cancels the fallback, removes timeout-only failure state, and confirms
+the logical override once the matching file observation arrives. If a fallback
+has already been accepted, the reducer's supersession outcome fences the old
+attempt from recovering the resolution. Client-core likewise treats late
+`LoadAttemptActive` as positive technical evidence and clears a matching stale
+player-timeout readiness fingerprint.
 
 Semantic outcomes are inserted into a retained, ordered store. They remain
 available in every compatible batch until the acknowledgement token covering
@@ -293,6 +315,13 @@ token, snapshot, event orders, semantic orders, and semantic payloads must all
 name that epoch. Retired attachment epochs are held in FIFO delivery buffers;
 the producer cannot expose a newer epoch until all older handoff deliveries
 have been acknowledged.
+
+Both production consumers retain per-attempt physical and semantic flags:
+`owns_transport`, `semantic_load_completed`, `physical_terminal`, and
+`logical_ownership_revoked`. Transport deltas are accepted only from the
+explicit physical owner. `Superseded` revokes logical success but does not mark
+the physical attempt terminal; only `LoadAttemptTerminal` retires its transport
+ownership.
 
 Snapshot meanings:
 
@@ -388,6 +417,15 @@ authoritative idle. Empty playlist plus a nonempty path is incomplete and
 retried. A recently accepted unbound attempt can remain awaiting within its
 semantic deadline; after that deadline it becomes quiescent rather than being
 erased or polled indefinitely.
+
+The adapter's physical projection is keyed by `LoadAttemptId`; generation,
+playlist entry, path, and file-loaded state are installed or cleared together.
+A submitted replacement target remains pending data and never overwrites the
+current physical path. When an unstarted replacement becomes quiescent, one
+authoritative playlist/path rebase either retains the predecessor, clears to
+Empty, or binds the late successor. That one-shot authority check does not
+restart the proactive reconciliation loop. A predecessor `end-file` clears its
+projection even while the successor remains accepted but unstarted.
 
 Getters never perform repeated synchronous reacquisition. Taking a consumer
 batch does not clear reconciliation-required state.
@@ -593,6 +631,9 @@ replayer are deterministic.
 | A to B to C replacement | deterministic scheduler with error and stop variants |
 | Synchronous rejection isolation | deterministic rejection scenario |
 | Same-generation recovery | old end before/after successor start and old error variants |
+| Starting ownership | normal and quiescent `LoadAttemptStarting` through reducer, client-core, and GUI consumers, including pre-file-loaded Loading/cache deltas |
+| Indeterminate GUI recovery | tracked timeout, retained attempt correlation, late Active plus matching file, and accepted-fallback fencing |
+| Attempt-keyed adapter projection | A retained, authoritative empty, late B, predecessor end, and local/network replacement matrices |
 | Strict binding/reconciliation | stale playlist, external current item, later causal entry, and empty-player tests |
 | Fast load before binding | deferred `start-file`/`file-loaded` adapter regression plus required real-mpv pause/seek/resume semantics |
 | Post-response event harvesting | pending Play completes without an unrelated command; active media delivers `end-file` after its load command is already terminal |

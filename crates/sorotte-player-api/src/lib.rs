@@ -1243,6 +1243,14 @@ pub enum PlayerEvent {
         media_generation: PlayerMediaGeneration,
         command_id: Option<PlayerCommandId>,
         playlist_entry_id: i64,
+        /// Whether this start-file observation establishes the physical owner
+        /// of subsequent transport telemetry.
+        ///
+        /// A normal start owns transport immediately, before semantic
+        /// file-loaded completion. A late start for an indeterminate
+        /// quiescent attempt remains correlated but fails closed until a later
+        /// owned file-loaded observation restores transport ownership.
+        owns_transport: bool,
     },
     LoadAttemptActive {
         attempt_id: LoadAttemptId,

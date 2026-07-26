@@ -6,6 +6,74 @@ use sorotte_player_api::{
 };
 use std::{collections::BTreeSet, io};
 
+fn active_projection(
+    adapter: &mut MpvAdapter,
+    generation: PlayerMediaGeneration,
+    playlist_entry_id: i64,
+    path: &str,
+) -> LoadAttemptId {
+    let attachment_epoch = adapter.lifecycle_epoch();
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+        attachment_epoch,
+        media_generation: generation,
+        playlist_entry_id,
+        observed_target: path.to_owned(),
+        file_loaded: true,
+    });
+    let attempt_id = adapter
+        .player_lifecycle
+        .active_load_attempt
+        .expect("external fixture should establish an active attempt");
+    adapter.install_physical_projection(
+        attempt_id,
+        generation,
+        Some(playlist_entry_id),
+        Some(path.to_owned()),
+        true,
+    );
+    adapter.observed_state.path = Some(path.to_owned());
+    adapter.path_metadata_generation = Some(generation);
+    adapter.active_generation_has_restarted = true;
+    adapter.transport_phase = PlayerTransportPhase::Playing;
+    attempt_id
+}
+
+fn timeout_unstarted_replacement(
+    adapter: &mut MpvAdapter,
+    generation: PlayerMediaGeneration,
+    target: &str,
+) -> LoadAttemptId {
+    let command_id = adapter.register_tracked_command(
+        Some(generation),
+        TrackedCommandKind::Load {
+            file_loaded: false,
+            ready: false,
+        },
+    );
+    adapter.accept_tracked_command(command_id);
+    let baseline = adapter
+        .active_playlist_entry_id
+        .and_then(|entry_id| i64::try_from(entry_id).ok())
+        .into_iter()
+        .collect();
+    let attempt_id = adapter.submit_lifecycle_load(Some(command_id), generation, target, baseline);
+    adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+        attachment_epoch: adapter.lifecycle_epoch(),
+        attempt_id,
+    });
+    adapter.pending_load_request = Some(target.to_owned());
+    adapter.pending_load_generation = Some(generation);
+    adapter.finish_tracked_command(
+        command_id,
+        PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+    );
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_id].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
+    attempt_id
+}
+
 #[test]
 fn timed_out_unbound_load_clears_pending_ui_and_stops_property_query_scheduling() {
     let generation = PlayerMediaGeneration::new(1);
@@ -39,7 +107,10 @@ fn timed_out_unbound_load_clears_pending_ui_and_stops_property_query_scheduling(
     assert_eq!(adapter.pending_load_request(), None);
     assert_eq!(adapter.pending_load_generation(), None);
     assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
-    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(
+        adapter.lifecycle_reconciliation_due,
+        "quiescence requests exactly one authoritative rebase"
+    );
     assert!(!adapter.player_lifecycle.reconciliation_required);
     assert!(
         adapter
@@ -135,7 +206,10 @@ fn timed_out_bound_load_clears_loading_projection_but_retains_late_physical_owne
     assert_eq!(adapter.active_playlist_entry_id, None);
     assert!(!adapter.paused_for_cache());
     assert_eq!(adapter.cache_buffering_percent(), None);
-    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(
+        adapter.lifecycle_reconciliation_due,
+        "quiescence requests exactly one authoritative rebase"
+    );
     assert!(!adapter.player_lifecycle.reconciliation_required);
     assert_eq!(
         effects
@@ -238,7 +312,10 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
     assert_eq!(adapter.active_media_generation, None);
     assert_eq!(adapter.active_playlist_entry_id, None);
     assert_eq!(adapter.current_path, None);
-    assert!(!adapter.lifecycle_reconciliation_due);
+    assert!(
+        adapter.lifecycle_reconciliation_due,
+        "quiescence requests exactly one authoritative rebase"
+    );
     assert!(!adapter.player_lifecycle.reconciliation_required);
 }
 
@@ -333,6 +410,132 @@ fn delayed_file_loaded_from_superseded_attempt_cannot_replace_active_adapter_pro
             if load.attempt_id == attempt_a
                 && load.result == PlayerLoadAttemptResult::Loaded
     )));
+}
+
+#[test]
+fn unstarted_replacement_timeout_rebases_to_authoritative_predecessor_without_mixing_identity() {
+    for (active_path, replacement_path) in [
+        ("C:/media/local-a.mkv", "https://media.invalid/network-b"),
+        ("https://media.invalid/network-a", "C:/media/local-b.mkv"),
+    ] {
+        let generation_a = PlayerMediaGeneration::new(11);
+        let generation_b = PlayerMediaGeneration::new(12);
+        let mut adapter = MpvAdapter::default();
+        let attempt_a = active_projection(&mut adapter, generation_a, 10, active_path);
+        let attempt_b = timeout_unstarted_replacement(&mut adapter, generation_b, replacement_path);
+
+        assert_eq!(adapter.active_load_attempt_id, Some(attempt_a));
+        assert_eq!(adapter.active_media_generation, Some(generation_a));
+        assert_eq!(adapter.active_playlist_entry_id, Some(10));
+        assert_eq!(adapter.current_path(), Some(active_path));
+        assert!(adapter.active_file_loaded);
+        assert!(adapter.physical_projection_is_coherent());
+        assert_ne!(adapter.active_load_attempt_id, Some(attempt_b));
+
+        adapter.inject_authoritative_playlist_snapshot_for_test(
+            [(10, Some(active_path.to_owned()), true)],
+            Some(active_path.to_owned()),
+        );
+
+        assert_eq!(adapter.active_load_attempt_id, Some(attempt_a));
+        assert_eq!(adapter.active_media_generation, Some(generation_a));
+        assert_eq!(adapter.active_playlist_entry_id, Some(10));
+        assert_eq!(adapter.current_path(), Some(active_path));
+        assert!(adapter.active_file_loaded);
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
+        assert!(adapter.physical_projection_is_coherent());
+    }
+}
+
+#[test]
+fn unstarted_replacement_timeout_rebases_to_authoritative_empty_player() {
+    let generation_a = PlayerMediaGeneration::new(11);
+    let generation_b = PlayerMediaGeneration::new(12);
+    let mut adapter = MpvAdapter::default();
+    let attempt_a = active_projection(&mut adapter, generation_a, 10, "https://media.invalid/a");
+    timeout_unstarted_replacement(&mut adapter, generation_b, "C:/media/b.mkv");
+
+    adapter.inject_authoritative_playlist_snapshot_for_test([], None);
+
+    assert_eq!(adapter.active_load_attempt_id, None);
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert_eq!(adapter.current_path(), None);
+    assert!(!adapter.active_file_loaded);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert!(adapter.physical_projection_is_coherent());
+    assert!(
+        adapter.player_lifecycle.load_attempts[&attempt_a]
+            .state
+            .is_terminal()
+    );
+}
+
+#[test]
+fn quiescent_replacement_appearing_after_timeout_never_mixes_predecessor_and_successor() {
+    let generation_a = PlayerMediaGeneration::new(11);
+    let generation_b = PlayerMediaGeneration::new(12);
+    let target_a = "C:/media/a.mkv";
+    let target_b = "https://media.invalid/b";
+    let mut adapter = MpvAdapter::default();
+    let attempt_a = active_projection(&mut adapter, generation_a, 10, target_a);
+    let attempt_b = timeout_unstarted_replacement(&mut adapter, generation_b, target_b);
+
+    adapter.inject_authoritative_playlist_snapshot_for_test(
+        [(20, Some(target_b.to_owned()), true)],
+        Some(target_b.to_owned()),
+    );
+    assert_eq!(adapter.active_load_attempt_id, None);
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.current_path(), None);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert!(adapter.physical_projection_is_coherent());
+    assert!(
+        adapter.player_lifecycle.load_attempts[&attempt_a]
+            .state
+            .is_terminal()
+    );
+
+    adapter.handle_start_file_observation(20);
+    assert_eq!(
+        adapter.active_load_attempt_id, None,
+        "a quiescent late start remains fail-closed until file-loaded"
+    );
+    assert!(adapter.physical_projection_is_coherent());
+
+    adapter.handle_file_loaded_observation(Some(target_b.to_owned()));
+    assert_eq!(adapter.active_load_attempt_id, Some(attempt_b));
+    assert_eq!(adapter.active_media_generation, Some(generation_b));
+    assert_eq!(adapter.active_playlist_entry_id, Some(20));
+    assert_eq!(adapter.current_path(), Some(target_b));
+    assert!(adapter.active_file_loaded);
+    assert!(adapter.physical_projection_is_coherent());
+}
+
+#[test]
+fn predecessor_end_file_clears_projection_while_replacement_remains_unstarted() {
+    let generation_a = PlayerMediaGeneration::new(11);
+    let generation_b = PlayerMediaGeneration::new(12);
+    let mut adapter = MpvAdapter::default();
+    active_projection(&mut adapter, generation_a, 10, "C:/media/a.mkv");
+    let attempt_b =
+        timeout_unstarted_replacement(&mut adapter, generation_b, "https://media.invalid/b");
+
+    adapter.handle_end_file_event(&serde_json::json!({
+        "reason": "stop",
+        "playlist_entry_id": 10,
+    }));
+
+    assert_eq!(adapter.active_load_attempt_id, None);
+    assert_eq!(adapter.active_media_generation, None);
+    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert_eq!(adapter.current_path(), None);
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    assert!(adapter.physical_projection_is_coherent());
+    assert!(matches!(
+        adapter.player_lifecycle.load_attempts[&attempt_b].state,
+        LoadAttemptState::MayStillEmitQuiescent { .. }
+    ));
 }
 
 #[test]

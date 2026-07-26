@@ -773,6 +773,12 @@ pub struct MpvAdapter {
     interrupted_network_stream_recovery: Option<InterruptedNetworkStreamRecovery>,
     network_stream_recovery_evidence: Option<NetworkStreamRecoveryEvidence>,
     network_cache_stall: Option<NetworkCacheStall>,
+    /// Physical attempt that owns the adapter identity projection.
+    ///
+    /// `active_media_generation`, `active_playlist_entry_id`,
+    /// `current_path`, and `active_file_loaded` are updated atomically with
+    /// this key at lifecycle ownership boundaries.
+    active_load_attempt_id: Option<LoadAttemptId>,
     active_media_generation: Option<PlayerMediaGeneration>,
     active_playlist_entry_id: Option<u64>,
     latest_start_file_observation: Option<DeferredStartFileObservation>,
@@ -897,14 +903,11 @@ impl MpvAdapter {
         self.interrupted_network_stream_recovery = None;
         self.network_stream_recovery_evidence = None;
         self.network_cache_stall = None;
-        self.active_media_generation = None;
-        self.active_playlist_entry_id = None;
+        self.clear_physical_projection();
         self.latest_start_file_observation = None;
         self.deferred_start_file_observation = None;
         self.deferred_file_loaded_observation = None;
-        self.active_file_loaded = false;
         self.active_generation_has_restarted = false;
-        self.current_path = None;
         self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
         self.last_ipc_event_fence_at = None;
@@ -967,17 +970,14 @@ impl MpvAdapter {
 
         self.pending_load_request = None;
         self.pending_load_generation = None;
-        self.active_playlist_entry_id = None;
+        self.clear_physical_projection();
         self.latest_start_file_observation = None;
         self.deferred_start_file_observation = None;
         self.deferred_file_loaded_observation = None;
-        self.active_media_generation = None;
         self.interrupted_network_stream_recovery = None;
         self.network_stream_recovery_evidence = None;
         self.network_cache_stall = None;
-        self.current_path = None;
         self.last_polled_local_file_update = None;
-        self.active_file_loaded = false;
         self.active_generation_has_restarted = false;
         self.transport_phase = PlayerTransportPhase::Empty;
         self.observed_state = MpvObservedState::default();
@@ -1445,10 +1445,18 @@ impl MpvAdapter {
             observed_target: target.to_owned(),
             file_loaded: true,
         });
-        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
-        self.active_media_generation = self.player_lifecycle.active_media_generation();
-        self.active_file_loaded = true;
-        self.current_path = Some(target.to_owned());
+        let active = self
+            .player_lifecycle
+            .active_attempt()
+            .cloned()
+            .expect("test external load should establish a physical owner");
+        self.install_physical_projection(
+            active.id,
+            active.media_generation,
+            Some(playlist_entry_id),
+            Some(target.to_owned()),
+            true,
+        );
         self.observed_state.path = Some(target.to_owned());
         self.transport_phase = PlayerTransportPhase::Playing;
         debug_assert!(self.player_lifecycle.assert_invariants().is_ok());
@@ -4188,7 +4196,12 @@ impl MpvAdapter {
             let pending_load_completed =
                 self.complete_pending_load_request_from_polled_update_if_ready(polled_update);
             if !pending_load_completed {
-                self.current_path = authoritative_update.path.clone();
+                if let Some(attempt_id) = self.active_load_attempt_id {
+                    self.update_physical_projection_path(
+                        attempt_id,
+                        authoritative_update.path.clone(),
+                    );
+                }
                 self.observed_state.path = authoritative_update.path;
                 self.observed_state.duration_seconds = authoritative_update.duration_seconds;
                 self.observed_state.size_bytes = authoritative_update.size_bytes;
@@ -4213,7 +4226,9 @@ impl MpvAdapter {
         self.observed_state.path = authoritative_path.clone();
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
-        self.current_path = polled_update.path.clone();
+        if let Some(attempt_id) = self.active_load_attempt_id {
+            self.update_physical_projection_path(attempt_id, polled_update.path.clone());
+        }
         self.path_metadata_generation = self.observation_media_generation();
         self.duration_metadata_generation = self.observation_media_generation();
         if self.refresh_timeline_kind_from_metadata() {
@@ -4412,6 +4427,35 @@ impl MpvAdapter {
         let generation = self
             .pending_load_generation
             .expect("legacy scripted polling requires its submitted generation");
+        #[cfg(test)]
+        if !self.player_lifecycle.load_attempts.values().any(|attempt| {
+            attempt.media_generation == generation
+                && !attempt.state.is_terminal()
+                && attempt.playlist_entry_id.is_some()
+        }) {
+            let test_entry_id = self
+                .latest_start_file_observation
+                .filter(|observation| observation.attachment_epoch == self.lifecycle_epoch())
+                .map(|observation| observation.playlist_entry_id)
+                .or_else(|| {
+                    self.player_lifecycle
+                        .load_attempts
+                        .values()
+                        .find(|attempt| {
+                            attempt.media_generation == generation
+                                && !attempt.state.is_terminal()
+                                && attempt.playlist_entry_id.is_none()
+                                && Self::media_target_matches(
+                                    &requested_target,
+                                    &attempt.requested_target,
+                                )
+                        })
+                        .and_then(|attempt| i64::try_from(attempt.id.get()).ok())
+                });
+            if let Some(test_entry_id) = test_entry_id {
+                let _ = self.bind_single_pending_test_load(test_entry_id);
+            }
+        }
         let requested_target = self
             .pending_load_request
             .take()
@@ -4430,9 +4474,29 @@ impl MpvAdapter {
             }
         }
         self.pending_load_generation = None;
-        self.active_media_generation = Some(generation);
-        self.active_file_loaded = true;
-        self.current_path = polled_update.path.clone();
+        let projection_attempt = self
+            .player_lifecycle
+            .load_attempts
+            .values()
+            .find(|attempt| {
+                attempt.media_generation == generation
+                    && !attempt.state.is_terminal()
+                    && attempt.playlist_entry_id.is_some()
+            })
+            .cloned();
+        let Some(projection_attempt) = projection_attempt else {
+            self.pending_load_request = Some(requested_target);
+            self.pending_load_generation = Some(generation);
+            self.lifecycle_reconciliation_due = true;
+            return false;
+        };
+        self.install_physical_projection(
+            projection_attempt.id,
+            generation,
+            projection_attempt.playlist_entry_id,
+            polled_update.path.clone(),
+            true,
+        );
         self.observed_state.path = polled_update.path.clone();
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
@@ -4498,6 +4562,67 @@ impl MpvAdapter {
 
     fn lifecycle_epoch(&self) -> PlayerAttachmentEpoch {
         self.player_lifecycle.attachment_epoch
+    }
+
+    fn install_physical_projection(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        playlist_entry_id: Option<i64>,
+        current_path: Option<String>,
+        file_loaded: bool,
+    ) {
+        self.active_load_attempt_id = Some(attempt_id);
+        self.active_media_generation = Some(media_generation);
+        self.active_playlist_entry_id =
+            playlist_entry_id.and_then(|entry_id| u64::try_from(entry_id).ok());
+        self.current_path = current_path;
+        self.active_file_loaded = file_loaded;
+        debug_assert!(self.physical_projection_is_coherent());
+    }
+
+    fn clear_physical_projection(&mut self) {
+        self.active_load_attempt_id = None;
+        self.active_media_generation = None;
+        self.active_playlist_entry_id = None;
+        self.current_path = None;
+        self.active_file_loaded = false;
+        debug_assert!(self.physical_projection_is_coherent());
+    }
+
+    fn update_physical_projection_path(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        current_path: Option<String>,
+    ) -> bool {
+        if self.active_load_attempt_id != Some(attempt_id) {
+            return false;
+        }
+        self.current_path = current_path;
+        true
+    }
+
+    fn physical_projection_is_coherent(&self) -> bool {
+        match (
+            self.active_load_attempt_id,
+            self.active_media_generation,
+            self.active_playlist_entry_id,
+            self.active_file_loaded,
+        ) {
+            (None, None, None, false) => self.current_path.is_none(),
+            (Some(attempt_id), Some(media_generation), playlist_entry_id, _) => self
+                .player_lifecycle
+                .load_attempts
+                .get(&attempt_id)
+                .is_some_and(|attempt| {
+                    attempt.media_generation == media_generation
+                        && attempt
+                            .playlist_entry_id
+                            .and_then(|entry_id| u64::try_from(entry_id).ok())
+                            == playlist_entry_id
+                }),
+            _ => false,
+        }
     }
 
     fn apply_lifecycle_input(&mut self, input: PlayerLifecycleInput) -> Vec<PlayerLifecycleEffect> {
@@ -4584,14 +4709,11 @@ impl MpvAdapter {
             self.network_cache_stall = None;
         }
 
-        if (self.active_media_generation == Some(media_generation) && !self.active_file_loaded)
-            || (pending_load_was_generation && self.active_media_generation.is_none())
+        if self.active_load_attempt_id == Some(attempt_id)
+            || (pending_load_was_generation && self.active_load_attempt_id.is_none())
         {
             self.transport_phase = PlayerTransportPhase::Empty;
-            self.active_file_loaded = false;
-            self.active_media_generation = None;
-            self.active_playlist_entry_id = None;
-            self.current_path = None;
+            self.clear_physical_projection();
             self.paused = false;
             self.logical_pause_explicit = false;
             self.position_seconds = 0.0;
@@ -4618,10 +4740,10 @@ impl MpvAdapter {
             self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
         }
 
-        self.lifecycle_reconciliation_due = self.player_lifecycle.reconciliation_required
-            || self.player_lifecycle.requires_authoritative_snapshot()
-            || self.deferred_start_file_observation.is_some()
-            || self.deferred_file_loaded_observation.is_some();
+        // A semantic deadline is also an authority boundary: the physical
+        // player may still contain the predecessor, be empty, or have admitted
+        // the late successor without delivering start-file.
+        self.lifecycle_reconciliation_due = true;
     }
 
     fn submit_lifecycle_load(
@@ -4753,12 +4875,20 @@ impl MpvAdapter {
         {
             return false;
         }
-        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
-        self.active_media_generation = self
+        let media_generation = self
             .player_lifecycle
             .load_attempts
             .get(attempt_id)
             .map(|attempt| attempt.media_generation);
+        if let Some(media_generation) = media_generation {
+            self.install_physical_projection(
+                *attempt_id,
+                media_generation,
+                Some(playlist_entry_id),
+                None,
+                false,
+            );
+        }
         true
     }
 
@@ -4890,7 +5020,6 @@ impl MpvAdapter {
         self.observed_state.core_idle = core_idle;
         self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
         self.observed_state.eof_reached = eof_reached;
-        self.current_path = path.clone();
         self.refresh_network_stream_recovery_evidence();
         // File-loaded is the semantic load boundary, while readiness is a
         // transport observation. Re-publish the authoritative post-start
@@ -4912,12 +5041,25 @@ impl MpvAdapter {
 
     fn publish_reconciled_transport_state(&mut self) {
         let Some(active_attempt) = self.player_lifecycle.active_attempt().cloned() else {
+            self.clear_physical_projection();
+            self.transport_phase = PlayerTransportPhase::Empty;
             return;
         };
-        self.active_media_generation = Some(active_attempt.media_generation);
-        self.active_playlist_entry_id = active_attempt
-            .playlist_entry_id
-            .and_then(|playlist_entry_id| u64::try_from(playlist_entry_id).ok());
+        let file_loaded = if self.active_load_attempt_id == Some(active_attempt.id) {
+            self.active_file_loaded
+        } else {
+            matches!(
+                active_attempt.state,
+                crate::lifecycle::LoadAttemptState::Active
+            )
+        };
+        self.install_physical_projection(
+            active_attempt.id,
+            active_attempt.media_generation,
+            active_attempt.playlist_entry_id,
+            self.observed_state.path.clone(),
+            file_loaded,
+        );
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
         let update = self
@@ -5287,18 +5429,6 @@ impl MpvAdapter {
                     && update.phase != Some(PlayerTransportPhase::Failed)
                     && update.eof_reached != Some(true))
         });
-        self.pending_cache_telemetry_updates
-            .retain(|update| update.media_generation != Some(generation));
-        self.transport_phase = PlayerTransportPhase::Loading;
-        self.active_file_loaded = false;
-        self.observed_state.eof_reached = Some(false);
-        self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(Some(generation)));
-        let mut update = self
-            .transport_update_for(generation)
-            .with_phase(PlayerTransportPhase::Loading)
-            .with_position_seconds(position_seconds);
-        update.eof_reached = Some(false);
-        self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
         self.lifecycle_reconciliation_due = true;
         #[cfg(not(test))]
         self.reconcile_lifecycle_from_authority();
@@ -6397,13 +6527,13 @@ impl MpvAdapter {
         self.deferred_start_file_observation = None;
         self.deferred_file_loaded_observation = None;
         self.transport_phase = PlayerTransportPhase::Failed;
-        self.active_file_loaded = false;
         if let Some((attempt_id, generation)) = active_owner {
             let update = self
                 .transport_update_for(generation)
                 .with_phase(PlayerTransportPhase::Failed);
             self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
         }
+        self.clear_physical_projection();
     }
 
     fn apply_paused_for_cache_observation(&mut self, paused_for_cache: bool) {
@@ -6514,8 +6644,15 @@ impl MpvAdapter {
                         .count();
                     if matching_unbound == 1 {
                         let test_entry_id = self
-                            .active_playlist_entry_id
-                            .and_then(|entry_id| i64::try_from(entry_id).ok())
+                            .latest_start_file_observation
+                            .filter(|observation| {
+                                observation.attachment_epoch == self.lifecycle_epoch()
+                            })
+                            .map(|observation| observation.playlist_entry_id)
+                            .or_else(|| {
+                                self.active_playlist_entry_id
+                                    .and_then(|entry_id| i64::try_from(entry_id).ok())
+                            })
                             .or_else(|| {
                                 self.player_lifecycle
                                     .load_attempts
@@ -6530,33 +6667,48 @@ impl MpvAdapter {
                                     })
                                     .and_then(|attempt| i64::try_from(attempt.id.get()).ok())
                             });
-                        if let Some(test_entry_id) = test_entry_id
-                            && self.bind_single_pending_test_load(test_entry_id)
-                        {
-                            self.active_file_loaded = false;
+                        if let Some(test_entry_id) = test_entry_id {
+                            let _ = self.bind_single_pending_test_load(test_entry_id);
                         }
                     }
                 }
                 #[cfg(test)]
-                if next_path.is_some() && self.active_media_generation.is_none() {
+                if next_path.is_some() && self.active_load_attempt_id.is_none() {
                     // Legacy scripted transports omit the authoritative playlist
                     // query used in production. This compatibility projection is
                     // test-only; production ownership is established by the
                     // reducer from playlist-entry evidence before metadata is
                     // correlated.
-                    let generation = self
-                        .pending_load_generation()
-                        .unwrap_or_else(|| self.allocate_media_generation());
-                    self.active_media_generation = Some(generation);
-                    self.active_file_loaded = true;
-                    self.active_generation_has_restarted = false;
-                    self.transport_phase = PlayerTransportPhase::Prebuffering;
-                    let update = self
-                        .transport_update_for(generation)
-                        .with_phase(PlayerTransportPhase::Prebuffering);
-                    self.queue_transport_telemetry_update(update);
+                    if let Some(active) = self.player_lifecycle.active_attempt().cloned() {
+                        self.install_physical_projection(
+                            active.id,
+                            active.media_generation,
+                            active.playlist_entry_id,
+                            next_path.clone(),
+                            true,
+                        );
+                        self.active_generation_has_restarted = false;
+                        self.transport_phase = PlayerTransportPhase::Prebuffering;
+                        let update = self
+                            .transport_update_for(active.media_generation)
+                            .with_phase(PlayerTransportPhase::Prebuffering);
+                        self.queue_transport_telemetry_update_for_attempt(update, Some(active.id));
+                    }
                 }
-                self.current_path = next_path.clone();
+                let projection_can_accept_path =
+                    self.active_load_attempt_id.is_some_and(|attempt_id| {
+                        self.player_lifecycle
+                            .load_attempts
+                            .get(&attempt_id)
+                            .is_some_and(|attempt| {
+                                !attempt.logical_ownership_revoked
+                                    || attempt.superseded_by.is_none()
+                            })
+                    });
+                if projection_can_accept_path && let Some(attempt_id) = self.active_load_attempt_id
+                {
+                    self.update_physical_projection_path(attempt_id, next_path.clone());
+                }
                 self.observed_state.path = next_path.clone();
                 authoritative_path = next_path.clone();
                 self.path_metadata_generation = self.observation_media_generation();
@@ -6875,10 +7027,9 @@ impl MpvAdapter {
                 #[cfg(test)]
                 {
                     // Legacy scripted unit transports do not expose an
-                    // authoritative playlist. Remember only the latest observed
-                    // entry; matching path/file-loaded evidence performs the
-                    // actual binding without weakening production ownership.
-                    self.active_playlist_entry_id = Some(playlist_entry_id);
+                    // authoritative playlist. Matching path/file-loaded
+                    // evidence performs the actual binding without mutating
+                    // the physical projection before ownership is proven.
                 }
                 #[cfg(not(test))]
                 {
@@ -6966,13 +7117,16 @@ impl MpvAdapter {
         self.network_media_options_apply_identity = None;
         self.reset_network_media_policy_diagnostics();
 
-        self.active_playlist_entry_id = u64::try_from(observation.playlist_entry_id).ok();
-        self.active_media_generation = Some(generation);
-        self.active_file_loaded = false;
+        self.install_physical_projection(
+            lifecycle_attempt_id,
+            generation,
+            Some(observation.playlist_entry_id),
+            None,
+            false,
+        );
         self.active_generation_has_restarted = false;
         self.network_cache_stall = None;
         self.reset_timeline_metadata();
-        self.current_path = None;
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.observed_state.paused = observation.retained_paused;
@@ -7101,8 +7255,13 @@ impl MpvAdapter {
             self.lifecycle_reconciliation_due = true;
             return;
         }
-        self.active_media_generation = Some(active_attempt.media_generation);
-        self.active_file_loaded = true;
+        self.install_physical_projection(
+            active_attempt.id,
+            active_attempt.media_generation,
+            active_attempt.playlist_entry_id,
+            self.current_path.clone(),
+            true,
+        );
         self.active_generation_has_restarted = true;
         self.playback_restart_sequence = self.playback_restart_sequence.wrapping_add(1).max(1);
         self.observed_state.seeking = Some(false);
@@ -7218,9 +7377,16 @@ impl MpvAdapter {
         if !owns_logical_playback {
             return;
         }
-        self.active_playlist_entry_id = u64::try_from(playlist_entry_id).ok();
-        self.active_media_generation = Some(generation);
-        self.active_file_loaded = true;
+        self.install_physical_projection(
+            attempt_id,
+            generation,
+            Some(playlist_entry_id),
+            self.observed_state
+                .path
+                .clone()
+                .or_else(|| self.current_path.clone()),
+            true,
+        );
         // `start-file` clears generation-scoped transport observations, but mpv does not
         // necessarily emit a fresh property-change when a scalar value (notably
         // `paused-for-cache=false`) is unchanged across the boundary. Reacquire one coherent
@@ -7237,10 +7403,10 @@ impl MpvAdapter {
         self.queue_transport_telemetry_update_for_attempt(update, Some(attempt_id));
         self.observe_tracked_commands(Some(generation), TrackedCommandObservation::FileLoaded);
         self.observe_tracked_commands(Some(generation), TrackedCommandObservation::Phase(phase));
-        // Path can arrive between start-file and file-loaded. Ordered consumers
-        // deliberately do not grant ownership at Starting, so publish file
-        // identity only after this owned file-loaded observation has emitted
-        // LoadAttemptActive.
+        // Path can arrive between start-file and file-loaded. Transport
+        // ownership begins at a normal Starting event, while file identity and
+        // semantic load completion remain gated on this owned file-loaded
+        // observation.
         self.maybe_emit_local_file_update_from_observed_state();
 
         if self.pending_load_generation != Some(generation) {
@@ -7258,7 +7424,7 @@ impl MpvAdapter {
         let metadata_is_current = polled_update.is_some();
         let loaded_update =
             polled_update.unwrap_or_else(|| Self::local_file_update_for_path(&requested_target));
-        self.current_path = loaded_update.path.clone();
+        self.update_physical_projection_path(attempt_id, loaded_update.path.clone());
         self.observed_state.path = loaded_update.path.clone();
         self.observed_state.duration_seconds = loaded_update.duration_seconds;
         self.observed_state.size_bytes = loaded_update.size_bytes;
@@ -7413,14 +7579,10 @@ impl MpvAdapter {
             PlayerPhysicalLoadOutcome::Ended,
             PlayerPhysicalLoadOutcome::Failed,
         );
-        let recovery_started = if reason == "eof"
+        let recovery_started = reason == "eof"
             && self.player_lifecycle.active_load_attempt == Some(lifecycle_attempt_id)
-        {
-            generation
-                .is_some_and(|generation| self.try_recover_interrupted_network_stream(generation))
-        } else {
-            false
-        };
+            && generation
+                .is_some_and(|generation| self.try_recover_interrupted_network_stream(generation));
         let lifecycle_epoch = self.lifecycle_epoch();
         let lifecycle_effects = self.apply_lifecycle_input(PlayerLifecycleInput::EndFile {
             attachment_epoch: lifecycle_epoch,
@@ -7436,13 +7598,6 @@ impl MpvAdapter {
                 } if *attempt_id == lifecycle_attempt_id
             )
         });
-        if recovery_started {
-            // The old physical attempt is now terminal in the reducer, while
-            // the accepted same-generation successor owns logical playback.
-            // Its Loading delta was queued by the recovery transaction.
-            return;
-        }
-
         if logical_terminal && let Some(generation) = generation {
             let mut update = self.transport_update_for(generation).with_phase(phase);
             update.eof_reached = Some(true);
@@ -7459,9 +7614,11 @@ impl MpvAdapter {
             }
         }
 
-        let affects_current_generation = logical_terminal;
-        if affects_current_generation {
-            self.interrupted_network_stream_recovery = None;
+        let affects_physical_projection = self.active_load_attempt_id == Some(lifecycle_attempt_id);
+        if affects_physical_projection {
+            if !recovery_started {
+                self.interrupted_network_stream_recovery = None;
+            }
             self.network_stream_recovery_evidence = None;
             self.network_cache_stall = None;
             if self
@@ -7470,9 +7627,12 @@ impl MpvAdapter {
             {
                 self.network_media_options_expected_transition = None;
             }
-            self.transport_phase = phase;
-            self.active_file_loaded = false;
-            self.active_media_generation = None;
+            self.transport_phase = if logical_terminal {
+                phase
+            } else {
+                PlayerTransportPhase::Empty
+            };
+            self.clear_physical_projection();
             self.reset_timeline_metadata();
             self.observed_state.eof_reached = Some(true);
             self.observed_state.buffered_ahead_seconds = None;
@@ -7483,9 +7643,6 @@ impl MpvAdapter {
             self.observed_state.cache_eof = None;
             self.observed_state.cache_underrun = None;
             self.observed_state.cache_metrics_observed_at = None;
-            if self.active_playlist_entry_id == playlist_entry_id {
-                self.active_playlist_entry_id = None;
-            }
             if self
                 .network_media_options_embedded_load
                 .as_ref()
@@ -7514,7 +7671,6 @@ impl MpvAdapter {
         };
         self.pending_load_generation = None;
         let message = message.expect("error end-file events should have a fallback message");
-        self.current_path = None;
         self.pending_local_file_update = None;
         self.pending_local_file_generation = None;
         self.pending_local_file_observed_at = None;
@@ -8859,7 +9015,6 @@ impl MpvAdapter {
         self.observed_state.core_idle = core_idle;
         self.observed_state.demuxer_cache_idle = demuxer_cache_idle;
         self.observed_state.eof_reached = eof_reached;
-        self.current_path = current_path;
         self.publish_reconciled_transport_state();
         self.lifecycle_reconciliation_due = self.player_lifecycle.reconciliation_required
             || self.player_lifecycle.requires_authoritative_snapshot()
@@ -9243,7 +9398,17 @@ mod timeline_kind_tests {
             observed_target: path.to_owned(),
             file_loaded: true,
         });
-        adapter.active_playlist_entry_id = Some(41);
+        let attempt_id = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("external fixture load should establish an active attempt");
+        adapter.install_physical_projection(
+            attempt_id,
+            generation,
+            Some(41),
+            Some(path.to_owned()),
+            true,
+        );
         adapter.refresh_timeline_kind_from_metadata();
         adapter
     }
@@ -9692,6 +9857,17 @@ mod interrupted_network_stream_recovery_tests {
             observed_target: NETWORK_PATH.to_owned(),
             file_loaded: true,
         });
+        let attempt_id = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("external fixture load should establish an active attempt");
+        adapter.install_physical_projection(
+            attempt_id,
+            generation,
+            Some(10),
+            Some(NETWORK_PATH.to_owned()),
+            true,
+        );
         adapter
     }
 
@@ -9735,35 +9911,23 @@ mod interrupted_network_stream_recovery_tests {
             adapter.player_lifecycle.load_attempts[&recovery.latest_attempt_id].media_generation,
             generation
         );
-        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
-        assert!(
-            adapter
-                .pending_transport_telemetry_updates
-                .iter()
-                .any(|update| {
-                    update.media_generation == Some(generation)
-                        && update.phase == Some(PlayerTransportPhase::Loading)
-                        && update.position_seconds == Some(257.25)
-                        && update.eof_reached == Some(false)
-                })
-        );
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
         assert!(
             adapter
                 .pending_transport_telemetry_updates
                 .iter()
                 .all(|update| {
-                    update.phase != Some(PlayerTransportPhase::Ended)
+                    update.phase != Some(PlayerTransportPhase::Loading)
+                        && update.phase != Some(PlayerTransportPhase::Ended)
                         && update.eof_reached != Some(true)
-                })
+                }),
+            "the successor cannot publish transport before its start-file"
         );
     }
 
     #[test]
     fn null_terminal_properties_do_not_erase_premature_eof_recovery_evidence() {
         let mut adapter = loaded_network_vod(257.25, 1_919.0);
-        let generation = adapter
-            .active_media_generation
-            .expect("fixture should have an active generation");
         adapter.refresh_network_stream_recovery_evidence();
         assert!(adapter.network_stream_recovery_evidence.is_some());
 
@@ -9791,8 +9955,8 @@ mod interrupted_network_stream_recovery_tests {
         }));
 
         assert_eq!(adapter.network_stream_recovery_attempt_count(), 1);
-        assert_eq!(adapter.active_media_generation, Some(generation));
-        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+        assert_eq!(adapter.active_media_generation, None);
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
     }
 
     #[test]
@@ -9848,7 +10012,11 @@ mod interrupted_network_stream_recovery_tests {
 
         assert_eq!(adapter.active_media_generation, generation);
         assert_eq!(adapter.network_stream_recovery_attempt_count(), 1);
-        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+        assert_eq!(
+            adapter.transport_phase,
+            PlayerTransportPhase::Rebuffering,
+            "the accepted successor does not own transport until start-file"
+        );
         assert_eq!(adapter.network_cache_stall, None);
     }
 
@@ -9947,13 +10115,11 @@ mod interrupted_network_stream_recovery_tests {
         let recovered = adapter
             .take_ordered_event_batch()
             .expect("causal end-file should publish the recovery transition");
-        assert!(recovered.ordered_events.iter().any(|event| matches!(
-            &event.kind,
-            PlayerOrderedEventKind::Transport(update)
-                if update.media_generation == Some(generation)
-                    && update.phase == Some(PlayerTransportPhase::Loading)
-                    && update.eof_reached == Some(false)
-        )));
+        assert_eq!(
+            adapter.transport_phase,
+            PlayerTransportPhase::Empty,
+            "the recovery successor cannot own transport before start-file"
+        );
         assert!(recovered.ordered_events.iter().all(|event| {
             !matches!(
                 &event.kind,
@@ -10097,7 +10263,11 @@ mod interrupted_network_stream_recovery_tests {
 
         near_tail.maintain_network_cache_stall_recovery();
 
-        assert_eq!(near_tail.transport_phase, PlayerTransportPhase::Loading);
+        assert_eq!(
+            near_tail.transport_phase,
+            PlayerTransportPhase::Playing,
+            "the accepted recovery successor cannot replace the playing projection before start-file"
+        );
         assert_eq!(near_tail.network_stream_recovery_attempt_count(), 1);
         assert!(near_tail.network_cache_stall.is_none());
 

@@ -1581,6 +1581,7 @@ impl PlayerLifecycleState {
                     media_generation,
                     command_id,
                     playlist_entry_id,
+                    owns_transport: !quiescent,
                 },
                 effects,
             );
@@ -1805,6 +1806,34 @@ impl PlayerLifecycleState {
             self.next_reconciliation_tick = None;
             self.reconciliation_backoff_ticks = INITIAL_RECONCILIATION_BACKOFF_TICKS;
             return;
+        }
+
+        let authoritative_entry_ids = entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>();
+        let contradicted_attempts = entries
+            .iter()
+            .any(|entry| entry.current)
+            .then_some(self.active_load_attempt)
+            .flatten()
+            .into_iter()
+            .filter(|attempt_id| {
+                self.load_attempts.get(attempt_id).is_some_and(|attempt| {
+                    attempt.attachment_epoch == self.attachment_epoch
+                        && !attempt.state.is_terminal()
+                        && attempt
+                            .playlist_entry_id
+                            .is_some_and(|entry_id| !authoritative_entry_ids.contains(&entry_id))
+                })
+            })
+            .collect::<Vec<_>>();
+        for attempt_id in contradicted_attempts {
+            self.commit_physical_attempt_terminal(
+                attempt_id,
+                PlayerPhysicalLoadOutcome::Ended,
+                effects,
+            );
         }
 
         let unbound_attempt_ids = self
@@ -2249,6 +2278,7 @@ pub fn reduce_player_lifecycle(
                     media_generation,
                     command_id: None,
                     playlist_entry_id,
+                    owns_transport: true,
                 },
                 &mut effects,
             );
@@ -3972,6 +4002,63 @@ mod tests {
     }
 
     #[test]
+    fn one_stale_snapshot_does_not_retire_a_bound_noncurrent_successor() {
+        let mut state = PlayerLifecycleState::default();
+        let predecessor = submit(&mut state, 1, 1, "predecessor", &[]);
+        accept(&mut state, 1);
+        bind_with_snapshot(&mut state, 91, "predecessor", true);
+
+        let successor = submit(&mut state, 2, 2, "successor", &[91]);
+        accept(&mut state, 2);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: vec![
+                    AuthoritativePlaylistEntry::new(91, Some("predecessor".to_owned()), true),
+                    AuthoritativePlaylistEntry::new(92, Some("successor".to_owned()), false),
+                ],
+                current_path: Some("predecessor".to_owned()),
+            },
+        );
+        assert_eq!(state.active_load_attempt, Some(predecessor));
+        assert_eq!(
+            state.load_attempts[&successor].state,
+            LoadAttemptState::Bound
+        );
+
+        let (next, effects) = reduce_player_lifecycle(
+            state,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch: PlayerAttachmentEpoch::new(1),
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    91,
+                    Some("predecessor".to_owned()),
+                    true,
+                )],
+                current_path: Some("predecessor".to_owned()),
+            },
+        );
+        state = next;
+        state
+            .assert_invariants()
+            .expect("stale successor snapshot invariants");
+
+        assert_eq!(
+            state.load_attempts[&successor].state,
+            LoadAttemptState::Bound
+        );
+        assert_eq!(state.attempt_for_playlist_entry(92), Some(successor));
+        assert!(!effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                event: PlayerEvent::LoadAttemptTerminal { attempt_id, .. },
+                ..
+            }) if *attempt_id == successor
+        )));
+    }
+
+    #[test]
     fn timed_out_unbound_load_quiesces_without_losing_strict_late_ownership() {
         let mut state = PlayerLifecycleState::default();
         let attempt_id = submit(&mut state, 1, 1, "late-target", &[]);
@@ -4066,6 +4153,68 @@ mod tests {
             state.load_attempts[&attempt_id].state,
             LoadAttemptState::Active
         );
+    }
+
+    #[test]
+    fn start_file_explicitly_reports_normal_and_quiescent_transport_ownership() {
+        let attachment_epoch = PlayerAttachmentEpoch::new(1);
+
+        let mut normal = PlayerLifecycleState::default();
+        let normal_attempt = submit(&mut normal, 1, 1, "normal-target", &[]);
+        accept(&mut normal, 1);
+        bind_with_snapshot(&mut normal, 10, "normal-target", false);
+        let (next, normal_effects) = reduce_player_lifecycle(
+            normal,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch,
+                playlist_entry_id: 10,
+            },
+        );
+        normal = next;
+        assert_eq!(normal.active_load_attempt, Some(normal_attempt));
+        assert!(normal_effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    owns_transport: true,
+                    ..
+                },
+                ..
+            }) if *attempt_id == normal_attempt
+        )));
+
+        let mut quiescent = PlayerLifecycleState::default();
+        let quiescent_attempt = submit(&mut quiescent, 2, 2, "late-target", &[]);
+        accept(&mut quiescent, 2);
+        bind_with_snapshot(&mut quiescent, 20, "late-target", false);
+        reduce(
+            &mut quiescent,
+            PlayerLifecycleInput::CommandCompletionNotObserved {
+                attachment_epoch,
+                command_id: PlayerCommandId::new(2),
+            },
+        );
+        let (next, quiescent_effects) = reduce_player_lifecycle(
+            quiescent,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch,
+                playlist_entry_id: 20,
+            },
+        );
+        quiescent = next;
+        assert_eq!(quiescent.active_load_attempt, None);
+        assert!(quiescent_effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    owns_transport: false,
+                    ..
+                },
+                ..
+            }) if *attempt_id == quiescent_attempt
+        )));
     }
 
     #[test]

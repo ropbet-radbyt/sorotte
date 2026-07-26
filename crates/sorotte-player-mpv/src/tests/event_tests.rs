@@ -175,9 +175,11 @@ fn async_property_change_events_from_mpv_queue_local_file_update() {
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"property unavailable"}"#,
+        r#"{"event":"start-file","playlist_entry_id":41}"#,
         r#"{"event":"property-change","name":"path","data":"C:/media/from-event.mkv"}"#,
         r#"{"event":"property-change","name":"duration","data":120.0}"#,
         r#"{"event":"property-change","name":"file-size","data":987654}"#,
+        r#"{"event":"file-loaded"}"#,
         r#"{"request_id":10,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
@@ -381,6 +383,7 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":41}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.invalid/watch?v=generation-test"}"#,
         r#"{"event":"property-change","name":"pause","data":false}"#,
         r#"{"event":"property-change","name":"seeking","data":false}"#,
         r#"{"event":"property-change","name":"seekable","data":true}"#,
@@ -839,7 +842,7 @@ fn end_file_error_is_classified_for_the_matching_generation() {
 }
 
 #[test]
-fn stale_end_file_keeps_the_new_generation_loading() {
+fn ending_old_physical_file_before_replacement_start_leaves_transport_empty() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":100}"#,
@@ -876,26 +879,13 @@ fn stale_end_file_keeps_the_new_generation_loading() {
 
     assert_eq!(
         adapter.transport_phase(),
-        PlayerTransportPhase::Loading,
-        "the old end-file event must not overwrite the replacement generation phase"
-    );
-    let replacement_loading = adapter
-        .take_transport_telemetry_update()
-        .expect("replacement generation should emit loading telemetry");
-    assert_eq!(
-        replacement_loading
-            .media_generation
-            .map(|generation| generation.get()),
-        Some(2)
-    );
-    assert_eq!(
-        replacement_loading.phase,
-        Some(PlayerTransportPhase::Loading)
+        PlayerTransportPhase::Empty,
+        "the replacement cannot own transport until its start-file"
     );
     assert_eq!(
         adapter.take_transport_telemetry_update(),
         None,
-        "the superseded physical episode must not publish Ended for its logical generation"
+        "neither the unstarted successor nor the superseded physical episode may publish successor telemetry"
     );
 }
 

@@ -96,6 +96,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             attempt.state,
                             PlaylistResolutionAttemptState::Resolving
                                 | PlaylistResolutionAttemptState::Loading
+                                | PlaylistResolutionAttemptState::Indeterminate
                         )
                 });
         !self.player_local_file_placeholder && !playlist_load_unconfirmed
@@ -147,14 +148,24 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|attempt| {
                 let due_transient_is_eligible =
                     attempt.state == PlaylistResolutionAttemptState::Resolving;
-                attempt
+                let mut excluded = attempt
                     .candidate_failures
                     .iter()
                     .filter(|failure| {
                         !due_transient_is_eligible || failure.excludes_candidate_at(now)
                     })
                     .map(|failure| failure.candidate.clone())
-                    .collect()
+                    .collect::<Vec<_>>();
+                if attempt.state == PlaylistResolutionAttemptState::Indeterminate
+                    && let Some(candidate) = attempt.candidate.as_ref()
+                    && !excluded.contains(candidate)
+                {
+                    // A timeout is not a permanent candidate failure, but one
+                    // fallback pass must not immediately submit the same
+                    // still-live physical attempt again.
+                    excluded.push(candidate.clone());
+                }
+                excluded
             })
             .unwrap_or_default()
     }
@@ -302,6 +313,7 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.candidate_plex_operation_context = None;
         attempt.player_command_id = None;
         attempt.player_media_generation = None;
+        attempt.load_attempt_id = None;
         attempt.state = PlaylistResolutionAttemptState::Resolving;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
@@ -393,6 +405,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         attempt.player_command_id = started.player_command_id;
         attempt.player_media_generation = started.player_media_generation;
+        attempt.load_attempt_id = None;
         attempt.state = PlaylistResolutionAttemptState::Loading;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
@@ -420,6 +433,7 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.candidate_plex_operation_context = None;
         attempt.player_command_id = None;
         attempt.player_media_generation = None;
+        attempt.load_attempt_id = None;
         attempt.state = PlaylistResolutionAttemptState::Active;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
@@ -479,6 +493,7 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.candidate_plex_operation_context = None;
         attempt.player_command_id = None;
         attempt.player_media_generation = None;
+        attempt.load_attempt_id = None;
         attempt.state = PlaylistResolutionAttemptState::Failed;
         attempt.fallback_pending = true;
         attempt.handoff_pending = false;
@@ -511,7 +526,11 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .filter(|attempt| {
                 attempt.player_command_id.is_some()
-                    && attempt.state == PlaylistResolutionAttemptState::Loading
+                    && matches!(
+                        attempt.state,
+                        PlaylistResolutionAttemptState::Loading
+                            | PlaylistResolutionAttemptState::Indeterminate
+                    )
             })
             .and_then(|attempt| attempt.candidate.as_ref())
             .is_some_and(|candidate| {
@@ -531,7 +550,11 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .filter(|attempt| {
                 attempt.player_command_id.is_some()
-                    && attempt.state == PlaylistResolutionAttemptState::Loading
+                    && matches!(
+                        attempt.state,
+                        PlaylistResolutionAttemptState::Loading
+                            | PlaylistResolutionAttemptState::Indeterminate
+                    )
             })
             .and_then(|attempt| attempt.candidate.as_ref())
             .is_some_and(|candidate| {
@@ -552,6 +575,122 @@ impl GuiPersistedConfigRuntimeOwner {
             (Some(_), None) => false,
             (None, _) => true,
         }
+    }
+
+    pub(super) fn track_playlist_resolution_load_attempt(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+    ) -> bool {
+        let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
+            return false;
+        };
+        if attempt.playlist_generation != self.playlist_resolution.generation
+            || !Self::player_progress_generation_matches(
+                attempt.player_media_generation,
+                Some(media_generation),
+            )
+            || attempt
+                .player_command_id
+                .zip(command_id)
+                .is_some_and(|(expected, observed)| expected != observed)
+            || attempt
+                .load_attempt_id
+                .is_some_and(|expected| expected != attempt_id)
+            || matches!(
+                attempt.state,
+                PlaylistResolutionAttemptState::Failed | PlaylistResolutionAttemptState::Superseded
+            )
+        {
+            return false;
+        }
+        if attempt.player_media_generation.is_none() {
+            attempt.player_media_generation = Some(media_generation);
+        }
+        attempt.load_attempt_id = Some(attempt_id);
+        true
+    }
+
+    pub(super) fn mark_playlist_resolution_load_indeterminate(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+    ) {
+        if !self.track_playlist_resolution_load_attempt(attempt_id, media_generation, command_id) {
+            return;
+        }
+        if let Some(attempt) = self.playlist_resolution_attempt.as_mut() {
+            attempt.state = PlaylistResolutionAttemptState::Indeterminate;
+            attempt.fallback_pending = true;
+            attempt.handoff_pending = false;
+        }
+        self.last_attached_media_resolution_trigger = None;
+    }
+
+    pub(super) fn recover_playlist_resolution_from_active_load(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+    ) -> bool {
+        if !self.track_playlist_resolution_load_attempt(attempt_id, media_generation, command_id) {
+            return false;
+        }
+        let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
+            return false;
+        };
+        if let Some(candidate) = attempt.candidate.as_ref() {
+            attempt
+                .candidate_failures
+                .retain(|failure| &failure.candidate != candidate);
+        }
+        attempt.state = PlaylistResolutionAttemptState::Active;
+        attempt.candidate_plex_operation_context = None;
+        attempt.fallback_pending = false;
+        attempt.handoff_pending = true;
+
+        let mut logical_override_confirmed = None;
+        if let Some(pending) = self.pending_logical_media_override.as_mut()
+            && pending.player_command_id == attempt.player_command_id
+            && Self::player_progress_generation_matches(
+                pending.player_media_generation,
+                Some(media_generation),
+            )
+        {
+            pending.load_completed = true;
+            logical_override_confirmed = pending
+                .logical_file_observed
+                .then(|| pending.logical_file.clone());
+        }
+        if logical_override_confirmed
+            .as_ref()
+            .is_some_and(|logical_file| self.player_local_file.as_ref() == Some(logical_file))
+        {
+            self.player_local_file_placeholder = false;
+            self.pending_logical_media_override = None;
+        }
+        self.last_attached_media_resolution_trigger = None;
+        true
+    }
+
+    pub(super) fn supersede_playlist_resolution_load_attempt(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
+            return;
+        };
+        if attempt.load_attempt_id != Some(attempt_id)
+            || attempt.player_media_generation != Some(media_generation)
+        {
+            return;
+        }
+        attempt.state = PlaylistResolutionAttemptState::Superseded;
+        attempt.fallback_pending = false;
+        attempt.handoff_pending = false;
     }
 
     fn update_pending_logical_override_from_command_progress(
@@ -584,6 +723,13 @@ impl GuiPersistedConfigRuntimeOwner {
                         .logical_file_observed
                         .then(|| pending.logical_file.clone());
                     (pending.logical_file_observed, confirmed, None)
+                }
+                PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
+                    PlayerCommandFailureKind::TimedOut,
+                )) => {
+                    // Command observation timed out, but the correlated
+                    // physical load remains capable of becoming active.
+                    (false, None, None)
                 }
                 PlayerCommandProgressState::Finished(
                     PlayerCommandResult::Failed(_) | PlayerCommandResult::Superseded,
@@ -706,6 +852,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 self.last_attached_media_resolution_trigger = None;
             }
+            PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut) => {
+                if let Some(attempt) = self.playlist_resolution_attempt.as_mut() {
+                    attempt.state = PlaylistResolutionAttemptState::Indeterminate;
+                    attempt.fallback_pending = true;
+                    attempt.handoff_pending = false;
+                }
+                self.last_attached_media_resolution_trigger = None;
+            }
             PlayerCommandResult::Failed(kind) => {
                 let failed_candidate = self
                     .playlist_resolution_attempt
@@ -742,17 +896,21 @@ impl GuiPersistedConfigRuntimeOwner {
             .playlist_resolution_attempt
             .as_ref()
             .and_then(|attempt| {
-                (attempt.state == PlaylistResolutionAttemptState::Loading)
-                    .then_some(attempt.candidate.as_ref())
-                    .flatten()
-                    .filter(|candidate| {
-                        candidate.matches_loaded_target(&outcome.requested_target)
-                            || outcome
-                                .loaded_target
-                                .as_deref()
-                                .is_some_and(|target| candidate.matches_loaded_target(target))
-                    })
-                    .map(|candidate| (candidate.clone(), attempt.player_command_id.is_some()))
+                matches!(
+                    attempt.state,
+                    PlaylistResolutionAttemptState::Loading
+                        | PlaylistResolutionAttemptState::Indeterminate
+                )
+                .then_some(attempt.candidate.as_ref())
+                .flatten()
+                .filter(|candidate| {
+                    candidate.matches_loaded_target(&outcome.requested_target)
+                        || outcome
+                            .loaded_target
+                            .as_deref()
+                            .is_some_and(|target| candidate.matches_loaded_target(target))
+                })
+                .map(|candidate| (candidate.clone(), attempt.player_command_id.is_some()))
             });
         let Some((candidate, tracked)) = matching_load else {
             return;
@@ -797,7 +955,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 .as_ref()
                 .is_some_and(|attempt| {
                     attempt.player_command_id.is_none()
-                        && attempt.state == PlaylistResolutionAttemptState::Loading
+                        && matches!(
+                            attempt.state,
+                            PlaylistResolutionAttemptState::Loading
+                                | PlaylistResolutionAttemptState::Indeterminate
+                        )
                         && attempt.candidate.as_ref().is_some_and(|candidate| {
                             update
                                 .path
@@ -912,6 +1074,7 @@ impl GuiPersistedConfigRuntimeOwner {
         source_state.status = match attempt.state {
             PlaylistResolutionAttemptState::Resolving => GuiPlaylistSourceStatus::Resolving,
             PlaylistResolutionAttemptState::Loading => GuiPlaylistSourceStatus::Loading,
+            PlaylistResolutionAttemptState::Indeterminate => GuiPlaylistSourceStatus::Loading,
             PlaylistResolutionAttemptState::Active => GuiPlaylistSourceStatus::Active,
             PlaylistResolutionAttemptState::Failed => GuiPlaylistSourceStatus::Failed,
             PlaylistResolutionAttemptState::Superseded => return None,
@@ -923,6 +1086,11 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             PlaylistResolutionAttemptState::Loading => {
                 format!("Waiting for the attached player to confirm the {provider_label} load.")
+            }
+            PlaylistResolutionAttemptState::Indeterminate => {
+                format!(
+                    "The attached player has not confirmed the {provider_label} load yet; checking fallback sources."
+                )
             }
             PlaylistResolutionAttemptState::Active => {
                 format!("The attached player confirmed the {provider_label} load.")
@@ -2108,6 +2276,161 @@ mod tests {
         );
         assert!(attempt.candidate_failures.is_empty());
         assert!(owner.failed_playlist_resolution_candidates().is_empty());
+    }
+
+    #[test]
+    fn indeterminate_tracked_plex_load_recovers_on_late_active_and_matching_file() {
+        let row_id = GuiPlaylistEntryId::next();
+        let candidate = plex_candidate();
+        let command_id = PlayerCommandId::new(5);
+        let media_generation = PlayerMediaGeneration::new(8);
+        let load_attempt_id = LoadAttemptId::new(11);
+        let stream_target = "https://plex.example/video?token=secret";
+        let logical_file = LocalFileUpdate::new("episode.mkv");
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 4;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            4,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(candidate, &started(5));
+        owner.player_local_file = Some(logical_file.clone());
+        owner.player_local_file_placeholder = true;
+        owner.pending_logical_media_override = Some(GuiPendingLogicalMediaOverride {
+            requested_target: "episode.mkv".to_owned(),
+            loaded_target_secret: sorotte_plex::SecretPlexPlaybackUrl::new(stream_target),
+            logical_file: logical_file.clone(),
+            user_initiated: false,
+            player_command_id: Some(command_id),
+            player_media_generation: None,
+            playlist_row_id: Some(row_id),
+            playlist_generation: 4,
+            load_completed: false,
+            logical_file_observed: false,
+        });
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::accepted(
+            command_id,
+            Some(media_generation),
+            None,
+        ));
+        assert!(owner.track_playlist_resolution_load_attempt(
+            load_attempt_id,
+            media_generation,
+            Some(command_id),
+        ));
+
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::finished(
+            command_id,
+            Some(media_generation),
+            None,
+            None,
+            PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
+        ));
+        owner.mark_playlist_resolution_load_indeterminate(
+            load_attempt_id,
+            media_generation,
+            Some(command_id),
+        );
+        {
+            let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+            assert_eq!(attempt.state, PlaylistResolutionAttemptState::Indeterminate);
+            assert_eq!(attempt.load_attempt_id, Some(load_attempt_id));
+            assert!(attempt.fallback_pending);
+            assert!(attempt.candidate_failures.is_empty());
+        }
+        assert!(owner.pending_logical_media_override.is_some());
+        assert!(owner.player_local_file_placeholder);
+
+        assert!(owner.recover_playlist_resolution_from_active_load(
+            load_attempt_id,
+            media_generation,
+            Some(command_id),
+        ));
+        owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                LocalFileUpdate::new(stream_target).with_path(stream_target),
+                Some(media_generation),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            true,
+        );
+
+        let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
+        assert_eq!(attempt.load_attempt_id, Some(load_attempt_id));
+        assert!(!attempt.fallback_pending);
+        assert!(attempt.candidate_failures.is_empty());
+        assert!(owner.failed_playlist_resolution_candidates().is_empty());
+        assert_eq!(owner.player_local_file, Some(logical_file));
+        assert!(!owner.player_local_file_placeholder);
+        assert!(owner.pending_logical_media_override.is_none());
+        assert!(owner.last_attached_media_resolution_trigger.is_none());
+    }
+
+    #[test]
+    fn accepted_fallback_prevents_superseded_late_attempt_from_recovering_resolution() {
+        let row_id = GuiPlaylistEntryId::next();
+        let old_command = PlayerCommandId::new(5);
+        let old_generation = PlayerMediaGeneration::new(8);
+        let old_attempt = LoadAttemptId::new(11);
+        let fallback_command = PlayerCommandId::new(6);
+        let fallback_generation = PlayerMediaGeneration::new(9);
+        let fallback_attempt = LoadAttemptId::new(12);
+        let fallback_candidate = local_candidate("C:/media/fallback.mkv");
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 4;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            4,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(
+            local_candidate("C:/media/slow.mkv"),
+            &started(5),
+        );
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::accepted(
+            old_command,
+            Some(old_generation),
+            None,
+        ));
+        assert!(owner.track_playlist_resolution_load_attempt(
+            old_attempt,
+            old_generation,
+            Some(old_command),
+        ));
+        owner.mark_playlist_resolution_load_indeterminate(
+            old_attempt,
+            old_generation,
+            Some(old_command),
+        );
+        owner.supersede_playlist_resolution_load_attempt(old_attempt, old_generation);
+
+        owner.begin_playlist_resolution_candidate_load(fallback_candidate.clone(), &started(6));
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::accepted(
+            fallback_command,
+            Some(fallback_generation),
+            None,
+        ));
+        assert!(owner.track_playlist_resolution_load_attempt(
+            fallback_attempt,
+            fallback_generation,
+            Some(fallback_command),
+        ));
+
+        assert!(!owner.recover_playlist_resolution_from_active_load(
+            old_attempt,
+            old_generation,
+            Some(old_command),
+        ));
+        let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Loading);
+        assert_eq!(attempt.load_attempt_id, Some(fallback_attempt));
+        assert_eq!(attempt.player_command_id, Some(fallback_command));
+        assert_eq!(attempt.candidate.as_ref(), Some(&fallback_candidate));
     }
 
     #[test]

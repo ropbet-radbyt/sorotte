@@ -826,14 +826,6 @@ impl PlayerAdapter for MpvAdapter {
         self.pending_load_request = Some(path.to_owned());
         self.pending_load_generation = Some(generation);
         self.network_media_options_embedded_load = None;
-        self.transport_phase = PlayerTransportPhase::Loading;
-        let loading_update = self
-            .transport_update_for(generation)
-            .with_phase(PlayerTransportPhase::Loading);
-        self.queue_transport_telemetry_update_for_attempt(
-            loading_update,
-            Some(lifecycle_attempt_id),
-        );
 
         let load_result =
             if uses_network_media_options(path) && !self.network_media_options.is_empty() {
@@ -895,22 +887,6 @@ impl PlayerAdapter for MpvAdapter {
             #[cfg(not(test))]
             self.reconcile_lifecycle_from_authority();
             self.drain_ipc_events_if_attached();
-            // A fast mpv load can deliver start-file/file-loaded before the
-            // loadfile command reply. Do not erase those observations after
-            // the command returns.
-            if self.pending_load_generation == Some(generation) {
-                self.current_path = Some(path.to_owned());
-                self.pending_local_file_update = None;
-                self.pending_local_file_generation = None;
-                self.pending_local_file_observed_at = None;
-                self.observed_state.path = None;
-                self.observed_state.duration_seconds = None;
-                self.observed_state.size_bytes = None;
-                self.paused_for_cache = false;
-                self.cache_buffering_percent = None;
-                self.observed_state.paused_for_cache = None;
-                self.observed_state.cache_buffering_percent = None;
-            }
         } else {
             let simulated_entry_id = i64::try_from(lifecycle_attempt_id.get()).unwrap_or(i64::MAX);
             self.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
@@ -927,12 +903,16 @@ impl PlayerAdapter for MpvAdapter {
                 playlist_entry_id: Some(simulated_entry_id),
                 loaded_target: Some(path.to_owned()),
             });
-            self.active_media_generation = Some(generation);
+            self.install_physical_projection(
+                lifecycle_attempt_id,
+                generation,
+                Some(simulated_entry_id),
+                Some(path.to_owned()),
+                true,
+            );
             self.pending_load_generation = None;
             self.pending_load_request = None;
-            self.active_file_loaded = true;
             self.active_generation_has_restarted = !self.paused;
-            self.current_path = Some(path.to_owned());
             self.queue_local_file_update(Self::local_file_update_for_path(path));
             self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
                 path,
