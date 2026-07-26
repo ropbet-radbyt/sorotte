@@ -4522,6 +4522,16 @@ impl MpvAdapter {
         self.path_metadata_generation = Some(generation);
         self.duration_metadata_generation = Some(generation);
         self.refresh_timeline_kind_from_metadata();
+        // A coherent metadata poll can win the race with mpv's queued
+        // `file-loaded` event. This path already commits the same lifecycle
+        // boundary above, so publish the corresponding tracker evidence now.
+        // Otherwise the later event is correctly deduplicated by lifecycle
+        // state but can never finish the still-pending tracked load.
+        self.observe_tracked_commands(Some(generation), TrackedCommandObservation::FileLoaded);
+        self.observe_tracked_commands(
+            Some(generation),
+            TrackedCommandObservation::Phase(self.inferred_transport_phase()),
+        );
         self.record_local_file_update_if_changed(polled_update.clone());
         self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
             requested_target,
@@ -10806,6 +10816,66 @@ mod authoritative_reconciliation_regression_tests {
         assert!(
             !adapter.logical_pause_explicit,
             "an authoritative unpause must retire stale explicit-pause ownership before a later cache-only pause"
+        );
+    }
+
+    #[test]
+    fn polled_load_completion_finishes_the_corresponding_tracked_load() {
+        let target = "C:/media/polled-before-file-loaded.wav";
+        let generation = PlayerMediaGeneration::new(1);
+        let mut adapter = MpvAdapter::simulated();
+        let command_id = adapter.register_tracked_command(
+            Some(generation),
+            TrackedCommandKind::Load {
+                file_loaded: false,
+                ready: false,
+            },
+        );
+        let attempt_id =
+            adapter.submit_lifecycle_load(Some(command_id), generation, target, BTreeSet::new());
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            attempt_id,
+        });
+        adapter.accept_tracked_command(command_id);
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            entries: vec![AuthoritativePlaylistEntry::new(
+                41,
+                Some(target.to_owned()),
+                true,
+            )],
+            current_path: Some(target.to_owned()),
+        });
+        adapter.pending_load_request = Some(target.to_owned());
+        adapter.pending_load_generation = Some(generation);
+        adapter.observed_state.paused = Some(true);
+        adapter.observed_state.logical_pause = Some(true);
+        adapter.observed_state.paused_for_cache = Some(false);
+        adapter.logical_pause_explicit = true;
+
+        assert!(
+            adapter.complete_pending_load_request_from_polled_update_if_ready(
+                MpvAdapter::local_file_update_for_path(target)
+                    .with_duration_seconds(8.0)
+                    .with_size_bytes(768_044),
+            ),
+            "coherent local-file metadata should complete the pending load"
+        );
+
+        assert!(
+            adapter
+                .pending_tracked_commands
+                .iter()
+                .all(|command| command.id != command_id),
+            "the same polled boundary that completes lifecycle ownership must also finish the tracked load"
+        );
+        assert!(
+            adapter
+                .pending_command_progress_updates
+                .iter()
+                .any(|progress| progress.command_id == command_id && progress.is_terminal()),
+            "tracked completion should remain available to legacy progress consumers"
         );
     }
 
