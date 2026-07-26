@@ -2318,7 +2318,7 @@ impl GuiPersistedConfigRuntimeOwner {
         match snapshot.active_load {
             SnapshotField::Known(active) if active.physical_file_loaded => {
                 self.player_local_file = snapshot_known_clone(&snapshot.current_path)
-                    .map(|path| LocalFileUpdate::new(path.clone()).with_path(path));
+                    .map(|path| local_file_update_for_player_path(&path));
                 self.player_local_file_placeholder = false;
             }
             SnapshotField::Known(_) => {
@@ -2399,41 +2399,33 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         event: SequencedPlayerEvent,
         user_offset_seconds: f64,
-    ) -> Result<(), sorotte_player_api::PlayerError> {
+    ) -> Result<Option<GuiMediaBoundary>, sorotte_player_api::PlayerError> {
+        let sequence = PlayerEventSequence::new(event.order.sequence);
         match event.event {
-            PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => {}
+            PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => Ok(None),
             PlayerEvent::LocalFileChanged {
                 attempt_id,
                 media_generation,
-                mut update,
+                update,
             } => {
                 if !self
                     .ordered_player_events
                     .attempt_is_owned(attempt_id, media_generation)
                 {
-                    return Ok(());
+                    return Ok(None);
                 }
-                if let Some((override_update, _)) =
-                    self.logical_media_override_for_loaded_target(&update)
-                {
-                    update = override_update;
-                }
-                let file_changed = Self::local_file_update_replaces_current_file(
-                    self.player_local_file.as_ref(),
-                    &update,
-                );
-                self.player_local_file = Some(update);
-                self.player_local_file_placeholder = false;
-                if file_changed {
-                    self.pending_local_attached_pause_override = None;
-                    self.player_position_seconds = Some(0.0);
-                }
+                Ok(self.process_attached_local_file_observation(
+                    PlayerLocalFileObservation::new(update, Some(media_generation), None),
+                    Some(sequence),
+                    false,
+                ))
             }
             PlayerEvent::TransportDelta(delta) => {
                 let Some(accepted) = self.ordered_player_events.apply_delta_if_owned(delta) else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 self.apply_ordered_transport_delta(accepted, user_offset_seconds);
+                Ok(None)
             }
             PlayerEvent::LoadAttemptBound {
                 attempt_id,
@@ -2463,6 +2455,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     media_generation,
                     command_id,
                 );
+                Ok(None)
             }
             PlayerEvent::LoadAttemptStarting {
                 attempt_id,
@@ -2493,6 +2486,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     media_generation,
                     command_id,
                 );
+                Ok(None)
             }
             PlayerEvent::LoadAttemptActive {
                 attempt_id,
@@ -2522,21 +2516,26 @@ impl GuiPersistedConfigRuntimeOwner {
                     media_generation,
                     command_id,
                 );
+                Ok(None)
             }
             PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
                 attempt_id,
                 media_generation,
                 ..
-            } => self
-                .ordered_player_events
-                .revoke_logical_ownership(attempt_id, media_generation),
+            } => {
+                self.ordered_player_events
+                    .revoke_logical_ownership(attempt_id, media_generation);
+                Ok(None)
+            }
             PlayerEvent::LoadAttemptTerminal {
                 attempt_id,
                 media_generation,
                 ..
-            } => self
-                .ordered_player_events
-                .terminate_attempt(attempt_id, media_generation),
+            } => {
+                self.ordered_player_events
+                    .terminate_attempt(attempt_id, media_generation);
+                Ok(None)
+            }
             PlayerEvent::LogicalPlaybackTerminal {
                 media_generation,
                 attempt_id,
@@ -2568,9 +2567,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         );
                     }
                 }
+                Ok(None)
             }
         }
-        Ok(())
     }
 
     fn apply_ordered_semantic_outcome(
@@ -3609,6 +3608,57 @@ mod ordered_delivery_tests {
         }
     }
 
+    struct MediaBoundaryRecordingSession {
+        prepared_media: Arc<AtomicUsize>,
+        interrupted_recovery: Arc<AtomicUsize>,
+    }
+
+    impl GuiSessionRuntimeAdapter for MediaBoundaryRecordingSession {
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(current_servers)
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn prepare_attached_playback_media(
+            &mut self,
+            _logical_id: sorotte_client_core::LogicalMediaId,
+            _kind: MediaTransportKind,
+            _intent: MediaLoadIntent,
+            _now_seconds: f64,
+        ) -> Result<Option<sorotte_client_core::MediaLoadPlan>, String> {
+            self.prepared_media.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn interrupt_attached_playback_recovery(
+            &mut self,
+        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+            self.interrupted_recovery.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
     fn epoch() -> PlayerAttachmentEpoch {
         PlayerAttachmentEpoch::new(1)
     }
@@ -3728,6 +3778,85 @@ mod ordered_delivery_tests {
                 "generated lifecycle batch should acknowledge"
             );
         }
+    }
+
+    #[test]
+    fn repro_acknowledged_local_file_change_prepares_new_logical_media_boundary() {
+        let attempt_id = LoadAttemptId::new(19);
+        let media_generation = PlayerMediaGeneration::new(2);
+        let prepared_media = Arc::new(AtomicUsize::new(0));
+        let interrupted_recovery = Arc::new(AtomicUsize::new(0));
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player_local_file =
+            Some(LocalFileUpdate::new("old.mkv").with_path("C:\\media\\old.mkv"));
+        owner.session = Some(Box::new(MediaBoundaryRecordingSession {
+            prepared_media: prepared_media.clone(),
+            interrupted_recovery: interrupted_recovery.clone(),
+        }));
+        let event_batch = batch(
+            2,
+            1,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch(), 1),
+                    event: PlayerEvent::LoadAttemptActive {
+                        attempt_id,
+                        media_generation,
+                        command_id: None,
+                        playlist_entry_id: 19,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch(), 2),
+                    event: PlayerEvent::LocalFileChanged {
+                        attempt_id,
+                        media_generation,
+                        update: LocalFileUpdate::new("new.mkv").with_path("C:\\media\\new.mkv"),
+                    },
+                },
+            ],
+        );
+
+        owner
+            .apply_ordered_player_event_batch(&event_batch, 0.0)
+            .expect("valid acknowledged player batch");
+
+        assert_eq!(
+            prepared_media.load(Ordering::SeqCst),
+            1,
+            "a confirmed acknowledged local-file boundary must prepare client-core for the new logical media"
+        );
+        assert_eq!(
+            interrupted_recovery.load(Ordering::SeqCst),
+            1,
+            "a confirmed acknowledged local-file boundary must interrupt recovery for the previous media"
+        );
+    }
+
+    #[test]
+    fn repro_authoritative_snapshot_uses_local_basename_for_player_identity() {
+        let attempt_id = LoadAttemptId::new(23);
+        let media_generation = PlayerMediaGeneration::new(23);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let mut snapshot = active_snapshot(0, attempt_id, media_generation, 0.0);
+        snapshot.current_path = SnapshotField::Known("C:\\private\\shows\\episode.mkv".to_owned());
+
+        owner
+            .apply_ordered_player_event_batch(&batch(0, 1, Some(snapshot), Vec::new()), 0.0)
+            .expect("valid authoritative snapshot batch");
+
+        assert_eq!(
+            (
+                owner
+                    .player_local_file
+                    .as_ref()
+                    .map(|file| file.name.as_str()),
+                owner.current_player_matches_media_target("episode.mkv"),
+            ),
+            (Some("episode.mkv"), true),
+            "snapshot recovery must retain a basename display identity that matches a basename-only shared-playlist target"
+        );
     }
 
     #[test]

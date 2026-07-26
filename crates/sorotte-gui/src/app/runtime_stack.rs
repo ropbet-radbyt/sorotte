@@ -54,7 +54,10 @@ use super::shell_state::{
 use super::support::{legacy_chat_input_enabled, system_time_seconds};
 
 pub(super) use self::client_core_adapter::GuiClientCoreChatSessionRuntimeAdapter;
-pub(super) use self::player::{GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter};
+pub(super) use self::player::{
+    GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter,
+    local_file_update_for_player_path,
+};
 pub(super) use self::session_adapter::{
     GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
     GuiSessionRuntimeAdapter,

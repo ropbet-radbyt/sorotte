@@ -41,19 +41,17 @@ pub(in super::super) struct GuiTestPlayerAdapter {
     media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
 }
 
-impl GuiTestPlayerAdapter {
-    fn local_file_update_for_path(path: &str) -> LocalFileUpdate {
-        let name = if path.contains("://") {
-            path.to_owned()
-        } else {
-            Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(path)
-                .to_owned()
-        };
-        LocalFileUpdate::new(name).with_path(path.to_owned())
-    }
+pub(in crate::app) fn local_file_update_for_player_path(path: &str) -> LocalFileUpdate {
+    let name = if path.contains("://") {
+        path.to_owned()
+    } else {
+        Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path)
+            .to_owned()
+    };
+    LocalFileUpdate::new(name).with_path(path.to_owned())
 }
 
 impl PlayerAdapter for GuiTestPlayerAdapter {
@@ -63,7 +61,7 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
         self.local_file_updates
-            .push_back(Self::local_file_update_for_path(path));
+            .push_back(local_file_update_for_player_path(path));
         self.media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
         self.playback_updates.push_back(
