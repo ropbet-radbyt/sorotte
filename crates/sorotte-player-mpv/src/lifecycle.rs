@@ -229,9 +229,38 @@ struct RetiredSeekTombstone {
 
 #[derive(Debug, Clone, PartialEq)]
 struct CachedBatch {
+    // The returned delivery is frozen until its exact token is acknowledged.
+    // Live queues may continue to overflow or receive a newer snapshot.
     batch: PlayerEventBatch,
-    event_count: usize,
-    outcome_count: usize,
+}
+
+fn acknowledge_delivery_through(
+    pending_events: &mut VecDeque<SequencedPlayerEvent>,
+    retained_semantic_outcomes: &mut VecDeque<SequencedPlayerSemanticOutcome>,
+    recovery_snapshot: &mut Option<PlayerAuthoritativeSnapshot>,
+    gap_detected: &mut bool,
+    boundary: PlayerSequenceBoundary,
+    acknowledges_snapshot: bool,
+) {
+    pending_events.retain(|event| {
+        event.order.attachment_epoch != boundary.attachment_epoch
+            || event.order.sequence > boundary.through_sequence
+    });
+    retained_semantic_outcomes.retain(|outcome| {
+        outcome.order.attachment_epoch != boundary.attachment_epoch
+            || outcome.order.sequence > boundary.through_sequence
+    });
+
+    if acknowledges_snapshot
+        && recovery_snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.attachment_epoch == boundary.attachment_epoch
+                && snapshot.sequence_boundary.attachment_epoch == boundary.attachment_epoch
+                && snapshot.sequence_boundary.through_sequence <= boundary.through_sequence
+        })
+    {
+        *recovery_snapshot = None;
+        *gap_detected = false;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +303,23 @@ impl EpochDeliveryBuffer {
         self.pending_events.retain(|event| {
             event.order.attachment_epoch != attachment_epoch || event.order.sequence > boundary
         });
+    }
+
+    fn acknowledge_through(
+        &mut self,
+        boundary: PlayerSequenceBoundary,
+        acknowledges_snapshot: bool,
+    ) {
+        debug_assert_eq!(self.attachment_epoch, boundary.attachment_epoch);
+        acknowledge_delivery_through(
+            &mut self.pending_events,
+            &mut self.retained_semantic_outcomes,
+            &mut self.recovery_snapshot,
+            &mut self.gap_detected,
+            boundary,
+            acknowledges_snapshot,
+        );
+        self.prune_snapshot_covered_events();
     }
 }
 
@@ -706,8 +752,6 @@ impl PlayerLifecycleState {
             ),
         };
         self.cached_batch = Some(CachedBatch {
-            event_count: batch.events.len(),
-            outcome_count: batch.semantic_outcomes.len(),
             batch: batch.clone(),
         });
         Some(batch)
@@ -738,8 +782,11 @@ impl PlayerLifecycleState {
                 }
             }
         }
-        let acknowledged_current_epoch = cached.batch.attachment_epoch == self.attachment_epoch;
-        let acknowledged_through_sequence = cached.batch.sequence_boundary.through_sequence;
+        let acknowledged_boundary = cached.batch.sequence_boundary;
+        let acknowledged_current_epoch =
+            acknowledged_boundary.attachment_epoch == self.attachment_epoch;
+        let acknowledged_through_sequence = acknowledged_boundary.through_sequence;
+        let acknowledges_snapshot = cached.batch.authoritative_snapshot.is_some();
         let acknowledgement = AcknowledgedPlayerDelivery {
             attachment_epoch: cached.batch.attachment_epoch,
             through_sequence: acknowledged_through_sequence,
@@ -755,31 +802,19 @@ impl PlayerLifecycleState {
                 .retired_epoch_deliveries
                 .front_mut()
                 .expect("retired delivery was present");
-            for _ in 0..cached.event_count {
-                delivery.pending_events.pop_front();
-            }
-            for _ in 0..cached.outcome_count {
-                delivery.retained_semantic_outcomes.pop_front();
-            }
-            if cached.batch.authoritative_snapshot.is_some() {
-                delivery.recovery_snapshot = None;
-                delivery.gap_detected = false;
-            }
-            delivery.prune_snapshot_covered_events();
+            delivery.acknowledge_through(acknowledged_boundary, acknowledges_snapshot);
             if delivery.is_empty() {
                 self.retired_epoch_deliveries.pop_front();
             }
         } else if cached.batch.attachment_epoch == self.attachment_epoch {
-            for _ in 0..cached.event_count {
-                self.pending_events.pop_front();
-            }
-            for _ in 0..cached.outcome_count {
-                self.retained_semantic_outcomes.pop_front();
-            }
-            if cached.batch.authoritative_snapshot.is_some() {
-                self.recovery_snapshot = None;
-                self.gap_detected = false;
-            }
+            acknowledge_delivery_through(
+                &mut self.pending_events,
+                &mut self.retained_semantic_outcomes,
+                &mut self.recovery_snapshot,
+                &mut self.gap_detected,
+                acknowledged_boundary,
+                acknowledges_snapshot,
+            );
         } else {
             self.cached_batch = Some(cached);
             return None;
@@ -1509,7 +1544,8 @@ impl PlayerLifecycleState {
     }
 
     fn mark_gap(&mut self, effects: &mut Vec<PlayerLifecycleEffect>) {
-        if !self.gap_detected {
+        let invalidates_recovery_snapshot = self.recovery_snapshot.is_some();
+        if !self.gap_detected || invalidates_recovery_snapshot {
             self.gap_detected = true;
             let event = SequencedPlayerEvent {
                 order: self.next_order(),
@@ -3503,6 +3539,45 @@ mod tests {
         );
     }
 
+    fn queue_transport_deltas(
+        state: &mut PlayerLifecycleState,
+        start_position: usize,
+        count: usize,
+    ) {
+        let attachment_epoch = state.attachment_epoch;
+        for position in start_position..start_position.saturating_add(count) {
+            reduce(
+                state,
+                PlayerLifecycleInput::TransportDelta {
+                    attachment_epoch,
+                    delta: PlayerTransportDelta {
+                        position_seconds: Some(position as f64),
+                        ..PlayerTransportDelta::default()
+                    },
+                },
+            );
+        }
+    }
+
+    fn cache_recovery_snapshot(state: &mut PlayerLifecycleState) -> PlayerEventBatch {
+        let attachment_epoch = state.attachment_epoch;
+        reduce(
+            state,
+            PlayerLifecycleInput::EventGapDetected { attachment_epoch },
+        );
+        let gap_batch = state.peek_event_batch().expect("gap marker");
+        assert!(state.acknowledge_event_batch(gap_batch.acknowledgement_token));
+
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot),
+        );
+        let cached = state.peek_event_batch().expect("snapshot batch");
+        assert!(cached.authoritative_snapshot.is_some());
+        cached
+    }
+
     #[test]
     fn lifecycle_debug_dump_is_deterministic_and_redacts_media_targets() {
         let mut state = PlayerLifecycleState::default();
@@ -4842,6 +4917,106 @@ mod tests {
         assert!(state.acknowledge_event_batch(snapshot_batch.acknowledgement_token));
         assert!(!state.requires_authoritative_snapshot());
         assert_eq!(state.peek_event_batch(), None);
+    }
+
+    #[test]
+    fn telemetry_overflow_does_not_mutate_an_unacknowledged_batch_prefix() {
+        let mut state = PlayerLifecycleState::default();
+        queue_transport_deltas(&mut state, 0, MAX_PENDING_TELEMETRY_EVENTS);
+
+        let cached = state.peek_event_batch().expect("initial telemetry batch");
+        assert_eq!(cached.events.len(), MAX_PENDING_TELEMETRY_EVENTS);
+        assert_eq!(
+            state.peek_event_batch(),
+            Some(cached.clone()),
+            "an unacknowledged batch must replay byte-for-byte"
+        );
+
+        queue_transport_deltas(&mut state, MAX_PENDING_TELEMETRY_EVENTS, 1);
+        assert_eq!(
+            state.peek_event_batch(),
+            Some(cached.clone()),
+            "overflow while a batch is in flight must not change its replay"
+        );
+        assert!(state.acknowledge_event_batch(cached.acknowledgement_token));
+
+        let successor = state
+            .peek_event_batch()
+            .expect("overflow recovery must remain deliverable");
+        assert!(
+            successor.authoritative_snapshot.is_some()
+                || successor
+                    .events
+                    .iter()
+                    .map(|event| event.order.sequence)
+                    .min()
+                    == Some(cached.sequence_boundary.through_sequence + 1),
+            "acknowledging an in-flight batch after overflow consumed the gap marker; \
+             ordered consumers cannot converge: cached boundary={}, successor={successor:?}",
+            cached.sequence_boundary.through_sequence,
+        );
+    }
+
+    #[test]
+    fn delayed_snapshot_ack_preserves_a_new_overflow_gap() {
+        let mut state = PlayerLifecycleState::default();
+        let cached = cache_recovery_snapshot(&mut state);
+
+        queue_transport_deltas(&mut state, 0, MAX_PENDING_TELEMETRY_EVENTS + 1);
+        assert_eq!(
+            state.peek_event_batch(),
+            Some(cached.clone()),
+            "overflow must not mutate the cached snapshot retry"
+        );
+        assert!(state.acknowledge_event_batch(cached.acknowledgement_token));
+        assert!(
+            state.requires_authoritative_snapshot(),
+            "acknowledging the invalidated snapshot must not clear the newer overflow gap"
+        );
+
+        let replacement_snapshot = state.closing_snapshot_for_current_epoch();
+        assert!(
+            replacement_snapshot.sequence_boundary.through_sequence
+                > cached.sequence_boundary.through_sequence
+        );
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(replacement_snapshot.clone()),
+        );
+        let successor = state
+            .peek_event_batch()
+            .expect("replacement snapshot batch");
+        assert_eq!(successor.authoritative_snapshot, Some(replacement_snapshot));
+        assert!(state.acknowledge_event_batch(successor.acknowledgement_token));
+        assert!(!state.requires_authoritative_snapshot());
+    }
+
+    #[test]
+    fn delayed_snapshot_ack_preserves_a_newer_overflow_snapshot() {
+        let mut state = PlayerLifecycleState::default();
+        let cached = cache_recovery_snapshot(&mut state);
+
+        queue_transport_deltas(&mut state, 0, MAX_PENDING_TELEMETRY_EVENTS + 1);
+        let replacement_snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(replacement_snapshot.clone()),
+        );
+        assert_eq!(
+            state.peek_event_batch(),
+            Some(cached.clone()),
+            "a newer snapshot must remain hidden behind the immutable cached retry"
+        );
+        assert!(state.acknowledge_event_batch(cached.acknowledgement_token));
+
+        let successor = state.peek_event_batch().expect("newer snapshot batch");
+        assert_eq!(successor.authoritative_snapshot, Some(replacement_snapshot));
+        assert!(
+            successor.sequence_boundary.through_sequence
+                > cached.sequence_boundary.through_sequence
+        );
+        assert!(state.acknowledge_event_batch(successor.acknowledgement_token));
+        assert!(!state.requires_authoritative_snapshot());
     }
 
     #[test]
