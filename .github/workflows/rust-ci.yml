@@ -33,6 +33,11 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace
 
+      - name: Cache-pause acknowledged-stream regression
+        run: >-
+          cargo test -p sorotte-player-mpv --features test-support
+          --test repro_acknowledged_cache_pause
+
   gui-windows-release-build:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     name: GUI release build (Windows)
@@ -222,6 +227,11 @@ jobs:
 
       - name: Cargo test
         run: cargo test --workspace
+
+      - name: Cache-pause acknowledged-stream regression
+        run: >-
+          cargo test -p sorotte-player-mpv --features test-support
+          --test repro_acknowledged_cache_pause
 
       - name: Setup Python
         uses: actions/setup-python@v5
