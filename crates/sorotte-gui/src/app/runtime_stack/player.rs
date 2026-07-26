@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::Path};
+use std::collections::VecDeque;
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
@@ -45,13 +45,38 @@ pub(in crate::app) fn local_file_update_for_player_path(path: &str) -> LocalFile
     let name = if path.contains("://") {
         path.to_owned()
     } else {
-        Path::new(path)
-            .file_name()
-            .and_then(|name| name.to_str())
+        path.rsplit(['/', '\\'])
+            .find(|component| !component.is_empty())
             .unwrap_or(path)
             .to_owned()
     };
     LocalFileUpdate::new(name).with_path(path.to_owned())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::local_file_update_for_player_path;
+
+    #[test]
+    fn local_file_identity_accepts_both_path_separator_styles() {
+        for path in [
+            "C:\\private\\shows\\episode.mkv",
+            "/private/shows/episode.mkv",
+        ] {
+            let update = local_file_update_for_player_path(path);
+            assert_eq!(update.name, "episode.mkv");
+            assert_eq!(update.path.as_deref(), Some(path));
+        }
+    }
+
+    #[test]
+    fn network_media_identity_preserves_the_full_url() {
+        let path = "https://media.example.test/watch/episode.mkv";
+        let update = local_file_update_for_player_path(path);
+
+        assert_eq!(update.name, path);
+        assert_eq!(update.path.as_deref(), Some(path));
+    }
 }
 
 impl PlayerAdapter for GuiTestPlayerAdapter {
