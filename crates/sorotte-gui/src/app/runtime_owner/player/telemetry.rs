@@ -22,6 +22,9 @@ const ATTACHED_SYSTEM_SEEK_OWNERSHIP_LIFETIME: Duration = Duration::from_secs(65
 const ATTACHED_SYSTEM_SEEK_TIMEOUT_EXTENSION: Duration = Duration::from_secs(60);
 const ATTACHED_SYSTEM_SEEK_OWNERSHIP_LIMIT: usize = 8;
 
+#[cfg(test)]
+mod lifecycle_verification_tests;
+
 #[derive(Debug, Clone, PartialEq)]
 enum GuiAttachedTransportObservationDisposition {
     Accepted {
@@ -745,23 +748,26 @@ impl GuiOrderedPlayerEventConsumer {
     fn install_active_load(&mut self, active: PlayerActiveLoadSnapshot) {
         self.install_attempt(
             active.attempt_id,
-            active.media_generation,
-            active.command_id,
-            active.playlist_entry_id,
-            true,
-            true,
+            GuiOrderedLoadInstall {
+                media_generation: active.media_generation,
+                command_id: active.command_id,
+                playlist_entry_id: active.playlist_entry_id,
+                owns_transport: true,
+                semantic_load_result: active.semantic_load_result,
+                logical_ownership_revoked: active.logical_ownership_revoked,
+            },
         );
     }
 
-    fn install_attempt(
-        &mut self,
-        attempt_id: LoadAttemptId,
-        media_generation: PlayerMediaGeneration,
-        mut command_id: Option<PlayerCommandId>,
-        mut playlist_entry_id: Option<i64>,
-        owns_transport: bool,
-        semantic_load_completed: bool,
-    ) {
+    fn install_attempt(&mut self, attempt_id: LoadAttemptId, install: GuiOrderedLoadInstall) {
+        let GuiOrderedLoadInstall {
+            media_generation,
+            mut command_id,
+            mut playlist_entry_id,
+            owns_transport,
+            semantic_load_result,
+            logical_ownership_revoked,
+        } = install;
         let existing = self.attempts.get(&attempt_id).copied();
         if let Some(existing) = existing {
             command_id = command_id.or(existing.command_id);
@@ -776,11 +782,11 @@ impl GuiOrderedPlayerEventConsumer {
                 command_id,
                 playlist_entry_id,
                 owns_transport,
-                semantic_load_completed: semantic_load_completed
-                    || existing.is_some_and(|binding| binding.semantic_load_completed),
+                semantic_load_result: semantic_load_result
+                    .or_else(|| existing.and_then(|binding| binding.semantic_load_result)),
                 physical_terminal,
-                logical_ownership_revoked: existing
-                    .is_some_and(|binding| binding.logical_ownership_revoked),
+                logical_ownership_revoked: logical_ownership_revoked
+                    || existing.is_some_and(|binding| binding.logical_ownership_revoked),
             },
         );
         if owns_transport {
@@ -800,19 +806,30 @@ impl GuiOrderedPlayerEventConsumer {
         command_id: Option<PlayerCommandId>,
     ) {
         if !self.attempts.contains_key(&attempt_id) {
-            self.install_attempt(attempt_id, media_generation, command_id, None, false, false);
+            self.install_attempt(
+                attempt_id,
+                GuiOrderedLoadInstall {
+                    media_generation,
+                    command_id,
+                    playlist_entry_id: None,
+                    owns_transport: false,
+                    semantic_load_result: None,
+                    logical_ownership_revoked: false,
+                },
+            );
         }
     }
 
-    fn mark_semantic_load_completed(
+    fn mark_semantic_load_result(
         &mut self,
         attempt_id: LoadAttemptId,
         media_generation: PlayerMediaGeneration,
+        result: PlayerLoadAttemptResult,
     ) {
         if let Some(binding) = self.attempts.get_mut(&attempt_id)
             && binding.media_generation == media_generation
         {
-            binding.semantic_load_completed = true;
+            binding.semantic_load_result.get_or_insert(result);
         }
     }
 
@@ -839,10 +856,9 @@ impl GuiOrderedPlayerEventConsumer {
         if binding.media_generation != media_generation {
             return;
         }
-        binding.owns_transport = false;
-        if self.transport_owner_attempt == Some(attempt_id) {
-            self.transport_owner_attempt = None;
-        }
+        binding
+            .semantic_load_result
+            .get_or_insert(PlayerLoadAttemptResult::Indeterminate);
     }
 
     fn validate_attempt_binding(
@@ -2299,9 +2315,23 @@ impl GuiPersistedConfigRuntimeOwner {
         self.ordered_player_events.rebase_snapshot(snapshot);
         self.pending_attached_player_pause_command = None;
         self.pending_local_attached_pause_override = None;
-        self.player_local_file = snapshot_known_clone(&snapshot.current_path)
-            .map(|path| LocalFileUpdate::new(path.clone()).with_path(path));
-        self.player_local_file_placeholder = false;
+        match snapshot.active_load {
+            SnapshotField::Known(active) if active.physical_file_loaded => {
+                self.player_local_file = snapshot_known_clone(&snapshot.current_path)
+                    .map(|path| LocalFileUpdate::new(path.clone()).with_path(path));
+                self.player_local_file_placeholder = false;
+            }
+            SnapshotField::Known(_) => {
+                if !self.player_local_file_placeholder {
+                    self.player_local_file = None;
+                }
+            }
+            SnapshotField::KnownAbsent => {
+                self.player_local_file = None;
+                self.player_local_file_placeholder = false;
+            }
+            SnapshotField::Unavailable => {}
+        }
         let transport = self.ordered_player_events.transport.clone();
         self.apply_ordered_transport_projection(&transport, user_offset_seconds);
         self.playlist_auto_advance_eof_latched =
@@ -2419,11 +2449,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 )?;
                 self.ordered_player_events.install_attempt(
                     attempt_id,
-                    media_generation,
-                    command_id,
-                    Some(playlist_entry_id),
-                    false,
-                    false,
+                    GuiOrderedLoadInstall {
+                        media_generation,
+                        command_id,
+                        playlist_entry_id: Some(playlist_entry_id),
+                        owns_transport: false,
+                        semantic_load_result: None,
+                        logical_ownership_revoked: false,
+                    },
                 );
                 self.track_playlist_resolution_load_attempt(
                     attempt_id,
@@ -2446,11 +2479,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 )?;
                 self.ordered_player_events.install_attempt(
                     attempt_id,
-                    media_generation,
-                    command_id,
-                    Some(playlist_entry_id),
-                    owns_transport,
-                    false,
+                    GuiOrderedLoadInstall {
+                        media_generation,
+                        command_id,
+                        playlist_entry_id: Some(playlist_entry_id),
+                        owns_transport,
+                        semantic_load_result: None,
+                        logical_ownership_revoked: false,
+                    },
                 );
                 self.track_playlist_resolution_load_attempt(
                     attempt_id,
@@ -2472,11 +2508,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 )?;
                 self.ordered_player_events.install_attempt(
                     attempt_id,
-                    media_generation,
-                    command_id,
-                    Some(playlist_entry_id),
-                    true,
-                    true,
+                    GuiOrderedLoadInstall {
+                        media_generation,
+                        command_id,
+                        playlist_entry_id: Some(playlist_entry_id),
+                        owns_transport: true,
+                        semantic_load_result: None,
+                        logical_ownership_revoked: false,
+                    },
                 );
                 self.recover_playlist_resolution_from_active_load(
                     attempt_id,
@@ -2484,6 +2523,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     command_id,
                 );
             }
+            PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
+                attempt_id,
+                media_generation,
+                ..
+            } => self
+                .ordered_player_events
+                .revoke_logical_ownership(attempt_id, media_generation),
             PlayerEvent::LoadAttemptTerminal {
                 attempt_id,
                 media_generation,
@@ -2577,10 +2623,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 ) {
                     return Ok(());
                 }
+                self.ordered_player_events.mark_semantic_load_result(
+                    load.attempt_id,
+                    load.media_generation,
+                    load.result,
+                );
                 match load.result {
-                    PlayerLoadAttemptResult::Loaded => self
-                        .ordered_player_events
-                        .mark_semantic_load_completed(load.attempt_id, load.media_generation),
+                    PlayerLoadAttemptResult::Loaded => {}
                     PlayerLoadAttemptResult::Superseded => {
                         self.ordered_player_events
                             .revoke_logical_ownership(load.attempt_id, load.media_generation);
@@ -3594,6 +3643,9 @@ mod ordered_delivery_tests {
                 media_generation,
                 command_id: Some(PlayerCommandId::new(40)),
                 playlist_entry_id: Some(400),
+                physical_file_loaded: true,
+                semantic_load_result: Some(PlayerLoadAttemptResult::Loaded),
+                logical_ownership_revoked: false,
             }),
             current_playlist_entry_id: SnapshotField::Known(400),
             current_path: SnapshotField::Known("synthetic-current.mkv".to_owned()),
@@ -4068,6 +4120,9 @@ mod ordered_delivery_tests {
                     media_generation: PlayerMediaGeneration::new(2),
                     command_id: None,
                     playlist_entry_id: Some(77),
+                    physical_file_loaded: true,
+                    semantic_load_result: Some(PlayerLoadAttemptResult::Loaded),
+                    logical_ownership_revoked: false,
                 }),
                 current_playlist_entry_id: SnapshotField::Known(77),
                 current_path: SnapshotField::Known("new-core.mkv".to_owned()),

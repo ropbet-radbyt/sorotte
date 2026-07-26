@@ -153,7 +153,7 @@ fn timed_out_unbound_load_clears_pending_ui_and_stops_property_query_scheduling(
 }
 
 #[test]
-fn timed_out_bound_load_clears_loading_projection_but_retains_late_physical_ownership() {
+fn timed_out_started_load_retains_loading_projection_and_late_physical_ownership() {
     let generation = PlayerMediaGeneration::new(3);
     let target = "https://media.invalid/bound-without-file-loaded";
     let mut adapter = MpvAdapter::default();
@@ -191,24 +191,24 @@ fn timed_out_bound_load_clears_loading_projection_but_retains_late_physical_owne
         now_tick: adapter.player_lifecycle.now_tick.saturating_add(60_000),
     });
 
-    assert!(matches!(
+    assert_eq!(
         adapter.player_lifecycle.load_attempts[&attempt_id].state,
-        LoadAttemptState::MayStillEmitQuiescent { .. }
-    ));
+        LoadAttemptState::Starting
+    );
     assert_eq!(
         adapter.player_lifecycle.attempt_for_playlist_entry(77),
         Some(attempt_id)
     );
-    assert_eq!(adapter.pending_load_request(), None);
-    assert_eq!(adapter.pending_load_generation(), None);
-    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
-    assert_eq!(adapter.active_media_generation, None);
-    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert_eq!(adapter.pending_load_request(), Some(target));
+    assert_eq!(adapter.pending_load_generation(), Some(generation));
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+    assert_eq!(adapter.active_media_generation, Some(generation));
+    assert_eq!(adapter.active_playlist_entry_id, Some(77));
     assert!(!adapter.paused_for_cache());
     assert_eq!(adapter.cache_buffering_percent(), None);
     assert!(
         adapter.lifecycle_reconciliation_due,
-        "quiescence requests exactly one authoritative rebase"
+        "the already-requested authoritative rebase remains pending"
     );
     assert!(!adapter.player_lifecycle.reconciliation_required);
     assert_eq!(
@@ -255,7 +255,7 @@ fn timed_out_bound_load_clears_loading_projection_but_retains_late_physical_owne
 }
 
 #[test]
-fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() {
+fn commandless_recovery_load_deadline_retains_started_physical_state() {
     let generation = PlayerMediaGeneration::new(9);
     let mut adapter = MpvAdapter::default();
     let attempt_id = adapter.submit_lifecycle_load(
@@ -293,10 +293,10 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
         now_tick: accepted_at_tick.saturating_add(60_000),
     });
 
-    assert!(matches!(
+    assert_eq!(
         adapter.player_lifecycle.load_attempts[&attempt_id].state,
-        LoadAttemptState::MayStillEmitQuiescent { .. }
-    ));
+        LoadAttemptState::Starting
+    );
     assert!(effects.iter().any(|effect| matches!(
         effect,
         PlayerLifecycleEffect::EmitSemanticOutcome(outcome)
@@ -307,14 +307,23 @@ fn commandless_recovery_load_deadline_clears_loading_state_and_reconciliation() 
                         && load.result == PlayerLoadAttemptResult::Indeterminate
             )
     )));
-    assert_eq!(adapter.interrupted_network_stream_recovery, None);
-    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
-    assert_eq!(adapter.active_media_generation, None);
-    assert_eq!(adapter.active_playlist_entry_id, None);
+    assert_eq!(
+        adapter.interrupted_network_stream_recovery,
+        Some(InterruptedNetworkStreamRecovery {
+            media_generation: generation,
+            latest_attempt_id: attempt_id,
+            resume_position_seconds: 42.0,
+            consecutive_attempts: 1,
+            total_attempts: 1,
+        })
+    );
+    assert_eq!(adapter.transport_phase, PlayerTransportPhase::Loading);
+    assert_eq!(adapter.active_media_generation, Some(generation));
+    assert_eq!(adapter.active_playlist_entry_id, Some(77));
     assert_eq!(adapter.current_path, None);
     assert!(
         adapter.lifecycle_reconciliation_due,
-        "quiescence requests exactly one authoritative rebase"
+        "the already-requested authoritative rebase remains pending"
     );
     assert!(!adapter.player_lifecycle.reconciliation_required);
 }

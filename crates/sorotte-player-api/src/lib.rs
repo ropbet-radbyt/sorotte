@@ -1154,7 +1154,7 @@ pub enum PlayerPhysicalLoadOutcome {
 }
 
 /// Semantic media-load result retained independently from telemetry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerLoadAttemptResult {
     Loaded,
     /// The physical attempt may still emit lifecycle events, but no longer
@@ -1218,6 +1218,21 @@ pub struct PlayerActiveLoadSnapshot {
     pub media_generation: PlayerMediaGeneration,
     pub command_id: Option<PlayerCommandId>,
     pub playlist_entry_id: Option<i64>,
+    /// Whether mpv has crossed the physical `file-loaded` boundary for this
+    /// transport owner. A known path or `start-file` is not equivalent.
+    pub physical_file_loaded: bool,
+    /// The reducer's single semantic result, when one has been emitted.
+    ///
+    /// This remains `None` while the physical attempt is merely bound or
+    /// starting, and retains `Indeterminate` if late physical evidence arrives
+    /// after the semantic deadline.
+    pub semantic_load_result: Option<PlayerLoadAttemptResult>,
+    /// Whether this physical owner has permanently lost logical ownership.
+    ///
+    /// A previously loaded attempt may remain physically current while a
+    /// replacement is pending, so this cannot be inferred from the semantic
+    /// result or the physical owner identity.
+    pub logical_ownership_revoked: bool,
 }
 
 /// One normalized semantic or telemetry event.
@@ -1257,6 +1272,15 @@ pub enum PlayerEvent {
         media_generation: PlayerMediaGeneration,
         command_id: Option<PlayerCommandId>,
         playlist_entry_id: i64,
+    },
+    /// The reducer has revoked this attempt's logical authority in favor of a
+    /// successor. Physical lifecycle events may still remain correlated to the
+    /// revoked attempt, but it can no longer report semantic success or recover
+    /// playlist resolution.
+    LoadAttemptLogicalOwnershipRevoked {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        successor_attempt_id: LoadAttemptId,
     },
     LoadAttemptTerminal {
         attempt_id: LoadAttemptId,
@@ -1357,6 +1381,61 @@ pub struct PlayerEventBatch {
     /// this batch's token.
     pub semantic_outcomes: Vec<SequencedPlayerSemanticOutcome>,
     pub acknowledgement_token: PlayerEventAcknowledgementToken,
+}
+
+/// Test-only, cross-layer view of one physical load attempt.
+///
+/// This type is feature-gated because it exists only to compare the reducer,
+/// adapter, and production consumers without making private ownership ledgers
+/// part of the supported player API.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct LifecycleVerificationAttemptProjection {
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub playlist_entry_id: Option<i64>,
+    pub owns_transport: SnapshotField<bool>,
+    pub semantic_load_result: SnapshotField<Option<PlayerLoadAttemptResult>>,
+    pub logical_ownership_revoked: SnapshotField<bool>,
+    pub physical_terminal: SnapshotField<bool>,
+}
+
+/// Test-only comparable lifecycle projection shared by verification harnesses.
+///
+/// `SnapshotField::Unavailable` means the projecting layer does not claim that
+/// fact. `KnownAbsent` means the layer authoritatively projects no value.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct LifecycleVerificationProjection {
+    pub attachment_epoch: SnapshotField<PlayerAttachmentEpoch>,
+    pub sequence_boundary: SnapshotField<PlayerSequenceBoundary>,
+    pub in_flight_acknowledgement: SnapshotField<PlayerEventAcknowledgementToken>,
+    pub pending_event_count: SnapshotField<usize>,
+    pub retained_semantic_outcome_count: SnapshotField<usize>,
+    pub snapshot_required: SnapshotField<bool>,
+
+    pub physical_transport_owner: SnapshotField<LoadAttemptId>,
+    pub physical_media_generation: SnapshotField<PlayerMediaGeneration>,
+    pub physical_playlist_entry_id: SnapshotField<i64>,
+    pub physical_path: SnapshotField<String>,
+    pub physical_file_loaded: SnapshotField<bool>,
+    pub logical_owner: SnapshotField<LoadAttemptId>,
+
+    pub transport: PlayerTransportSnapshot,
+    pub attempts: std::collections::BTreeMap<LoadAttemptId, LifecycleVerificationAttemptProjection>,
+    pub pending_commands: SnapshotField<std::collections::BTreeSet<PlayerCommandId>>,
+    pub terminal_command_results:
+        SnapshotField<std::collections::BTreeMap<PlayerCommandId, PlayerCommandSemanticResult>>,
+    pub terminal_load_results:
+        SnapshotField<std::collections::BTreeMap<LoadAttemptId, PlayerLoadAttemptResult>>,
+
+    pub pending_playlist_resolution_attempt: SnapshotField<LoadAttemptId>,
+    pub playlist_resolution_state: SnapshotField<String>,
+    pub fallback_pending: SnapshotField<bool>,
+    pub player_local_file: SnapshotField<String>,
+    pub player_local_file_placeholder: SnapshotField<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

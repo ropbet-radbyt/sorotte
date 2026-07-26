@@ -84,8 +84,18 @@ struct GuiOrderedLoadBinding {
     command_id: Option<PlayerCommandId>,
     playlist_entry_id: Option<i64>,
     owns_transport: bool,
-    semantic_load_completed: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
     physical_terminal: bool,
+    logical_ownership_revoked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiOrderedLoadInstall {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    owns_transport: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
     logical_ownership_revoked: bool,
 }
 

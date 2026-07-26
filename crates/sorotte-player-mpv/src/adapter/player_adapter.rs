@@ -1963,7 +1963,7 @@ mod nonblocking_maintenance_tests {
         adapter.observed_state.position_seconds = Some(10.02);
         adapter.playback_restart_sequence = 1;
         adapter.active_generation_has_restarted = true;
-        adapter.publish_reconciled_transport_state();
+        adapter.publish_reconciled_transport_state(Some(10));
 
         assert!(adapter.pending_tracked_commands.is_empty());
         assert!(matches!(

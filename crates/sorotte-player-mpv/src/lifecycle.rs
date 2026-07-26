@@ -9,6 +9,8 @@ use std::{
     fmt::Write as _,
 };
 
+#[cfg(feature = "test-support")]
+use sorotte_player_api::{LifecycleVerificationAttemptProjection, LifecycleVerificationProjection};
 use sorotte_player_api::{
     LoadAttemptId, LoadAttemptOutcome, LocalFileUpdate, PlayerActiveLoadSnapshot,
     PlayerAttachmentEpoch, PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId,
@@ -121,13 +123,27 @@ pub struct LoadAttempt {
     pub superseded_by: Option<LoadAttemptId>,
     pub logical_ownership_revoked: bool,
     pub state: LoadAttemptState,
-    pub semantic_outcome_emitted: bool,
+    /// The reducer-owned, exactly-once semantic result for this attempt.
+    ///
+    /// Physical lifecycle may continue after `Indeterminate` or
+    /// `Superseded`; late evidence must never overwrite this value.
+    pub semantic_load_result: Option<PlayerLoadAttemptResult>,
+    /// True only after a raw or deferred `start-file` event is correlated to
+    /// this attempt. An authoritative current-playlist snapshot may project the
+    /// attempt as `Starting` without setting this bit; only the raw boundary
+    /// retains physical ownership across semantic deadline expiry.
     start_file_observed: bool,
     file_loaded_observed: bool,
     reconcile_until_tick: Option<u64>,
     file_loaded_deadline_tick: Option<u64>,
     semantic_outcome_sequence: Option<u64>,
     physical_terminal_sequence: Option<u64>,
+}
+
+impl LoadAttempt {
+    pub(crate) const fn physical_file_loaded(&self) -> bool {
+        self.file_loaded_observed
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,6 +450,125 @@ impl PlayerLifecycleState {
         self.gap_detected && self.recovery_snapshot.is_none()
     }
 
+    /// Returns the reducer-owned facts used by cross-layer lifecycle verification.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn lifecycle_verification_projection(&self) -> LifecycleVerificationProjection {
+        let terminal_command_results = self
+            .commands
+            .iter()
+            .filter_map(|(command_id, command)| {
+                command
+                    .state
+                    .public_result()
+                    .map(|result| (*command_id, result))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let pending_commands = self
+            .commands
+            .iter()
+            .filter_map(|(command_id, command)| {
+                (!command.state.is_terminal()).then_some(*command_id)
+            })
+            .collect::<BTreeSet<_>>();
+        let terminal_load_results = self
+            .load_attempts
+            .iter()
+            .filter_map(|(attempt_id, attempt)| {
+                attempt
+                    .semantic_load_result
+                    .map(|result| (*attempt_id, result))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let attempts = self
+            .load_attempts
+            .iter()
+            .map(|(attempt_id, attempt)| {
+                (
+                    *attempt_id,
+                    LifecycleVerificationAttemptProjection {
+                        media_generation: attempt.media_generation,
+                        command_id: attempt.command_id,
+                        playlist_entry_id: attempt.playlist_entry_id,
+                        owns_transport: SnapshotField::Known(
+                            self.active_load_attempt == Some(*attempt_id),
+                        ),
+                        semantic_load_result: SnapshotField::Known(attempt.semantic_load_result),
+                        logical_ownership_revoked: SnapshotField::Known(
+                            attempt.logical_ownership_revoked,
+                        ),
+                        physical_terminal: SnapshotField::Known(attempt.state.is_terminal()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let physical_attempt = self.active_attempt();
+        let logical_owner = self
+            .load_attempts
+            .values()
+            .rev()
+            .find(|attempt| {
+                !attempt.state.is_terminal()
+                    && attempt.superseded_by.is_none()
+                    && !attempt.logical_ownership_revoked
+            })
+            .map(|attempt| attempt.id);
+        let transport = PlayerTransportSnapshot {
+            load_attempt_id: physical_attempt
+                .map(|attempt| SnapshotField::Known(attempt.id))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            media_generation: physical_attempt
+                .map(|attempt| SnapshotField::Known(attempt.media_generation))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            ..PlayerTransportSnapshot::default()
+        };
+
+        LifecycleVerificationProjection {
+            attachment_epoch: SnapshotField::Known(self.attachment_epoch),
+            sequence_boundary: SnapshotField::Known(PlayerSequenceBoundary::new(
+                self.attachment_epoch,
+                self.last_event_sequence(),
+            )),
+            in_flight_acknowledgement: self
+                .cached_batch
+                .as_ref()
+                .map(|cached| SnapshotField::Known(cached.batch.acknowledgement_token))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            pending_event_count: SnapshotField::Known(self.pending_event_count()),
+            retained_semantic_outcome_count: SnapshotField::Known(
+                self.pending_semantic_outcome_count(),
+            ),
+            snapshot_required: SnapshotField::Known(self.requires_authoritative_snapshot()),
+            physical_transport_owner: physical_attempt
+                .map(|attempt| SnapshotField::Known(attempt.id))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            physical_media_generation: physical_attempt
+                .map(|attempt| SnapshotField::Known(attempt.media_generation))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            physical_playlist_entry_id: physical_attempt
+                .and_then(|attempt| attempt.playlist_entry_id)
+                .map(SnapshotField::Known)
+                .unwrap_or(SnapshotField::KnownAbsent),
+            physical_path: SnapshotField::Unavailable,
+            physical_file_loaded: physical_attempt
+                .map(|attempt| SnapshotField::Known(attempt.file_loaded_observed))
+                .unwrap_or(SnapshotField::KnownAbsent),
+            logical_owner: logical_owner
+                .map(SnapshotField::Known)
+                .unwrap_or(SnapshotField::KnownAbsent),
+            transport,
+            attempts,
+            pending_commands: SnapshotField::Known(pending_commands),
+            terminal_command_results: SnapshotField::Known(terminal_command_results),
+            terminal_load_results: SnapshotField::Known(terminal_load_results),
+            pending_playlist_resolution_attempt: SnapshotField::Unavailable,
+            playlist_resolution_state: SnapshotField::Unavailable,
+            fallback_pending: SnapshotField::Unavailable,
+            player_local_file: SnapshotField::Unavailable,
+            player_local_file_placeholder: SnapshotField::Unavailable,
+        }
+    }
+
     /// Emits a compact deterministic lifecycle dump suitable for bug reports.
     ///
     /// Media targets are represented only by a coarse kind. Paths, URLs,
@@ -677,6 +812,9 @@ impl PlayerLifecycleState {
             media_generation: attempt.media_generation,
             command_id: attempt.command_id,
             playlist_entry_id: attempt.playlist_entry_id,
+            physical_file_loaded: attempt.file_loaded_observed,
+            semantic_load_result: attempt.semantic_load_result,
+            logical_ownership_revoked: attempt.logical_ownership_revoked,
         });
         PlayerAuthoritativeSnapshot {
             attachment_epoch: self.attachment_epoch,
@@ -972,7 +1110,8 @@ impl PlayerLifecycleState {
             {
                 return Err("live attempt playlist ID is not reverse-mapped".to_owned());
             }
-            if attempt.semantic_outcome_emitted != attempt.semantic_outcome_sequence.is_some() {
+            if attempt.semantic_load_result.is_some() != attempt.semantic_outcome_sequence.is_some()
+            {
                 return Err("load outcome sequence invariant is violated".to_owned());
             }
             if attempt.state.is_terminal() != attempt.physical_terminal_sequence.is_some() {
@@ -997,7 +1136,7 @@ impl PlayerLifecycleState {
                 return Err("load attempt reconciliation deadline is inconsistent".to_owned());
             }
             if attempt.file_loaded_deadline_tick.is_some()
-                && (attempt.semantic_outcome_emitted
+                && (attempt.semantic_load_result.is_some()
                     || attempt.logical_ownership_revoked
                     || attempt.file_loaded_observed
                     || attempt.state.is_terminal()
@@ -1007,13 +1146,6 @@ impl PlayerLifecycleState {
                     ))
             {
                 return Err("load attempt completion deadline is inconsistent".to_owned());
-            }
-            if matches!(
-                attempt.state,
-                LoadAttemptState::Starting | LoadAttemptState::Active
-            ) && !attempt.start_file_observed
-            {
-                return Err("started load attempt has no start-file evidence".to_owned());
             }
             if attempt.state == LoadAttemptState::Active && !attempt.file_loaded_observed {
                 return Err("active load attempt has no file-loaded evidence".to_owned());
@@ -1445,10 +1577,10 @@ impl PlayerLifecycleState {
         let Some(attempt) = self.load_attempts.get_mut(&attempt_id) else {
             return;
         };
-        if attempt.semantic_outcome_emitted {
+        if attempt.semantic_load_result.is_some() {
             return;
         }
-        attempt.semantic_outcome_emitted = true;
+        attempt.semantic_load_result = Some(result);
         let outcome = LoadAttemptOutcome {
             attachment_epoch: attempt.attachment_epoch,
             attempt_id,
@@ -1521,6 +1653,7 @@ impl PlayerLifecycleState {
         &mut self,
         attempt_id: LoadAttemptId,
         playlist_entry_id: i64,
+        start_file_observed: bool,
         effects: &mut Vec<PlayerLifecycleEffect>,
     ) {
         if !self.bind_attempt(attempt_id, playlist_entry_id, effects) {
@@ -1532,8 +1665,19 @@ impl PlayerLifecycleState {
         if attempt.state.is_terminal() {
             return;
         }
-        let first_start_observation = !attempt.start_file_observed;
-        attempt.start_file_observed = true;
+        let quiescent = matches!(
+            attempt.state,
+            LoadAttemptState::MayStillEmitQuiescent { .. }
+        );
+        // An authoritative current-playlist snapshot can bind a quiescent
+        // attempt, but only the correlated raw/deferred start-file boundary
+        // should publish its fail-closed Starting event. Otherwise the
+        // authority pass and immediate deferred replay would emit it twice.
+        let first_start_observation =
+            !attempt.start_file_observed && (start_file_observed || !quiescent);
+        if start_file_observed {
+            attempt.start_file_observed = true;
+        }
         if attempt.logical_ownership_revoked {
             return;
         }
@@ -1561,10 +1705,6 @@ impl PlayerLifecycleState {
         let Some(attempt) = self.load_attempts.get_mut(&attempt_id) else {
             return;
         };
-        let quiescent = matches!(
-            attempt.state,
-            LoadAttemptState::MayStillEmitQuiescent { .. }
-        );
         if !quiescent {
             attempt.state = LoadAttemptState::Starting;
         }
@@ -1601,7 +1741,7 @@ impl PlayerLifecycleState {
                 continue;
             }
             if let Some(attempt_id) = self.strict_start_owner(deferred.playlist_entry_id) {
-                self.start_attempt(attempt_id, deferred.playlist_entry_id, effects);
+                self.start_attempt(attempt_id, deferred.playlist_entry_id, true, effects);
             } else {
                 retained.push_back(deferred);
             }
@@ -1697,7 +1837,7 @@ impl PlayerLifecycleState {
             attempt.physical_terminal_sequence = Some(terminal_order.sequence);
         }
 
-        if !before.semantic_outcome_emitted {
+        if before.semantic_load_result.is_none() {
             let result = match outcome {
                 PlayerPhysicalLoadOutcome::Ended => PlayerLoadAttemptResult::Indeterminate,
                 PlayerPhysicalLoadOutcome::Failed(kind) => PlayerLoadAttemptResult::Failed(kind),
@@ -1881,7 +2021,7 @@ impl PlayerLifecycleState {
         if let Some(current) = entries.iter().find(|entry| entry.current)
             && let Some(attempt_id) = self.playlist_entry_attempts.get(&current.id).copied()
         {
-            self.start_attempt(attempt_id, current.id, effects);
+            self.start_attempt(attempt_id, current.id, false, effects);
         }
         self.try_deferred_starts(effects);
         let unresolved = self.load_attempts.values().any(|attempt| {
@@ -2151,7 +2291,7 @@ pub fn reduce_player_lifecycle(
                         superseded_by: None,
                         logical_ownership_revoked: false,
                         state: LoadAttemptState::Submitting,
-                        semantic_outcome_emitted: false,
+                        semantic_load_result: None,
                         start_file_observed: false,
                         file_loaded_observed: false,
                         reconcile_until_tick: None,
@@ -2219,7 +2359,7 @@ pub fn reduce_player_lifecycle(
                     } else {
                         LoadAttemptState::Starting
                     },
-                    semantic_outcome_emitted: false,
+                    semantic_load_result: None,
                     start_file_observed: true,
                     file_loaded_observed: file_loaded,
                     reconcile_until_tick: None,
@@ -2236,6 +2376,8 @@ pub fn reduce_player_lifecycle(
                 && let Some(predecessor) = state.load_attempts.get_mut(&predecessor_id)
                 && !predecessor.state.is_terminal()
             {
+                let predecessor_generation = predecessor.media_generation;
+                let predecessor_command = predecessor.command_id;
                 predecessor.superseded_by = Some(attempt_id);
                 predecessor.logical_ownership_revoked = true;
                 predecessor.state = LoadAttemptState::SupersededMayStillEmit {
@@ -2243,7 +2385,15 @@ pub fn reduce_player_lifecycle(
                 };
                 predecessor.reconcile_until_tick = None;
                 predecessor.file_loaded_deadline_tick = None;
-                if let Some(command_id) = predecessor.command_id {
+                state.queue_event(
+                    PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
+                        attempt_id: predecessor_id,
+                        media_generation: predecessor_generation,
+                        successor_attempt_id: attempt_id,
+                    },
+                    &mut effects,
+                );
+                if let Some(command_id) = predecessor_command {
                     state.command_terminal(
                         command_id,
                         CommandSemanticState::Superseded,
@@ -2342,6 +2492,7 @@ pub fn reduce_player_lifecycle(
                     .load_attempts
                     .get(&predecessor_id)
                     .and_then(|attempt| attempt.command_id);
+                let mut revoked_predecessor_generation = None;
                 if let Some(predecessor) = state.load_attempts.get_mut(&predecessor_id)
                     && !predecessor.state.is_terminal()
                 {
@@ -2352,6 +2503,17 @@ pub fn reduce_player_lifecycle(
                     };
                     predecessor.reconcile_until_tick = None;
                     predecessor.file_loaded_deadline_tick = None;
+                    revoked_predecessor_generation = Some(predecessor.media_generation);
+                }
+                if let Some(media_generation) = revoked_predecessor_generation {
+                    state.queue_event(
+                        PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
+                            attempt_id: predecessor_id,
+                            media_generation,
+                            successor_attempt_id: attempt_id,
+                        },
+                        &mut effects,
+                    );
                 }
                 if let Some(predecessor_command) = predecessor_command {
                     state.command_terminal(
@@ -2557,27 +2719,38 @@ pub fn reduce_player_lifecycle(
             {
                 owner.state = SystemSeekOwnershipState::MayStillArrive;
             }
-            let mut quiesced_attempt = None;
-            if let Some(attempt_id) = state.attempt_for_command(command_id)
-                && let Some(attempt) = state.load_attempts.get_mut(&attempt_id)
-                && !attempt.state.is_terminal()
-                && !matches!(
-                    attempt.state,
-                    LoadAttemptState::SupersededMayStillEmit { .. }
-                        | LoadAttemptState::MayStillEmitQuiescent { .. }
-                )
-            {
-                attempt.state = LoadAttemptState::MayStillEmitQuiescent {
-                    retire_after_tick: state
-                        .now_tick
-                        .saturating_add(QUIESCENT_LOAD_ATTEMPT_RETENTION_TICKS),
-                };
-                attempt.reconcile_until_tick = None;
-                attempt.file_loaded_deadline_tick = None;
-                quiesced_attempt = Some(attempt_id);
+            let mut timed_out_attempt = None;
+            if let Some(attempt_id) = state.attempt_for_command(command_id) {
+                let owns_transport = state.active_load_attempt == Some(attempt_id)
+                    && state
+                        .load_attempts
+                        .get(&attempt_id)
+                        .is_some_and(|attempt| attempt.start_file_observed);
+                if let Some(attempt) = state.load_attempts.get_mut(&attempt_id)
+                    && !attempt.state.is_terminal()
+                    && !matches!(
+                        attempt.state,
+                        LoadAttemptState::SupersededMayStillEmit { .. }
+                            | LoadAttemptState::MayStillEmitQuiescent { .. }
+                    )
+                {
+                    // Command semantic expiry cannot revoke a physical
+                    // ownership boundary that start-file already established.
+                    // Only an attempt that never started becomes quiescent.
+                    attempt.file_loaded_deadline_tick = None;
+                    if !owns_transport {
+                        attempt.state = LoadAttemptState::MayStillEmitQuiescent {
+                            retire_after_tick: state
+                                .now_tick
+                                .saturating_add(QUIESCENT_LOAD_ATTEMPT_RETENTION_TICKS),
+                        };
+                        attempt.reconcile_until_tick = None;
+                    }
+                    timed_out_attempt = Some((attempt_id, owns_transport));
+                }
             }
-            if let Some(attempt_id) = quiesced_attempt {
-                if state.active_load_attempt == Some(attempt_id) {
+            if let Some((attempt_id, owns_transport)) = timed_out_attempt {
+                if !owns_transport && state.active_load_attempt == Some(attempt_id) {
                     state.active_load_attempt = None;
                     state.provisional_eof = None;
                 }
@@ -2587,7 +2760,9 @@ pub fn reduce_player_lifecycle(
                     None,
                     &mut effects,
                 );
-                state.stop_reconciliation_without_proactive_work();
+                if !owns_transport {
+                    state.stop_reconciliation_without_proactive_work();
+                }
             }
         }
         PlayerLifecycleInput::StartFile {
@@ -2599,7 +2774,7 @@ pub fn reduce_player_lifecycle(
                     return (state, effects);
                 }
                 if let Some(attempt_id) = state.strict_start_owner(playlist_entry_id) {
-                    state.start_attempt(attempt_id, playlist_entry_id, &mut effects);
+                    state.start_attempt(attempt_id, playlist_entry_id, true, &mut effects);
                 } else {
                     if !state.deferred_start_files.iter().any(|event| {
                         event.attachment_epoch == attachment_epoch
@@ -3074,7 +3249,7 @@ pub fn reduce_player_lifecycle(
                 .filter(|attempt| {
                     !attempt.state.is_terminal()
                         && !attempt.logical_ownership_revoked
-                        && !attempt.semantic_outcome_emitted
+                        && attempt.semantic_load_result.is_none()
                         && attempt
                             .file_loaded_deadline_tick
                             .is_some_and(|deadline| state.now_tick >= deadline)
@@ -3089,14 +3264,21 @@ pub fn reduce_player_lifecycle(
                     .load_attempts
                     .get(&attempt_id)
                     .and_then(|attempt| attempt.command_id);
+                let owns_transport = state.active_load_attempt == Some(attempt_id)
+                    && state
+                        .load_attempts
+                        .get(&attempt_id)
+                        .is_some_and(|attempt| attempt.start_file_observed);
                 if let Some(attempt) = state.load_attempts.get_mut(&attempt_id) {
-                    attempt.state = LoadAttemptState::MayStillEmitQuiescent {
-                        retire_after_tick: quiescent_retire_after_tick,
-                    };
-                    attempt.reconcile_until_tick = None;
                     attempt.file_loaded_deadline_tick = None;
+                    if !owns_transport {
+                        attempt.state = LoadAttemptState::MayStillEmitQuiescent {
+                            retire_after_tick: quiescent_retire_after_tick,
+                        };
+                        attempt.reconcile_until_tick = None;
+                    }
                 }
-                if state.active_load_attempt == Some(attempt_id) {
+                if !owns_transport && state.active_load_attempt == Some(attempt_id) {
                     state.active_load_attempt = None;
                     state.provisional_eof = None;
                 }
@@ -4156,6 +4338,63 @@ mod tests {
     }
 
     #[test]
+    fn command_timeout_after_start_retains_physical_ownership() {
+        let attachment_epoch = PlayerAttachmentEpoch::new(1);
+        let mut state = PlayerLifecycleState::default();
+        let attempt_id = submit(&mut state, 1, 1, "started-target", &[]);
+        accept(&mut state, 1);
+        bind_with_snapshot(&mut state, 10, "started-target", false);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch,
+                playlist_entry_id: 10,
+            },
+        );
+        assert_eq!(state.active_load_attempt, Some(attempt_id));
+        assert_eq!(
+            state.load_attempts[&attempt_id].state,
+            LoadAttemptState::Starting
+        );
+
+        let current = std::mem::take(&mut state);
+        let (next, effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::CommandCompletionNotObserved {
+                attachment_epoch,
+                command_id: PlayerCommandId::new(1),
+            },
+        );
+        state = next;
+
+        state
+            .assert_invariants()
+            .expect("started timeout invariants");
+        assert_eq!(state.active_load_attempt, Some(attempt_id));
+        assert_eq!(
+            state.load_attempts[&attempt_id].state,
+            LoadAttemptState::Starting
+        );
+        assert_eq!(
+            state.load_attempts[&attempt_id].semantic_load_result,
+            Some(PlayerLoadAttemptResult::Indeterminate)
+        );
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            PlayerLifecycleEffect::EmitSemanticOutcome(
+                SequencedPlayerSemanticOutcome {
+                    outcome: PlayerSemanticOutcome::LoadAttempt(LoadAttemptOutcome {
+                        attempt_id: emitted_attempt,
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                        ..
+                    }),
+                    ..
+                }
+            ) if *emitted_attempt == attempt_id
+        )));
+    }
+
+    #[test]
     fn start_file_explicitly_reports_normal_and_quiescent_transport_ownership() {
         let attachment_epoch = PlayerAttachmentEpoch::new(1);
 
@@ -4215,6 +4454,79 @@ mod tests {
                 ..
             }) if *attempt_id == quiescent_attempt
         )));
+    }
+
+    #[test]
+    fn deferred_quiescent_start_emits_one_starting_event_after_snapshot_binding() {
+        let attachment_epoch = PlayerAttachmentEpoch::new(1);
+        let mut state = PlayerLifecycleState::default();
+        let attempt_id = submit(&mut state, 1, 1, "late-target", &[]);
+        accept(&mut state, 1);
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::CommandCompletionNotObserved {
+                attachment_epoch,
+                command_id: PlayerCommandId::new(1),
+            },
+        );
+
+        let current = std::mem::take(&mut state);
+        let (next, start_effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::StartFile {
+                attachment_epoch,
+                playlist_entry_id: 10,
+            },
+        );
+        state = next;
+        assert!(
+            start_effects.iter().all(|effect| !matches!(
+                effect,
+                PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                    event: PlayerEvent::LoadAttemptStarting { .. },
+                    ..
+                })
+            )),
+            "unbound raw start-file must wait for strict playlist ownership"
+        );
+
+        let current = std::mem::take(&mut state);
+        let (next, snapshot_effects) = reduce_player_lifecycle(
+            current,
+            PlayerLifecycleInput::PlaylistSnapshot {
+                attachment_epoch,
+                entries: vec![AuthoritativePlaylistEntry::new(
+                    10,
+                    Some("late-target".to_owned()),
+                    true,
+                )],
+                current_path: Some("late-target".to_owned()),
+            },
+        );
+        state = next;
+
+        state
+            .assert_invariants()
+            .expect("deferred quiescent start invariants");
+        assert_eq!(state.active_load_attempt, None);
+        assert_eq!(
+            snapshot_effects
+                .iter()
+                .filter(|effect| matches!(
+                    effect,
+                    PlayerLifecycleEffect::EmitOrderedEvent(SequencedPlayerEvent {
+                        event: PlayerEvent::LoadAttemptStarting {
+                            attempt_id: emitted_attempt,
+                            owns_transport: false,
+                            ..
+                        },
+                        ..
+                    }) if *emitted_attempt == attempt_id
+                ))
+                .count(),
+            1,
+            "one raw start-file boundary must emit exactly one ordered starting event"
+        );
     }
 
     #[test]
@@ -4304,6 +4616,9 @@ mod tests {
                     media_generation: PlayerMediaGeneration::new(2),
                     command_id: Some(PlayerCommandId::new(2)),
                     playlist_entry_id: Some(1),
+                    physical_file_loaded: false,
+                    semantic_load_result: None,
+                    logical_ownership_revoked: false,
                 }),
                 current_playlist_entry_id: SnapshotField::Known(1),
                 current_path: SnapshotField::Known("new".to_owned()),

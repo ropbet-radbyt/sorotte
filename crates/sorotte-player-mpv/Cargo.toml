@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-test-support = []
+test-support = ["sorotte-player-api/test-support"]
 
 [dependencies]
 anyhow.workspace = true
