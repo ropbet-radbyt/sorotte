@@ -66,6 +66,75 @@ function Assert-PackageScriptRejectsPrefixCollision {
     }
 }
 
+function Assert-PackageScriptRejectsReparseOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [string]$Channel
+    )
+
+    $unique = [Guid]::NewGuid().ToString("N")
+    $linkRoot = Join-Path $RepoRoot ".package-reparse-output-$unique"
+    $outsideRoot = Join-Path $RepoParent "$RepoLeaf-package-reparse-target-$unique"
+    $packageRoot = Join-Path (Join-Path $outsideRoot "staging") $PackageName
+    $canaryPath = Join-Path $packageRoot "must-not-be-deleted.txt"
+    $failureMessage = ""
+    $rejectedForBoundary = $false
+    $canarySurvived = $false
+
+    try {
+        New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+        Set-Content -LiteralPath $canaryPath -Value "$Name reparse-output canary" -Encoding UTF8
+        New-Item -ItemType Junction -Path $linkRoot -Target $outsideRoot | Out-Null
+
+        try {
+            if ([string]::IsNullOrEmpty($Channel)) {
+                & $ScriptPath -OutputDir $linkRoot -SkipBuild
+            }
+            else {
+                & $ScriptPath -OutputDir $linkRoot -SkipBuild -Channel $Channel
+            }
+        }
+        catch {
+            $failureMessage = $_.Exception.Message
+            $rejectedForBoundary =
+                $failureMessage.Contains("Refusing to mutate path outside repo") -or
+                $failureMessage.Contains("reparse")
+        }
+        finally {
+            Set-Location $RepoRoot
+        }
+        $canarySurvived = Test-Path -LiteralPath $canaryPath -PathType Leaf
+    }
+    finally {
+        if (Test-Path -LiteralPath $linkRoot) {
+            [System.IO.Directory]::Delete($linkRoot)
+        }
+        $outsideParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $outsideRoot))
+        $outsideLeaf = Split-Path -Leaf $outsideRoot
+        if (
+            $outsideParent -ne [System.IO.Path]::GetFullPath($RepoParent) -or
+            -not $outsideLeaf.StartsWith(
+                "$RepoLeaf-package-reparse-target-",
+                [System.StringComparison]::Ordinal
+            )
+        ) {
+            throw "Refusing to clean unexpected package reparse target: $outsideRoot"
+        }
+        if (Test-Path -LiteralPath $outsideRoot) {
+            Remove-Item -LiteralPath $outsideRoot -Recurse -Force
+        }
+    }
+
+    if (-not $canarySurvived) {
+        throw "$Name packaging mutated the reparse-point target before rejecting it: $failureMessage"
+    }
+    if (-not $rejectedForBoundary) {
+        throw "$Name packaging did not reject a reparse-point output path: $failureMessage"
+    }
+}
+
 try {
     $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Windows
@@ -88,6 +157,15 @@ try {
         -ScriptPath (Join-Path $ScriptDir "package-server-release.ps1") `
         -OutputRoot (Join-Path $CollisionRoot "server") `
         -PackageName "sorotte-server-$serverVersion-windows-x86_64"
+    Assert-PackageScriptRejectsReparseOutput `
+        -Name "Server" `
+        -ScriptPath (Join-Path $ScriptDir "package-server-release.ps1") `
+        -PackageName "sorotte-server-$serverVersion-windows-x86_64"
+    Assert-PackageScriptRejectsReparseOutput `
+        -Name "GUI" `
+        -ScriptPath (Join-Path $ScriptDir "package-gui-release.ps1") `
+        -PackageName "sorotte-gui-$guiVersion-windows-x86_64" `
+        -Channel "dev"
 
     Write-Host "Package path boundary regressions passed."
 }

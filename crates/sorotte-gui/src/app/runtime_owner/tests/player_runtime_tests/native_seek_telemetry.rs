@@ -1429,6 +1429,53 @@ fn paused_core_idle_seek_publishes_after_seek_completion() {
 }
 
 #[test]
+fn sparse_pause_then_transient_native_seek_edge_publishes_before_ready_paused_settles() {
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let mut pause = sparse_update(0.1);
+    pause.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
+    pause.logical_pause = Some(true);
+    let mut core_idle = sparse_update(0.2);
+    core_idle.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
+    core_idle.core_idle = Some(true);
+    let mut native_seek_edge = sparse_update(0.3);
+    native_seek_edge.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
+    native_seek_edge.seeking = Some(true);
+    let mut normalized_seek = sparse_update(0.4);
+    normalized_seek.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
+    normalized_seek.seeking = Some(false);
+    let mut seek_complete = sparse_position_update(0.5, 20.0);
+    seek_complete.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
+    seek_complete.logical_pause = Some(true);
+    seek_complete.seeking = Some(false);
+    seek_complete.core_idle = Some(true);
+    let mut player = PositionTelemetryPlayer::default();
+    player.updates.extend([
+        position_update_at_rate(0.0, 10.0, 1.0),
+        pause,
+        core_idle,
+        native_seek_edge,
+        normalized_seek,
+        seek_complete,
+    ]);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
+    owner.session = Some(Box::new(PositionSession {
+        state: session_state.clone(),
+    }));
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recorded_manual_seeks,
+        vec![20.0],
+        "the transient raw seek edge must preserve native-seek ownership before ReadyPaused settles"
+    );
+}
+
+#[test]
 fn loading_and_unknown_rate_samples_only_reestablish_a_baseline() {
     let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
     let mut loading = position_update_at_rate(0.5, 30.0, 1.0);

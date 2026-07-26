@@ -8,6 +8,21 @@ use crate::app::{
 
 use super::*;
 
+fn config_storage_metadata_is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_public_server_connect_request(
         &mut self,
@@ -711,10 +726,37 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn copy_storage_path_best_effort(src: &Path, dst: &Path, warnings: &mut Vec<String>) {
-        if !src.exists() {
+        let metadata = match std::fs::symlink_metadata(src) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                warnings.push(format!("{}: {error}", src.display()));
+                return;
+            }
+        };
+        if config_storage_metadata_is_reparse_or_symlink(&metadata) {
+            warnings.push(format!(
+                "{}: refusing to copy linked storage path",
+                src.display()
+            ));
             return;
         }
-        if src.is_file() {
+        match std::fs::symlink_metadata(dst) {
+            Ok(metadata) if config_storage_metadata_is_reparse_or_symlink(&metadata) => {
+                warnings.push(format!(
+                    "{}: refusing to write through linked storage path",
+                    dst.display()
+                ));
+                return;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warnings.push(format!("{}: {error}", dst.display()));
+                return;
+            }
+        }
+        if metadata.is_file() {
             if dst.exists() {
                 return;
             }
@@ -729,7 +771,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         }
-        if !src.is_dir() {
+        if !metadata.is_dir() {
             return;
         }
         if let Err(error) = std::fs::create_dir_all(dst) {
@@ -750,5 +792,104 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(error) => warnings.push(format!("{}: {error}", src.display())),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod config_relocation_link_tests {
+    use super::*;
+
+    fn config_copy_test_root(label: &str) -> PathBuf {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "sorotte-config-copy-{label}-{}-{unique_suffix}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn config_storage_copy_does_not_follow_descendant_junctions() {
+        let root = config_copy_test_root("junction");
+        let old_root = root.join("old");
+        let new_root = root.join("new");
+        let outside_root = root.join("outside");
+        let old_cache = old_root.join("cache");
+        std::fs::create_dir_all(&old_cache).expect("old cache root should be created");
+        std::fs::create_dir_all(&outside_root).expect("outside root should be created");
+        std::fs::write(outside_root.join("private-token.txt"), b"outside")
+            .expect("outside fixture should be written");
+
+        let junction = old_cache.join("external");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside_root)
+            .status()
+            .expect("junction command should start");
+        assert!(status.success(), "test junction should be created");
+
+        let warnings = GuiPersistedConfigRuntimeOwner::copy_known_storage_entries_best_effort(
+            Some(&old_root),
+            &new_root,
+        );
+
+        assert!(
+            !new_root
+                .join("cache")
+                .join("external")
+                .join("private-token.txt")
+                .exists(),
+            "config relocation must not traverse a descendant junction and copy files outside the old config root; warnings: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("refusing to copy linked storage path")),
+            "skipping a configured storage junction should be visible: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir(&junction);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_storage_copy_does_not_follow_descendant_symlinks() {
+        let root = config_copy_test_root("symlink");
+        let old_root = root.join("old");
+        let new_root = root.join("new");
+        let outside_root = root.join("outside");
+        let old_cache = old_root.join("cache");
+        std::fs::create_dir_all(&old_cache).expect("old cache root should be created");
+        std::fs::create_dir_all(&outside_root).expect("outside root should be created");
+        std::fs::write(outside_root.join("private-token.txt"), b"outside")
+            .expect("outside fixture should be written");
+        std::os::unix::fs::symlink(&outside_root, old_cache.join("external"))
+            .expect("test symlink should be created");
+
+        let warnings = GuiPersistedConfigRuntimeOwner::copy_known_storage_entries_best_effort(
+            Some(&old_root),
+            &new_root,
+        );
+
+        assert!(
+            !new_root
+                .join("cache")
+                .join("external")
+                .join("private-token.txt")
+                .exists(),
+            "config relocation must not traverse a descendant symlink; warnings: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("refusing to copy linked storage path")),
+            "skipping a configured storage symlink should be visible: {warnings:?}"
+        );
+        let _ = std::fs::remove_file(old_cache.join("external"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

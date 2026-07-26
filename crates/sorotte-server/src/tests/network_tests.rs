@@ -825,6 +825,115 @@ async fn server_network_periodic_state_updates_coalesce_to_latest() {
 }
 
 #[tokio::test]
+async fn actor_commit_order_is_preserved_when_session_dispatches_resume_out_of_order() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username) in [
+        ("source-a", "alice"),
+        ("source-b", "bob"),
+        ("observer", "carol"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) =
+        crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("observer".to_owned(), event_tx);
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+
+    let first_committed = Arc::new(tokio::sync::Notify::new());
+    let release_first_session = Arc::new(tokio::sync::Notify::new());
+    let first_runtime = runtime.clone();
+    let first_senders = client_event_senders.clone();
+    let first_dispatch_order = dispatch_order.clone();
+    let first_committed_task = first_committed.clone();
+    let release_first_session_task = release_first_session.clone();
+    let first_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &first_runtime,
+            &first_dispatch_order,
+            "source-a",
+            r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+            &first_senders,
+            async move {
+                first_committed_task.notify_one();
+                // Hold the production dispatch helper across the exact
+                // suspension point that previously let a later actor commit
+                // overtake peer fanout.
+                release_first_session_task.notified().await;
+            },
+        )
+        .await
+        .expect("first actor mutation and dispatch should succeed");
+    });
+    first_committed.notified().await;
+
+    let second_runtime = runtime.clone();
+    let second_senders = client_event_senders.clone();
+    let second_dispatch_order = dispatch_order.clone();
+    let second_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &second_runtime,
+            &second_dispatch_order,
+            "source-b",
+            r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+            &second_senders,
+            std::future::ready(()),
+        )
+        .await
+        .expect("second actor mutation and dispatch should succeed");
+    });
+    tokio::task::yield_now().await;
+    release_first_session.notify_one();
+    first_session
+        .await
+        .expect("first session dispatch task should join");
+    second_session
+        .await
+        .expect("second session dispatch task should join");
+
+    let mut observed_playlists = Vec::new();
+    while observed_playlists.len() < 2 {
+        let line = timeout(
+            Duration::from_secs(1),
+            event_rx.receive_reliable_line_for_test(),
+        )
+        .await
+        .expect("observer should receive both committed playlist changes")
+        .expect("observer queue should remain open");
+        if let ProtocolMessage::Set(payload) =
+            decode_message_line(&line).expect("observer fanout should decode")
+            && let Some(playlist) = payload.set.playlist_change
+        {
+            observed_playlists.push(playlist.files);
+        }
+    }
+
+    assert_eq!(
+        observed_playlists,
+        vec![vec!["first.mkv".to_owned()], vec!["second.mkv".to_owned()]],
+        "network fanout must preserve the actor's authoritative mutation order"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
 async fn server_network_accept_queue_is_bounded() {
     let (accepted_tx, _accepted_rx): (
         mpsc::Sender<io::Result<(TcpStream, std::net::SocketAddr)>>,

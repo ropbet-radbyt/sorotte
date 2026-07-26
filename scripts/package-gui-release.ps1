@@ -42,6 +42,28 @@ function Assert-PathInsideRepo {
     ) {
         throw "Refusing to mutate path outside repo: $fullPath"
     }
+    if ($fullPath.Equals($repoPath, $comparison)) {
+        return
+    }
+
+    $currentPath = $repoPath
+    $relativePath = $fullPath.Substring($repoPrefix.Length)
+    foreach ($component in ($relativePath -split '[\\/]')) {
+        if ([string]::IsNullOrEmpty($component)) {
+            continue
+        }
+        $currentPath = Join-Path $currentPath $component
+        if (-not (Test-Path -LiteralPath $currentPath)) {
+            break
+        }
+        $item = Get-Item -Force -LiteralPath $currentPath
+        if (
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne
+            0
+        ) {
+            throw "Refusing to mutate path through reparse point: $currentPath"
+        }
+    }
 }
 
 function Get-SorotteGuiVersion {
@@ -118,6 +140,8 @@ $gitSha = Get-GitSha
 
 Assert-PathInsideRepo $stagingRoot
 Assert-PathInsideRepo $artifactsRoot
+Assert-PathInsideRepo $packageRoot
+Assert-PathInsideRepo $symbolsRoot
 if (Test-Path -LiteralPath $packageRoot) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
 }

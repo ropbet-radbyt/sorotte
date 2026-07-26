@@ -5086,13 +5086,22 @@ impl MpvAdapter {
         };
         self.observed_state.cache_buffering_percent = cache_buffering_percent;
 
+        let core_idle = match self
+            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_CORE_IDLE)
+        {
+            Ok(value) => value.as_ref().and_then(Value::as_bool),
+            Err(()) => return,
+        };
+        self.observed_state.core_idle = core_idle;
+
         let seeking = match self
             .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_SEEKING)
         {
             Ok(value) => value.as_ref().and_then(Value::as_bool),
             Err(()) => return,
         };
-        self.observed_state.seeking = seeking;
+        self.observed_state.seeking =
+            seeking.map(|seeking| self.normalize_transport_seeking_observation(seeking));
 
         let seekable = match self
             .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_SEEKABLE)
@@ -5101,14 +5110,6 @@ impl MpvAdapter {
             Err(()) => return,
         };
         self.observed_state.seekable = seekable;
-
-        let core_idle = match self
-            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_CORE_IDLE)
-        {
-            Ok(value) => value.as_ref().and_then(Value::as_bool),
-            Err(()) => return,
-        };
-        self.observed_state.core_idle = core_idle;
 
         let demuxer_cache_idle = match self.read_authoritative_property_at_response_boundary(
             epoch,
@@ -7418,10 +7419,26 @@ impl MpvAdapter {
         !(settled_intentional_pause && !tracked_seek_is_pending)
     }
 
+    fn queue_transient_native_seek_edge_if_normalized(&mut self, transport_seeking: bool) {
+        if transport_seeking {
+            return;
+        }
+        // Keep the stable projection ReadyPaused, but preserve the raw mpv
+        // seek edge long enough for attached consumers to classify a manual
+        // paused seek. A following normalized delta closes the edge in the
+        // same ordered batch so it cannot latch transport in Seeking.
+        let mut update = self
+            .transport_update()
+            .with_phase(PlayerTransportPhase::Seeking);
+        update.seeking = Some(true);
+        self.queue_transport_telemetry_update(update);
+    }
+
     fn handle_seek_event(&mut self) {
         self.network_cache_stall = None;
         self.begin_seek_cache_evidence_epoch();
         let transport_seeking = self.normalize_transport_seeking_observation(true);
+        self.queue_transient_native_seek_edge_if_normalized(transport_seeking);
         self.observed_state.seeking = Some(transport_seeking);
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
@@ -9687,6 +9704,8 @@ mod timeline_kind_tests {
         adapter.active_generation_has_restarted = true;
         adapter.playback_restart_sequence = 1;
         adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
+        adapter.pending_ordered_player_events.clear();
+        adapter.pending_transport_telemetry_updates.clear();
 
         adapter.handle_ipc_event(&json!({
             "event": MPV_EVENT_SEEK,
@@ -9697,6 +9716,24 @@ mod timeline_kind_tests {
             "an internal resync edge must not displace settled intentional pause"
         );
         assert_eq!(adapter.observed_state.seeking, Some(false));
+        let seek_edges = adapter
+            .pending_ordered_player_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                PlayerOrderedEventKind::Transport(update) if update.seeking.is_some() => {
+                    Some((update.phase, update.seeking))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            seek_edges,
+            vec![
+                (Some(PlayerTransportPhase::Seeking), Some(true)),
+                (Some(PlayerTransportPhase::ReadyPaused), Some(false)),
+            ],
+            "a raw paused native-seek edge must precede the stable normalized transport state"
+        );
 
         adapter.handle_ipc_event(&json!({
             "event": MPV_EVENT_PROPERTY_CHANGE,
@@ -10668,6 +10705,8 @@ mod authoritative_reconciliation_regression_tests {
         pending_lines: VecDeque<String>,
         pause_response: bool,
         paused_for_cache_response: bool,
+        seeking_response: bool,
+        core_idle_response: bool,
         pause_event_after_response: Option<bool>,
         verified_transition_before_playlist_response: bool,
     }
@@ -10692,9 +10731,9 @@ mod authoritative_reconciliation_regression_tests {
                 MPV_PROPERTY_SPEED => json!(1.0),
                 MPV_PROPERTY_PAUSED_FOR_CACHE => json!(self.paused_for_cache_response),
                 MPV_PROPERTY_CACHE_BUFFERING_STATE => json!(100.0),
-                MPV_PROPERTY_SEEKING => json!(false),
+                MPV_PROPERTY_SEEKING => json!(self.seeking_response),
                 MPV_PROPERTY_SEEKABLE => json!(true),
-                MPV_PROPERTY_CORE_IDLE => json!(false),
+                MPV_PROPERTY_CORE_IDLE => json!(self.core_idle_response),
                 MPV_PROPERTY_DEMUXER_CACHE_IDLE => json!(false),
                 MPV_PROPERTY_EOF_REACHED => json!(false),
                 _ => Value::Null,
@@ -10911,6 +10950,54 @@ mod authoritative_reconciliation_regression_tests {
         assert!(
             !adapter.logical_pause_explicit,
             "an authoritative unpause must retire stale explicit-pause ownership before a later cache-only pause"
+        );
+    }
+
+    #[test]
+    fn authoritative_reconciliation_normalizes_paused_internal_seek_like_event_ingress() {
+        let target = "C:/media/paused-internal-seek.wav";
+        let generation = PlayerMediaGeneration::new(41);
+        let mut adapter = MpvAdapter::with_test_transport(InterleavedAuthorityTransport {
+            pause_response: true,
+            paused_for_cache_response: false,
+            seeking_response: true,
+            core_idle_response: true,
+            ..InterleavedAuthorityTransport::default()
+        });
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            media_generation: generation,
+            playlist_entry_id: 41,
+            observed_target: target.to_owned(),
+            file_loaded: true,
+        });
+        let attempt_id = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("external fixture should establish an active attempt");
+        adapter.install_physical_projection(
+            attempt_id,
+            generation,
+            Some(41),
+            Some(target.to_owned()),
+            true,
+        );
+        adapter.logical_pause_explicit = true;
+        adapter.active_generation_has_restarted = true;
+        adapter.playback_restart_sequence = 1;
+        adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
+
+        adapter.reconcile_lifecycle_from_authority();
+
+        assert_eq!(
+            adapter.observed_state.seeking,
+            Some(false),
+            "authoritative polling must apply the same paused internal-resync normalization as property-event ingress"
+        );
+        assert_eq!(
+            adapter.transport_phase,
+            PlayerTransportPhase::ReadyPaused,
+            "a reconciliation poll must not re-latch settled paused playback in Seeking"
         );
     }
 

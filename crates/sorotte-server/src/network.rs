@@ -106,6 +106,22 @@ pub(crate) struct ClientEventReceiver {
 }
 
 pub(crate) type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
+pub(crate) type SharedNetworkDispatchOrder = Arc<Mutex<()>>;
+
+#[derive(Clone)]
+struct ServerNetworkDispatchContext {
+    client_event_senders: SharedClientEventSenders,
+    dispatch_order: SharedNetworkDispatchOrder,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+}
+
+pub(crate) async fn with_network_dispatch_order<T>(
+    dispatch_order: &SharedNetworkDispatchOrder,
+    operation: impl Future<Output = T>,
+) -> T {
+    let _guard = dispatch_order.lock().await;
+    operation.await
+}
 
 pub(crate) fn client_event_queue(
     metrics: ServerOutboundBackpressureMetrics,
@@ -744,13 +760,10 @@ impl ServerNetworkTransport {
     }
 }
 
-async fn route_outbound_lines_for_client_session(
-    transport: &mut ServerNetworkTransport,
+fn partition_outbound_lines_for_client_session(
     client_id: &str,
-    client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
-    write_timeout: std::time::Duration,
-) -> io::Result<()> {
+) -> (Vec<DirectedOutboundLine>, Vec<DirectedOutboundLine>) {
     let mut local_outbound_lines = Vec::new();
     let mut peer_outbound_lines = Vec::new();
     for line in outbound_lines {
@@ -760,18 +773,167 @@ async fn route_outbound_lines_for_client_session(
             peer_outbound_lines.push(line);
         }
     }
+    (local_outbound_lines, peer_outbound_lines)
+}
 
-    // Runtime handlers mutate authoritative room state before returning this
-    // dispatch. Queue reliable peer fanout first so a stalled or disconnected
-    // source cannot prevent surviving participants from observing an already
-    // accepted mutation.
-    dispatch_outbound_lines_to_clients(client_event_senders, peer_outbound_lines).await;
+async fn write_local_outbound_lines(
+    transport: &mut ServerNetworkTransport,
+    local_outbound_lines: Vec<DirectedOutboundLine>,
+    write_timeout: std::time::Duration,
+) -> io::Result<()> {
     for line in local_outbound_lines {
         transport
             .write_line_with_timeout(&line.line, write_timeout)
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+async fn route_outbound_lines_for_client_session(
+    transport: &mut ServerNetworkTransport,
+    client_id: &str,
+    client_event_senders: &SharedClientEventSenders,
+    outbound_lines: Vec<DirectedOutboundLine>,
+    write_timeout: std::time::Duration,
+) -> io::Result<()> {
+    let (local_outbound_lines, peer_outbound_lines) =
+        partition_outbound_lines_for_client_session(client_id, outbound_lines);
+    // Runtime handlers mutate authoritative room state before returning this
+    // dispatch. Queue reliable peer fanout first so a stalled or disconnected
+    // source cannot prevent surviving participants from observing an already
+    // accepted mutation.
+    dispatch_outbound_lines_to_clients(client_event_senders, peer_outbound_lines).await;
+    write_local_outbound_lines(transport, local_outbound_lines, write_timeout).await
+}
+
+struct OrderedClientDispatch {
+    local_outbound_lines: Vec<DirectedOutboundLine>,
+    transport_actions: Vec<DirectedTransportAction>,
+    session_exists: bool,
+}
+
+async fn handle_line_and_queue_peer_dispatch_after_commit(
+    runtime: &ServerActorHandle,
+    dispatch_context: &ServerNetworkDispatchContext,
+    client_id: &str,
+    inbound_line: &str,
+    peer_ip: Option<&str>,
+    after_actor_commit: impl Future<Output = ()>,
+) -> Result<OrderedClientDispatch, ServerActorError> {
+    with_network_dispatch_order(&dispatch_context.dispatch_order, async {
+        let (dispatch, session_exists) = runtime
+            .handle_line(client_id, inbound_line, peer_ip)
+            .await?;
+        after_actor_commit.await;
+        let (local_outbound_lines, peer_outbound_lines) =
+            partition_outbound_lines_for_client_session(client_id, dispatch.outbound_lines);
+        dispatch_outbound_lines_to_clients(
+            &dispatch_context.client_event_senders,
+            peer_outbound_lines,
+        )
+        .await;
+        dispatch_transport_actions_to_sink(
+            dispatch_context.transport_action_sink.as_ref(),
+            &dispatch.transport_actions,
+        );
+        dispatch_transport_actions_to_peer_clients(
+            &dispatch_context.client_event_senders,
+            client_id,
+            &dispatch.transport_actions,
+        )
+        .await;
+        Ok(OrderedClientDispatch {
+            local_outbound_lines,
+            transport_actions: dispatch.transport_actions,
+            session_exists,
+        })
+    })
+    .await
+}
+
+async fn handle_line_and_queue_peer_dispatch(
+    runtime: &ServerActorHandle,
+    dispatch_context: &ServerNetworkDispatchContext,
+    client_id: &str,
+    inbound_line: &str,
+    peer_ip: Option<&str>,
+) -> Result<OrderedClientDispatch, ServerActorError> {
+    handle_line_and_queue_peer_dispatch_after_commit(
+        runtime,
+        dispatch_context,
+        client_id,
+        inbound_line,
+        peer_ip,
+        std::future::ready(()),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn handle_line_and_queue_peer_dispatch_after_commit_for_test(
+    runtime: &ServerActorHandle,
+    dispatch_order: &SharedNetworkDispatchOrder,
+    client_id: &str,
+    inbound_line: &str,
+    client_event_senders: &SharedClientEventSenders,
+    after_actor_commit: impl Future<Output = ()>,
+) -> Result<(), ServerActorError> {
+    let dispatch_context = ServerNetworkDispatchContext {
+        client_event_senders: client_event_senders.clone(),
+        dispatch_order: dispatch_order.clone(),
+        transport_action_sink: None,
+    };
+    handle_line_and_queue_peer_dispatch_after_commit(
+        runtime,
+        &dispatch_context,
+        client_id,
+        inbound_line,
+        None,
+        after_actor_commit,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn disconnect_and_queue_peer_dispatch(
+    runtime: &ServerActorHandle,
+    dispatch_context: &ServerNetworkDispatchContext,
+    client_id: &str,
+) -> Result<(), ServerActorError> {
+    with_network_dispatch_order(&dispatch_context.dispatch_order, async {
+        let outbound_lines = runtime.disconnect(client_id).await?;
+        dispatch_outbound_lines_to_clients(&dispatch_context.client_event_senders, outbound_lines)
+            .await;
+        Ok(())
+    })
+    .await
+}
+
+async fn collect_and_queue_periodic_dispatch(
+    runtime: &ServerActorHandle,
+    dispatch_context: &ServerNetworkDispatchContext,
+    now_seconds: f64,
+) -> Result<(), ServerActorError> {
+    with_network_dispatch_order(&dispatch_context.dispatch_order, async {
+        let dispatch = runtime.collect_dispatch(now_seconds).await?;
+        dispatch_outbound_lines_to_clients(
+            &dispatch_context.client_event_senders,
+            dispatch.outbound_lines,
+        )
+        .await;
+        dispatch_transport_actions_to_sink(
+            dispatch_context.transport_action_sink.as_ref(),
+            &dispatch.transport_actions,
+        );
+        dispatch_transport_actions_to_clients(
+            &dispatch_context.client_event_senders,
+            &dispatch.transport_actions,
+        )
+        .await;
+        Ok(())
+    })
+    .await
 }
 
 async fn tls_acceptor_from_runtime(runtime: &ServerActorHandle) -> io::Result<TlsAcceptor> {
@@ -813,15 +975,14 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
     stream: TcpStream,
     identity: ServerNetworkClientIdentity,
     runtime: ServerActorHandle,
-    client_event_senders: SharedClientEventSenders,
-    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    dispatch_context: ServerNetworkDispatchContext,
     timeouts: ServerNetworkClientSessionTimeouts,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
     let ServerNetworkClientIdentity { peer_ip, client_id } = identity;
     let (event_tx, mut event_rx) = client_event_queue(runtime.outbound_backpressure_metrics());
     {
-        let mut senders = client_event_senders.lock().await;
+        let mut senders = dispatch_context.client_event_senders.lock().await;
         senders.insert(client_id.clone(), event_tx);
     }
 
@@ -878,24 +1039,28 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                 }
                 let Some(handle_result) = run_until_shutdown(
                     &mut shutdown_rx,
-                    runtime.handle_line(&client_id, inbound_line, peer_ip.as_deref()),
+                    handle_line_and_queue_peer_dispatch(
+                        &runtime,
+                        &dispatch_context,
+                        &client_id,
+                        inbound_line,
+                        peer_ip.as_deref(),
+                    ),
                 )
                 .await
                 else {
                     shutdown_requested = true;
                     break;
                 };
-                let (dispatch, session_exists) = handle_result?;
-                session_known = session_known || session_exists;
+                let ordered_dispatch = handle_result?;
+                session_known = session_known || ordered_dispatch.session_exists;
                 let close_after_dispatch =
-                    transport_actions_close_client(&dispatch.transport_actions, &client_id);
+                    transport_actions_close_client(&ordered_dispatch.transport_actions, &client_id);
                 let Some(route_result) = run_until_shutdown(
                     &mut shutdown_rx,
-                    route_outbound_lines_for_client_session(
+                    write_local_outbound_lines(
                         &mut transport,
-                        &client_id,
-                        &client_event_senders,
-                        dispatch.outbound_lines,
+                        ordered_dispatch.local_outbound_lines,
                         timeouts.write,
                     ),
                 )
@@ -908,35 +1073,13 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                     session_error = Some(ServerNetworkError::Io(source));
                     break;
                 }
-                dispatch_transport_actions_to_sink(
-                    transport_action_sink.as_ref(),
-                    &dispatch.transport_actions,
-                );
-                // A command handled for this connection can revoke a
-                // different, overlapping connection (for example playback
-                // ownership recovery). Route those cross-client actions to
-                // the owning session task immediately; local actions remain
-                // synchronous below so StartTls cannot be applied twice.
-                let Some(()) = run_until_shutdown(
-                    &mut shutdown_rx,
-                    dispatch_transport_actions_to_peer_clients(
-                        &client_event_senders,
-                        &client_id,
-                        &dispatch.transport_actions,
-                    ),
-                )
-                .await
-                else {
-                    shutdown_requested = true;
-                    break;
-                };
                 let Some(action_result) = run_until_shutdown(
                     &mut shutdown_rx,
                     apply_local_transport_actions(
                         &mut transport,
                         &client_id,
                         &runtime,
-                        &dispatch.transport_actions,
+                        &ordered_dispatch.transport_actions,
                         timeouts.tls_handshake,
                     ),
                 )
@@ -1025,7 +1168,7 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
     }
 
     {
-        let mut senders = client_event_senders.lock().await;
+        let mut senders = dispatch_context.client_event_senders.lock().await;
         senders.remove(&client_id);
     }
     event_rx.close_and_record_discarded().await;
@@ -1044,11 +1187,10 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
         Ok(Err(_)) | Err(_) => {}
     }
 
-    let disconnect_fanout = runtime.disconnect(&client_id).await;
-    match disconnect_fanout {
-        Ok(outbound_lines) => {
-            dispatch_outbound_lines_to_clients(&client_event_senders, outbound_lines).await;
-        }
+    let disconnect_result =
+        disconnect_and_queue_peer_dispatch(&runtime, &dispatch_context, &client_id).await;
+    match disconnect_result {
+        Ok(()) => {}
         Err(source) => {
             if session_error.is_none() {
                 session_error = Some(ServerNetworkError::Actor(source));
@@ -1076,12 +1218,16 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     // transport closes. The production network owner supplies a real receiver
     // through the internal helper below.
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let dispatch_context = ServerNetworkDispatchContext {
+        client_event_senders,
+        dispatch_order: Arc::new(Mutex::new(())),
+        transport_action_sink,
+    };
     run_server_network_client_session_with_timeouts_until_shutdown(
         stream,
         ServerNetworkClientIdentity { peer_ip, client_id },
         runtime,
-        client_event_senders,
-        transport_action_sink,
+        dispatch_context,
         timeouts,
         shutdown_rx,
     )
@@ -1203,16 +1349,14 @@ async fn run_server_network_client_session(
     peer_ip: Option<String>,
     client_id: String,
     runtime: ServerActorHandle,
-    client_event_senders: SharedClientEventSenders,
-    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    dispatch_context: ServerNetworkDispatchContext,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
     run_server_network_client_session_with_timeouts_until_shutdown(
         stream,
         ServerNetworkClientIdentity { peer_ip, client_id },
         runtime,
-        client_event_senders,
-        transport_action_sink,
+        dispatch_context,
         ServerNetworkClientSessionTimeouts::production_with_pre_hello(
             std::time::Duration::from_secs_f64(PROTOCOL_TIMEOUT_SECONDS),
         ),
@@ -1355,7 +1499,11 @@ pub async fn run_server_network_loops_until_shutdown(
         )));
     }
 
-    let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let dispatch_context = ServerNetworkDispatchContext {
+        client_event_senders: Arc::new(Mutex::new(BTreeMap::new())),
+        dispatch_order: Arc::new(Mutex::new(())),
+        transport_action_sink,
+    };
     let (accepted_tx, mut accepted_rx): (Sender<AcceptedClient>, Receiver<AcceptedClient>) =
         channel(ACCEPTED_CLIENT_QUEUE_CAPACITY);
     let (local_shutdown_tx, local_shutdown_rx) = watch::channel(false);
@@ -1389,30 +1537,19 @@ pub async fn run_server_network_loops_until_shutdown(
         record_finished_tasks(&mut accept_tasks, "acceptor");
         tokio::select! {
             _ = tick.tick() => {
-                let dispatch = match runtime
-                    .collect_dispatch(current_unix_timestamp_seconds())
-                    .await
+                match collect_and_queue_periodic_dispatch(
+                    &runtime,
+                    &dispatch_context,
+                    current_unix_timestamp_seconds(),
+                )
+                .await
                 {
-                    Ok(dispatch) => dispatch,
+                    Ok(()) => {}
                     Err(source) => {
                         loop_error = Some(ServerNetworkError::Actor(source));
                         break;
                     }
-                };
-                dispatch_outbound_lines_to_clients(
-                    &client_event_senders,
-                    dispatch.outbound_lines,
-                )
-                .await;
-                dispatch_transport_actions_to_sink(
-                    transport_action_sink.as_ref(),
-                    &dispatch.transport_actions,
-                );
-                dispatch_transport_actions_to_clients(
-                    &client_event_senders,
-                    &dispatch.transport_actions,
-                )
-                .await;
+                }
             }
             _ = wait_for_shutdown(&mut shutdown_rx) => break,
             accepted = accepted_rx.recv() => {
@@ -1429,8 +1566,7 @@ pub async fn run_server_network_loops_until_shutdown(
                 let client_id = format!("client-{next_client_number}");
                 next_client_number = next_client_number.saturating_add(1);
                 let runtime = runtime.clone();
-                let client_event_senders = client_event_senders.clone();
-                let transport_action_sink = transport_action_sink.clone();
+                let dispatch_context = dispatch_context.clone();
                 let session_shutdown_rx = local_shutdown_rx.clone();
                 let peer_ip = Some(address.ip().to_string());
                 let task_client_id = client_id.clone();
@@ -1440,8 +1576,7 @@ pub async fn run_server_network_loops_until_shutdown(
                         peer_ip,
                         client_id,
                         runtime,
-                        client_event_senders,
-                        transport_action_sink,
+                        dispatch_context,
                         session_shutdown_rx,
                     )
                     .await
