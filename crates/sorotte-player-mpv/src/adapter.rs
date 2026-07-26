@@ -4907,6 +4907,31 @@ impl MpvAdapter {
         attachment_epoch: PlayerAttachmentEpoch,
         property_name: &str,
     ) -> Result<Option<Value>, ()> {
+        self.read_authoritative_property_at_response_boundary_with_network_options_flush(
+            attachment_epoch,
+            property_name,
+            true,
+        )
+    }
+
+    fn read_authoritative_identity_property_at_response_boundary(
+        &mut self,
+        attachment_epoch: PlayerAttachmentEpoch,
+        property_name: &str,
+    ) -> Result<Option<Value>, ()> {
+        self.read_authoritative_property_at_response_boundary_with_network_options_flush(
+            attachment_epoch,
+            property_name,
+            false,
+        )
+    }
+
+    fn read_authoritative_property_at_response_boundary_with_network_options_flush(
+        &mut self,
+        attachment_epoch: PlayerAttachmentEpoch,
+        property_name: &str,
+        flush_network_options: bool,
+    ) -> Result<Option<Value>, ()> {
         let response = match self.ipc_client.as_mut() {
             Some(client) => client.get_property_classified(property_name),
             None => {
@@ -4920,7 +4945,11 @@ impl MpvAdapter {
         // The worker encountered every queued event before it returned this
         // response. Reduce that causal prefix before applying the response;
         // events harvested by a later property query can then supersede it.
-        self.drain_ipc_events_if_attached();
+        if flush_network_options {
+            self.drain_ipc_events_if_attached();
+        } else {
+            self.drain_ipc_events_without_network_options_flush();
+        }
 
         match response {
             Ok(value) => Ok(value),
@@ -4950,7 +4979,7 @@ impl MpvAdapter {
             return;
         }
         let playlist = match self
-            .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PLAYLIST)
+            .read_authoritative_identity_property_at_response_boundary(epoch, MPV_PROPERTY_PLAYLIST)
         {
             Ok(Some(playlist)) => playlist,
             Ok(None) => {
@@ -4961,11 +4990,12 @@ impl MpvAdapter {
             }
             Err(()) => return,
         };
-        let path =
-            match self.read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PATH) {
-                Ok(path) => path.and_then(|value| value.as_str().map(ToOwned::to_owned)),
-                Err(()) => return,
-            };
+        let path = match self
+            .read_authoritative_identity_property_at_response_boundary(epoch, MPV_PROPERTY_PATH)
+        {
+            Ok(path) => path.and_then(|value| value.as_str().map(ToOwned::to_owned)),
+            Err(()) => return,
+        };
         let entries = Self::authoritative_playlist_entries(&playlist);
         let authoritative_current_entry_id = entries
             .iter()
@@ -4978,11 +5008,16 @@ impl MpvAdapter {
         });
         self.observe_external_current_from_authority(&entries, path.as_deref());
         // Reapply identity-dependent ingress only after the authoritative
-        // playlist has bound the physical attempt. Both retained observations
-        // precede the path response, which is applied immediately afterwards.
+        // playlist has bound the physical attempt. Network-policy results
+        // observed before either identity response remain deferred until this
+        // point so start-file initialization cannot erase their verification.
         self.replay_deferred_start_file_if_bound();
         self.replay_deferred_file_loaded_if_bound();
-        self.observed_state.path = path;
+        self.observed_state.path = path.clone();
+        self.flush_deferred_network_media_options_for_authoritative_path(path.as_deref());
+        // Events harvested after the path response are newer than the
+        // authoritative identity pair and may now supersede it normally.
+        self.drain_ipc_events_if_attached();
 
         let paused = match self
             .read_authoritative_property_at_response_boundary(epoch, MPV_PROPERTY_PAUSE)
@@ -6613,6 +6648,27 @@ impl MpvAdapter {
         {
             self.apply_network_options_hook_transition_result(result, observed_path);
         }
+    }
+
+    fn flush_deferred_network_media_options_for_authoritative_path(&mut self, path: Option<&str>) {
+        // Every deferred path observation preceded the completed path query,
+        // so the query result supersedes it. The hook transition itself still
+        // belongs to this start-file boundary and must be finalized only after
+        // the playlist response has bound its media generation.
+        self.deferred_network_media_options_observation = None;
+        if let Some(result) = self
+            .deferred_network_media_options_hook_transition_result
+            .take()
+        {
+            self.apply_network_options_hook_transition_result(
+                result,
+                Some(path.map(ToOwned::to_owned)),
+            );
+        }
+        self.apply_authoritative_path_for_network_options(
+            path,
+            AuthoritativePathObservationOrigin::Poll,
+        );
     }
 
     fn observe_unhealthy_ipc_transport(&mut self) {
@@ -10446,18 +10502,24 @@ mod authoritative_reconciliation_regression_tests {
         pause_response: bool,
         paused_for_cache_response: bool,
         pause_event_after_response: Option<bool>,
+        verified_transition_before_playlist_response: bool,
     }
 
     impl InterleavedAuthorityTransport {
         fn response_data(&self, property: &str) -> Value {
+            let current_path = if self.verified_transition_before_playlist_response {
+                "https://media.example.test/cap.wav"
+            } else {
+                "C:/media/current.mkv"
+            };
             match property {
                 MPV_PROPERTY_PLAYLIST => json!([{
                     "id": 41,
-                    "filename": "C:/media/current.mkv",
+                    "filename": current_path,
                     "current": true,
                     "playing": true,
                 }]),
-                MPV_PROPERTY_PATH => json!("C:/media/current.mkv"),
+                MPV_PROPERTY_PATH => json!(current_path),
                 MPV_PROPERTY_PAUSE => json!(self.pause_response),
                 MPV_PROPERTY_TIME_POS => json!(12.0),
                 MPV_PROPERTY_SPEED => json!(1.0),
@@ -10478,6 +10540,47 @@ mod authoritative_reconciliation_regression_tests {
             let request: Value = serde_json::from_str(line.trim()).expect("valid IPC request");
             let request_id = request["request_id"].as_u64().expect("request id");
             let property = request["command"][1].as_str().expect("get-property name");
+            if property == MPV_PROPERTY_PLAYLIST
+                && self.verified_transition_before_playlist_response
+            {
+                self.pending_lines.push_back(format!(
+                    "{}\n",
+                    json!({
+                        "event": MPV_EVENT_START_FILE,
+                        "playlist_entry_id": 41,
+                    })
+                ));
+                let payload = json!({
+                    "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
+                    "ownerId": "causal-test-owner",
+                    "attachmentId": "causal-test-attachment",
+                    "configurationGeneration": 2,
+                    "hookInstanceId": "test-hook-instance",
+                    "loadSequence": 1,
+                    "sourcePath": "https://media.example.test/cap.wav",
+                    "streamOpenFilename": "https://media.example.test/cap.wav",
+                    "status": "network-updated",
+                    "applicationState": "applied",
+                    "verification": "complete",
+                    "optionResults": [{
+                        "name": "cache-secs",
+                        "status": "applied",
+                    }],
+                    "effectiveOptions": {
+                        "cache-secs": "60",
+                    },
+                });
+                self.pending_lines.push_back(format!(
+                    "{}\n",
+                    json!({
+                        "event": "client-message",
+                        "args": [
+                            SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT,
+                            payload.to_string(),
+                        ],
+                    })
+                ));
+            }
             self.pending_lines.push_back(format!(
                 "{}\n",
                 json!({
@@ -10567,6 +10670,46 @@ mod authoritative_reconciliation_regression_tests {
             adapter.observed_state.paused,
             Some(true),
             "the pause event emitted after the pause response must remain authoritative"
+        );
+    }
+
+    #[test]
+    fn authoritative_playlist_binding_preserves_earlier_verified_hook_result() {
+        let target = "https://media.example.test/cap.wav";
+        let generation = PlayerMediaGeneration::new(1);
+        let mut adapter =
+            MpvAdapter::with_network_options_hook_test_transport(InterleavedAuthorityTransport {
+                verified_transition_before_playlist_response: true,
+                ..InterleavedAuthorityTransport::default()
+            });
+        adapter.legacy_syncplayintf_owner_id = "causal-test-owner".to_owned();
+        adapter.legacy_syncplayintf_attachment_id = "causal-test-attachment".to_owned();
+        adapter.configure_network_media_options([("cache-secs", "60")]);
+        adapter.prepare_test_network_options_hook_v3_reducer();
+        let attempt_id = adapter.submit_lifecycle_load(None, generation, target, BTreeSet::new());
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch: adapter.lifecycle_epoch(),
+            attempt_id,
+        });
+        adapter.pending_load_request = Some(target.to_owned());
+        adapter.pending_load_generation = Some(generation);
+
+        adapter.reconcile_lifecycle_from_authority();
+
+        let diagnostics = adapter.network_media_diagnostic_snapshot();
+        assert_eq!(diagnostics.media_generation, Some(generation));
+        assert_eq!(diagnostics.load_sequence, Some(1));
+        assert_eq!(
+            diagnostics.application_state,
+            Some(MpvNetworkMediaPolicyApplicationState::Applied)
+        );
+        assert!(
+            diagnostics.verification_complete,
+            "binding start-file after the playlist response must not erase an earlier causal hook result"
+        );
+        assert_eq!(
+            diagnostics.effective_cache_options,
+            BTreeMap::from([("cache-secs".to_owned(), "60".to_owned())])
         );
     }
 
