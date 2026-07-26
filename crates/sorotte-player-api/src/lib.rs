@@ -1634,6 +1634,13 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         None
     }
+    /// Selects the lifecycle event-delivery contract for this adapter
+    /// attachment.
+    ///
+    /// The returned mode must remain constant for the lifetime of an
+    /// attachment. Changing modes requires a new attachment epoch or an
+    /// equivalent explicit consumer reset. Within one attachment, an adapter
+    /// must not expose lifecycle ownership through both delivery modes.
     fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
         PlayerEventDeliveryMode::LegacyTypedQueues
     }

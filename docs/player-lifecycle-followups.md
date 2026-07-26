@@ -78,42 +78,129 @@ security risk.
 - Disposition: fixed here because it blocked the mandatory workspace gate. The
   server now drains the peer after announcing EOF, with a bounded timeout.
 
-## Verification-only lifecycle authority questions
+## Reviewed lifecycle authority questions
 
-- Severity: unclassified; static possibilities only.
 - Baseline:
   `a47b6e035608bb03f1a1dd59986375653963b39a`
   (`Separate physical player lifecycle ownership`).
-- Reachability: not observed in real use, real mpv, a captured transcript, the
-  vertical deterministic harness, or a reducer/model failure at the time of
-  inventory.
-- Origin classification: defensive audit only.
-- Disposition: do not change production behavior unless an executable
-  adapter-to-consumer trace proves divergence.
+- Origin classification: defensive assignment audit only.
+- Reachability: none of these questions produced a failure in real use, real
+  mpv, transcript replay, the vertical deterministic harness, generated
+  histories, or the reducer/model.
+- Independent review: 2026-07-26, against
+  `fe18a43bf4b6588511e0c87b8c29366a4cdd1769`.
+- Overall disposition: no executable P0/P1 defect remains. Questions 1, 2, and
+  4 are closed; question 3 is retained as a nonblocking hardening test;
+  question 5 is a P3 API-contract clarification and is documented in
+  `PlayerAdapter`.
 
-The independent assignment audit originally recorded six questions. Full-stack
-tests have since proved and corrected snapshot semantic inference,
-`LocalFileChanged` duplicate authority, physical `LoadAttemptActive` semantic
-inference, pre-file-loaded snapshot path confirmation, command-timeout physical
-ownership loss, and missing logical-revocation delivery. Their exact failures
-and authority corrections are recorded in
+The assignment audit originally recorded additional questions. Full-stack
+tests proved and corrected snapshot semantic inference, `LocalFileChanged`
+duplicate authority, physical `LoadAttemptActive` semantic inference,
+pre-file-loaded snapshot path confirmation, command-timeout physical ownership
+loss, and missing logical-revocation delivery. Their exact failures and
+authority corrections are recorded in
 `docs/player-lifecycle-verification.md`.
 
-The remaining static-only questions are:
+### 1. Semantic failure outcomes and physical terminality
 
-1. Both consumers mark a binding physically terminal for semantic failure
-   outcomes as well as for an explicit `LoadAttemptTerminal` event.
-2. The GUI mirrors ordered command outcomes into its legacy
-   playlist-resolution command-progress handler, which can update resolution
-   state without a `LoadAttemptId`.
-3. The GUI's attempt-fenced ordered media-outcome bridge delegates failure
-   presentation to target-string-keyed legacy handling; no stale
-   same-target failure divergence is currently executable.
-4. The acknowledged-mode no-legacy-drain test instruments one representative
-   legacy getter rather than all compatibility getters.
-5. GUI refresh assumes `PlayerEventDeliveryMode` stays stable for an
-   attachment; production mpv does, but the public adapter contract does not
-   state that invariant explicitly.
+**Answer: safe under the current reducer contract; no production change
+required.**
 
-The authority inventory and evidence gate for these questions are maintained in
-`docs/player-lifecycle-verification.md`.
+The consumers mark a binding physically terminal when they receive `Failed`,
+`NeverStarted`, or `TransportDisconnected`, as well as when they receive an
+explicit `LoadAttemptTerminal` event. Those semantic results are not generic
+command failures:
+
+- `Failed` and `TransportDisconnected` are produced from
+  `commit_physical_attempt_terminal`;
+- synchronous rejection emits `NeverStarted` in the same reducer transition
+  that commits the physical `NeverStarted` terminal state; and
+- `Superseded` and `Indeterminate`, whose physical effects may still arrive,
+  do not mark the consumer binding terminal.
+
+The consumer mark is therefore a redundant projection of a reducer-owned fact,
+not an independent terminality decision. It also preserves the terminal
+projection when recovery compacts an explicit telemetry event while retaining
+the semantic result. A future helper such as
+`PlayerLoadAttemptResult::implies_physical_terminal` could centralize the
+mapping, but it is maintainability work rather than a merge requirement.
+
+**Disposition: closed as answered.**
+
+### 2. Ordered command outcomes through the legacy GUI progress handler
+
+**Answer: safe as a presentation bridge; it is not a second physical ownership
+authority.**
+
+Before the existing playlist-resolution handler mutates state, it requires the
+exact player command ID and media generation stored by the current resolution
+attempt. Its outputs are presentation and fallback states (`Active`,
+`Indeterminate`, `Failed`, or `Superseded`); it does not select the physical
+transport owner, active load attempt, playlist-entry owner, or physical
+terminality. In particular, `CompletionNotObserved` becomes `Indeterminate`,
+not a definitive load failure.
+
+The reducer still owns the single attachment-scoped semantic terminal result.
+Passing `LoadAttemptId` through this bridge could make that relationship more
+explicit, but is not required for correctness at the current boundary.
+
+**Disposition: closed as answered; optional later simplification only.**
+
+### 3. Attempt-fenced media failures and target-string presentation
+
+**Answer: acceptable for the current acknowledged mpv producer; retain one
+nonblocking hardening test.**
+
+The ordered GUI consumer verifies attachment epoch, load-attempt ID, media
+generation, and associated command identity before it constructs a legacy
+media-load failure. Only that already-fenced result delegates presentation to
+the target-oriented handler. Reducer semantic results are write-once, and
+successor acceptance emits logical revocation plus `Superseded` where
+applicable, so an ordinary stale same-target attempt cannot manufacture a
+second semantic failure against its successor.
+
+The remaining theoretical sequence is deliberately narrower: attempt A has a
+queued failure for target T, attempt B becomes the current resolution attempt
+for T, and A's queued outcome is applied before B's attempt identity is
+attached. Production scheduling and the verification harness did not reproduce
+that sequence. A future deterministic test should construct it directly. If it
+fails, the narrow correction is an attempt-keyed
+`handle_ordered_playlist_load_failure(load_attempt_id, media_generation,
+command_id, failure)` path, while retaining a separate synchronous-rejection
+path for the interval before an attempt is bound.
+
+**Disposition: nonblocking hardening test; not an open merge defect.**
+
+### 4. Representative no-legacy-drain poison getter
+
+**Answer: a test-coverage limitation, not evidence of duplicate production
+authority.**
+
+Acknowledged GUI refresh selects the batch path and returns after draining it;
+it does not continue into the legacy command, playback, transport, media-load,
+local-file, or observation getters. The mpv acknowledged producer likewise
+does not use those compatibility queues to establish lifecycle ownership.
+
+A stronger test adapter may panic from every legacy lifecycle getter while
+advertising `OrderedAcknowledgedBatches`, and should be exercised through both
+GUI and client-core refresh paths. That would comprehensively lock in the
+no-mixed-mode rule without changing production behavior.
+
+**Disposition: closed as nonblocking test debt.**
+
+### 5. `PlayerEventDeliveryMode` stability
+
+**Answer: the mode is stable for an attachment; the current mpv implementation
+is correct.**
+
+The public `PlayerAdapter` contract now states that the delivery mode must
+remain constant for the lifetime of an attachment. Changing mode requires a new
+attachment epoch or an equivalent explicit consumer reset, and an adapter must
+not expose lifecycle ownership through both modes within one attachment.
+
+Sampling the mode once per refresh remains a possible cleanup, but repeated
+reads are safe under the explicit contract and do not justify changing the
+verified lifecycle implementation.
+
+**Disposition: P3 API hardening documented; not a merge blocker.**

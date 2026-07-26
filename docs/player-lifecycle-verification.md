@@ -518,22 +518,27 @@ P0/P1 lifecycle defect remains. The source checkpoint branch was not modified,
 and this verification branch should now receive human merge review without
 further speculative lifecycle changes.
 
-## Static-only follow-ups
+## Reviewed follow-up dispositions
 
-The following remaining possibilities still require vertical trace evidence and
-are deliberately not production changes:
+Independent review against
+`fe18a43bf4b6588511e0c87b8c29366a4cdd1769` found no new executable P0/P1
+defect and resolved the five remaining static questions:
 
-1. semantic failure outcomes also mark consumer bindings physically terminal;
-2. the GUI's ordered command outcome is mirrored into the legacy
-   playlist-resolution command-progress handler without `LoadAttemptId`;
-3. the ordered media-outcome failure presentation remains target-string keyed
-   after its exact attempt fence;
-4. the no-legacy-drain regression test poisons one representative legacy
-   getter rather than every compatibility getter;
-5. delivery mode is queried more than once per GUI refresh and relies on the
-   adapter contract remaining stable for an attachment.
+1. semantic `Failed`, `NeverStarted`, and `TransportDisconnected` results imply
+   a reducer-owned physical terminal transition, so the consumer terminal mark
+   is a safe redundant projection;
+2. the legacy GUI command-progress handler is an identity-gated presentation
+   bridge and does not establish physical lifecycle ownership;
+3. target-oriented failure presentation is reached only after the exact
+   attempt fence; a deliberately constructed same-target queued-failure test is
+   retained as nonblocking hardening;
+4. poisoning every legacy getter would strengthen the no-mixed-mode regression
+   test but does not reveal a duplicate production authority; and
+5. `PlayerEventDeliveryMode` is required to remain stable for an attachment,
+   which is now explicit in the public adapter contract.
 
-These are classified as **static possibility only** until a deterministic
-adapter-to-both-consumers test proves a divergence. Any proven failure must
-identify the owning authority and be reduced to a fixed regression before
-production behavior changes.
+The full reasoning, residual test ideas, and final dispositions are recorded in
+`docs/player-lifecycle-followups.md`. None warrants reopening production
+lifecycle behavior before merge. Any future executable failure must still name
+the owning authority and be reduced to a deterministic regression before a
+production correction is made.
