@@ -73,6 +73,12 @@ struct ProtocolLineQueueState {
 enum QueuedProtocolLine {
     Reliable(String),
     Periodic(Arc<StdMutex<PeriodicStateUpdate>>),
+    TransportAction(ServerTransportAction),
+}
+
+enum ResolvedClientEvent {
+    ProtocolLine(String),
+    TransportAction(ServerTransportAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +97,6 @@ pub(crate) struct ClientEventSender {
     // line seals it so no older state can arrive after that reliable line.
     protocol_lines: Sender<QueuedProtocolLine>,
     protocol_line_queue: Arc<Mutex<ProtocolLineQueueState>>,
-    transport_actions: UnboundedSender<ServerTransportAction>,
     overload_close: watch::Sender<Option<usize>>,
     overload_signalled: Arc<AtomicBool>,
     metrics: ServerOutboundBackpressureMetrics,
@@ -100,7 +105,6 @@ pub(crate) struct ClientEventSender {
 pub(crate) struct ClientEventReceiver {
     protocol_lines: Receiver<QueuedProtocolLine>,
     protocol_line_queue: Arc<Mutex<ProtocolLineQueueState>>,
-    transport_actions: tokio::sync::mpsc::UnboundedReceiver<ServerTransportAction>,
     overload_close: watch::Receiver<Option<usize>>,
     metrics: ServerOutboundBackpressureMetrics,
 }
@@ -127,14 +131,12 @@ pub(crate) fn client_event_queue(
     metrics: ServerOutboundBackpressureMetrics,
 ) -> (ClientEventSender, ClientEventReceiver) {
     let (protocol_tx, protocol_rx) = channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
-    let (transport_tx, transport_rx) = tokio::sync::mpsc::unbounded_channel();
     let (overload_tx, overload_rx) = watch::channel(None);
     let protocol_line_queue = Arc::new(Mutex::new(ProtocolLineQueueState::default()));
     (
         ClientEventSender {
             protocol_lines: protocol_tx,
             protocol_line_queue: protocol_line_queue.clone(),
-            transport_actions: transport_tx,
             overload_close: overload_tx,
             overload_signalled: Arc::new(AtomicBool::new(false)),
             metrics: metrics.clone(),
@@ -142,7 +144,6 @@ pub(crate) fn client_event_queue(
         ClientEventReceiver {
             protocol_lines: protocol_rx,
             protocol_line_queue,
-            transport_actions: transport_rx,
             overload_close: overload_rx,
             metrics,
         },
@@ -158,11 +159,19 @@ impl ClientEventSender {
         match event {
             ClientOutboundEvent::ReliableLine(line) => self.send_reliable_line(line).await,
             ClientOutboundEvent::PeriodicStateLine(line) => self.send_periodic_state(line).await,
-            ClientOutboundEvent::TransportAction(action) => self.send_transport_action(action),
+            ClientOutboundEvent::TransportAction(action) => {
+                self.send_reliable_event(QueuedProtocolLine::TransportAction(action))
+                    .await
+            }
         }
     }
 
     async fn send_reliable_line(&self, line: String) -> ClientEventSendOutcome {
+        self.send_reliable_event(QueuedProtocolLine::Reliable(line))
+            .await
+    }
+
+    async fn send_reliable_event(&self, item: QueuedProtocolLine) -> ClientEventSendOutcome {
         let mut queue = self.protocol_line_queue.lock().await;
         if queue.closed || self.protocol_lines.is_closed() {
             queue.closed = true;
@@ -170,7 +179,6 @@ impl ClientEventSender {
             self.metrics.dropped();
             return ClientEventSendOutcome::Closed;
         }
-        let item = QueuedProtocolLine::Reliable(line);
         match self.protocol_lines.try_send(item) {
             Ok(()) => {
                 queue.tail_periodic = None;
@@ -249,20 +257,6 @@ impl ClientEventSender {
         }
     }
 
-    fn send_transport_action(&self, action: ServerTransportAction) -> ClientEventSendOutcome {
-        match self.transport_actions.send(action) {
-            Ok(()) => {
-                self.metrics.enqueued();
-                ClientEventSendOutcome::Sent
-            }
-            Err(_) => {
-                self.metrics.closed();
-                self.metrics.dropped();
-                ClientEventSendOutcome::Closed
-            }
-        }
-    }
-
     fn signal_overload(&self) {
         if !self.overload_signalled.swap(true, Ordering::AcqRel) {
             self.metrics.overload_disconnect();
@@ -274,9 +268,9 @@ impl ClientEventSender {
 }
 
 impl ClientEventReceiver {
-    async fn resolve_protocol_line(&self, item: QueuedProtocolLine) -> String {
-        let line = match item {
-            QueuedProtocolLine::Reliable(line) => line,
+    async fn resolve_event(&self, item: QueuedProtocolLine) -> ResolvedClientEvent {
+        let event = match item {
+            QueuedProtocolLine::Reliable(line) => ResolvedClientEvent::ProtocolLine(line),
             QueuedProtocolLine::Periodic(update) => {
                 let mut queue = self.protocol_line_queue.lock().await;
                 if queue
@@ -286,15 +280,29 @@ impl ClientEventReceiver {
                 {
                     queue.tail_periodic = None;
                 }
-                update
+                let line = update
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .line
-                    .clone()
+                    .clone();
+                ResolvedClientEvent::ProtocolLine(line)
+            }
+            QueuedProtocolLine::TransportAction(action) => {
+                ResolvedClientEvent::TransportAction(action)
             }
         };
         self.metrics.dequeued();
-        line
+        event
+    }
+
+    #[cfg(test)]
+    async fn resolve_protocol_line(&self, item: QueuedProtocolLine) -> String {
+        match self.resolve_event(item).await {
+            ResolvedClientEvent::ProtocolLine(line) => line,
+            ResolvedClientEvent::TransportAction(action) => {
+                panic!("expected protocol line, received transport action {action:?}")
+            }
+        }
     }
 
     #[cfg(test)]
@@ -310,8 +318,7 @@ impl ClientEventReceiver {
             queue.tail_periodic = None;
             self.protocol_lines.close();
         }
-        self.transport_actions.close();
-        let discarded = self.protocol_lines.len() + self.transport_actions.len();
+        let discarded = self.protocol_lines.len();
         self.metrics.discarded(discarded);
     }
 
@@ -434,24 +441,6 @@ async fn dispatch_transport_actions_to_clients(
     }
 }
 
-async fn dispatch_transport_actions_to_peer_clients(
-    client_event_senders: &SharedClientEventSenders,
-    source_client_id: &str,
-    transport_actions: &[DirectedTransportAction],
-) {
-    for action in transport_actions {
-        if action.client_id == source_client_id {
-            continue;
-        }
-        dispatch_client_event(
-            client_event_senders,
-            &action.client_id,
-            ClientOutboundEvent::TransportAction(action.action.clone()),
-        )
-        .await;
-    }
-}
-
 #[cfg(test)]
 pub(crate) async fn prune_finished_session_tasks(session_tasks: &mut Vec<JoinHandle<()>>) {
     let mut index = 0;
@@ -476,15 +465,6 @@ fn dispatch_transport_actions_to_sink(
             let _ = transport_action_sink.send(action.clone());
         }
     }
-}
-
-fn transport_actions_close_client(
-    transport_actions: &[DirectedTransportAction],
-    client_id: &str,
-) -> bool {
-    transport_actions.iter().any(|action| {
-        action.client_id == client_id && action.action == ServerTransportAction::Close
-    })
 }
 
 pub(crate) async fn write_network_line_to_stream<S>(stream: &mut S, line: &str) -> io::Result<()>
@@ -777,56 +757,7 @@ impl ServerNetworkTransport {
     }
 }
 
-fn partition_outbound_lines_for_client_session(
-    client_id: &str,
-    outbound_lines: Vec<DirectedOutboundLine>,
-) -> (Vec<DirectedOutboundLine>, Vec<DirectedOutboundLine>) {
-    let mut local_outbound_lines = Vec::new();
-    let mut peer_outbound_lines = Vec::new();
-    for line in outbound_lines {
-        if line.client_id == client_id {
-            local_outbound_lines.push(line);
-        } else {
-            peer_outbound_lines.push(line);
-        }
-    }
-    (local_outbound_lines, peer_outbound_lines)
-}
-
-async fn write_local_outbound_lines(
-    transport: &mut ServerNetworkTransport,
-    local_outbound_lines: Vec<DirectedOutboundLine>,
-    write_timeout: std::time::Duration,
-) -> io::Result<()> {
-    for line in local_outbound_lines {
-        transport
-            .write_line_with_timeout(&line.line, write_timeout)
-            .await?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-async fn route_outbound_lines_for_client_session(
-    transport: &mut ServerNetworkTransport,
-    client_id: &str,
-    client_event_senders: &SharedClientEventSenders,
-    outbound_lines: Vec<DirectedOutboundLine>,
-    write_timeout: std::time::Duration,
-) -> io::Result<()> {
-    let (local_outbound_lines, peer_outbound_lines) =
-        partition_outbound_lines_for_client_session(client_id, outbound_lines);
-    // Runtime handlers mutate authoritative room state before returning this
-    // dispatch. Queue reliable peer fanout first so a stalled or disconnected
-    // source cannot prevent surviving participants from observing an already
-    // accepted mutation.
-    dispatch_outbound_lines_to_clients(client_event_senders, peer_outbound_lines).await;
-    write_local_outbound_lines(transport, local_outbound_lines, write_timeout).await
-}
-
 struct OrderedClientDispatch {
-    local_outbound_lines: Vec<DirectedOutboundLine>,
-    transport_actions: Vec<DirectedTransportAction>,
     session_exists: bool,
 }
 
@@ -843,28 +774,21 @@ async fn handle_line_and_queue_peer_dispatch_after_commit(
             .handle_line(client_id, inbound_line, peer_ip)
             .await?;
         after_actor_commit.await;
-        let (local_outbound_lines, peer_outbound_lines) =
-            partition_outbound_lines_for_client_session(client_id, dispatch.outbound_lines);
         dispatch_outbound_lines_to_clients(
             &dispatch_context.client_event_senders,
-            peer_outbound_lines,
+            dispatch.outbound_lines,
         )
         .await;
         dispatch_transport_actions_to_sink(
             dispatch_context.transport_action_sink.as_ref(),
             &dispatch.transport_actions,
         );
-        dispatch_transport_actions_to_peer_clients(
+        dispatch_transport_actions_to_clients(
             &dispatch_context.client_event_senders,
-            client_id,
             &dispatch.transport_actions,
         )
         .await;
-        Ok(OrderedClientDispatch {
-            local_outbound_lines,
-            transport_actions: dispatch.transport_actions,
-            session_exists,
-        })
+        Ok(OrderedClientDispatch { session_exists })
     })
     .await
 }
@@ -1014,10 +938,73 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
     let mut shutdown_requested = false;
     loop {
         tokio::select! {
+            biased;
+
             _ = wait_for_shutdown(&mut shutdown_rx) => {
                 shutdown_requested = true;
                 break;
             },
+            overload_changed = event_rx.overload_close.changed() => {
+                if overload_changed.is_err() {
+                    break;
+                }
+                let Some(queue_depth) = *event_rx.overload_close.borrow_and_update() else {
+                    continue;
+                };
+                session_error = Some(ServerNetworkError::OutboundOverload {
+                    client_id: client_id.clone(),
+                    queue_depth,
+                });
+                break;
+            }
+            outbound_item = event_rx.protocol_lines.recv() => {
+                let Some(outbound_item) = outbound_item else {
+                    break;
+                };
+                match event_rx.resolve_event(outbound_item).await {
+                    ResolvedClientEvent::ProtocolLine(outbound_line) => {
+                        let Some(write_result) = run_until_shutdown(
+                            &mut shutdown_rx,
+                            transport.write_line_with_timeout(&outbound_line, timeouts.write),
+                        )
+                        .await
+                        else {
+                            shutdown_requested = true;
+                            break;
+                        };
+                        if let Err(source) = write_result {
+                            session_error = Some(ServerNetworkError::Io(source));
+                            break;
+                        }
+                    }
+                    ResolvedClientEvent::TransportAction(ServerTransportAction::Close) => break,
+                    ResolvedClientEvent::TransportAction(ServerTransportAction::StartTls) => {
+                        let action = DirectedTransportAction::new(
+                            &client_id,
+                            ServerTransportAction::StartTls,
+                        );
+                        let Some(action_result) = run_until_shutdown(
+                            &mut shutdown_rx,
+                            apply_local_transport_actions(
+                                &mut transport,
+                                &client_id,
+                                &runtime,
+                                &[action],
+                                timeouts.tls_handshake,
+                            ),
+                        )
+                        .await
+                        else {
+                            shutdown_requested = true;
+                            break;
+                        };
+                        if let Err(source) = action_result {
+                            session_error = Some(ServerNetworkError::Io(source));
+                            break;
+                        }
+                    }
+                }
+            }
             _ = &mut pre_hello_timer, if !session_known => {
                 break;
             }
@@ -1071,115 +1058,6 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                 };
                 let ordered_dispatch = handle_result?;
                 session_known = session_known || ordered_dispatch.session_exists;
-                let close_after_dispatch =
-                    transport_actions_close_client(&ordered_dispatch.transport_actions, &client_id);
-                let Some(route_result) = run_until_shutdown(
-                    &mut shutdown_rx,
-                    write_local_outbound_lines(
-                        &mut transport,
-                        ordered_dispatch.local_outbound_lines,
-                        timeouts.write,
-                    ),
-                )
-                .await
-                else {
-                    shutdown_requested = true;
-                    break;
-                };
-                if let Err(source) = route_result {
-                    session_error = Some(ServerNetworkError::Io(source));
-                    break;
-                }
-                let Some(action_result) = run_until_shutdown(
-                    &mut shutdown_rx,
-                    apply_local_transport_actions(
-                        &mut transport,
-                        &client_id,
-                        &runtime,
-                        &ordered_dispatch.transport_actions,
-                        timeouts.tls_handshake,
-                    ),
-                )
-                .await
-                else {
-                    shutdown_requested = true;
-                    break;
-                };
-                if let Err(source) = action_result {
-                    session_error = Some(ServerNetworkError::Io(source));
-                    break;
-                }
-                if close_after_dispatch {
-                    break;
-                }
-            }
-            outbound_item = event_rx.protocol_lines.recv() => {
-                let Some(outbound_item) = outbound_item else {
-                    break;
-                };
-                let outbound_line = event_rx.resolve_protocol_line(outbound_item).await;
-                let Some(write_result) = run_until_shutdown(
-                    &mut shutdown_rx,
-                    transport.write_line_with_timeout(&outbound_line, timeouts.write),
-                )
-                .await
-                else {
-                    shutdown_requested = true;
-                    break;
-                };
-                if let Err(source) = write_result {
-                    session_error = Some(ServerNetworkError::Io(source));
-                    break;
-                }
-            }
-            transport_action = event_rx.transport_actions.recv() => {
-                let Some(transport_action) = transport_action else {
-                    break;
-                };
-                event_rx.metrics.dequeued();
-                match transport_action {
-                    ServerTransportAction::Close => {
-                        break;
-                    }
-                    ServerTransportAction::StartTls => {
-                        let action = DirectedTransportAction::new(
-                            &client_id,
-                            ServerTransportAction::StartTls,
-                        );
-                        let Some(action_result) = run_until_shutdown(
-                            &mut shutdown_rx,
-                            apply_local_transport_actions(
-                                &mut transport,
-                                &client_id,
-                                &runtime,
-                                &[action],
-                                timeouts.tls_handshake,
-                            ),
-                        )
-                        .await
-                        else {
-                            shutdown_requested = true;
-                            break;
-                        };
-                        if let Err(source) = action_result {
-                            session_error = Some(ServerNetworkError::Io(source));
-                            break;
-                        }
-                    }
-                }
-            }
-            overload_changed = event_rx.overload_close.changed() => {
-                if overload_changed.is_err() {
-                    break;
-                }
-                let Some(queue_depth) = *event_rx.overload_close.borrow_and_update() else {
-                    continue;
-                };
-                session_error = Some(ServerNetworkError::OutboundOverload {
-                    client_id: client_id.clone(),
-                    queue_depth,
-                });
-                break;
             }
         }
     }
@@ -1303,18 +1181,28 @@ pub(crate) async fn stalled_transport_direct_response_write_for_test(
 ) -> io::Result<()> {
     let mut transport = ServerNetworkTransport::StalledWrite;
     let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
-    route_outbound_lines_for_client_session(
-        &mut transport,
-        "client-1",
+    let (client_tx, mut client_rx) =
+        client_event_queue(ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), client_tx);
+    dispatch_outbound_lines_to_clients(
         &client_event_senders,
         vec![DirectedOutboundLine {
             client_id: "client-1".to_owned(),
             line: r#"{"Chat":"direct"}"#.to_owned(),
             delivery: ServerOutboundDelivery::Reliable,
         }],
-        write_timeout,
     )
-    .await
+    .await;
+    let line = client_rx
+        .receive_reliable_line_for_test()
+        .await
+        .expect("source response should be queued");
+    transport
+        .write_line_with_timeout(&line, write_timeout)
+        .await
 }
 
 #[cfg(test)]
@@ -1344,20 +1232,23 @@ pub(crate) async fn stalled_source_write_still_queues_peer_fanout_for_test(
 
     let mut transport = ServerNetworkTransport::StalledWrite;
     let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let (source_tx, mut source_rx) =
+        client_event_queue(ServerOutboundBackpressureMetrics::default());
     let (peer_tx, mut peer_rx) = client_event_queue(ServerOutboundBackpressureMetrics::default());
-    client_event_senders
-        .lock()
-        .await
-        .insert("peer-client".to_owned(), peer_tx);
-    let route_result = route_outbound_lines_for_client_session(
-        &mut transport,
-        "source-client",
-        &client_event_senders,
-        outbound_lines,
-        write_timeout,
-    )
-    .await;
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("source-client".to_owned(), source_tx);
+        senders.insert("peer-client".to_owned(), peer_tx);
+    }
+    dispatch_outbound_lines_to_clients(&client_event_senders, outbound_lines).await;
     let peer_line = peer_rx.receive_reliable_line_for_test().await;
+    let source_line = source_rx
+        .receive_reliable_line_for_test()
+        .await
+        .expect("source response should be queued");
+    let route_result = transport
+        .write_line_with_timeout(&source_line, write_timeout)
+        .await;
     (route_result, peer_line, committed_files)
 }
 
@@ -1841,6 +1732,82 @@ mod credential_debug_tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.coalesced_state_updates, 1);
         assert_eq!(snapshot.queue_depth, 0);
+    }
+
+    #[tokio::test]
+    async fn pending_periodic_state_is_not_written_after_a_newer_direct_local_state() {
+        let (sender, mut receiver) =
+            client_event_queue(ServerOutboundBackpressureMetrics::default());
+
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::PeriodicStateLine(
+                    "old-periodic-state".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::ReliableLine(
+                    "new-forced-state".to_owned(),
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+
+        let first = receiver
+            .receive_protocol_line()
+            .await
+            .expect("old periodic state should remain first");
+        let second = receiver
+            .receive_protocol_line()
+            .await
+            .expect("new reliable state should remain second");
+        assert_eq!(
+            [first.as_str(), second.as_str()],
+            ["old-periodic-state", "new-forced-state"],
+            "an older queued state must not arrive after the newer authoritative local response"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_action_cannot_overtake_its_preceding_protocol_line() {
+        let (sender, mut receiver) =
+            client_event_queue(ServerOutboundBackpressureMetrics::default());
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::ReliableLine("tls-ack".to_owned()))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+        assert_eq!(
+            sender
+                .send(ClientOutboundEvent::TransportAction(
+                    ServerTransportAction::StartTls,
+                ))
+                .await,
+            ClientEventSendOutcome::Sent
+        );
+
+        let first = receiver
+            .protocol_lines
+            .recv()
+            .await
+            .expect("TLS acknowledgement should be queued");
+        let second = receiver
+            .protocol_lines
+            .recv()
+            .await
+            .expect("TLS action should be queued");
+        assert!(matches!(
+            receiver.resolve_event(first).await,
+            ResolvedClientEvent::ProtocolLine(line) if line == "tls-ack"
+        ));
+        assert!(matches!(
+            receiver.resolve_event(second).await,
+            ResolvedClientEvent::TransportAction(ServerTransportAction::StartTls)
+        ));
     }
 
     #[tokio::test]

@@ -249,18 +249,22 @@ Packages intentionally exclude `target/release/deps`.
 
 ## Publishing To GHCR
 
-The publish workflow builds and pushes:
+Release-tag runs build and push immutable source tags:
 
-- `ghcr.io/ropbet-radbyt/sorotte-server:latest`
 - `ghcr.io/ropbet-radbyt/sorotte-server:<git-tag>`
 - `ghcr.io/ropbet-radbyt/sorotte-server:sha-<short-sha>`
+
+The mutable `ghcr.io/ropbet-radbyt/sorotte-server:latest` tag is promoted only
+by an explicit manual workflow run with `push_latest` set to `true`. Re-running
+an older tag workflow cannot move `latest` backward.
 
 To publish manually:
 
 1. Push the workflow to GitHub.
 2. Open the repository in GitHub.
 3. Go to `Actions`.
-4. Run `publish sorotte-server container`.
+4. Run `publish sorotte-server container`; set `push_latest` to `true` only
+   when intentionally promoting that selected revision.
 5. After the first successful push, open the package page for `sorotte-server`.
 6. Go to `Package settings`.
 7. Change visibility to `Public` if the image should be anonymously pullable.

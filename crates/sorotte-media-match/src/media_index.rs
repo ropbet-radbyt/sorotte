@@ -769,6 +769,7 @@ fn acquire_media_index_activation_lock(root: &Path) -> Result<MediaIndexActivati
             root.display()
         )
     })?;
+    validate_real_media_index_directory(root)?;
     let path = root.join(MEDIA_INDEX_ACTIVATION_LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -825,7 +826,9 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
         let generations_root = existing_media_index_generations_root(root)?
             .unwrap_or_else(|| root.join(MEDIA_INDEX_GENERATIONS_DIR));
         let current_path = generations_root.join(&manifest.current);
-        if validate_media_index_database(&media_match_v3_index_path(&current_path)).is_ok() {
+        if validate_real_media_index_directory(&current_path).is_ok()
+            && validate_media_index_database(&media_match_v3_index_path(&current_path)).is_ok()
+        {
             let _ = collect_old_media_index_generations(
                 root,
                 &manifest.current,
@@ -839,7 +842,9 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
         }
         if let Some(previous) = manifest.previous.as_deref() {
             let previous_path = generations_root.join(previous);
-            if validate_media_index_database(&media_match_v3_index_path(&previous_path)).is_ok() {
+            if validate_real_media_index_directory(&previous_path).is_ok()
+                && validate_media_index_database(&media_match_v3_index_path(&previous_path)).is_ok()
+            {
                 let recovery_epoch = manifest.epoch.checked_add(1).ok_or_else(|| {
                     "media-match activation epoch is exhausted during rollback recovery".to_owned()
                 })?;
@@ -1604,6 +1609,152 @@ fn current_unix_millis() -> u64 {
 #[cfg(test)]
 mod generation_link_safety_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn activated_generation_does_not_open_through_junction_entry() {
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-active-junction-{unique}"));
+        let live_root = fixture.join("live");
+        let generations_root = live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let outside_generation = fixture.join("outside-generation");
+        fs::create_dir_all(&generations_root).expect("generations root should be created");
+        let outside = open_media_match_v3_index(&outside_generation)
+            .expect("outside index should initialize");
+        drop(outside);
+
+        let generation_link = generations_root.join("generation-current");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&generation_link)
+            .arg(&outside_generation)
+            .status()
+            .expect("junction creation command should launch");
+        assert!(status.success(), "junction creation should succeed");
+        write_media_index_manifest(&live_root, 1, "generation-current", None)
+            .expect("activation manifest should be written");
+
+        let opened = MediaIndexService::new(&live_root).open();
+        let unexpected_root = opened.as_ref().ok().map(|session| session.root.clone());
+        drop(opened);
+
+        fs::remove_dir(&generation_link)
+            .expect("generation junction should be removed without following it");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            unexpected_root.is_none(),
+            "an activated generation link must be rejected, but it opened as {unexpected_root:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn media_index_service_does_not_open_through_live_root_junction() {
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-live-root-junction-{unique}"));
+        let outside_root = fixture.join("outside-live-root");
+        let outside_generation = outside_root
+            .join(MEDIA_INDEX_GENERATIONS_DIR)
+            .join("generation-current");
+        let outside = open_media_match_v3_index(&outside_generation)
+            .expect("outside index should initialize");
+        drop(outside);
+        write_media_index_manifest(&outside_root, 1, "generation-current", None)
+            .expect("activation manifest should be written");
+
+        let live_root = fixture.join("live");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&live_root)
+            .arg(&outside_root)
+            .status()
+            .expect("junction creation command should launch");
+        assert!(status.success(), "junction creation should succeed");
+
+        let opened = MediaIndexService::new(&live_root).open();
+        let unexpectedly_opened = opened.is_ok();
+        drop(opened);
+
+        fs::remove_dir(&live_root).expect("live-root junction should be removed without following");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            !unexpectedly_opened,
+            "the managed media-index root itself must not be followed through a junction"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activated_generation_does_not_open_through_symlink_entry() {
+        use std::os::unix::fs::symlink;
+
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-active-link-{unique}"));
+        let live_root = fixture.join("live");
+        let generations_root = live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let outside_generation = fixture.join("outside-generation");
+        fs::create_dir_all(&generations_root).expect("generations root should be created");
+        let outside = open_media_match_v3_index(&outside_generation)
+            .expect("outside index should initialize");
+        drop(outside);
+
+        let generation_link = generations_root.join("generation-current");
+        symlink(&outside_generation, &generation_link)
+            .expect("generation symlink should be created");
+        write_media_index_manifest(&live_root, 1, "generation-current", None)
+            .expect("activation manifest should be written");
+
+        let opened = MediaIndexService::new(&live_root).open();
+        let unexpectedly_opened = opened.is_ok();
+        drop(opened);
+
+        fs::remove_file(&generation_link).expect("generation symlink should be removed");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            !unexpectedly_opened,
+            "an activated generation symlink must be rejected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn media_index_service_does_not_open_through_live_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-live-root-link-{unique}"));
+        let outside_root = fixture.join("outside-live-root");
+        let outside_generation = outside_root
+            .join(MEDIA_INDEX_GENERATIONS_DIR)
+            .join("generation-current");
+        let outside = open_media_match_v3_index(&outside_generation)
+            .expect("outside index should initialize");
+        drop(outside);
+        write_media_index_manifest(&outside_root, 1, "generation-current", None)
+            .expect("activation manifest should be written");
+
+        let live_root = fixture.join("live");
+        symlink(&outside_root, &live_root).expect("live-root symlink should be created");
+
+        let opened = MediaIndexService::new(&live_root).open();
+        let unexpectedly_opened = opened.is_ok();
+        drop(opened);
+
+        fs::remove_file(&live_root).expect("live-root symlink should be removed");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            !unexpectedly_opened,
+            "the managed media-index root itself must not be followed through a symlink"
+        );
+    }
 
     #[cfg(windows)]
     #[test]

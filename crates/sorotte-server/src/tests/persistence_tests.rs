@@ -565,6 +565,37 @@ fn permanent_rooms_file_ignores_comment_lines() {
 }
 
 #[test]
+fn permanent_rooms_file_works_without_a_rooms_database() {
+    let permanent_rooms_file = temporary_text_path("permanent-room-without-database");
+    let _ = fs::remove_file(&permanent_rooms_file);
+    fs::write(&permanent_rooms_file, "permanent-room\n")
+        .expect("permanent rooms file should be writable");
+
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .set_permanent_rooms_file_path(Some(permanent_rooms_file.clone()))
+        .expect("runtime should load the documented standalone permanent-rooms file");
+
+    assert!(
+        runtime.room_playlists.contains_key("permanent-room"),
+        "a permanent-rooms file must create its configured empty room even without SQLite"
+    );
+    assert!(
+        runtime.room_is_permanent("permanent-room"),
+        "permanence must come from configuration rather than database presence"
+    );
+    runtime
+        .cleanup_room_if_empty("permanent-room")
+        .expect("standalone permanent room cleanup should succeed");
+    assert!(
+        runtime.room_playlists.contains_key("permanent-room"),
+        "an empty standalone permanent room must remain available"
+    );
+
+    fs::remove_file(&permanent_rooms_file).expect("temporary permanent rooms file cleanup");
+}
+
+#[test]
 fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
     let db_path = temporary_sqlite_path("permanent-room-retention");
     let permanent_rooms_file = temporary_text_path("permanent-room-retention");
@@ -1139,6 +1170,66 @@ fn persistent_room_owner_quota_survives_restart_without_storing_raw_peer_ip() {
     assert_eq!(
         restarted.room_playlist_state("room-c").files,
         vec!["c.mkv".to_owned()]
+    );
+
+    drop(restarted);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn persistent_room_creation_cooldown_survives_restart() {
+    let db_path = temporary_sqlite_path("persistent-room-creation-cooldown-restart");
+    let _ = fs::remove_file(&db_path);
+    let peer_ip = "192.0.2.93";
+
+    let mut first = ServerRuntime::with_persistent_rooms_enabled(true);
+    first.set_time_now_override_seconds(Some(100.0));
+    first
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("room persistence should initialize");
+    first.set_max_persistent_rooms(10);
+    first.set_max_persistent_rooms_per_identity(10);
+    first.set_persistent_room_creation_cooldown_seconds(60.0);
+    first
+        .handle_line_fanout_with_transport_actions_for_peer(
+            "first",
+            r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5"}}"#,
+            Some(peer_ip),
+        )
+        .expect("first peer should connect");
+    first
+        .handle_line_fanout("first", r#"{"Set":{"playlistChange":{"files":["a.mkv"]}}}"#)
+        .expect("first durable room should be accepted");
+    first
+        .flush_persistence()
+        .expect("first room should become durable");
+    drop(first);
+
+    let mut restarted = ServerRuntime::with_persistent_rooms_enabled(true);
+    restarted.set_time_now_override_seconds(Some(101.0));
+    restarted
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("persisted rooms should reload");
+    restarted.set_max_persistent_rooms(10);
+    restarted.set_max_persistent_rooms_per_identity(10);
+    restarted.set_persistent_room_creation_cooldown_seconds(60.0);
+    restarted
+        .handle_line_fanout_with_transport_actions_for_peer(
+            "second",
+            r#"{"Hello":{"username":"bob","room":{"name":"room-b"},"version":"1.7.5"}}"#,
+            Some(peer_ip),
+        )
+        .expect("same peer should reconnect");
+    restarted
+        .handle_line_fanout(
+            "second",
+            r#"{"Set":{"playlistChange":{"files":["b.mkv"]}}}"#,
+        )
+        .expect("cooldown rejection should return a correction");
+
+    assert!(
+        restarted.room_playlist_state("room-b").files.is_empty(),
+        "a restart must not reset a persisted creator's room-creation cooldown"
     );
 
     drop(restarted);

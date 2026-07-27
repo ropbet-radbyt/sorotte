@@ -258,13 +258,24 @@ fn client_runtime_undo_playlist_change_toggles_between_previous_and_current_play
         "toggling back to a different media target must also be finalized"
     );
     let (_, _, control) = runtime.into_parts();
+    let outbound_messages = control.outbound_messages();
     assert_eq!(
-        control.outbound_messages().len(),
-        5,
-        "playlist reset state snapshots should coalesce across consecutive undo batches"
+        outbound_messages.len(),
+        6,
+        "each undo batch must retain its own trailing State behind the playlist commands it \
+         describes"
     );
-    let playlist_change = control
-        .outbound_messages()
+    assert!(
+        matches!(outbound_messages[0], ProtocolMessage::Set(_))
+            && matches!(outbound_messages[1], ProtocolMessage::Set(_))
+            && matches!(outbound_messages[2], ProtocolMessage::State(_))
+            && matches!(outbound_messages[3], ProtocolMessage::Set(_))
+            && matches!(outbound_messages[4], ProtocolMessage::Set(_))
+            && matches!(outbound_messages[5], ProtocolMessage::State(_)),
+        "a later undo batch must not move its playlist commands ahead of the preceding batch's \
+         State"
+    );
+    let playlist_change = outbound_messages
         .iter()
         .filter_map(|message| match message {
             ProtocolMessage::Set(set) => set.set.playlist_change.as_ref(),

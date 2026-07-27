@@ -64,6 +64,66 @@ function Assert-PathInsideRepo {
     }
 }
 
+function Write-Utf8ArtifactFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    Assert-PathInsideRepo $fullPath
+    $directory = Split-Path -Parent $fullPath
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "Artifact directory does not exist: $directory"
+    }
+    $leaf = Split-Path -Leaf $fullPath
+    $temporaryPath = Join-Path $directory ".$leaf.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$temporaryPath.backup"
+    Assert-PathInsideRepo $temporaryPath
+    Assert-PathInsideRepo $backupPath
+    $stream = $null
+    try {
+        $encoding = [System.Text.UTF8Encoding]::new($false)
+        $text = if (
+            $Content.EndsWith("`n", [System.StringComparison]::Ordinal)
+        ) {
+            $Content
+        }
+        else {
+            "$Content$([System.Environment]::NewLine)"
+        }
+        $bytes = $encoding.GetBytes($text)
+        $stream = [System.IO.File]::Open(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        if ([System.IO.File]::Exists($fullPath)) {
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+    }
+    finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+    }
+}
+
 function Get-SorotteServerVersion {
     $metadataJson = & cargo metadata --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
@@ -181,7 +241,9 @@ if ($packageForWindows) {
 
 $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 $checksumPath = "$archivePath.sha256"
-"$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)" | Set-Content -LiteralPath $checksumPath -Encoding UTF8
+Write-Utf8ArtifactFile `
+    -Path $checksumPath `
+    -Content "$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)"
 
 if ($null -ne $pdbPath) {
     New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
@@ -192,7 +254,9 @@ if ($null -ne $pdbPath) {
     Compress-Archive -LiteralPath $symbolsContents.FullName -DestinationPath $symbolsArchivePath -Force
 
     $symbolsHash = Get-FileHash -LiteralPath $symbolsArchivePath -Algorithm SHA256
-    "$($symbolsHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $symbolsArchivePath)" | Set-Content -LiteralPath $symbolsChecksumPath -Encoding UTF8
+    Write-Utf8ArtifactFile `
+        -Path $symbolsChecksumPath `
+        -Content "$($symbolsHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $symbolsArchivePath)"
 }
 
 Write-Host ""

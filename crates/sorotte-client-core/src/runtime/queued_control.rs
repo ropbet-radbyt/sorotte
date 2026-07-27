@@ -99,6 +99,8 @@ where
         let local_state_change_global_playstate = self
             .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
                 &inbound_state,
+                received_at_seconds,
+                response_at_seconds,
             );
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             inbound_state,
@@ -185,16 +187,23 @@ where
     pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
         &self,
         inbound_state: &ClientStateUpdate,
+        received_at_seconds: f64,
+        response_at_seconds: f64,
     ) -> Option<RoomPlaystateView> {
         let playstate = inbound_state.playstate.as_ref()?;
         let mut position = playstate.position;
         if playstate.paused == Some(false) {
-            let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
-            if forward_delay.is_finite()
-                && forward_delay > 0.0
+            let mut projection_seconds =
+                self.ping_metrics_legacy_compatible.forward_delay_seconds();
+            let response_delay_seconds = response_at_seconds - received_at_seconds;
+            if response_delay_seconds.is_finite() && response_delay_seconds > 0.0 {
+                projection_seconds += response_delay_seconds;
+            }
+            if projection_seconds.is_finite()
+                && projection_seconds > 0.0
                 && let Some(raw_position) = position.filter(|value| value.is_finite())
             {
-                position = Some(raw_position + forward_delay);
+                position = Some(raw_position + projection_seconds);
             }
         }
 

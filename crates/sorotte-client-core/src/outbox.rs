@@ -248,24 +248,11 @@ impl ProtocolOutbox {
     }
 
     fn insert_reliable(&mut self, message: ProtocolMessage, delivery: ProtocolDelivery) {
-        // Keep reliable commands ahead of an unleased coalescible State. A
-        // leased State is already owned by the transport and cannot be moved.
-        let insert_at = self
-            .delivery
-            .iter()
-            .enumerate()
-            .find_map(|(index, delivery)| {
-                matches!(
-                    delivery,
-                    ProtocolDelivery::ConnectionScopedState { generation }
-                        if *generation == self.connection_generation
-                            && !(index == 0 && self.leased_front.get().is_some())
-                )
-                .then_some(index)
-            })
-            .unwrap_or(self.pending.len());
-        self.pending.insert(insert_at, message);
-        self.delivery.insert(insert_at, delivery);
+        // Reliable commands are causal barriers. Moving one ahead of an
+        // earlier State can apply a playlist/media mutation before the seek or
+        // pause response that was sampled for the previous media.
+        self.pending.push_back(message);
+        self.delivery.push_back(delivery);
     }
 
     pub(crate) fn push_connection_scoped_reliable(
@@ -416,20 +403,19 @@ impl ProtocolOutbox {
             return false;
         }
 
-        let replace_at = self
-            .delivery
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, delivery)| {
-                matches!(
-                    delivery,
-                    ProtocolDelivery::ConnectionScopedState { generation }
-                        if *generation == self.connection_generation
-                            && !(index == 0 && self.leased_front.get().is_some())
-                )
-                .then_some(index)
-            });
+        // Only a tail State remains coalescible. Any reliable command after a
+        // State seals that snapshot in FIFO order, so a later State must be a
+        // new queue entry behind the command.
+        let replace_at = self.delivery.back().and_then(|delivery| {
+            let index = self.delivery.len().saturating_sub(1);
+            matches!(
+                delivery,
+                ProtocolDelivery::ConnectionScopedState { generation }
+                    if *generation == self.connection_generation
+                        && !(index == 0 && self.leased_front.get().is_some())
+            )
+            .then_some(index)
+        });
         if let Some(index) = replace_at {
             if let (ProtocolMessage::State(previous), ProtocolMessage::State(latest)) =
                 (&self.pending[index], &mut message)
@@ -515,11 +501,11 @@ impl ProtocolOutbox {
 mod tests {
     use sorotte_protocol::{
         DirectReadinessSurface, IgnoringOnTheFlyPayload, MediaReadyPayload, PingPayload,
-        PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaystatePayload,
-        ProtocolMessage, ReadinessIntentRequest, ReadinessSetExtension, RoomBufferingPolicy,
-        RoomBufferingPolicyPayload, SetPayload, StartedAckPayload, StatePayload,
-        TransportBufferingReportPayload, UserReadinessIntent, UserReadinessMutationSource,
-        playlist_change_with_plex_sidecar,
+        PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaylistIndexPayload,
+        PlaystatePayload, ProtocolMessage, ReadinessIntentRequest, ReadinessSetExtension,
+        RoomBufferingPolicy, RoomBufferingPolicyPayload, SetPayload, StartedAckPayload,
+        StatePayload, TransportBufferingReportPayload, UserReadinessIntent,
+        UserReadinessMutationSource, playlist_change_with_plex_sidecar,
     };
 
     use super::{EffectOutbox, ProtocolOutbox};
@@ -736,6 +722,72 @@ mod tests {
         assert_eq!(
             state.state.extra.get("newExtension"),
             Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn pending_seek_state_is_not_overtaken_by_later_playlist_selection() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(
+            outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(240.0)
+                        .with_paused(false)
+                        .with_do_seek(true),
+                ),
+            ))
+        );
+        outbox.push_back(ProtocolMessage::set(
+            SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(1)),
+        ));
+
+        let messages = outbox.drain();
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [ProtocolMessage::State(_), ProtocolMessage::Set(_)]
+            ),
+            "a seek response for the old media must be sent before a later playlist-index \
+             mutation; otherwise the server can apply the stale seek to the newly selected media"
+        );
+    }
+
+    #[test]
+    fn reliable_command_seals_preceding_state_and_only_tail_state_coalesces() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_playstate(PlaystatePayload::new().with_position(10.0)),
+        )));
+        outbox.push_back(ProtocolMessage::chat_text("causal barrier"));
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_playstate(PlaystatePayload::new().with_position(20.0)),
+        )));
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_playstate(PlaystatePayload::new().with_position(30.0)),
+        )));
+
+        let messages = outbox.drain();
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                ProtocolMessage::State(_),
+                ProtocolMessage::Chat(_),
+                ProtocolMessage::State(_)
+            ]
+        ));
+        let ProtocolMessage::State(latest) = &messages[2] else {
+            unreachable!("shape asserted above");
+        };
+        assert_eq!(
+            latest
+                .state
+                .playstate
+                .as_ref()
+                .and_then(|playstate| playstate.position),
+            Some(30.0)
         );
     }
 

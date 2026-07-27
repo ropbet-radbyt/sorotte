@@ -90,6 +90,87 @@ function Get-GitSha {
     return [string]$sha
 }
 
+function Get-GitCommitCreatedAtUtc {
+    param([Parameter(Mandatory = $true)][string]$GitSha)
+
+    if ($GitSha -notmatch '^[0-9a-fA-F]{40}$') {
+        return $null
+    }
+    $commitTimestamp = & git show -s --format=%cI $GitSha 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitTimestamp)) {
+        return $null
+    }
+    $parsed = [System.DateTimeOffset]::Parse(
+        $commitTimestamp.Trim(),
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind
+    )
+    return $parsed.ToUniversalTime().ToString(
+        "yyyy-MM-ddTHH:mm:ssZ",
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
+}
+
+function Write-Utf8ArtifactFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    Assert-PathInsideRepo $fullPath
+    $directory = Split-Path -Parent $fullPath
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "Artifact directory does not exist: $directory"
+    }
+    $leaf = Split-Path -Leaf $fullPath
+    $temporaryPath = Join-Path $directory ".$leaf.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$temporaryPath.backup"
+    Assert-PathInsideRepo $temporaryPath
+    Assert-PathInsideRepo $backupPath
+    $stream = $null
+    try {
+        $encoding = [System.Text.UTF8Encoding]::new($false)
+        $text = if (
+            $Content.EndsWith("`n", [System.StringComparison]::Ordinal)
+        ) {
+            $Content
+        }
+        else {
+            "$Content$([System.Environment]::NewLine)"
+        }
+        $bytes = $encoding.GetBytes($text)
+        $stream = [System.IO.File]::Open(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        if ([System.IO.File]::Exists($fullPath)) {
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+    }
+    finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+    }
+}
+
 function Assert-WindowsX64 {
     $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
@@ -135,8 +216,25 @@ $stagingRoot = Join-Path $outputRoot "staging"
 $artifactsRoot = Join-Path $outputRoot "artifacts"
 $packageRoot = Join-Path $stagingRoot $packageName
 $symbolsRoot = Join-Path $stagingRoot $symbolsPackageName
-$createdAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
 $gitSha = Get-GitSha
+$createdAtUtc = if ($Channel -eq "dev") {
+    $commitCreatedAtUtc = Get-GitCommitCreatedAtUtc $gitSha
+    if ($null -ne $commitCreatedAtUtc) {
+        $commitCreatedAtUtc
+    }
+    else {
+        (Get-Date).ToUniversalTime().ToString(
+            "yyyy-MM-ddTHH:mm:ssZ",
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+}
+else {
+    (Get-Date).ToUniversalTime().ToString(
+        "yyyy-MM-ddTHH:mm:ssZ",
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
+}
 
 Assert-PathInsideRepo $stagingRoot
 Assert-PathInsideRepo $artifactsRoot
@@ -211,7 +309,9 @@ Compress-Archive -LiteralPath $packageContents.FullName -DestinationPath $archiv
 
 $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 $checksumPath = "$archivePath.sha256"
-"$($hash.Hash.ToLowerInvariant())  $archiveFileName" | Set-Content -LiteralPath $checksumPath -Encoding UTF8
+Write-Utf8ArtifactFile `
+    -Path $checksumPath `
+    -Content "$($hash.Hash.ToLowerInvariant())  $archiveFileName"
 
 $manifestPath = Join-Path $artifactsRoot "sorotte-update-manifest.json"
 $manifest = [ordered]@{
@@ -225,7 +325,7 @@ $manifest = [ordered]@{
     package = $archiveFileName
     sha256 = $hash.Hash.ToLowerInvariant()
 }
-$manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+Write-Utf8ArtifactFile -Path $manifestPath -Content ($manifest | ConvertTo-Json -Depth 4)
 
 if ($pdbPaths.Count -gt 0) {
     New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
@@ -238,7 +338,9 @@ if ($pdbPaths.Count -gt 0) {
     Compress-Archive -LiteralPath $symbolsContents.FullName -DestinationPath $symbolsArchivePath -Force
 
     $symbolsHash = Get-FileHash -LiteralPath $symbolsArchivePath -Algorithm SHA256
-    "$($symbolsHash.Hash.ToLowerInvariant())  $symbolsArchiveFileName" | Set-Content -LiteralPath $symbolsChecksumPath -Encoding UTF8
+    Write-Utf8ArtifactFile `
+        -Path $symbolsChecksumPath `
+        -Content "$($symbolsHash.Hash.ToLowerInvariant())  $symbolsArchiveFileName"
 }
 
 Write-Host ""

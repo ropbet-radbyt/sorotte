@@ -108,6 +108,13 @@ fn snapshot_known_clone<T: Clone>(field: &SnapshotField<T>) -> Option<T> {
     }
 }
 
+fn local_file_updates_share_identity(left: &LocalFileUpdate, right: &LocalFileUpdate) -> bool {
+    match (&left.path, &right.path) {
+        (Some(left_path), Some(right_path)) => left_path == right_path,
+        _ => left.name == right.name,
+    }
+}
+
 #[cfg(feature = "test-support")]
 fn verification_optional_field<T>(value: Option<T>) -> SnapshotField<T> {
     match value {
@@ -862,6 +869,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_forced_seek_revision: Option<u64>,
     transport_telemetry_observed: bool,
     transport_telemetry_available: bool,
+    awaiting_ordered_snapshot: bool,
     reconnect_reconciliation: Option<ReconnectReconciliation>,
     last_applied_revision: Option<u64>,
     last_started_revision: Option<u64>,
@@ -2129,11 +2137,26 @@ impl RuntimePlaybackCoordination {
         }
     }
 
+    fn fence_ordered_transport_until_snapshot(&mut self, external_now_seconds: f64) {
+        self.awaiting_ordered_snapshot = true;
+        self.latest_observation = None;
+        self.latest_position_observation = None;
+        self.transport_telemetry_observed = false;
+        let coordinator_now = self.coordinator_now(external_now_seconds);
+        self.coordinator
+            .reset_transport_adapter_epoch(coordinator_now);
+    }
+
+    pub(crate) fn ordered_transport_awaits_snapshot(&self) -> bool {
+        self.awaiting_ordered_snapshot
+    }
+
     pub(crate) fn rebase_ordered_transport_snapshot(
         &mut self,
         transport: &PlayerTransportSnapshot,
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
+        self.awaiting_ordered_snapshot = false;
         self.transport_telemetry_available = true;
         self.latest_observation = None;
         self.latest_position_observation = None;
@@ -2166,6 +2189,9 @@ impl RuntimePlaybackCoordination {
         delta: &PlayerTransportDelta,
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
+        if self.awaiting_ordered_snapshot {
+            return Vec::new();
+        }
         self.transport_telemetry_available = true;
         let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
             self.observation_from_ordered_transport(transport, external_now_seconds)
@@ -2496,6 +2522,9 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
         legacy_position_seconds: Option<f64>,
     ) -> Option<f64> {
+        if self.awaiting_ordered_snapshot {
+            return None;
+        }
         if !self.transport_telemetry_observed {
             return legacy_position_seconds;
         }
@@ -4462,6 +4491,26 @@ where
         now_seconds: f64,
         first_error: &mut Option<PlayerError>,
     ) {
+        let previous_file = self.last_local_file_update.clone();
+        let snapshot_file = match (&snapshot.active_load, &snapshot.current_path) {
+            (SnapshotField::Known(active), SnapshotField::Known(path))
+                if active.physical_file_loaded =>
+            {
+                Some(LocalFileUpdate::new(path.clone()).with_path(path.clone()))
+            }
+            _ => None,
+        };
+        let matching_pending_file = snapshot_file.as_ref().and_then(|snapshot_file| {
+            self.pending_ordered_local_file_updates
+                .pending()
+                .iter()
+                .rev()
+                .find(|pending| local_file_updates_share_identity(pending, snapshot_file))
+                .cloned()
+        });
+        let had_matching_pending_file = matching_pending_file.is_some();
+        let recovered_file = matching_pending_file.or_else(|| snapshot_file.clone());
+
         self.ordered_player_events.rebase_snapshot(snapshot);
         self.observe_pending_reconnect_rate_reset(snapshot_known_copy(
             &snapshot.transport.playback_rate,
@@ -4480,14 +4529,16 @@ where
                     ),
                 },
             );
-        self.last_local_file_update = match (&snapshot.active_load, &snapshot.current_path) {
-            (SnapshotField::Known(active), SnapshotField::Known(path))
-                if active.physical_file_loaded =>
-            {
-                Some(LocalFileUpdate::new(path.clone()).with_path(path.clone()))
-            }
-            _ => None,
-        };
+        self.last_local_file_update.clone_from(&recovered_file);
+        if let Some(recovered_file) = recovered_file
+            && (had_matching_pending_file
+                || previous_file.as_ref().is_none_or(|previous| {
+                    !local_file_updates_share_identity(previous, &recovered_file)
+                }))
+        {
+            self.pending_ordered_local_file_updates
+                .push_back(recovered_file);
+        }
         let actions = self
             .playback_coordination
             .rebase_ordered_transport_snapshot(&snapshot.transport, now_seconds);
@@ -4501,7 +4552,15 @@ where
         first_error: &mut Option<PlayerError>,
     ) {
         match event.event {
-            PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => {}
+            PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => {
+                self.pending_player_playback_telemetry_updates = EffectOutbox::default();
+                self.session
+                    .replace_player_playback_telemetry_from_authoritative_snapshot(
+                        &PlayerPlaybackTelemetryUpdate::default(),
+                    );
+                self.playback_coordination
+                    .fence_ordered_transport_until_snapshot(now_seconds);
+            }
             PlayerEvent::LocalFileChanged {
                 attempt_id,
                 media_generation,
@@ -4520,6 +4579,9 @@ where
                 let Some(accepted) = self.ordered_player_events.apply_delta_if_owned(delta) else {
                     return;
                 };
+                if self.playback_coordination.awaiting_ordered_snapshot {
+                    return;
+                }
                 self.observe_pending_reconnect_rate_reset(accepted.playback_rate);
                 self.record_ordered_playback_projection(&accepted);
                 let transport = self.ordered_player_events.transport.clone();
@@ -5932,6 +5994,121 @@ mod tests {
     }
 
     #[test]
+    fn ordered_gap_marker_invalidates_position_projection_until_snapshot_recovery() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-gap-projection").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial ordered snapshot should drain");
+        assert_eq!(runtime.projected_local_position_at(1.0), Some(42.0));
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.1)
+            .expect("gap marker is a valid acknowledged batch");
+
+        assert_eq!(
+            runtime.projected_local_position_at(1.1),
+            None,
+            "a gap means transport deltas were lost, so stale pre-gap position must stay fenced until an authoritative snapshot rebases the consumer"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            3,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs_f64(1.5),
+                    )),
+                    position_seconds: Some(99.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.5)
+            .expect("post-gap delta should be acknowledged but remain fenced");
+        assert_eq!(
+            runtime.projected_local_position_at(1.5),
+            None,
+            "ordinary deltas cannot re-authorize transport after a declared event gap"
+        );
+        assert_eq!(
+            runtime.session().local_position_seconds(),
+            None,
+            "partial post-gap deltas must not leak into the session telemetry projection before \
+             an authoritative snapshot"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            4,
+            4,
+            Some(active_snapshot(
+                epoch,
+                4,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                    50.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("authoritative recovery snapshot should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(2.0),
+            Some(50.0),
+            "an authoritative snapshot must clear the event-gap fence"
+        );
+    }
+
+    #[test]
     fn ordered_transport_maps_adapter_generation_to_pending_logical_media() {
         let epoch = PlayerAttachmentEpoch::new(1);
         let attempt_id = LoadAttemptId::new(1);
@@ -6124,6 +6301,168 @@ mod tests {
                 .is_empty(),
             "successful privacy-aware publication acknowledges the local effect"
         );
+    }
+
+    #[test]
+    fn ordered_snapshot_preserves_matching_richer_pending_file_announcement() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            1,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptStarting {
+                        attempt_id,
+                        media_generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                        owns_transport: true,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::LocalFileChanged {
+                        attempt_id,
+                        media_generation,
+                        update: LocalFileUpdate::new("episode.mkv")
+                            .with_duration_seconds(120.0)
+                            .with_size_bytes(4096)
+                            .with_path("C:/media/episode.mkv"),
+                    },
+                },
+            ],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("ordered file event should drain");
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        assert!(
+            !runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("gap handling should remain nonfatal"),
+            "a pre-gap file announcement must remain fenced until the snapshot proves its identity"
+        );
+        assert!(
+            runtime.control().outbound_messages().iter().all(|message| {
+                !matches!(
+                    message,
+                    ProtocolMessage::Set(set) if set.set.file.is_some()
+                )
+            }),
+            "no file identity may be published from an incomplete ordered event stream"
+        );
+
+        let mut snapshot = active_snapshot(
+            epoch,
+            4,
+            attempt_id,
+            media_generation,
+            ordered_playing_transport(
+                media_generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                10.0,
+            ),
+        );
+        snapshot.current_path = SnapshotField::Known("C:/media/episode.mkv".to_owned());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            4,
+            3,
+            Some(snapshot),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("authoritative snapshot should drain");
+
+        let pending = runtime
+            .pending_ordered_local_file_updates
+            .front()
+            .expect("the unreported matching file must remain pending");
+        assert_eq!(
+            runtime.pending_ordered_local_file_updates.pending().len(),
+            1,
+            "snapshot recovery should restore exactly one matching rich file announcement"
+        );
+        assert_eq!(pending.name, "episode.mkv");
+        assert_eq!(pending.duration_seconds, Some(120.0));
+        assert_eq!(pending.size_bytes, Some(4096));
+        assert_eq!(pending.path.as_deref(), Some("C:/media/episode.mkv"));
+    }
+
+    #[test]
+    fn ordered_snapshot_recovers_local_file_announcement_after_lost_event() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("snapshot-file-recovery").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    10.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        assert!(
+            runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("snapshot recovery and file publication should succeed"),
+            "an authoritative active-load snapshot is the recovery source when LocalFileChanged was dropped"
+        );
+        let published_files = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(set) if set.set.file.is_some()
+                )
+            })
+            .count();
+        assert_eq!(published_files, 1);
     }
 
     #[test]
@@ -9999,6 +10338,68 @@ mod tests {
             runtime.outbound_state_sync_position_seconds(105.1, false),
             None,
             "cache-stalled rich telemetry must produce ping-only State instead of re-anchoring the room"
+        );
+    }
+
+    #[test]
+    fn delayed_inbound_state_does_not_publish_false_local_seek() {
+        let mut session = barrier_session();
+        session.model.playback.local_position = Some(5.0);
+        session.model.playback.local_paused = Some(false);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("delayed-inbound-state").unwrap(),
+            MediaTransportKind::NetworkVod,
+            99.0,
+        );
+        runtime
+            .playback_coordination
+            .observe_transport(transport(1, 1.0, PlayerTransportPhase::Playing, 5.0), 100.0);
+        runtime
+            .playback_coordination
+            .observe_transport(transport(1, 5.5, PlayerTransportPhase::Playing, 9.5), 104.5);
+
+        assert!(
+            runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(5.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                ),
+                false,
+                100.0,
+                105.0,
+                100.0,
+            )
+        );
+        let ProtocolMessage::State(response) = runtime
+            .control()
+            .outbound_messages()
+            .back()
+            .expect("the delayed inbound State should receive a response")
+        else {
+            panic!("the delayed inbound State response should remain a State message");
+        };
+        let response_playstate = response
+            .state
+            .playstate
+            .as_ref()
+            .expect("fresh local telemetry should remain present");
+        assert!(
+            response_playstate
+                .position
+                .is_some_and(|position| (position - 10.0).abs() <= 0.000_001),
+            "local state should be projected to reply time"
+        );
+        assert_ne!(
+            response_playstate.do_seek,
+            Some(true),
+            "matching room and local positions at receipt time must not become a local seek solely because the GUI processes the inbound State later"
         );
     }
 

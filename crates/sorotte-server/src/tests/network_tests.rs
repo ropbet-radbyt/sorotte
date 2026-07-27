@@ -934,6 +934,86 @@ async fn actor_commit_order_is_preserved_when_session_dispatches_resume_out_of_o
 }
 
 #[tokio::test]
+async fn source_local_response_does_not_overtake_older_peer_dispatch() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username) in [("source-a", "alice"), ("source-b", "bob")] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) =
+        crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("source-b".to_owned(), event_tx);
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+
+    crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+        &runtime,
+        &dispatch_order,
+        "source-a",
+        r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+        &client_event_senders,
+        std::future::ready(()),
+    )
+    .await
+    .expect("first actor mutation and peer dispatch should succeed");
+
+    crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+        &runtime,
+        &dispatch_order,
+        "source-b",
+        r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+        &client_event_senders,
+        std::future::ready(()),
+    )
+    .await
+    .expect("second actor mutation and local dispatch should succeed");
+
+    let mut observed_playlists = Vec::new();
+    for _ in 0..8 {
+        let queued = timeout(
+            Duration::from_secs(1),
+            event_rx.receive_reliable_line_for_test(),
+        )
+        .await
+        .expect("both playlist dispatches should already be queued")
+        .expect("source-b queue should remain open");
+        if let ProtocolMessage::Set(payload) =
+            decode_message_line(&queued).expect("queued dispatch should decode")
+            && let Some(playlist) = payload.set.playlist_change
+        {
+            observed_playlists.push(playlist.files);
+            if observed_playlists.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        observed_playlists,
+        vec![vec!["first.mkv".to_owned()], vec!["second.mkv".to_owned()]],
+        "a recipient's later source-local response must not bypass an older authoritative peer \
+         dispatch that is still queued for the same socket"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
 async fn stalled_peer_backpressure_grace_does_not_accumulate_across_unrelated_rooms() {
     let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     for (client_id, username, room) in [

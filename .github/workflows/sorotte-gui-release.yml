@@ -106,6 +106,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ./scripts/assert-github-source-tip.ps1 -ExpectedSha $env:GITHUB_SHA -Remote origin -Branch main
+
           $tag = $env:SOROTTE_GUI_DEV_RELEASE_TAG
           $shortSha = $env:GITHUB_SHA.Substring(0, 7)
           $title = "Sorotte GUI dev build"

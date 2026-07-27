@@ -87,7 +87,7 @@ GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
-The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; branch pushes update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks.
+The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; pushes to the current `main` tip update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks. Publication rechecks the remote `main` tip so rerunning an older workflow cannot roll dev clients backward.
 
 ## Server Release Checks
 

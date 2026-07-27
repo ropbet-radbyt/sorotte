@@ -574,6 +574,12 @@ where
             self.drain_player_transport_coordination(
                 unix_wall_clock_time_seconds_legacy_compatible(),
             )?;
+            if self
+                .playback_coordination
+                .ordered_transport_awaits_snapshot()
+            {
+                return Ok(false);
+            }
             self.pending_ordered_local_file_updates.front().cloned()
         } else {
             self.player.take_local_file_update()

@@ -373,6 +373,12 @@ impl ServerRuntime {
                 .insert(room_name.clone(), owner_bucket.clone());
             self.persistent_room_created_at_by_room
                 .insert(room_name.clone(), created_at_seconds);
+            self.persistent_room_last_creation_by_identity
+                .entry(owner_bucket.clone())
+                .and_modify(|last_creation| {
+                    *last_creation = last_creation.max(created_at_seconds);
+                })
+                .or_insert(created_at_seconds);
             let room_playback = self
                 .room_playback_states
                 .entry(room_name.clone())
@@ -403,9 +409,6 @@ impl ServerRuntime {
     }
 
     pub(crate) fn apply_permanent_rooms_snapshot(&mut self) {
-        if self.room_persistence.is_none() {
-            return;
-        }
         let now_seconds = self.current_time_seconds();
         for room_name in self.permanent_rooms.clone() {
             self.room_playlists
@@ -426,7 +429,7 @@ impl ServerRuntime {
     }
 
     pub(crate) fn room_is_permanent(&self, room_name: &str) -> bool {
-        self.room_persistence.is_some() && self.permanent_rooms.contains(room_name)
+        self.permanent_rooms.contains(room_name)
     }
 
     pub(crate) fn room_should_be_retained_when_empty(&self, room_name: &str) -> bool {
