@@ -217,9 +217,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             use windows_sys::Win32::{
                 Foundation::{ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE},
                 Storage::FileSystem::{
-                    FILE_ATTRIBUTE_DIRECTORY, FIND_FIRST_EX_LARGE_FETCH, FindClose,
-                    FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
-                    WIN32_FIND_DATAW,
+                    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+                    FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch,
+                    FindFirstFileExW, FindNextFileW, WIN32_FIND_DATAW,
                 },
             };
 
@@ -276,9 +276,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     .unwrap_or(current_find_data.cFileName.len());
                 let file_name = OsString::from_wide(&current_find_data.cFileName[..name_length]);
                 if file_name != "." && file_name != ".." {
-                    let is_dir =
-                        (current_find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                    if !visitor(file_name.as_os_str(), is_dir, !is_dir) {
+                    let is_reparse_point =
+                        (current_find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                    let is_dir = !is_reparse_point
+                        && (current_find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    let is_file = !is_reparse_point
+                        && (current_find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+                    if !visitor(file_name.as_os_str(), is_dir, is_file) {
                         break;
                     }
                 }

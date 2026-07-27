@@ -1026,7 +1026,18 @@ impl GuiTcpSessionTransportDriver {
                 self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
                 self.tls_response_started_at = None;
                 self.initial_hello_started_at = Some(Instant::now());
-                transport_handle.push_inbound_protocol_line(line);
+                for message in messages
+                    .into_iter()
+                    .filter(|message| !matches!(message, ProtocolMessage::Tls(_)))
+                {
+                    transport_handle.push_inbound_protocol_line(
+                        encode_message_line(&message).map_err(|error| {
+                            format!(
+                                "Session transport TCP failed to preserve a bundled plaintext protocol message: {error}"
+                            )
+                        })?,
+                    );
+                }
             }
         }
         Ok(())

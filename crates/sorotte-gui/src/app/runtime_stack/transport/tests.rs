@@ -579,16 +579,12 @@ fn tcp_session_transport_prefer_tls_preserves_hello_bundled_after_refusal() {
         1,
         "the valid bundled Hello must be re-injected into normal inbound handling"
     );
-    let messages = sorotte_protocol::decode_message_line_items(&inbound[0].line)
-        .expect("bundled line should remain valid")
-        .into_iter()
-        .map(|item| item.message.expect("every bundled item should decode"))
-        .collect::<Vec<_>>();
-    assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, sorotte_protocol::ProtocolMessage::Hello(_)))
-    );
+    let message = sorotte_protocol::decode_message_line(&inbound[0].line)
+        .expect("the re-injected application line should decode");
+    assert!(matches!(
+        message,
+        sorotte_protocol::ProtocolMessage::Hello(_)
+    ));
 }
 
 #[test]

@@ -4377,7 +4377,11 @@ impl MpvAdapter {
         let Ok(Some(position_seconds)) = polled_position else {
             return;
         };
-        if !position_seconds.is_finite() || (self.position_seconds - position_seconds).abs() < 1e-6
+        if !position_seconds.is_finite()
+            || self
+                .observed_state
+                .position_seconds
+                .is_some_and(|observed| (observed - position_seconds).abs() < 1e-6)
         {
             return;
         }
@@ -5427,6 +5431,9 @@ impl MpvAdapter {
         if !self.active_file_loaded {
             return;
         }
+        if self.observed_state.seeking == Some(true) {
+            return;
+        }
 
         let position_seconds = self
             .observed_state
@@ -6344,6 +6351,14 @@ impl MpvAdapter {
         self.queue_cache_telemetry_update(self.cleared_cache_telemetry_update(generation));
     }
 
+    fn invalidate_network_stream_recovery_position_for_seek(&mut self) {
+        // A seek makes the previously observed time-pos causally stale. Keep
+        // recovery disabled until mpv publishes a fresh post-seek time-pos and
+        // leaves its seeking state.
+        self.network_stream_recovery_evidence = None;
+        self.observed_state.position_seconds = None;
+    }
+
     fn set_transport_phase(&mut self, phase: PlayerTransportPhase) {
         self.transport_phase = phase;
         let mut update = self.transport_update();
@@ -7027,6 +7042,9 @@ impl MpvAdapter {
             }
             MPV_PROPERTY_SEEKING => {
                 if let Some(seeking) = data.and_then(Value::as_bool) {
+                    if seeking {
+                        self.invalidate_network_stream_recovery_position_for_seek();
+                    }
                     let transport_seeking = self.normalize_transport_seeking_observation(seeking);
                     self.observed_state.seeking = Some(transport_seeking);
                     let phase = self.inferred_transport_phase();
@@ -7436,6 +7454,7 @@ impl MpvAdapter {
 
     fn handle_seek_event(&mut self) {
         self.network_cache_stall = None;
+        self.invalidate_network_stream_recovery_position_for_seek();
         self.begin_seek_cache_evidence_epoch();
         let transport_seeking = self.normalize_transport_seeking_observation(true);
         self.queue_transient_native_seek_edge_if_normalized(transport_seeking);
@@ -10313,6 +10332,77 @@ mod interrupted_network_stream_recovery_tests {
         assert_eq!(adapter.network_stream_recovery_attempt_count(), 1);
         assert_eq!(adapter.active_media_generation, None);
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    }
+
+    #[test]
+    fn seek_without_a_fresh_position_cannot_reload_the_stale_pre_seek_position() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.refresh_network_stream_recovery_evidence();
+        assert_eq!(
+            adapter
+                .network_stream_recovery_evidence
+                .as_ref()
+                .map(|evidence| evidence.position_seconds),
+            Some(257.25)
+        );
+
+        // mpv's seek edge invalidates the old time-pos. If the underlying
+        // network request terminates before a post-seek position arrives,
+        // Sorotte must not manufacture a recovery load at the pre-seek
+        // position and thereby undo the room/user seek.
+        adapter.handle_seek_event();
+        assert_eq!(adapter.observed_state.seeking, Some(true));
+
+        adapter.handle_end_file_event(&json!({
+            "reason": "eof",
+            "playlist_entry_id": 10,
+        }));
+
+        assert_eq!(
+            adapter
+                .interrupted_network_stream_recovery
+                .as_ref()
+                .map(|recovery| recovery.resume_position_seconds),
+            None,
+            "the pre-seek position must not become the recovery reload target"
+        );
+        assert_eq!(
+            adapter.network_stream_recovery_attempt_count(),
+            0,
+            "stale pre-seek time-pos must not become a recovery resume target"
+        );
+        assert_eq!(adapter.transport_phase, PlayerTransportPhase::Ended);
+    }
+
+    #[test]
+    fn recovery_evidence_rearms_only_after_post_seek_position_and_seek_completion() {
+        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        adapter.refresh_network_stream_recovery_evidence();
+        adapter.handle_seek_event();
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_TIME_POS,
+            "data": 512.0,
+        }));
+        assert!(
+            adapter.network_stream_recovery_evidence.is_none(),
+            "time-pos observed while mpv is still seeking is not settled recovery evidence"
+        );
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_SEEKING,
+            "data": false,
+        }));
+        assert_eq!(
+            adapter
+                .network_stream_recovery_evidence
+                .as_ref()
+                .map(|evidence| evidence.position_seconds),
+            Some(512.0),
+            "the settled post-seek position should re-arm bounded EOF recovery"
+        );
     }
 
     #[test]

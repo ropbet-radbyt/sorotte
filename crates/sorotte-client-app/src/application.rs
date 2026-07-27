@@ -1818,6 +1818,14 @@ where
             .run_reconnect_state_restore_validation_if_needed()
     }
 
+    pub fn run_reconnect_state_restore_validation_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
+    }
+
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
         &mut self,
         state: StatePayload,

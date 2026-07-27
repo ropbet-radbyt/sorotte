@@ -573,6 +573,39 @@ fn tls_send_dispatch_includes_transport_action_bundle() {
 }
 
 #[test]
+fn start_tls_is_a_transport_boundary_for_a_bundled_hello() {
+    let cert_path = temporary_directory_path("tls-bundled-hello-boundary");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions(
+            "client-1",
+            r#"{"TLS":{"startTLS":"send"},"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("STARTTLS negotiation should be handled");
+
+    assert!(
+        has_start_tls_transport_action(&dispatch.transport_actions, "client-1"),
+        "the server should still authorize the transport upgrade"
+    );
+    assert!(
+        runtime.session("client-1").is_none(),
+        "application commands bundled after STARTTLS must not execute on the plaintext side of the transport boundary"
+    );
+    assert_eq!(
+        dispatch.outbound_lines.len(),
+        1,
+        "only the STARTTLS acknowledgement may be written before the connection is upgraded"
+    );
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[test]
 fn protocol_error_dispatch_sends_not_json_error_and_close() {
     let mut runtime = ServerRuntime::new();
 

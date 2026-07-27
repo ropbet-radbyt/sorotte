@@ -1803,6 +1803,87 @@ async fn server_network_starttls_success_still_allows_hello() {
 }
 
 #[tokio::test]
+async fn server_network_does_not_write_bundled_hello_response_before_starttls_upgrade() {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let cert_path = temporary_directory_path("tls-bundled-hello-plaintext");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let (client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_timeouts(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime.clone(),
+            client_event_senders,
+            None,
+            crate::network::ServerNetworkClientSessionTimeouts::new(
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ),
+        ),
+    );
+    let mut client_stream = tokio::io::BufReader::new(client_stream);
+
+    client_stream
+        .get_mut()
+        .write_all(
+            br#"{"TLS":{"startTLS":"send"},"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .await
+        .expect("bundled STARTTLS request should write");
+    client_stream
+        .get_mut()
+        .write_all(b"\n")
+        .await
+        .expect("bundled STARTTLS newline should write");
+    client_stream
+        .get_mut()
+        .flush()
+        .await
+        .expect("bundled STARTTLS request should flush");
+
+    let mut tls_response = String::new();
+    timeout(
+        Duration::from_secs(2),
+        client_stream.read_line(&mut tls_response),
+    )
+    .await
+    .expect("STARTTLS response should arrive")
+    .expect("STARTTLS response should be readable");
+    assert!(
+        matches!(
+            decode_message_line(tls_response.trim()),
+            Ok(ProtocolMessage::Tls(_))
+        ),
+        "the first plaintext response should acknowledge STARTTLS"
+    );
+
+    let mut plaintext_suffix = String::new();
+    let plaintext_suffix_result = timeout(
+        Duration::from_millis(100),
+        client_stream.read_line(&mut plaintext_suffix),
+    )
+    .await;
+
+    session_task.abort();
+    let _ = session_task.await;
+    drop(runtime);
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+
+    assert!(
+        plaintext_suffix_result.is_err(),
+        "the transport should be waiting for a TLS ClientHello, but wrote another plaintext protocol response: {plaintext_suffix:?}"
+    );
+}
+
+#[tokio::test]
 async fn server_network_loop_forwards_tls_start_transport_action_to_sink() {
     let cert_path = temporary_directory_path("tls-network-loop");
     let _ = fs::remove_dir_all(&cert_path);

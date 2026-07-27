@@ -663,8 +663,8 @@ impl PlayerAdapter for MpvAdapter {
             PlayerCommand::OpenFile(path) => self.open_file(&path),
             PlayerCommand::SetPosition(position_seconds) => {
                 self.interrupted_network_stream_recovery = None;
-                self.network_stream_recovery_evidence = None;
                 self.network_cache_stall = None;
+                self.invalidate_network_stream_recovery_position_for_seek();
                 self.begin_seek_cache_evidence_epoch();
                 let result = self.send_ipc_command_if_attached(json!([
                     MPV_COMMAND_SET_PROPERTY,
@@ -978,6 +978,7 @@ impl PlayerAdapter for MpvAdapter {
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
         self.interrupted_network_stream_recovery = None;
         self.network_cache_stall = None;
+        self.invalidate_network_stream_recovery_position_for_seek();
         self.begin_seek_cache_evidence_epoch();
         self.send_ipc_command_if_attached(json!([
             MPV_COMMAND_SET_PROPERTY,

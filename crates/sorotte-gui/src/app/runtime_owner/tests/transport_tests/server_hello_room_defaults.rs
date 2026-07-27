@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn gui_persisted_config_runtime_owner_applies_hello_bundled_after_prefer_tls_refusal() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("bundled refusal test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("bundled refusal test listener should expose its address");
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("accepted socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read STARTTLS request");
+        assert!(tls_request.contains(r#""startTLS":"send""#));
+        stream
+            .write_all(
+                br#"{"TLS":{"startTLS":"false"},"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("server should write bundled refusal and Hello");
+        stream
+            .write_all(b"\n")
+            .expect("server should terminate bundled response");
+        stream
+            .flush()
+            .expect("server should flush bundled response");
+        let _ = stop_rx.recv_timeout(Duration::from_secs(2));
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
+        .expect("PreferTls runtime owner should connect");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !owner
+        .session
+        .as_ref()
+        .is_some_and(|session| session.server_handshake_completed())
+    {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        assert!(
+            Instant::now() < deadline,
+            "bundled Hello should complete the application handshake"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let _ = stop_tx.send(());
+    server_thread.join().expect("server thread should join");
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|notification| !notification.message.contains("Unexpected TLS")),
+        "the consumed STARTTLS refusal must not enter normal session decoding"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_disconnects_on_non_protocol_tcp_lines_before_server_hello() {
     use std::{
         io::{BufReader, Write},

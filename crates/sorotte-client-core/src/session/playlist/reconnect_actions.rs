@@ -161,6 +161,15 @@ impl ClientSession {
     pub fn runtime_actions_for_reconnect_state_restore_validation_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_reconnect_state_restore_validation_if_needed_at(
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub fn runtime_actions_for_reconnect_state_restore_validation_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Vec<ClientRuntimeAction> {
         if !self.model.reconnect.state_restore_validation_pending {
             return Vec::new();
         }
@@ -180,7 +189,6 @@ impl ClientSession {
             return Vec::new();
         }
 
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         let Some(room_playstate) = self.current_room_playstate_at(now_seconds) else {
             return Vec::new();
         };

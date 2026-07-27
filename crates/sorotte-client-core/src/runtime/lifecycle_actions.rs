@@ -281,7 +281,7 @@ where
 
         let actions = self
             .session
-            .runtime_actions_for_reconnect_state_restore_validation_if_needed();
+            .runtime_actions_for_reconnect_state_restore_validation_if_needed_at(now_seconds);
         if actions.is_empty() {
             return Ok(());
         }

@@ -148,7 +148,19 @@ impl ServerRuntime {
                 }
             };
             match self.handle_protocol_message_fanout_for_peer(client_id, message, peer_ip) {
-                Ok(messages) => outbound_messages.extend(messages),
+                Ok(messages) => {
+                    outbound_messages.extend(messages);
+                    // STARTTLS is a hard transport boundary. Once accepted,
+                    // no remaining item from this plaintext line may execute;
+                    // the client must resend application messages after the
+                    // socket has completed its TLS upgrade.
+                    if self.pending_transport_actions.iter().any(|action| {
+                        action.client_id == client_id
+                            && action.action == ServerTransportAction::StartTls
+                    }) {
+                        break;
+                    }
+                }
                 Err(error) => {
                     return Err(Box::new(LineFanoutFailure::new(outbound_messages, error)));
                 }

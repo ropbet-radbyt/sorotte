@@ -2,7 +2,10 @@ use super::*;
 
 mod execution;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, OnceLock},
+};
 
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
@@ -346,7 +349,7 @@ async fn negotiate_start_tls_with_policy(
         ));
     };
 
-    let mut prefetched_plaintext_line = None;
+    let mut prefetched_plaintext_lines = VecDeque::new();
     let decoded_items = decode_message_line_items(tls_response_line.trim());
     let upgrade_to_tls = match decoded_items {
         Ok(items) if items.iter().all(|item| item.message.is_ok()) => {
@@ -376,7 +379,12 @@ async fn negotiate_start_tls_with_policy(
                 eprintln!(
                     "warning: server returned an unexpected STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
                 );
-                prefetched_plaintext_line = Some(tls_response_line);
+                for message in messages
+                    .into_iter()
+                    .filter(|message| !matches!(message, ProtocolMessage::Tls(_)))
+                {
+                    prefetched_plaintext_lines.push_back(encode_message_line(&message)?);
+                }
                 false
             }
         }
@@ -412,7 +420,7 @@ async fn negotiate_start_tls_with_policy(
         );
         return Ok(StartTlsNegotiationResult {
             stream: Box::new(stream),
-            prefetched_plaintext_line,
+            prefetched_plaintext_lines,
         });
     }
 
@@ -433,24 +441,24 @@ async fn negotiate_start_tls_with_policy(
     })??;
     Ok(StartTlsNegotiationResult {
         stream: Box::new(tls_stream),
-        prefetched_plaintext_line: None,
+        prefetched_plaintext_lines: VecDeque::new(),
     })
 }
 
 struct StartTlsNegotiationResult {
     stream: Box<dyn ConnectedSessionAsyncStream>,
-    prefetched_plaintext_line: Option<String>,
+    prefetched_plaintext_lines: VecDeque<String>,
 }
 
 async fn read_inbound_or_prefetched_protocol_line<R>(
     reader: &mut R,
-    prefetched_line: &mut Option<String>,
+    prefetched_lines: &mut VecDeque<String>,
 ) -> anyhow::Result<Option<String>>
 where
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    if prefetched_line.is_some() {
-        return Ok(prefetched_line.take());
+    if let Some(line) = prefetched_lines.pop_front() {
+        return Ok(Some(line));
     }
     read_inbound_protocol_line(reader).await
 }
@@ -623,9 +631,9 @@ where
 
     let hello_line = encode_message_line(&hello_message)?;
     let tls_policy = client_tls_policy(config, tls_policy_override);
-    let (stream, mut prefetched_inbound_line): (
+    let (stream, mut prefetched_inbound_lines): (
         Box<dyn ConnectedSessionAsyncStream>,
-        Option<String>,
+        VecDeque<String>,
     ) = if tls_policy != TlsPolicy::Plaintext {
         let negotiation = await_with_player_integration_maintenance(
             runtime,
@@ -644,9 +652,9 @@ where
             ),
         )
         .await?;
-        (negotiation.stream, negotiation.prefetched_plaintext_line)
+        (negotiation.stream, negotiation.prefetched_plaintext_lines)
     } else {
-        (Box::new(stream), None)
+        (Box::new(stream), VecDeque::new())
     };
     let (reader, mut writer) = tokio::io::split(stream);
     emit_application_service_events(
@@ -745,7 +753,7 @@ where
             }
             line = read_inbound_or_prefetched_protocol_line(
                 &mut reader,
-                &mut prefetched_inbound_line,
+                &mut prefetched_inbound_lines,
             ) => {
                 match line? {
                     Some(line) => {
@@ -1160,7 +1168,7 @@ mod tests {
         assert!(truncated.contains("malformed response"));
     }
 
-    async fn prefer_tls_prefetched_line_for_response(response: &'static [u8]) -> String {
+    async fn prefer_tls_prefetched_lines_for_response(response: &'static [u8]) -> VecDeque<String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
@@ -1193,9 +1201,7 @@ mod tests {
         .await
         .expect("PreferTls should retain a plaintext connection");
         server_task.await.expect("server task should complete");
-        negotiation
-            .prefetched_plaintext_line
-            .expect("unexpected valid protocol response must be preserved")
+        negotiation.prefetched_plaintext_lines
     }
 
     #[tokio::test]
@@ -1211,25 +1217,28 @@ mod tests {
                 b"{\"Error\":{\"message\":\"something went wrong\"}}\n".as_slice(),
             ),
         ] {
-            let prefetched = prefer_tls_prefetched_line_for_response(response).await;
-            let mut pending = Some(prefetched);
+            let mut pending = prefer_tls_prefetched_lines_for_response(response).await;
             let mut reader = BufReader::new(tokio::io::empty());
             let reinjected =
                 read_inbound_or_prefetched_protocol_line(&mut reader, &mut pending)
                     .await
                     .expect("prefetched protocol line should be readable")
                     .expect("prefetched protocol line should be present");
-            assert_eq!(reinjected, expected);
+            assert_eq!(
+                decode_message_line(&reinjected)
+                    .expect("re-injected line should enter normal protocol decoding"),
+                decode_message_line(expected).expect("expected protocol fixture should decode"),
+            );
             assert!(
                 decode_message_line(&reinjected).is_ok(),
                 "re-injected line should enter normal protocol decoding"
             );
-            assert!(pending.is_none());
+            assert!(pending.is_empty());
         }
     }
 
     #[tokio::test]
-    async fn prefer_tls_reinjects_every_message_bundled_with_an_explicit_tls_refusal() {
+    async fn prefer_tls_reinjects_only_application_messages_bundled_with_a_tls_refusal() {
         for response in [
             b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
                 .as_slice(),
@@ -1244,18 +1253,20 @@ mod tests {
             b"{\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}},\"TLS\":{\"startTLS\":\"false\"}}\n"
                 .as_slice(),
         ] {
-            let prefetched = prefer_tls_prefetched_line_for_response(response).await;
-            let messages = decode_message_line_items(&prefetched)
-                .expect("bundled refusal should remain valid")
-                .into_iter()
-                .map(|item| item.message.expect("every bundled item should decode"))
+            let prefetched = prefer_tls_prefetched_lines_for_response(response).await;
+            let messages = prefetched
+                .iter()
+                .map(|line| {
+                    decode_message_line(line)
+                        .expect("each re-injected application message should decode")
+                })
                 .collect::<Vec<_>>();
 
-            assert_eq!(messages.len(), 2);
+            assert_eq!(messages.len(), 1);
             assert!(
                 messages
                     .iter()
-                    .any(|message| matches!(message, ProtocolMessage::Tls(tls) if tls.tls.start_tls == "false"))
+                    .all(|message| !matches!(message, ProtocolMessage::Tls(_)))
             );
             assert!(
                 messages
@@ -1268,6 +1279,25 @@ mod tests {
                     ))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_bundled_refusal_reinjects_only_application_messages() {
+        let response =
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n";
+        let mut prefetched = prefer_tls_prefetched_lines_for_response(response).await;
+        let mut session = sorotte_client_core::ClientSession::default();
+
+        session
+            .apply_message_json(
+                &prefetched
+                    .pop_front()
+                    .expect("the bundled Hello must be preserved"),
+            )
+            .expect("negotiation control must not poison normal plaintext inbound handling");
+        assert!(prefetched.is_empty());
+        assert_eq!(session.username(), Some("server"));
+        assert_eq!(session.room(), Some("room"));
     }
 
     #[tokio::test]

@@ -306,9 +306,9 @@ impl MediaIndexBuildTransaction {
         let generation = format!("generation-{unique}");
         #[cfg(test)]
         self.inject_test_failure(MediaIndexCommitFailurePoint::BeforeGenerationCreation)?;
-        let generations_root = self.live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let generations_root = create_or_validate_media_index_generations_root(&self.live_root)?;
         let generation_root = generations_root.join(&generation);
-        fs::create_dir_all(&generation_root).map_err(|error| {
+        fs::create_dir(&generation_root).map_err(|error| {
             format!(
                 "failed creating media-match generation directory '{}': {error}",
                 generation_root.display()
@@ -822,9 +822,9 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
                 manifest.previous.as_deref(),
             )?;
         }
-        let current_path = root
-            .join(MEDIA_INDEX_GENERATIONS_DIR)
-            .join(&manifest.current);
+        let generations_root = existing_media_index_generations_root(root)?
+            .unwrap_or_else(|| root.join(MEDIA_INDEX_GENERATIONS_DIR));
+        let current_path = generations_root.join(&manifest.current);
         if validate_media_index_database(&media_match_v3_index_path(&current_path)).is_ok() {
             let _ = collect_old_media_index_generations(
                 root,
@@ -838,7 +838,7 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
             });
         }
         if let Some(previous) = manifest.previous.as_deref() {
-            let previous_path = root.join(MEDIA_INDEX_GENERATIONS_DIR).join(previous);
+            let previous_path = generations_root.join(previous);
             if validate_media_index_database(&media_match_v3_index_path(&previous_path)).is_ok() {
                 let recovery_epoch = manifest.epoch.checked_add(1).ok_or_else(|| {
                     "media-match activation epoch is exhausted during rollback recovery".to_owned()
@@ -897,6 +897,63 @@ fn valid_generation_name(generation: &str) -> bool {
         && generation
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn validate_real_media_index_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed inspecting directory '{}': {error}", path.display()))?;
+    if !metadata.is_dir() || metadata_is_reparse_or_symlink(&metadata) {
+        return Err(format!(
+            "refusing link, reparse point, or non-directory media-index path '{}'",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn existing_media_index_generations_root(root: &Path) -> Result<Option<PathBuf>, String> {
+    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
+    match fs::symlink_metadata(&generations_root) {
+        Ok(_) => {
+            validate_real_media_index_directory(&generations_root)?;
+            Ok(Some(generations_root))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed inspecting media-match generations directory '{}': {error}",
+            generations_root.display()
+        )),
+    }
+}
+
+fn create_or_validate_media_index_generations_root(root: &Path) -> Result<PathBuf, String> {
+    if let Some(generations_root) = existing_media_index_generations_root(root)? {
+        return Ok(generations_root);
+    }
+    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
+    fs::create_dir(&generations_root).map_err(|error| {
+        format!(
+            "failed creating media-match generations directory '{}': {error}",
+            generations_root.display()
+        )
+    })?;
+    validate_real_media_index_directory(&generations_root)?;
+    Ok(generations_root)
 }
 
 fn manifest_checksum(version: u32, epoch: u64, current: &str, previous: Option<&str>) -> String {
@@ -1080,15 +1137,17 @@ fn media_index_manifest_slots_need_repair(root: &Path, selected: &MediaIndexMani
 }
 
 fn media_index_generation_names(root: &Path) -> Vec<String> {
-    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
+    let Ok(Some(generations_root)) = existing_media_index_generations_root(root) else {
+        return Vec::new();
+    };
     let Ok(entries) = fs::read_dir(&generations_root) else {
         return Vec::new();
     };
     let mut entries = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_dir() {
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            if !metadata.is_dir() || metadata_is_reparse_or_symlink(&metadata) {
                 return None;
             }
             let name = entry.file_name().to_str()?.to_owned();
@@ -1181,10 +1240,15 @@ fn collect_old_media_index_generations(
     current: &str,
     previous: Option<&str>,
 ) -> Result<(), String> {
-    let generations_root = root.join(MEDIA_INDEX_GENERATIONS_DIR);
-    let Ok(entries) = fs::read_dir(&generations_root) else {
+    let Some(generations_root) = existing_media_index_generations_root(root)? else {
         return Ok(());
     };
+    let entries = fs::read_dir(&generations_root).map_err(|error| {
+        format!(
+            "failed reading media-match generations directory '{}': {error}",
+            generations_root.display()
+        )
+    })?;
     let mut warnings = Vec::new();
     let legacy_path = media_match_v3_index_path(root);
     if previous.is_some()
@@ -1200,7 +1264,22 @@ fn collect_old_media_index_generations(
         if name == current || previous == Some(name.as_str()) {
             continue;
         }
-        if let Err(error) = remove_directory_if_exists(&entry.path()) {
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                warnings.push(format!("failed inspecting '{}': {error}", path.display()));
+                continue;
+            }
+        };
+        if !metadata.is_dir() || metadata_is_reparse_or_symlink(&metadata) {
+            warnings.push(format!(
+                "refusing to remove link, reparse point, or non-directory generation '{}'",
+                path.display()
+            ));
+            continue;
+        }
+        if let Err(error) = remove_directory_if_exists(&path) {
             warnings.push(error);
         }
     }
@@ -1520,4 +1599,134 @@ fn current_unix_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod generation_link_safety_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn generation_cleanup_does_not_follow_generations_root_junction() {
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-generation-junction-{unique}"));
+        let live_root = fixture.join("live");
+        let outside_root = fixture.join("outside");
+        let outside_generation = outside_root.join("generation-stale");
+        fs::create_dir_all(&live_root).expect("live index root should be created");
+        fs::create_dir_all(&outside_generation).expect("outside generation should be created");
+        let canary = outside_generation.join("must-not-be-deleted.txt");
+        fs::write(&canary, b"outside").expect("outside canary should be written");
+
+        let generations_link = live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&generations_link)
+            .arg(&outside_root)
+            .status()
+            .expect("junction creation command should launch");
+        assert!(status.success(), "junction creation should succeed");
+
+        let cleanup = collect_old_media_index_generations(&live_root, "generation-current", None);
+        let creation = create_or_validate_media_index_generations_root(&live_root);
+        let canary_survived = canary.is_file();
+
+        fs::remove_dir(&generations_link)
+            .expect("generations junction should be removed without following it");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            cleanup.is_err(),
+            "generation cleanup must reject a junction root"
+        );
+        assert!(
+            creation.is_err(),
+            "generation creation must reject a junction root"
+        );
+        assert!(canary_survived, "the junction target must remain untouched");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generation_cleanup_does_not_follow_generation_entry_junction() {
+        let unique = media_index_transaction_unique();
+        let fixture = std::env::temp_dir().join(format!(
+            "sorotte-media-index-generation-entry-junction-{unique}"
+        ));
+        let live_root = fixture.join("live");
+        let generations_root = live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        let outside_generation = fixture.join("outside-generation");
+        fs::create_dir_all(&generations_root).expect("generations root should be created");
+        fs::create_dir_all(&outside_generation).expect("outside generation should be created");
+        let canary = outside_generation.join("must-not-be-deleted.txt");
+        fs::write(&canary, b"outside").expect("outside canary should be written");
+
+        let generation_link = generations_root.join("generation-stale");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&generation_link)
+            .arg(&outside_generation)
+            .status()
+            .expect("junction creation command should launch");
+        assert!(status.success(), "junction creation should succeed");
+
+        let cleanup = collect_old_media_index_generations(
+            &live_root,
+            "generation-current",
+            Some("generation-previous"),
+        );
+        let canary_survived = canary.is_file();
+
+        fs::remove_dir(&generation_link)
+            .expect("generation junction should be removed without following it");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            cleanup.is_err(),
+            "generation cleanup must reject a junction entry"
+        );
+        assert!(canary_survived, "the junction target must remain untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generation_cleanup_does_not_follow_generations_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let unique = media_index_transaction_unique();
+        let fixture =
+            std::env::temp_dir().join(format!("sorotte-media-index-generation-link-{unique}"));
+        let live_root = fixture.join("live");
+        let outside_root = fixture.join("outside");
+        let outside_generation = outside_root.join("generation-stale");
+        fs::create_dir_all(&live_root).expect("live index root should be created");
+        fs::create_dir_all(&outside_generation).expect("outside generation should be created");
+        let canary = outside_generation.join("must-not-be-deleted.txt");
+        fs::write(&canary, b"outside").expect("outside canary should be written");
+
+        let generations_link = live_root.join(MEDIA_INDEX_GENERATIONS_DIR);
+        symlink(&outside_root, &generations_link).expect("generations symlink should be created");
+
+        let cleanup = collect_old_media_index_generations(
+            &live_root,
+            "generation-current",
+            Some("generation-previous"),
+        );
+        let creation = create_or_validate_media_index_generations_root(&live_root);
+        let canary_survived = canary.is_file();
+
+        fs::remove_file(&generations_link).expect("generations symlink should be removed");
+        fs::remove_dir_all(&fixture).expect("fixture should be removed");
+
+        assert!(
+            cleanup.is_err(),
+            "generation cleanup must reject a symlink root"
+        );
+        assert!(
+            creation.is_err(),
+            "generation creation must reject a symlink root"
+        );
+        assert!(canary_survived, "the symlink target must remain untouched");
+    }
 }

@@ -290,7 +290,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 )?;
             }
             ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation => {
-                runtime.run_reconnect_state_restore_validation_if_needed()?;
+                runtime.run_reconnect_state_restore_validation_if_needed_at(now_seconds)?;
             }
             ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
                 let _ = runtime
