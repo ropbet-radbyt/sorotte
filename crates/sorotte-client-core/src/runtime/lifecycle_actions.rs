@@ -11,6 +11,7 @@ where
         self.control.begin_protocol_connection_generation();
         self.playback_coordination
             .begin_protocol_connection_generation(&self.session);
+        self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();
     }
 
     pub fn run_readiness_unpause_attempt(

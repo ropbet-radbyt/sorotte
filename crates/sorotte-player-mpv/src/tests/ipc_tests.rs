@@ -1225,6 +1225,43 @@ fn noisy_incoming_event_cannot_evict_a_full_structural_event_window() {
     );
 }
 
+#[test]
+fn queue_pressure_preserves_transient_seek_and_playback_restart_lifecycle_edges() {
+    let (ordinary_capacity, _) = MpvJsonIpcClient::test_runtime_queue_capacities();
+    let seek = json!({"event": "seek"});
+    let playback_restart = json!({"event": "playback-restart"});
+    let mut reads = vec![seek.to_string(), playback_restart.to_string()];
+    for tick in 0..ordinary_capacity {
+        reads.push(
+            json!({"event": "property-change", "name": "time-pos", "data": tick}).to_string(),
+        );
+    }
+    reads.push(json!({"request_id": 1, "error": "success"}).to_string());
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 13),
+        Ok(Some(1))
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!client.test_nonblocking_command_is_pending());
+
+    let ordinary_events = client.take_pending_events();
+    assert!(
+        ordinary_events.contains(&seek),
+        "seek is a one-shot lifecycle edge required to track active seek ownership"
+    );
+    assert!(
+        ordinary_events.contains(&playback_restart),
+        "playback-restart is a one-shot lifecycle edge required to complete StartAfterLoad and StartAfterSeek commands"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_named_pipe_read_is_cancelled_at_command_deadline() {

@@ -66,6 +66,70 @@ fn reconnect_retry_policy_applies_sync_state_reset_before_retry() {
 }
 
 #[test]
+fn reconnect_retry_discards_latency_estimates_owned_by_the_previous_transport() {
+    let mut runtime = ClientRuntime::new(
+        ClientSession::default(),
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    runtime
+        .ping_metrics_legacy_compatible
+        .observe_inbound_state_at(
+            &StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_client_latency_calculation(100.0)
+                    .with_server_rtt(0.1),
+            ),
+            101.0,
+        );
+    assert!(
+        runtime
+            .ping_metrics_legacy_compatible
+            .forward_delay_seconds()
+            > 1.0,
+        "precondition: the first transport should own a material delay estimate"
+    );
+
+    runtime
+        .run_reconnect_retry(0)
+        .expect("reconnect scheduling should succeed");
+
+    runtime
+        .session_mut_for_test()
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room2"},"version":"1.2.255"}}"#,
+            200.0,
+        )
+        .expect("new transport Hello should apply");
+    runtime
+        .session_mut_for_test()
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            200.0,
+        )
+        .expect("new transport state without fresh ping metrics should apply");
+    assert_eq!(
+        runtime
+            .current_room_playstate_legacy_ping_compatible_at(200.0)
+            .and_then(|playstate| playstate.position),
+        Some(10.0),
+        "the disconnected transport's delay must not move the new transport's room clock"
+    );
+    assert_eq!(
+        runtime
+            .ping_metrics_legacy_compatible
+            .forward_delay_seconds(),
+        0.0,
+        "a new transport must not inherit the disconnected transport's one-way delay"
+    );
+    assert_eq!(
+        runtime.ping_metrics_legacy_compatible.client_rtt_seconds(),
+        0.0,
+        "a new transport must not advertise the disconnected transport's RTT"
+    );
+}
+
+#[test]
 fn runtime_actions_for_reconnect_retry_schedule_or_stop_as_expected() {
     let mut session = ClientSession::default();
 

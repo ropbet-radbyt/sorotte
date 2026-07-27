@@ -369,6 +369,7 @@ pub(crate) async fn dispatch_outbound_lines_to_clients(
     client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
 ) {
+    let mut events_by_client = BTreeMap::<String, Vec<ClientOutboundEvent>>::new();
     for line in outbound_lines {
         let event = match line.delivery {
             ServerOutboundDelivery::Reliable => ClientOutboundEvent::ReliableLine(line.line),
@@ -376,7 +377,23 @@ pub(crate) async fn dispatch_outbound_lines_to_clients(
                 ClientOutboundEvent::PeriodicStateLine(line.line)
             }
         };
-        dispatch_client_event(client_event_senders, &line.client_id, event).await;
+        events_by_client
+            .entry(line.client_id)
+            .or_default()
+            .push(event);
+    }
+
+    let mut dispatch_tasks = JoinSet::new();
+    for (client_id, events) in events_by_client {
+        let client_event_senders = Arc::clone(client_event_senders);
+        dispatch_tasks.spawn(async move {
+            for event in events {
+                dispatch_client_event(&client_event_senders, &client_id, event).await;
+            }
+        });
+    }
+    while let Some(result) = dispatch_tasks.join_next().await {
+        result.expect("client outbound dispatch task should not panic");
     }
 }
 

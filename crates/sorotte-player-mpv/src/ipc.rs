@@ -1406,7 +1406,7 @@ fn is_causally_ordered_sorotte_control_event(event: &Value) -> bool {
 
 fn is_structural_mpv_event(event: &Value) -> bool {
     match event.get("event").and_then(Value::as_str) {
-        Some("start-file" | "end-file" | "file-loaded") => true,
+        Some("start-file" | "end-file" | "file-loaded" | "seek" | "playback-restart") => true,
         Some("property-change") => event.get("name").and_then(Value::as_str) == Some("path"),
         _ => false,
     }

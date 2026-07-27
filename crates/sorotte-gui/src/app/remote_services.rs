@@ -457,13 +457,31 @@ fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
+#[cfg(not(windows))]
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 pub(crate) fn cleanup_update_staging_root(gui_config_root: Option<&Path>) -> Result<(), String> {
     let Some(gui_config_root) = gui_config_root else {
         return Ok(());
     };
     let updates_root = gui_config_root.join("updates");
-    if !updates_root.exists() {
-        return Ok(());
+    match fs::symlink_metadata(&updates_root) {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
+            return Err(format!(
+                "update staging path is not a regular directory: {}",
+                updates_root.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting update staging directory {}: {error}",
+                updates_root.display()
+            ));
+        }
     }
     cleanup_updates_root_entries(&updates_root, None)?;
     match fs::remove_dir(&updates_root) {
@@ -1280,6 +1298,18 @@ fn cleanup_updates_root_entries(
     updates_root: &Path,
     active_stage_name: Option<&std::ffi::OsStr>,
 ) -> Result<(), String> {
+    let root_metadata = fs::symlink_metadata(updates_root).map_err(|error| {
+        format!(
+            "failed to inspect update staging directory {}: {error}",
+            updates_root.display()
+        )
+    })?;
+    if metadata_is_link_or_reparse(&root_metadata) || !root_metadata.is_dir() {
+        return Err(format!(
+            "update staging path is not a regular directory: {}",
+            updates_root.display()
+        ));
+    }
     for entry in fs::read_dir(updates_root).map_err(|error| {
         format!(
             "failed to read update staging directory {}: {error}",
@@ -1297,13 +1327,19 @@ fn cleanup_updates_root_entries(
             continue;
         }
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
             format!(
                 "failed to inspect stale update staging entry {}: {error}",
                 path.display()
             )
         })?;
-        remove_update_staging_entry(&path, file_type)?;
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(format!(
+                "refusing to remove stale update staging link or reparse point: {}",
+                path.display()
+            ));
+        }
+        remove_update_staging_entry(&path, metadata.file_type())?;
     }
     Ok(())
 }
@@ -2474,6 +2510,40 @@ mod tests {
 
         assert!(!updates_root.exists());
         fs::remove_dir_all(&config_root).expect("test config root should be removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn update_staging_root_cleanup_rejects_updates_junction_without_deleting_target() {
+        let root = temp_update_root("staging-root-junction");
+        let config_root = root.join("config");
+        let outside_root = root.join("outside");
+        fs::create_dir_all(&config_root).expect("config root should be created");
+        fs::create_dir_all(&outside_root).expect("outside root should be created");
+        let canary = outside_root.join("must-not-be-deleted.txt");
+        fs::write(&canary, b"outside").expect("outside canary should be written");
+        let updates_root = config_root.join("updates");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&updates_root)
+            .arg(&outside_root)
+            .status()
+            .expect("junction command should start");
+        assert!(status.success(), "test junction should be created");
+
+        let result = cleanup_update_staging_root(Some(&config_root));
+
+        assert!(
+            canary.is_file(),
+            "startup cleanup must not traverse the updates junction and delete external contents; got {result:?}"
+        );
+        assert!(
+            result.is_err(),
+            "startup cleanup must reject an updates junction; got {result:?}"
+        );
+
+        let _ = fs::remove_dir(&updates_root);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use sorotte_client_app::app_boundary::state::{
 };
 use sorotte_protocol::{
     DEFAULT_MAX_PROTOCOL_LINE_BYTES, PingPayload, ProtocolMessage, StatePayload,
-    decode_message_line, decode_message_line_items, encode_message_line,
+    decode_message_line_items, encode_message_line,
 };
 
 use super::handle::{
@@ -948,22 +948,30 @@ impl GuiTcpSessionTransportDriver {
         transport_handle: &GuiQueuedSessionTransportHandle,
         line: String,
     ) -> Result<(), String> {
-        let Ok(message) = decode_message_line(&line) else {
-            return if self.tls_policy == TlsPolicy::RequireTls {
-                Err("Session transport TCP received a malformed response instead of accepting required TLS.".to_owned())
-            } else {
-                Self::warn_prefer_tls_plaintext_fallback(
-                    transport_handle,
-                    "The server returned a malformed STARTTLS response.",
-                );
-                self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
-                self.tls_response_started_at = None;
-                self.initial_hello_started_at = Some(Instant::now());
-                Ok(())
-            };
+        let messages = match decode_message_line_items(&line) {
+            Ok(items) if !items.is_empty() && items.iter().all(|item| item.message.is_ok()) => {
+                items
+                    .into_iter()
+                    .map(|item| item.message.expect("validated protocol item"))
+                    .collect::<Vec<_>>()
+            }
+            _ => {
+                return if self.tls_policy == TlsPolicy::RequireTls {
+                    Err("Session transport TCP received a malformed response instead of accepting required TLS.".to_owned())
+                } else {
+                    Self::warn_prefer_tls_plaintext_fallback(
+                        transport_handle,
+                        "The server returned a malformed STARTTLS response.",
+                    );
+                    self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
+                    self.tls_response_started_at = None;
+                    self.initial_hello_started_at = Some(Instant::now());
+                    Ok(())
+                };
+            }
         };
-        match message {
-            ProtocolMessage::Tls(tls_message) if tls_message.tls.start_tls == "true" => {
+        match messages.as_slice() {
+            [ProtocolMessage::Tls(tls_message)] if tls_message.tls.start_tls == "true" => {
                 let server_name = self.server_name()?;
                 let transport = self.transport.take().ok_or_else(|| {
                     "Session transport TCP TLS upgrade failed because the socket was unavailable."
@@ -975,7 +983,7 @@ impl GuiTcpSessionTransportDriver {
                 self.tls_response_started_at = None;
                 self.tls_handshake_started_at = Some(Instant::now());
             }
-            ProtocolMessage::Tls(_) => {
+            [ProtocolMessage::Tls(_)] => {
                 if self.tls_policy == TlsPolicy::RequireTls {
                     return Err(
                         "Session transport TCP server refused required TLS negotiation.".to_owned(),
@@ -989,7 +997,7 @@ impl GuiTcpSessionTransportDriver {
                 self.tls_response_started_at = None;
                 self.initial_hello_started_at = Some(Instant::now());
             }
-            _ => {
+            [message] => {
                 if self.tls_policy == TlsPolicy::RequireTls {
                     return Err(format!(
                         "Session transport TCP server returned unexpected {} message instead of accepting required TLS.",
@@ -999,6 +1007,21 @@ impl GuiTcpSessionTransportDriver {
                 Self::warn_prefer_tls_plaintext_fallback(
                     transport_handle,
                     "The server returned an unexpected message instead of a STARTTLS response.",
+                );
+                self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
+                self.tls_response_started_at = None;
+                self.initial_hello_started_at = Some(Instant::now());
+                transport_handle.push_inbound_protocol_line(line);
+            }
+            _ => {
+                if self.tls_policy == TlsPolicy::RequireTls {
+                    return Err(
+                        "Session transport TCP server bundled additional protocol messages with its STARTTLS response instead of providing a standalone required TLS acceptance.".to_owned(),
+                    );
+                }
+                Self::warn_prefer_tls_plaintext_fallback(
+                    transport_handle,
+                    "The server bundled additional messages with its STARTTLS response.",
                 );
                 self.tls_negotiation_state = GuiTcpSessionTlsNegotiationState::Disabled;
                 self.tls_response_started_at = None;

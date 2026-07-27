@@ -528,6 +528,70 @@ fn tcp_session_transport_require_tls_rejects_refusal_without_sending_hello() {
 }
 
 #[test]
+fn tcp_session_transport_prefer_tls_preserves_hello_bundled_after_refusal() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("bundled TLS-refusal test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("bundled TLS-refusal test server should expose address");
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        assert!(tls_request.contains(r#""startTLS":"send""#));
+        stream
+            .write_all(
+                br#"{"TLS":{"startTLS":"false"},"Hello":{"username":"server","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("bundled refusal and Hello should write");
+        stream
+            .write_all(b"\n")
+            .expect("bundled refusal and Hello should terminate");
+        stream.flush().expect("bundled response should flush");
+        let _ = stop_rx.recv_timeout(Duration::from_secs(1));
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
+    .expect("PreferTls client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let mut inbound = Vec::new();
+    while Instant::now() < deadline && inbound.is_empty() {
+        driver
+            .pump(&transport)
+            .expect("bundled refusal must keep the plaintext transport usable");
+        inbound = transport.drain_inbound_protocol_lines();
+        thread::sleep(Duration::from_millis(5));
+    }
+    let _ = stop_tx.send(());
+    server_thread.join().expect("server thread should join");
+
+    assert_eq!(
+        inbound.len(),
+        1,
+        "the valid bundled Hello must be re-injected into normal inbound handling"
+    );
+    let messages = sorotte_protocol::decode_message_line_items(&inbound[0].line)
+        .expect("bundled line should remain valid")
+        .into_iter()
+        .map(|item| item.message.expect("every bundled item should decode"))
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, sorotte_protocol::ProtocolMessage::Hello(_)))
+    );
+}
+
+#[test]
 fn tcp_session_transport_require_tls_rejects_substituted_message() {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .expect("required TLS substitution test server should bind");

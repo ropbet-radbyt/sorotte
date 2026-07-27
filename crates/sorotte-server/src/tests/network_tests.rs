@@ -934,6 +934,103 @@ async fn actor_commit_order_is_preserved_when_session_dispatches_resume_out_of_o
 }
 
 #[tokio::test]
+async fn stalled_peer_backpressure_grace_does_not_accumulate_across_unrelated_rooms() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username, room) in [
+        ("source-a", "alice", "room-a"),
+        ("slow-a", "bob", "room-a"),
+        ("slow-b", "carol", "room-a"),
+        ("slow-c", "dave", "room-a"),
+        ("slow-d", "erin", "room-a"),
+        ("source-b", "frank", "room-b"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room}"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let mut slow_receivers = Vec::new();
+    for client_id in ["slow-a", "slow-b", "slow-c", "slow-d"] {
+        let (event_tx, event_rx) =
+            crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+        client_event_senders
+            .lock()
+            .await
+            .insert(client_id.to_owned(), event_tx);
+        let lines = (0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY).map(|index| DirectedOutboundLine {
+            client_id: client_id.to_owned(),
+            line: format!("queued-{client_id}-{index}"),
+            delivery: ServerOutboundDelivery::Reliable,
+        });
+        crate::network::dispatch_outbound_lines_to_clients(&client_event_senders, lines.collect())
+            .await;
+        slow_receivers.push(event_rx);
+    }
+
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+    let first_committed = Arc::new(tokio::sync::Notify::new());
+    let first_runtime = runtime.clone();
+    let first_senders = client_event_senders.clone();
+    let first_dispatch_order = dispatch_order.clone();
+    let first_committed_task = first_committed.clone();
+    let first_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &first_runtime,
+            &first_dispatch_order,
+            "source-a",
+            r#"{"Set":{"playlistChange":{"files":["episode.mkv"]}}}"#,
+            &first_senders,
+            async move {
+                first_committed_task.notify_one();
+            },
+        )
+        .await
+        .expect("first room mutation and dispatch should succeed");
+    });
+    first_committed.notified().await;
+
+    let second_runtime = runtime.clone();
+    let second_senders = client_event_senders.clone();
+    let second_dispatch_order = dispatch_order.clone();
+    let mut unrelated_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &second_runtime,
+            &second_dispatch_order,
+            "source-b",
+            r#"{"List":null}"#,
+            &second_senders,
+            std::future::ready(()),
+        )
+        .await
+        .expect("unrelated room command should succeed");
+    });
+
+    timeout(Duration::from_millis(250), &mut unrelated_session)
+        .await
+        .expect(
+            "one room's stalled recipients must not accumulate serial overload grace periods while holding the global dispatch-order gate",
+        )
+        .expect("unrelated room dispatch task should join");
+
+    first_session
+        .await
+        .expect("first room dispatch task should join");
+    drop(slow_receivers);
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
 async fn server_network_accept_queue_is_bounded() {
     let (accepted_tx, _accepted_rx): (
         mpsc::Sender<io::Result<(TcpStream, std::net::SocketAddr)>>,
