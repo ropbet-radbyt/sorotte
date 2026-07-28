@@ -1,0 +1,26 @@
+schema_version = 1
+cargo_mutants_version = "27.1.0"
+
+[[shard]]
+id = "privacy-secret"
+owner = "secrets"
+package = "sorotte-secret"
+files = ["crates/sorotte-secret/src/lib.rs"]
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[accepted_unviable]]
+id = "const-default-is-not-const"
+shard = "privacy-secret"
+file = "crates/sorotte-secret/src/lib.rs"
+function = "RedactedCommandArgs::from_count"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants inserts a non-const Default::default call into a const fn, so Rust rejects the mutant before tests can run"
+review_by = "2026-10-31"

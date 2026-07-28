@@ -215,4 +215,141 @@ mod tests {
         assert!(!debug.contains("COOKIES_PATH_CANARY"));
         assert!(!debug.contains("SIGNED_URL_CANARY"));
     }
+
+    #[test]
+    fn command_argument_summary_recognizes_every_safe_standalone_flag() {
+        let cases = [
+            ("--fullscreen", "fullscreen"),
+            ("--fs", "fullscreen"),
+            ("--pause", "pause"),
+            ("--ontop", "ontop"),
+            ("--border", "border"),
+            ("--force-window", "force-window"),
+            ("--keep-open", "keep-open"),
+        ];
+
+        for (argument, expected_name) in cases {
+            let summary = RedactedCommandArgs::from_args([argument]);
+
+            assert_eq!(summary.count(), 1, "argument {argument}");
+            assert_eq!(
+                summary.safe_flags_present,
+                vec![expected_name],
+                "argument {argument}"
+            );
+            assert_eq!(
+                summary.to_string(),
+                format!("1 command argument(s) (safe flags present: {expected_name})"),
+                "argument {argument}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_argument_summary_deduplicates_safe_aliases_in_first_seen_order() {
+        let summary = RedactedCommandArgs::from_args([
+            "--pause",
+            "--fullscreen",
+            "--fs",
+            "--pause",
+            "--keep-open",
+        ]);
+
+        assert_eq!(summary.count(), 5);
+        assert_eq!(
+            summary.safe_flags_present,
+            vec!["pause", "fullscreen", "keep-open"]
+        );
+        assert_eq!(
+            summary.to_string(),
+            "5 command argument(s) (safe flags present: pause, fullscreen, keep-open)"
+        );
+    }
+
+    #[test]
+    fn option_name_summary_recognizes_only_exact_value_free_names() {
+        let cases = [
+            ("fullscreen", "fullscreen"),
+            ("fs", "fullscreen"),
+            ("pause", "pause"),
+            ("ontop", "ontop"),
+            ("border", "border"),
+            ("force-window", "force-window"),
+            ("keep-open", "keep-open"),
+        ];
+
+        for (option_name, expected_name) in cases {
+            let summary = RedactedCommandArgs::from_option_names([option_name]);
+
+            assert_eq!(summary.count(), 1, "option name {option_name}");
+            assert_eq!(
+                summary.safe_flags_present,
+                vec![expected_name],
+                "option name {option_name}"
+            );
+        }
+
+        let rejected = [
+            "",
+            "Fullscreen",
+            "--fullscreen",
+            "fullscreen=yes",
+            "keep_open",
+            "cookies-file",
+            "http-header-fields",
+        ];
+        for option_name in rejected {
+            let summary = RedactedCommandArgs::from_option_names([option_name]);
+
+            assert_eq!(summary.count(), 1, "option name {option_name:?}");
+            assert!(
+                summary.safe_flags_present.is_empty(),
+                "option name {option_name:?}"
+            );
+            assert_eq!(summary.to_string(), "1 command argument(s)");
+        }
+    }
+
+    #[test]
+    fn option_name_summary_counts_all_names_and_deduplicates_aliases() {
+        let summary = RedactedCommandArgs::from_option_names([
+            "fullscreen",
+            "fs",
+            "unknown",
+            "pause",
+            "fullscreen",
+        ]);
+
+        assert_eq!(summary.count(), 5);
+        assert_eq!(summary.safe_flags_present, vec!["fullscreen", "pause"]);
+        assert_eq!(
+            summary.to_string(),
+            "5 command argument(s) (safe flags present: fullscreen, pause)"
+        );
+    }
+
+    #[test]
+    fn count_only_summary_preserves_the_exact_count_without_safe_flags() {
+        let summary = RedactedCommandArgs::from_count(7);
+
+        assert_eq!(summary.count(), 7);
+        assert!(summary.safe_flags_present.is_empty());
+        assert_eq!(summary.to_string(), "7 command argument(s)");
+    }
+
+    #[test]
+    fn empty_secret_is_distinct_from_blank_nonempty_secret() {
+        assert!(SecretValue::new("").is_empty());
+        assert!(!SecretValue::new(" \t\r\n").is_empty());
+        assert!(!SecretValue::new("token").is_empty());
+    }
+
+    #[test]
+    fn string_and_str_conversions_preserve_the_exact_secret() {
+        let owned = SecretValue::from(String::from("owned-secret"));
+        let borrowed = SecretValue::from("borrowed-secret");
+
+        assert_eq!(owned.expose_secret(), "owned-secret");
+        assert_eq!(borrowed.expose_secret(), "borrowed-secret");
+    }
 }
