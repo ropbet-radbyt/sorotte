@@ -333,7 +333,10 @@ async fn negotiate_start_tls_with_policy(
         write_protocol_line(&mut stream, &tls_request_line).await?;
         let mut reader = BufReader::new(stream);
         let response = read_inbound_protocol_line(&mut reader).await?;
-        Ok::<_, anyhow::Error>((reader.into_inner(), response))
+        // Keep the reader as the transport. PreferTls fallback must preserve
+        // any later plaintext protocol bytes that arrived in the same socket
+        // read as the STARTTLS response.
+        Ok::<_, anyhow::Error>((reader, response))
     })
     .await
     .map_err(|_| {
@@ -1235,6 +1238,77 @@ mod tests {
             );
             assert!(pending.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_preserves_protocol_lines_read_ahead_with_unexpected_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n{\"Chat\":{\"username\":\"server\",\"message\":\"preserve read ahead\"}}\n",
+                )
+                .await
+                .expect("two-line fallback response should write in one operation");
+            writer
+                .flush()
+                .await
+                .expect("fallback response should flush");
+        });
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let mut negotiation = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::PreferTls,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("PreferTls should retain a plaintext connection");
+        server_task.await.expect("server task should complete");
+
+        let mut reader = BufReader::new(negotiation.stream);
+        let first = read_inbound_or_prefetched_protocol_line(
+            &mut reader,
+            &mut negotiation.prefetched_plaintext_lines,
+        )
+        .await
+        .expect("prefetched Hello read should succeed")
+        .expect("prefetched Hello should be present");
+        assert!(matches!(
+            decode_message_line(&first),
+            Ok(ProtocolMessage::Hello(_))
+        ));
+
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_inbound_or_prefetched_protocol_line(
+                &mut reader,
+                &mut negotiation.prefetched_plaintext_lines,
+            ),
+        )
+        .await
+        .expect("the already-sent second line should not time out")
+        .expect("second line read should succeed")
+        .expect("the read-ahead Chat line must not be discarded");
+        assert!(matches!(
+            decode_message_line(&second),
+            Ok(ProtocolMessage::Chat(_))
+        ));
     }
 
     #[tokio::test]

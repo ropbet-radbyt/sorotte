@@ -757,9 +757,10 @@ where
         Some(format!("{} roots", search_roots.len())),
         0.05,
     ));
-    let candidates = collect_media_match_candidates(search_roots, cancel_flag)?;
+    let discovery = discover_media_match_candidates(search_roots, cancel_flag)?;
+    let candidates = discovery.candidates;
     if current_player_path.is_none() {
-        inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
+        inventory_media_match_candidates(root, &discovery.scanned_roots, &candidates, cancel_flag)?;
         match media_match_tool_paths_for_settings(tool_root, extraction_settings) {
             Ok(tools) => {
                 return rebuild_persisted_media_match_candidates_with_progress_and_cancel(
@@ -1083,15 +1084,18 @@ where
         Some(format!("{} roots", request.search_roots.len())),
         0.05,
     ));
-    let explicit_candidates = request.candidates.as_ref();
-    let candidates = match explicit_candidates {
-        Some(candidates) => candidates.clone(),
-        None => collect_media_match_candidates(request.search_roots, request.cancel_flag)?,
+    let (candidates, scanned_roots) = match request.candidates.as_ref() {
+        Some(candidates) => (candidates.clone(), None),
+        None => {
+            let discovery =
+                discover_media_match_candidates(request.search_roots, request.cancel_flag)?;
+            (discovery.candidates, Some(discovery.scanned_roots))
+        }
     };
-    if explicit_candidates.is_none() {
+    if let Some(scanned_roots) = scanned_roots.as_ref() {
         inventory_media_match_candidates(
             request.root,
-            request.search_roots,
+            scanned_roots,
             &candidates,
             request.cancel_flag,
         )?;
@@ -1464,7 +1468,20 @@ fn collect_media_match_candidates(
     search_roots: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<Vec<PathBuf>, String> {
-    collect_media_match_candidates_with_limits(
+    discover_media_match_candidates(search_roots, cancel_flag).map(|discovery| discovery.candidates)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaMatchCandidateDiscovery {
+    candidates: Vec<PathBuf>,
+    scanned_roots: Vec<PathBuf>,
+}
+
+fn discover_media_match_candidates(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<MediaMatchCandidateDiscovery, String> {
+    discover_media_match_candidates_with_limits(
         search_roots,
         cancel_flag,
         MediaMatchDiscoveryLimits {
@@ -1474,11 +1491,21 @@ fn collect_media_match_candidates(
     )
 }
 
+#[cfg(test)]
 fn collect_media_match_candidates_with_limits(
     search_roots: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
     limits: MediaMatchDiscoveryLimits,
 ) -> Result<Vec<PathBuf>, String> {
+    discover_media_match_candidates_with_limits(search_roots, cancel_flag, limits)
+        .map(|discovery| discovery.candidates)
+}
+
+fn discover_media_match_candidates_with_limits(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+    limits: MediaMatchDiscoveryLimits,
+) -> Result<MediaMatchCandidateDiscovery, String> {
     let mut files = Vec::new();
     // Configured roots are explicit trust boundaries. Follow a root link/junction for directory
     // validation and canonical cycle identity while preserving its configured spelling in
@@ -1486,9 +1513,12 @@ fn collect_media_match_candidates_with_limits(
     let mut stack = search_roots
         .iter()
         .cloned()
-        .map(|root| (root, 0usize, true))
+        .enumerate()
+        .map(|(root_index, root)| (root, 0usize, true, root_index))
         .collect::<Vec<_>>();
     let mut visited_directories = HashSet::new();
+    let mut root_scan_complete = vec![true; search_roots.len()];
+    let mut root_was_traversed = vec![false; search_roots.len()];
     // Root work items are nodes too. Count them up front so an attacker cannot bypass the global
     // bound with a huge list of empty, duplicate, or nonexistent roots.
     let mut visited_nodes = search_roots.len();
@@ -1498,7 +1528,7 @@ fn collect_media_match_candidates_with_limits(
             limits.max_nodes
         ));
     }
-    while let Some((path, depth, is_explicit_root)) = stack.pop() {
+    while let Some((path, depth, is_explicit_root, root_index)) = stack.pop() {
         check_media_match_discovery_canceled(cancel_flag)?;
         let metadata = if is_explicit_root {
             fs::metadata(&path)
@@ -1506,20 +1536,28 @@ fn collect_media_match_candidates_with_limits(
             fs::symlink_metadata(&path)
         };
         let Ok(metadata) = metadata else {
+            root_scan_complete[root_index] = false;
             continue;
         };
         if !metadata.is_dir() {
+            root_scan_complete[root_index] = false;
             continue;
         }
         let Ok(canonical_path) = fs::canonicalize(&path) else {
+            root_scan_complete[root_index] = false;
             continue;
         };
         if !visited_directories.insert(media_match_directory_visit_key(&canonical_path)) {
+            root_scan_complete[root_index] = false;
             continue;
         }
         let Ok(entries) = fs::read_dir(&path) else {
+            root_scan_complete[root_index] = false;
             continue;
         };
+        if is_explicit_root {
+            root_was_traversed[root_index] = true;
+        }
         for entry in entries {
             check_media_match_discovery_canceled(cancel_flag)?;
             visited_nodes = visited_nodes.saturating_add(1);
@@ -1530,10 +1568,12 @@ fn collect_media_match_candidates_with_limits(
                 ));
             }
             let Ok(entry) = entry else {
+                root_scan_complete[root_index] = false;
                 continue;
             };
             let path = entry.path();
             let Ok(metadata) = fs::symlink_metadata(&path) else {
+                root_scan_complete[root_index] = false;
                 continue;
             };
             if metadata_is_directory_link(&metadata) {
@@ -1547,7 +1587,7 @@ fn collect_media_match_candidates_with_limits(
                         path.display()
                     ));
                 }
-                stack.push((path, depth + 1, false));
+                stack.push((path, depth + 1, false, root_index));
             } else if metadata.is_file() && media_match_candidate_extension(&path) {
                 files.push(path);
             }
@@ -1558,7 +1598,16 @@ fn collect_media_match_candidates_with_limits(
             .cmp(&normalize_media_path(right))
             .then_with(|| left.cmp(right))
     });
-    Ok(files)
+    let scanned_roots = search_roots
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| root_was_traversed[*index] && root_scan_complete[*index])
+        .map(|(_, root)| root.clone())
+        .collect();
+    Ok(MediaMatchCandidateDiscovery {
+        candidates: files,
+        scanned_roots,
+    })
 }
 
 fn check_media_match_discovery_canceled(cancel_flag: Option<&AtomicBool>) -> Result<(), String> {
@@ -1596,7 +1645,7 @@ fn media_match_directory_visit_key(path: &Path) -> String {
 
 fn inventory_media_match_candidates(
     root: &Path,
-    search_roots: &[PathBuf],
+    scanned_roots: &[PathBuf],
     candidates: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
@@ -1622,7 +1671,7 @@ fn inventory_media_match_candidates(
             size_bytes,
         ));
     }
-    let normalized_roots = search_roots
+    let normalized_roots = scanned_roots
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
@@ -1647,8 +1696,8 @@ pub(super) fn rebuild_persisted_media_match_inventory_for_tests(
     root: &Path,
     search_roots: &[PathBuf],
 ) -> Result<(), String> {
-    let candidates = collect_media_match_candidates(search_roots, None)?;
-    inventory_media_match_candidates(root, search_roots, &candidates, None)
+    let discovery = discover_media_match_candidates(search_roots, None)?;
+    inventory_media_match_candidates(root, &discovery.scanned_roots, &discovery.candidates, None)
 }
 
 fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
@@ -4393,6 +4442,82 @@ mod tests {
         assert!(
             !cache.records.contains_key(&removed_normalized_path),
             "deleted files under scanned roots should not remain in the media-match cache"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_preserves_records_when_configured_root_is_temporarily_missing() {
+        let root = unique_media_match_test_root("temporarily-missing-inventory-root");
+        let media_dir = root.join("media");
+        let offline_media_dir = root.join("media-offline");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let media_path = media_dir.join("episode.mkv");
+        std::fs::write(&media_path, b"episode").expect("media should be written");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
+        let normalized_path = record.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(record);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        std::fs::rename(&media_dir, &offline_media_dir)
+            .expect("configured root should become temporarily unavailable");
+        rebuild_persisted_media_match_inventory_for_tests(&root, std::slice::from_ref(&media_dir))
+            .expect("temporarily missing root should not make the inventory rebuild fail");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("cached record should still load");
+        assert!(
+            cache.records.contains_key(&normalized_path),
+            "a temporarily missing configured root must not be treated as a successful empty scan"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_prunes_healthy_roots_while_retaining_an_offline_root() {
+        let root = unique_media_match_test_root("mixed-online-offline-inventory-roots");
+        let online_dir = root.join("online");
+        let offline_dir = root.join("offline");
+        let moved_offline_dir = root.join("offline-unmounted");
+        std::fs::create_dir_all(&online_dir).expect("online media dir should be created");
+        std::fs::create_dir_all(&offline_dir).expect("offline media dir should be created");
+        let deleted_online_path = online_dir.join("deleted.mkv");
+        let retained_offline_path = offline_dir.join("retained.mkv");
+        std::fs::write(&deleted_online_path, b"online").expect("online media should be written");
+        std::fs::write(&retained_offline_path, b"offline")
+            .expect("offline media should be written");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let deleted_online =
+            fake_media_match_record_for_file(&deleted_online_path, extraction_settings.clone());
+        let retained_offline =
+            fake_media_match_record_for_file(&retained_offline_path, extraction_settings.clone());
+        let deleted_online_key = deleted_online.identity.normalized_path.clone();
+        let retained_offline_key = retained_offline.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(deleted_online);
+        cache.insert(retained_offline);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        std::fs::remove_file(&deleted_online_path).expect("online file should be deleted");
+        std::fs::rename(&offline_dir, &moved_offline_dir)
+            .expect("offline root should become unavailable");
+        rebuild_persisted_media_match_inventory_for_tests(
+            &root,
+            &[online_dir.clone(), offline_dir.clone()],
+        )
+        .expect("mixed-root rebuild should succeed");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("retained cache should load");
+        assert!(
+            !cache.records.contains_key(&deleted_online_key),
+            "a healthy scanned root must continue pruning genuinely deleted files"
+        );
+        assert!(
+            cache.records.contains_key(&retained_offline_key),
+            "an unavailable root must retain its cached records"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -825,6 +825,119 @@ async fn server_network_periodic_state_updates_coalesce_to_latest() {
 }
 
 #[tokio::test]
+async fn authoritative_buffering_pause_is_not_dropped_as_periodic_backpressure() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        let hello = format!(
+            r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room}"}},"version":"1.7.5","features":{{"sorottePlaybackBarrierV1":true}}}}}}"#
+        );
+        runtime
+            .handle_line(client_id, &hello)
+            .expect("hello should succeed");
+    }
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"controllerAuth":{"password":"AB-123-456"}}}"#,
+        )
+        .expect("policy controller authentication should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("room should start playing");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":2,"policy":"pauseAnyEligible","debounceMs":1000,"resumeHysteresisMs":1500,"maxPauseMs":10000}}}}"#,
+        )
+        .expect("policy should configure");
+    runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"transport":{"mediaGeneration":2,"buffering":true}}}}"#,
+        )
+        .expect("buffering report should succeed");
+    let paused = runtime
+        .collect_dispatch_at(101.0)
+        .expect("debounce deadline should pause");
+    let mut authoritative_pause = paused
+        .outbound_lines
+        .into_iter()
+        .find(|line| {
+            line.client_id == "alice-client"
+                && matches!(
+                    decode_message_line(&line.line),
+                    Ok(ProtocolMessage::State(ref state))
+                        if state.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.paused == Some(true)
+                        })
+                )
+        })
+        .expect("maintenance should emit an authoritative pause");
+    let pause_line = authoritative_pause.line.clone();
+    authoritative_pause.client_id = "client-1".to_owned();
+
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+    fill_reliable_outbound_queue(&client_event_senders).await;
+    let pause_dispatch_senders = client_event_senders.clone();
+    let pause_dispatch = tokio::spawn(async move {
+        crate::network::dispatch_outbound_lines_to_clients(
+            &pause_dispatch_senders,
+            vec![authoritative_pause],
+        )
+        .await;
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        event_rx.receive_reliable_line_for_test().await.is_some(),
+        "transient congestion should clear"
+    );
+    pause_dispatch
+        .await
+        .expect("authoritative pause dispatch should join");
+    let mut delivered = Vec::new();
+    assert!(
+        client_event_senders.lock().await.contains_key("client-1"),
+        "transient congestion must leave the connection registered"
+    );
+    while let Ok(Some(line)) = timeout(
+        Duration::from_millis(10),
+        event_rx.receive_reliable_line_for_test(),
+    )
+    .await
+    {
+        delivered.push(line);
+    }
+    let pause_delivered = delivered.iter().any(|line| line == &pause_line);
+    let recovery_tick = runtime
+        .collect_dispatch_at(102.0)
+        .expect("the next maintenance tick should succeed");
+    let periodic_recovery_delivered = recovery_tick.outbound_lines.iter().any(|line| {
+        line.client_id == "alice-client"
+            && matches!(
+                decode_message_line(&line.line),
+                Ok(ProtocolMessage::State(ref state)) if state.state.playstate.is_some()
+            )
+    });
+    assert!(
+        pause_delivered || periodic_recovery_delivered,
+        "the room-authoritative pause was dropped and its unseen server-ignoring counter also \
+         suppressed the next periodic recovery state: pause_delivered={pause_delivered}, \
+         periodic_recovery_delivered={periodic_recovery_delivered}"
+    );
+}
+
+#[tokio::test]
 async fn actor_commit_order_is_preserved_when_session_dispatches_resume_out_of_order() {
     let runtime = ServerActorHandle::spawn(ServerRuntime::new());
     for (client_id, username) in [

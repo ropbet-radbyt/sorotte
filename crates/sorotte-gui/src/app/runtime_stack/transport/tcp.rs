@@ -1168,6 +1168,7 @@ struct GuiThreadedTcpSessionTransportWorker {
     error_rx: mpsc::Receiver<String>,
     join_handle: Option<thread::JoinHandle<()>>,
     pump_request_in_flight: bool,
+    generation_handle: GuiQueuedSessionTransportHandle,
 }
 
 impl GuiThreadedTcpSessionTransportDriver {
@@ -1211,6 +1212,8 @@ impl GuiThreadedTcpSessionTransportDriver {
         let (pump_tx, pump_rx) = mpsc::channel();
         let (pump_result_tx, pump_result_rx) = mpsc::channel();
         let (error_tx, error_rx) = mpsc::channel();
+        let generation_handle = transport.begin_worker_generation();
+        let worker_transport = generation_handle.clone();
         let join_handle = thread::Builder::new()
             .name("sorotte-gui-tcp-transport".to_owned())
             .spawn(move || {
@@ -1228,7 +1231,7 @@ impl GuiThreadedTcpSessionTransportDriver {
                     };
                 let mut liveness_was_enabled = false;
                 let mut observed_outbound_activity =
-                    transport.outbound_protocol_activity_revision();
+                    worker_transport.outbound_protocol_activity_revision();
                 let mut next_liveness_at = Instant::now() + Self::LIVENESS_INITIAL_DELAY;
                 loop {
                     let pump_requested = match pump_rx.recv_timeout(Self::WORKER_PUMP_INTERVAL) {
@@ -1249,7 +1252,8 @@ impl GuiThreadedTcpSessionTransportDriver {
                     }
 
                     let now = Instant::now();
-                    let current_outbound_activity = transport.outbound_protocol_activity_revision();
+                    let current_outbound_activity =
+                        worker_transport.outbound_protocol_activity_revision();
                     if current_outbound_activity != observed_outbound_activity {
                         observed_outbound_activity = current_outbound_activity;
                         next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
@@ -1262,7 +1266,8 @@ impl GuiThreadedTcpSessionTransportDriver {
                             next_liveness_at = now + Self::LIVENESS_INITIAL_DELAY;
                         }
                         if now >= next_liveness_at {
-                            transport.push_outbound_liveness_protocol_line(liveness_line.clone());
+                            worker_transport
+                                .push_outbound_liveness_protocol_line(liveness_line.clone());
                             next_liveness_at = now + Self::LIVENESS_INTERVAL;
                         }
                     } else {
@@ -1270,7 +1275,7 @@ impl GuiThreadedTcpSessionTransportDriver {
                     }
                     liveness_was_enabled = liveness_is_enabled;
 
-                    if let Err(error) = driver.pump(&transport) {
+                    if let Err(error) = driver.pump(&worker_transport) {
                         let _ = error_tx.send(error.clone());
                         if pump_requested {
                             let _ = pump_result_tx.send(Err(error));
@@ -1294,6 +1299,7 @@ impl GuiThreadedTcpSessionTransportDriver {
             error_rx,
             join_handle: Some(join_handle),
             pump_request_in_flight: false,
+            generation_handle,
         });
         Ok(())
     }
@@ -1421,6 +1427,11 @@ impl GuiThreadedTcpSessionTransportWorker {
     }
 
     fn stop(mut self) {
+        // Fence every shared-handle operation before returning to the owner.
+        // The network thread may still be blocked in DNS or socket I/O, but it
+        // can no longer consume, acknowledge, fail, or publish data belonging
+        // to the replacement worker generation.
+        self.generation_handle.invalidate_worker_generation();
         let _ = self.stop_tx.send(());
         if let Some(join_handle) = self
             .join_handle
@@ -1442,6 +1453,84 @@ impl Drop for GuiThreadedTcpSessionTransportDriver {
 mod tests {
     use super::super::handle::GuiOutboundProtocolDelivery;
     use super::*;
+
+    #[test]
+    fn stopped_threaded_worker_cannot_fail_a_new_generation_delivery() {
+        let transport = GuiQueuedSessionTransportHandle::default();
+        let stale_transport = transport.begin_worker_generation();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (pump_tx, _pump_rx) = mpsc::channel();
+        let (_pump_result_tx, pump_result_rx) = mpsc::channel();
+        let (_error_tx, error_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let stale_worker_transport = stale_transport.clone();
+        let join_handle = thread::spawn(move || {
+            entered_tx.send(()).expect("worker should announce entry");
+            stop_rx.recv().expect("worker should receive stop");
+            release_rx
+                .recv()
+                .expect("test should release the stopped worker");
+            stale_worker_transport
+                .fail_pending_outbound_protocol_delivery(0, "stale worker stopped after reconnect");
+            finished_tx.send(()).expect("worker should announce exit");
+        });
+        entered_rx.recv().expect("worker should enter");
+
+        let worker = GuiThreadedTcpSessionTransportWorker {
+            stop_tx,
+            pump_tx,
+            pump_result_rx,
+            error_rx,
+            join_handle: Some(join_handle),
+            pump_request_in_flight: false,
+            generation_handle: stale_transport,
+        };
+        let (stop_returned_tx, stop_returned_rx) = mpsc::channel();
+        thread::spawn(move || {
+            worker.stop();
+            stop_returned_tx
+                .send(())
+                .expect("stop return should be observable");
+        });
+
+        let stop_returned_while_old_worker_was_alive = stop_returned_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        if stop_returned_while_old_worker_was_alive {
+            transport
+                .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+                    91,
+                    r#"{"State":{"ping":{}}}"#,
+                ))
+                .expect("new generation delivery should queue");
+        }
+        release_tx
+            .send(())
+            .expect("test should release the stopped worker");
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stopped worker should finish");
+        if !stop_returned_while_old_worker_was_alive {
+            stop_returned_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("blocking stop should return after its worker exits");
+            transport
+                .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+                    91,
+                    r#"{"State":{"ping":{}}}"#,
+                ))
+                .expect("new generation delivery should queue");
+        }
+
+        assert!(
+            transport
+                .drain_outbound_protocol_delivery_results()
+                .is_empty(),
+            "a worker generation whose stop returned must not fail a later generation's delivery"
+        );
+    }
 
     #[test]
     fn address_resolution_is_bounded_by_the_total_connect_deadline() {

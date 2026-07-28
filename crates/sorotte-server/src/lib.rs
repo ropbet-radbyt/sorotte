@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Write as _,
     fs, io,
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
@@ -250,6 +251,8 @@ pub enum ServerRuntimeError {
     InvalidHello,
     #[error("{0} persistence worker is unavailable")]
     PersistenceWorkerUnavailable(&'static str),
+    #[error("cannot reconfigure the persistent-room database while room '{0}' is occupied")]
+    PersistentRoomDatabaseReconfigurationBusy(String),
 }
 
 #[derive(Debug, thiserror::Error)]

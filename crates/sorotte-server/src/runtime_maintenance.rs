@@ -408,6 +408,32 @@ impl ServerRuntime {
         }
     }
 
+    pub(crate) fn replace_persisted_rooms_snapshot(
+        &mut self,
+        persisted_rooms: BTreeMap<String, PersistedRoomState>,
+    ) {
+        let replacement_names = persisted_rooms.keys().cloned().collect::<BTreeSet<_>>();
+        let replaced_names = self
+            .persisted_room_names
+            .union(&replacement_names)
+            .cloned()
+            .collect::<Vec<_>>();
+        for room_name in replaced_names {
+            self.remove_room_runtime_state(&room_name);
+        }
+        self.persistent_room_owner_by_room.clear();
+        self.persistent_room_created_at_by_room.clear();
+        self.persistent_room_last_creation_by_identity.clear();
+        self.persistent_room_last_activity_at.clear();
+        self.persisted_room_names = replacement_names;
+        self.next_room_persistence_version = persisted_rooms
+            .values()
+            .map(|room| room.version)
+            .max()
+            .unwrap_or(0);
+        self.apply_persisted_rooms_snapshot(persisted_rooms);
+    }
+
     pub(crate) fn apply_permanent_rooms_snapshot(&mut self) {
         let now_seconds = self.current_time_seconds();
         for room_name in self.permanent_rooms.clone() {
@@ -422,6 +448,26 @@ impl ServerRuntime {
                 .entry(room_name)
                 .or_insert_with(|| RoomPlaybackState::new_at(now_seconds));
         }
+    }
+
+    pub(crate) fn reconcile_permanent_rooms_snapshot(
+        &mut self,
+        previous_permanent_rooms: &BTreeSet<String>,
+    ) {
+        let removed_rooms = previous_permanent_rooms
+            .difference(&self.permanent_rooms)
+            .cloned()
+            .collect::<Vec<_>>();
+        for room_name in removed_rooms {
+            if self.clients_in_room(&room_name).is_empty()
+                && self.room_playlist_state(&room_name).files.is_empty()
+            {
+                self.remove_room_runtime_state(&room_name);
+                self.delete_persisted_room_if_needed(&room_name)
+                    .expect("enqueueing a permanent-room deletion cannot fail");
+            }
+        }
+        self.apply_permanent_rooms_snapshot();
     }
 
     pub(crate) fn room_is_persistent(&self, room_name: &str) -> bool {
@@ -440,7 +486,18 @@ impl ServerRuntime {
         let source_identity = self
             .client_peer_ips
             .get(client_id)
-            .map(|peer_ip| format!("peer-ip:{}", peer_ip.trim().to_ascii_lowercase()))
+            .map(|peer_ip| {
+                let normalized_peer_ip = match peer_ip.trim().parse::<IpAddr>() {
+                    Ok(IpAddr::V6(address)) => address
+                        .to_ipv4_mapped()
+                        .map(IpAddr::V4)
+                        .unwrap_or(IpAddr::V6(address))
+                        .to_string(),
+                    Ok(address) => address.to_string(),
+                    Err(_) => peer_ip.trim().to_ascii_lowercase(),
+                };
+                format!("peer-ip:{normalized_peer_ip}")
+            })
             // Direct-runtime callers do not have a transport peer address. Keep
             // their quota namespace session-scoped; production network sessions
             // are keyed by peer IP above.

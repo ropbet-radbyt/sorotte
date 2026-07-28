@@ -269,26 +269,45 @@ impl ServerRuntime {
             self.next_room_persistence_version = 0;
             return Ok(());
         };
-        // Flush and close the old reusable connection before loading the new
-        // snapshot, especially when reconfiguring the same database path.
-        drop(self.room_persistence.take());
+        if self
+            .room_persistence
+            .as_ref()
+            .is_some_and(|persistence| !persistence.flush())
+        {
+            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("room"));
+        }
+
+        // Prepare the complete replacement before touching the working
+        // service. A bad path or worker-start failure must leave the current
+        // durable store attached.
         let store = RoomPersistenceStore::open(&db_path)?;
-        self.persistent_room_quota_secret = store.load_or_create_quota_secret()?;
+        let persistent_room_quota_secret = store.load_or_create_quota_secret()?;
         let persisted_rooms = store.load_rooms()?;
-        self.persisted_room_names = persisted_rooms.keys().cloned().collect();
-        self.next_room_persistence_version = persisted_rooms
-            .values()
-            .map(|room| room.version)
-            .max()
-            .unwrap_or(0);
-        self.persistent_room_owner_by_room.clear();
-        self.persistent_room_created_at_by_room.clear();
-        self.room_persistence = Some(RoomPersistenceService::start(
+        let affected_rooms = self
+            .persisted_room_names
+            .iter()
+            .chain(persisted_rooms.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Some(occupied_room) = affected_rooms
+            .iter()
+            .find(|room_name| !self.clients_in_room(room_name).is_empty())
+        {
+            return Err(
+                ServerRuntimeError::PersistentRoomDatabaseReconfigurationBusy(
+                    occupied_room.clone(),
+                ),
+            );
+        }
+        let replacement_service = RoomPersistenceService::start(
             store,
             self.persistence_events.clone(),
             self.persistence_degraded_worker_count.clone(),
-        )?);
-        self.apply_persisted_rooms_snapshot(persisted_rooms);
+        )?;
+
+        self.persistent_room_quota_secret = persistent_room_quota_secret;
+        self.room_persistence = Some(replacement_service);
+        self.replace_persisted_rooms_snapshot(persisted_rooms);
         self.apply_permanent_rooms_snapshot();
         Ok(())
     }
@@ -298,8 +317,11 @@ impl ServerRuntime {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.permanent_rooms = permanent_rooms.into_iter().map(Into::into).collect();
-        self.apply_permanent_rooms_snapshot();
+        let previous_permanent_rooms = std::mem::replace(
+            &mut self.permanent_rooms,
+            permanent_rooms.into_iter().map(Into::into).collect(),
+        );
+        self.reconcile_permanent_rooms_snapshot(&previous_permanent_rooms);
     }
 
     pub fn set_permanent_rooms_file_path(
@@ -493,12 +515,13 @@ impl ServerRuntime {
             .map(|message| {
                 let delivery = match &message.message {
                     ProtocolMessage::State(state)
-                        if state
-                            .state
-                            .playstate
-                            .as_ref()
-                            .and_then(|playstate| playstate.do_seek)
-                            != Some(true) =>
+                        if state.state.ignoring_on_the_fly.is_none()
+                            && state
+                                .state
+                                .playstate
+                                .as_ref()
+                                .and_then(|playstate| playstate.do_seek)
+                                != Some(true) =>
                     {
                         ServerOutboundDelivery::CoalesciblePeriodicState
                     }

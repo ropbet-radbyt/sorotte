@@ -1565,3 +1565,304 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
         "timeout list update should include legacy clients with Python-synthesized uiMode defaults"
     );
 }
+
+#[test]
+fn switching_room_database_replaces_the_previous_snapshot_without_copying_it() {
+    let first_db = temporary_sqlite_path("persistent-room-db-switch-first");
+    let second_db = temporary_sqlite_path("persistent-room-db-switch-second");
+    let _ = fs::remove_file(&first_db);
+    let _ = fs::remove_file(&second_db);
+
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .set_persistent_rooms_db_path(Some(first_db.clone()))
+        .expect("first room database should initialize");
+    runtime
+        .handle_line(
+            "owner",
+            r#"{"Hello":{"username":"alice","room":{"name":"private-room"},"version":"1.7.5","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("owner should join the first database room");
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["private-episode.mkv"]}}}"#,
+        )
+        .expect("private playlist should persist in the first database");
+    runtime
+        .handle_line_fanout("owner", r#"{"Set":{"room":{"name":"lobby"}}}"#)
+        .expect("owner should leave the private room");
+    runtime
+        .flush_persistence()
+        .expect("first database state should be durable");
+
+    runtime
+        .set_persistent_rooms_db_path(Some(second_db.clone()))
+        .expect("replacement empty room database should initialize");
+
+    let list_rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("owner", r#"{"List":null}"#)
+            .expect("GUI room list should succeed after database replacement"),
+    );
+    assert!(
+        !list_rooms.contains_key("private-room"),
+        "replacing the database must not expose rooms retained from the previous snapshot"
+    );
+
+    let joined = decode_directed_lines(
+        &runtime
+            .handle_line_fanout(
+                "reader",
+                r#"{"Hello":{"username":"bob","room":{"name":"private-room"},"version":"1.7.5"}}"#,
+            )
+            .expect("reader should join a fresh room in the replacement database"),
+    );
+    assert!(
+        has_playlist_snapshot(&joined, "reader", &[]),
+        "a room absent from the replacement database must not inherit the previous playlist"
+    );
+
+    runtime
+        .collect_dispatch_at(131.0)
+        .expect("occupied-room maintenance should succeed");
+    runtime
+        .flush_persistence()
+        .expect("replacement database maintenance should flush");
+    let replacement_rooms = RoomPersistenceStore::open(&second_db)
+        .expect("replacement room store should open")
+        .load_rooms()
+        .expect("replacement room store should load");
+    assert!(
+        !replacement_rooms.contains_key("private-room"),
+        "old private state must not be copied into the replacement database by a heartbeat"
+    );
+
+    drop(runtime);
+    fs::remove_file(&first_db).expect("first temporary sqlite db should be removable");
+    fs::remove_file(&second_db).expect("second temporary sqlite db should be removable");
+}
+
+#[test]
+fn switching_room_database_rejects_an_occupied_persisted_room() {
+    let first_db = temporary_sqlite_path("persistent-room-db-switch-busy-first");
+    let second_db = temporary_sqlite_path("persistent-room-db-switch-busy-second");
+    let _ = fs::remove_file(&first_db);
+    let _ = fs::remove_file(&second_db);
+
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .set_persistent_rooms_db_path(Some(first_db.clone()))
+        .expect("first room database should initialize");
+    runtime
+        .handle_line(
+            "owner",
+            r#"{"Hello":{"username":"alice","room":{"name":"occupied-room"},"version":"1.7.5"}}"#,
+        )
+        .expect("owner should join");
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+        )
+        .expect("occupied room should persist");
+    runtime
+        .flush_persistence()
+        .expect("first database should flush");
+
+    let error = runtime
+        .set_persistent_rooms_db_path(Some(second_db.clone()))
+        .expect_err("an occupied persisted room must fence database replacement");
+    assert!(matches!(
+        error,
+        ServerRuntimeError::PersistentRoomDatabaseReconfigurationBusy(ref room)
+            if room == "occupied-room"
+    ));
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+        )
+        .expect("the original runtime should remain usable");
+    runtime
+        .flush_persistence()
+        .expect("the original persistence service should remain attached");
+    let persisted = RoomPersistenceStore::open(&first_db)
+        .expect("original database should reopen")
+        .load_rooms()
+        .expect("original database should load");
+    assert_eq!(persisted["occupied-room"].files, vec!["second.mkv"]);
+
+    drop(runtime);
+    fs::remove_file(&first_db).expect("first temporary sqlite db should be removable");
+    fs::remove_file(&second_db).expect("second temporary sqlite db should be removable");
+}
+
+#[test]
+fn failed_room_database_reconfiguration_keeps_the_existing_persistence_service() {
+    let db_path = temporary_sqlite_path("persistent-room-db-reconfigure-failure");
+    let invalid_db_path = temporary_text_path("persistent-room-db-reconfigure-directory");
+    let _ = fs::remove_file(&db_path);
+    let _ = fs::remove_file(&invalid_db_path);
+    let _ = fs::remove_dir_all(&invalid_db_path);
+    fs::create_dir_all(&invalid_db_path).expect("invalid database directory fixture should exist");
+
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("initial room database should initialize");
+    runtime
+        .handle_line(
+            "owner",
+            r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5"}}"#,
+        )
+        .expect("owner should join");
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+        )
+        .expect("initial playlist should persist");
+    runtime
+        .flush_persistence()
+        .expect("initial database write should flush");
+
+    runtime
+        .set_persistent_rooms_db_path(Some(invalid_db_path.clone()))
+        .expect_err("a directory cannot be opened as a SQLite database file");
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+        )
+        .expect("runtime should continue after rejected reconfiguration");
+    runtime
+        .flush_persistence()
+        .expect("the original persistence service should remain flushable");
+
+    let persisted = RoomPersistenceStore::open(&db_path)
+        .expect("original database should reopen")
+        .load_rooms()
+        .expect("original database should load");
+    assert_eq!(
+        persisted["room"].files,
+        vec!["second.mkv".to_owned()],
+        "a rejected reconfiguration must not detach the original durable store"
+    );
+
+    drop(runtime);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    fs::remove_dir_all(&invalid_db_path).expect("invalid database fixture should be removable");
+}
+
+#[test]
+fn ipv4_mapped_ipv6_peer_cannot_bypass_persistent_room_identity_quota() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime.set_max_persistent_rooms(10);
+    runtime.set_max_persistent_rooms_per_identity(1);
+    runtime.set_persistent_room_creation_cooldown_seconds(0.0);
+
+    for (client_id, username, room_name, peer_ip) in [
+        ("ipv4", "alice", "room-v4", "192.0.2.44"),
+        ("mapped", "bob", "room-v4-mapped", "::ffff:192.0.2.44"),
+    ] {
+        runtime
+            .handle_line_fanout_with_transport_actions_for_peer(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room_name}"}},"version":"1.7.5"}}}}"#
+                ),
+                Some(peer_ip),
+            )
+            .expect("peer should connect");
+    }
+
+    runtime
+        .handle_line_fanout(
+            "ipv4",
+            r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+        )
+        .expect("first room should fit the identity quota");
+    runtime
+        .handle_line_fanout(
+            "mapped",
+            r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+        )
+        .expect("quota rejection should return a correction");
+
+    assert!(
+        runtime
+            .room_playlist_state("room-v4-mapped")
+            .files
+            .is_empty(),
+        "IPv4 and its mapped IPv6 representation must share one quota identity"
+    );
+}
+
+#[test]
+fn removing_permanent_room_configuration_removes_only_an_empty_placeholder() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_permanent_rooms(["retired-permanent-room"]);
+    runtime
+        .handle_line(
+            "gui-client",
+            r#"{"Hello":{"username":"alice","room":{"name":"lobby"},"version":"1.7.5","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("GUI client should connect");
+
+    let configured_rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("gui-client", r#"{"List":null}"#)
+            .expect("configured room list should succeed"),
+    );
+    assert!(configured_rooms.contains_key("retired-permanent-room"));
+
+    runtime.set_permanent_rooms(Vec::<String>::new());
+    let reconfigured_rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("gui-client", r#"{"List":null}"#)
+            .expect("reconfigured room list should succeed"),
+    );
+    assert!(
+        !reconfigured_rooms.contains_key("retired-permanent-room"),
+        "removing a permanent room must remove its empty placeholder"
+    );
+}
+
+#[test]
+fn removing_permanent_room_configuration_retains_nonempty_persistent_state() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_permanent_rooms(["former-permanent-room"]);
+    runtime
+        .handle_line(
+            "owner",
+            r#"{"Hello":{"username":"alice","room":{"name":"former-permanent-room"},"version":"1.7.5","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("owner should join");
+    runtime
+        .handle_line_fanout(
+            "owner",
+            r#"{"Set":{"playlistChange":{"files":["keep.mkv"]}}}"#,
+        )
+        .expect("playlist should update");
+    runtime
+        .handle_line_fanout("owner", r#"{"Set":{"room":{"name":"lobby"}}}"#)
+        .expect("owner should leave the former permanent room");
+
+    runtime.set_permanent_rooms(Vec::<String>::new());
+    let rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("owner", r#"{"List":null}"#)
+            .expect("room list should succeed"),
+    );
+    assert!(
+        rooms.contains_key("former-permanent-room"),
+        "removing permanent status must retain a nonempty room as ordinary persistent state"
+    );
+    assert_eq!(
+        runtime.room_playlist_state("former-permanent-room").files,
+        vec!["keep.mkv".to_owned()]
+    );
+}

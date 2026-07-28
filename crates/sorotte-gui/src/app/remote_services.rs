@@ -967,18 +967,36 @@ fn dev_candidate_newer_than_current(
             .as_ref()
             .and_then(|marker| marker.git_sha.clone())
     });
-    if let Some(candidate_sha) = candidate_sha
-        && Some(candidate_sha.to_owned()) == current_sha
-    {
-        return false;
-    }
     let current_created_at = env_trimmed(SOROTTE_GUI_BUILD_CREATED_AT_UTC_ENV).or_else(|| {
         install_marker
             .as_ref()
             .and_then(|marker| marker.created_at_utc.clone())
     });
+    dev_candidate_is_newer(
+        candidate_sha,
+        candidate_created_at,
+        current_sha.as_deref(),
+        current_created_at.as_deref(),
+    )
+}
+
+fn dev_candidate_is_newer(
+    candidate_sha: Option<&str>,
+    candidate_created_at: &str,
+    current_sha: Option<&str>,
+    current_created_at: Option<&str>,
+) -> bool {
+    if let (Some(candidate_sha), Some(current_sha)) = (candidate_sha, current_sha) {
+        // The rolling dev release is published only from the verified current
+        // main tip. Git author/committer timestamps are not monotonic along
+        // history, so a different authoritative SHA is the newer build even
+        // when its timestamp sorts earlier.
+        return !candidate_sha
+            .trim()
+            .eq_ignore_ascii_case(current_sha.trim());
+    }
     match current_created_at {
-        Some(current_created_at) => candidate_created_at > current_created_at.as_str(),
+        Some(current_created_at) => candidate_created_at > current_created_at,
         None => true,
     }
 }
@@ -2746,6 +2764,40 @@ mod tests {
                 ..StoredClientSettingsMvp::default()
             }),
             now,
+        ));
+    }
+
+    #[test]
+    fn dev_update_order_uses_authoritative_sha_before_non_monotonic_git_timestamp() {
+        assert!(!super::dev_candidate_is_newer(
+            Some("same-main-tip"),
+            "2026-07-28T13:00:00Z",
+            Some("same-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(!super::dev_candidate_is_newer(
+            Some("ABCDEF"),
+            "2026-07-28T13:00:00Z",
+            Some("abcdef"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(super::dev_candidate_is_newer(
+            Some("new-main-tip"),
+            "2026-07-28T11:00:00Z",
+            Some("old-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(!super::dev_candidate_is_newer(
+            None,
+            "2026-07-28T11:00:00Z",
+            Some("old-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(super::dev_candidate_is_newer(
+            Some("new-main-tip"),
+            "2026-07-28T13:00:00Z",
+            None,
+            Some("2026-07-28T12:00:00Z"),
         ));
     }
 }
