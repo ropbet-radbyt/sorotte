@@ -48,11 +48,14 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 Run Windows native smoke coverage for rendering, accessibility, startup, and end-to-end GUI changes:
 
 ```powershell
-cargo build -p sorotte-gui --bin sorotte-gui
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
 ```
 
-`scripts/gui-native-smoke.ps1` uses the existing `target/debug/sorotte-gui.exe`, so rebuild first after GUI code changes.
+`scripts/gui-native-smoke.ps1` performs a locked build before the watchdog
+starts, requires all nine implemented scenarios by default, and preserves
+structured evidence under `target/verification/gui-native-smoke/`. Pass
+`-BinaryPath` only when deliberately validating a caller-supplied executable;
+the wrapper records and binds that executable's path and digest.
 
 Generate the deterministic native Settings review packet on Windows with:
 
@@ -152,11 +155,51 @@ Install once:
 
 ```powershell
 rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov --locked
+cargo install cargo-llvm-cov --version 0.8.4 --locked
 ```
 
-Generate LCOV:
+Generate the pinned native producer views and source-bound physical-line map:
 
 ```powershell
-cargo llvm-cov --workspace --lcov --output-path target/lcov.info
+cargo llvm-cov --locked --workspace --all-features --no-report
+cargo llvm-cov report --json --skip-functions `
+  --output-path target/coverage.json
+cargo llvm-cov report --text `
+  --output-path target/coverage.txt
+python scripts/llvm_cov_line_map.py `
+  --repo-root . `
+  --llvm-json target/coverage.json `
+  --llvm-text target/coverage.txt `
+  --output target/coverage-line-map.json
 ```
+
+The LLVM component must be present before captured/headless execution:
+cargo-llvm-cov otherwise prompts interactively and can look hung. Pull-request
+policy is based on unique changed physical production lines, while LLVM's
+aggregate line-instance summary is retained as separate diagnostic evidence;
+see [`coverage/README.md`](../coverage/README.md).
+
+## Targeted Mutation Testing
+
+Mutation testing is intentionally shard-based. Install the pinned producer and
+run the currently required privacy shard with:
+
+```powershell
+cargo install cargo-mutants --version 27.1.0 --locked
+python scripts/mutation_ci.py validate `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --shard privacy-secret
+python scripts/mutation_ci.py run `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --shard privacy-secret `
+  --results-root target/mutation-ci/privacy-secret `
+  --output target/verification/mutation-privacy-secret.json
+```
+
+Use a fresh results root for every local run. The wrapper rejects an existing
+`mutants.out` directory so stale artifacts cannot be mistaken for new
+evidence. A survivor or product defect discovered by a coverage-only branch
+should be characterized and recorded; do not change production behavior just
+to make the mutation shard green.
