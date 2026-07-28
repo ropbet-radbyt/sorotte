@@ -78,3 +78,8 @@ path = "src/bin/sorotte-gui-startup-bench.rs"
 [[bin]]
 name = "sorotte-gui-updater"
 path = "src/bin/sorotte-gui-updater.rs"
+
+[[test]]
+name = "updater_self_replacement_windows"
+path = "tests/updater_self_replacement_windows.rs"
+required-features = ["updater-integration-test"]
