@@ -45,6 +45,7 @@ pub use extraction::{
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
 pub use media_index::{
+    MediaIndexBuildTransaction, MediaIndexCommitError, MediaIndexCommitOutcome,
     MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession, MediaIndexSummary,
 };
 pub use report_compare::{

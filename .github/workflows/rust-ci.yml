@@ -21,7 +21,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cargo fmt
@@ -32,6 +32,11 @@ jobs:
 
       - name: Cargo test
         run: cargo test --workspace
+
+      - name: Cache-pause acknowledged-stream regression
+        run: >-
+          cargo test -p sorotte-player-mpv --features test-support
+          --test repro_acknowledged_cache_pause
 
   gui-windows-release-build:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -48,7 +53,15 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
+
+      - name: Package path boundary regressions
+        shell: pwsh
+        run: ./scripts/package-path-boundary-tests.ps1
+
+      - name: Release publication policy regressions
+        shell: pwsh
+        run: ./scripts/release-publication-policy-tests.ps1
 
       # This is intentionally a compilation-only gate. Packaging, artifact
       # upload, tag mutation, and GitHub Release writes remain owned by the
@@ -73,7 +86,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -106,7 +119,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
 
       - name: Install supported mpv build dependencies
         run: |
@@ -183,6 +196,13 @@ jobs:
             real_mpv_cache_cap_drains_and_input_resumes \
             -- --ignored --exact --nocapture
 
+      - name: Required real mpv premature-disconnect recovery semantics
+        run: |
+          export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
+          cargo test -p sorotte-sim --test mpv_rebuffer_harness \
+            real_mpv_premature_http_disconnect_recovers_same_media_generation \
+            -- --ignored --exact --nocapture
+
       - name: Full deterministic HTTP-stall and rebuffer harness
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
@@ -207,7 +227,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cargo clippy
@@ -215,6 +235,11 @@ jobs:
 
       - name: Cargo test
         run: cargo test --workspace
+
+      - name: Cache-pause acknowledged-stream regression
+        run: >-
+          cargo test -p sorotte-player-mpv --features test-support
+          --test repro_acknowledged_cache_pause
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -249,7 +274,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.96.0
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python

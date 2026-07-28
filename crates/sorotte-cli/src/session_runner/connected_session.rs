@@ -2,7 +2,10 @@ use super::*;
 
 mod execution;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, OnceLock},
+};
 
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
@@ -21,6 +24,9 @@ type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAs
 
 const CLI_PLEX_CLIENT_IDENTIFIER: &str = "sorotte-cli";
 const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
+const DEFAULT_STARTTLS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_INITIAL_HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingReadyAtStart {
@@ -62,7 +68,7 @@ fn cli_plex_cache_path() -> Option<std::path::PathBuf> {
     })
 }
 
-fn emit_application_service_events(events: Vec<ClientEvent>) {
+pub(super) fn emit_application_service_events(events: Vec<ClientEvent>) {
     for event in events {
         match event {
             ClientEvent::Notification(message) => eprintln!("warning: {message}"),
@@ -248,13 +254,53 @@ fn default_tls_client_config() -> Arc<ClientConfig> {
         .clone()
 }
 
-fn start_tls_negotiation_enabled_legacy_compatible() -> bool {
-    #[cfg(test)]
-    const DEFAULT_START_TLS_NEGOTIATION_ENABLED: bool = false;
-    #[cfg(not(test))]
-    const DEFAULT_START_TLS_NEGOTIATION_ENABLED: bool = true;
+fn positive_timeout_from_env(name: &str, default: Duration) -> Duration {
+    positive_timeout_or_default(env_non_negative_f64(name), default)
+}
 
-    env_flag_override("SOROTTE_CLIENT_STARTTLS").unwrap_or(DEFAULT_START_TLS_NEGOTIATION_ENABLED)
+fn positive_timeout_or_default(seconds: Option<f64>, default: Duration) -> Duration {
+    seconds
+        .filter(|seconds| *seconds > 0.0)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .unwrap_or(default)
+}
+
+fn client_tls_policy(
+    config: &ClientLoopConfig,
+    persisted_override: Option<TlsPolicy>,
+) -> TlsPolicy {
+    if let Some(policy) = env_trimmed("SOROTTE_CLIENT_TLS_POLICY")
+        .as_deref()
+        .and_then(TlsPolicy::parse)
+    {
+        return policy;
+    }
+    if let Some(start_tls) = env_flag_override("SOROTTE_CLIENT_STARTTLS") {
+        return if start_tls {
+            TlsPolicy::PreferTls
+        } else {
+            TlsPolicy::Plaintext
+        };
+    }
+    inferred_client_tls_policy(config, persisted_override)
+}
+
+fn inferred_client_tls_policy(
+    config: &ClientLoopConfig,
+    persisted_override: Option<TlsPolicy>,
+) -> TlsPolicy {
+    if let Some(policy) = persisted_override {
+        return policy;
+    }
+    let has_credentials = config
+        .server_password
+        .as_ref()
+        .is_some_and(|password| !password.expose_secret().is_empty())
+        || config
+            .controlled_room_password_override
+            .as_ref()
+            .is_some_and(|password| !password.expose_secret().is_empty());
+    TlsPolicy::default_for_credentials(has_credentials)
 }
 
 fn decode_inbound_message_prefix_legacy_compatible(
@@ -274,37 +320,166 @@ fn decode_inbound_message_prefix_legacy_compatible(
     (messages, None)
 }
 
-async fn negotiate_start_tls_legacy_compatible(
+async fn negotiate_start_tls_with_policy(
     mut stream: TcpStream,
     host: &str,
-) -> anyhow::Result<Box<dyn ConnectedSessionAsyncStream>> {
-    let tls_request_line = encode_message_line(&ProtocolMessage::start_tls("send"))?;
-    write_protocol_line(&mut stream, &tls_request_line).await?;
-
-    let mut reader = BufReader::new(stream);
-    let Some(tls_response_line) = read_inbound_protocol_line(&mut reader).await? else {
+    policy: TlsPolicy,
+    response_timeout: Duration,
+    handshake_timeout: Duration,
+) -> anyhow::Result<StartTlsNegotiationResult> {
+    debug_assert_ne!(policy, TlsPolicy::Plaintext);
+    let tls_response_line = tokio::time::timeout(response_timeout, async {
+        let tls_request_line = encode_message_line(&ProtocolMessage::start_tls("send"))?;
+        write_protocol_line(&mut stream, &tls_request_line).await?;
+        let mut reader = BufReader::new(stream);
+        let response = read_inbound_protocol_line(&mut reader).await?;
+        // Keep the reader as the transport. PreferTls fallback must preserve
+        // any later plaintext protocol bytes that arrived in the same socket
+        // read as the STARTTLS response.
+        Ok::<_, anyhow::Error>((reader, response))
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "server STARTTLS response timed out after {:.1} seconds",
+            response_timeout.as_secs_f64()
+        )
+    })??;
+    let (stream, tls_response_line) = tls_response_line;
+    let Some(tls_response_line) = tls_response_line else {
         return Err(anyhow!(
             "server closed connection before TLS negotiation completed"
         ));
     };
 
-    let upgrade_to_tls = matches!(
-        decode_message_line(tls_response_line.trim()),
-        Ok(ProtocolMessage::Tls(tls_message)) if tls_message.tls.start_tls.contains("true")
-    );
-    let stream = reader.into_inner();
+    let mut prefetched_plaintext_lines = VecDeque::new();
+    let decoded_items = decode_message_line_items(tls_response_line.trim());
+    let upgrade_to_tls = match decoded_items {
+        Ok(items) if items.iter().all(|item| item.message.is_ok()) => {
+            let messages = items
+                .into_iter()
+                .map(|item| item.message.expect("validated protocol item"))
+                .collect::<Vec<_>>();
+            if matches!(
+                messages.as_slice(),
+                [ProtocolMessage::Tls(tls_message)] if tls_message.tls.start_tls == "true"
+            ) {
+                true
+            } else if matches!(messages.as_slice(), [ProtocolMessage::Tls(_)]) {
+                false
+            } else {
+                if policy == TlsPolicy::RequireTls {
+                    if let [message] = messages.as_slice() {
+                        return Err(anyhow!(
+                            "server returned unexpected {} message instead of accepting required TLS",
+                            message.kind()
+                        ));
+                    }
+                    return Err(anyhow!(
+                        "server bundled additional protocol messages with its STARTTLS response instead of providing a standalone required TLS acceptance"
+                    ));
+                }
+                eprintln!(
+                    "warning: server returned an unexpected STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
+                );
+                for message in messages
+                    .into_iter()
+                    .filter(|message| !matches!(message, ProtocolMessage::Tls(_)))
+                {
+                    prefetched_plaintext_lines.push_back(encode_message_line(&message)?);
+                }
+                false
+            }
+        }
+        Ok(_) => {
+            if policy == TlsPolicy::RequireTls {
+                return Err(anyhow!(
+                    "server returned a malformed response instead of accepting required TLS"
+                ));
+            }
+            eprintln!(
+                "warning: server returned a malformed STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
+            );
+            false
+        }
+        Err(error) => {
+            if policy == TlsPolicy::RequireTls {
+                return Err(anyhow!(
+                    "server returned a malformed response instead of accepting required TLS: {error}"
+                ));
+            }
+            eprintln!(
+                "warning: server returned a malformed STARTTLS response; continuing over plaintext because TLS policy is PreferTls"
+            );
+            false
+        }
+    };
     if !upgrade_to_tls {
-        return Ok(Box::new(stream));
+        if policy == TlsPolicy::RequireTls {
+            return Err(anyhow!("server refused required TLS negotiation"));
+        }
+        eprintln!(
+            "warning: server declined STARTTLS; continuing over plaintext because TLS policy is PreferTls"
+        );
+        return Ok(StartTlsNegotiationResult {
+            stream: Box::new(stream),
+            prefetched_plaintext_lines,
+        });
     }
 
     let server_name = ServerName::try_from(normalized_tls_server_host(host).trim().to_owned())
         .map_err(|error| {
             anyhow!("client TLS negotiation failed because the server name is invalid: {error}")
         })?;
-    let tls_stream = TlsConnector::from(default_tls_client_config())
-        .connect(server_name, stream)
-        .await?;
-    Ok(Box::new(tls_stream))
+    let tls_stream = tokio::time::timeout(
+        handshake_timeout,
+        TlsConnector::from(default_tls_client_config()).connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "client TLS handshake timed out after {:.1} seconds",
+            handshake_timeout.as_secs_f64()
+        )
+    })??;
+    Ok(StartTlsNegotiationResult {
+        stream: Box::new(tls_stream),
+        prefetched_plaintext_lines: VecDeque::new(),
+    })
+}
+
+struct StartTlsNegotiationResult {
+    stream: Box<dyn ConnectedSessionAsyncStream>,
+    prefetched_plaintext_lines: VecDeque<String>,
+}
+
+async fn read_inbound_or_prefetched_protocol_line<R>(
+    reader: &mut R,
+    prefetched_lines: &mut VecDeque<String>,
+) -> anyhow::Result<Option<String>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    if let Some(line) = prefetched_lines.pop_front() {
+        return Ok(Some(line));
+    }
+    read_inbound_protocol_line(reader).await
+}
+
+#[cfg(test)]
+async fn negotiate_start_tls_legacy_compatible(
+    stream: TcpStream,
+    host: &str,
+) -> anyhow::Result<Box<dyn ConnectedSessionAsyncStream>> {
+    negotiate_start_tls_with_policy(
+        stream,
+        host,
+        TlsPolicy::PreferTls,
+        DEFAULT_STARTTLS_RESPONSE_TIMEOUT,
+        DEFAULT_TLS_HANDSHAKE_TIMEOUT,
+    )
+    .await
+    .map(|negotiation| negotiation.stream)
 }
 
 #[cfg(test)]
@@ -368,6 +543,10 @@ where
             diagnostics_config,
             plex_config: &plex_config,
             network_options_health_reporter: &mut network_options_health_reporter,
+            // The legacy connected-session tests use plaintext protocol fixtures. Keep that
+            // test-only helper pinned to plaintext; production callers resolve the configured
+            // TLS policy through the network-loop launch context below.
+            tls_policy_override: Some(TlsPolicy::Plaintext),
         },
     )
     .await
@@ -388,6 +567,7 @@ where
     pub(crate) diagnostics_config: ClientLoopDiagnosticsConfig,
     pub(crate) plex_config: &'a PlexClientConfig,
     pub(crate) network_options_health_reporter: &'a mut CliNetworkOptionsHealthReporter,
+    pub(crate) tls_policy_override: Option<TlsPolicy>,
 }
 
 pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<
@@ -412,6 +592,7 @@ where
         diagnostics_config,
         plex_config,
         network_options_health_reporter,
+        tls_policy_override,
     } = launch;
     network_options_health_reporter
         .set_player_telemetry_diagnostics_enabled(diagnostics_config.log_player_telemetry);
@@ -452,16 +633,32 @@ where
     )?;
 
     let hello_line = encode_message_line(&hello_message)?;
-    let stream: Box<dyn ConnectedSessionAsyncStream> =
-        if start_tls_negotiation_enabled_legacy_compatible() {
-            await_with_player_integration_maintenance(
-                runtime,
-                negotiate_start_tls_legacy_compatible(stream, &config.host),
-            )
-            .await?
-        } else {
-            Box::new(stream)
-        };
+    let tls_policy = client_tls_policy(config, tls_policy_override);
+    let (stream, mut prefetched_inbound_lines): (
+        Box<dyn ConnectedSessionAsyncStream>,
+        VecDeque<String>,
+    ) = if tls_policy != TlsPolicy::Plaintext {
+        let negotiation = await_with_player_integration_maintenance(
+            runtime,
+            negotiate_start_tls_with_policy(
+                stream,
+                &config.host,
+                tls_policy,
+                positive_timeout_from_env(
+                    "SOROTTE_CLIENT_STARTTLS_TIMEOUT_SECONDS",
+                    DEFAULT_STARTTLS_RESPONSE_TIMEOUT,
+                ),
+                positive_timeout_from_env(
+                    "SOROTTE_CLIENT_TLS_HANDSHAKE_TIMEOUT_SECONDS",
+                    DEFAULT_TLS_HANDSHAKE_TIMEOUT,
+                ),
+            ),
+        )
+        .await?;
+        (negotiation.stream, negotiation.prefetched_plaintext_lines)
+    } else {
+        (Box::new(stream), VecDeque::new())
+    };
     let (reader, mut writer) = tokio::io::split(stream);
     emit_application_service_events(
         runtime
@@ -472,14 +669,33 @@ where
             )
             .await,
     );
-    await_with_player_integration_maintenance(
-        runtime,
-        write_protocol_line(&mut writer, &hello_line),
+    let initial_hello_timeout = positive_timeout_from_env(
+        "SOROTTE_CLIENT_INITIAL_HELLO_TIMEOUT_SECONDS",
+        DEFAULT_INITIAL_HELLO_TIMEOUT,
+    );
+    let initial_hello_deadline = Instant::now() + initial_hello_timeout;
+    tokio::time::timeout_at(
+        initial_hello_deadline,
+        await_with_player_integration_maintenance(
+            runtime,
+            write_protocol_line(&mut writer, &hello_line),
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "server initial Hello timed out after {:.1} seconds while sending the client Hello",
+            initial_hello_timeout.as_secs_f64()
+        )
+    })??;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
     publish_pending_local_file_updates(runtime, config, network_options_health_reporter)?;
-    flush_runtime_protocol_lines(runtime, &mut writer).await?;
+    if !flush_runtime_protocol_lines_until(runtime, &mut writer, initial_hello_deadline).await? {
+        return Err(anyhow!(
+            "server initial Hello timed out after {:.1} seconds while sending startup protocol messages",
+            initial_hello_timeout.as_secs_f64()
+        ));
+    }
     emit_application_service_events(runtime.pump_plex_service().await);
 
     let mut reader = BufReader::new(reader);
@@ -498,6 +714,8 @@ where
         desired: config.ready_at_start_override.unwrap_or(false),
         had_current_v2_membership,
     });
+    let initial_hello_deadline = tokio::time::sleep_until(initial_hello_deadline);
+    tokio::pin!(initial_hello_deadline);
     let mut outbound_state_sync_enabled = false;
     let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
         log_player_telemetry: diagnostics_config.log_player_telemetry,
@@ -529,7 +747,17 @@ where
         tokio::pin!(playback_barrier_retry_timer);
 
         tokio::select! {
-            line = read_inbound_protocol_line(&mut reader) => {
+            _ = &mut initial_hello_deadline, if pending_ready_at_start_on_server_hello.is_some() => {
+                emit_application_service_events(runtime.shutdown_plex_service().await);
+                return Err(anyhow!(
+                    "server initial Hello timed out after {:.1} seconds",
+                    initial_hello_timeout.as_secs_f64()
+                ));
+            }
+            line = read_inbound_or_prefetched_protocol_line(
+                &mut reader,
+                &mut prefetched_inbound_lines,
+            ) => {
                 match line? {
                     Some(line) => {
                         let (decoded_inbound_messages, predecoded_inbound_error) =
@@ -792,6 +1020,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn persisted_tls_policy_overrides_credential_inference() {
+        let mut config = crate::tests::test_client_loop_config();
+        config.server_password = Some("saved-secret".into());
+        assert_eq!(
+            inferred_client_tls_policy(&config, None),
+            TlsPolicy::RequireTls
+        );
+        assert_eq!(
+            inferred_client_tls_policy(&config, Some(TlsPolicy::Plaintext)),
+            TlsPolicy::Plaintext
+        );
+        assert_eq!(
+            inferred_client_tls_policy(&config, Some(TlsPolicy::PreferTls)),
+            TlsPolicy::PreferTls
+        );
+    }
+
+    #[test]
+    fn timeout_parser_falls_back_for_extreme_finite_values() {
+        let default = Duration::from_secs(7);
+        assert_eq!(
+            positive_timeout_or_default(Some(f64::MAX), default),
+            default
+        );
+        assert_eq!(
+            positive_timeout_or_default(Some(1.5), default),
+            Duration::from_millis(1_500)
+        );
+    }
+
     #[tokio::test]
     async fn starttls_negotiation_sends_request_and_accepts_plain_fallback() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -854,5 +1113,363 @@ mod tests {
         server_task
             .await
             .expect("server task should complete without panic");
+    }
+
+    async fn required_tls_error_for_response(response: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            writer
+                .write_all(response)
+                .await
+                .expect("test response should write");
+            writer.flush().await.expect("test response should flush");
+        });
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test server");
+        let error = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::RequireTls,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .expect("required TLS must reject a downgrade response")
+        .to_string();
+        server_task.await.expect("server task should complete");
+        error
+    }
+
+    #[tokio::test]
+    async fn require_tls_rejects_refusal_substitution_and_truncation() {
+        let refused =
+            required_tls_error_for_response(b"{\"TLS\":{\"startTLS\":\"false\"}}\n").await;
+        assert!(refused.contains("refused required TLS"));
+
+        let substituted = required_tls_error_for_response(
+            b"{\"Hello\":{\"username\":\"mallory\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n",
+        )
+        .await;
+        assert!(substituted.contains("unexpected Hello message"));
+
+        let truncated = required_tls_error_for_response(b"{\"TLS\":{\"startTLS\":\"tru").await;
+        assert!(truncated.contains("malformed response"));
+    }
+
+    async fn prefer_tls_prefetched_lines_for_response(response: &'static [u8]) -> VecDeque<String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            writer
+                .write_all(response)
+                .await
+                .expect("test response should write");
+            writer.flush().await.expect("test response should flush");
+        });
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let negotiation = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::PreferTls,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("PreferTls should retain a plaintext connection");
+        server_task.await.expect("server task should complete");
+        negotiation.prefetched_plaintext_lines
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_reinjects_unexpected_hello_and_error_lines() {
+        for (expected, response) in [
+            (
+                r#"{"Hello":{"username":"server","room":{"name":"room"},"version":"1.7.5"}}"#,
+                b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
+                    .as_slice(),
+            ),
+            (
+                r#"{"Error":{"message":"something went wrong"}}"#,
+                b"{\"Error\":{\"message\":\"something went wrong\"}}\n".as_slice(),
+            ),
+        ] {
+            let mut pending = prefer_tls_prefetched_lines_for_response(response).await;
+            let mut reader = BufReader::new(tokio::io::empty());
+            let reinjected =
+                read_inbound_or_prefetched_protocol_line(&mut reader, &mut pending)
+                    .await
+                    .expect("prefetched protocol line should be readable")
+                    .expect("prefetched protocol line should be present");
+            assert_eq!(
+                decode_message_line(&reinjected)
+                    .expect("re-injected line should enter normal protocol decoding"),
+                decode_message_line(expected).expect("expected protocol fixture should decode"),
+            );
+            assert!(
+                decode_message_line(&reinjected).is_ok(),
+                "re-injected line should enter normal protocol decoding"
+            );
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_preserves_protocol_lines_read_ahead_with_unexpected_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n{\"Chat\":{\"username\":\"server\",\"message\":\"preserve read ahead\"}}\n",
+                )
+                .await
+                .expect("two-line fallback response should write in one operation");
+            writer
+                .flush()
+                .await
+                .expect("fallback response should flush");
+        });
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let mut negotiation = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::PreferTls,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("PreferTls should retain a plaintext connection");
+        server_task.await.expect("server task should complete");
+
+        let mut reader = BufReader::new(negotiation.stream);
+        let first = read_inbound_or_prefetched_protocol_line(
+            &mut reader,
+            &mut negotiation.prefetched_plaintext_lines,
+        )
+        .await
+        .expect("prefetched Hello read should succeed")
+        .expect("prefetched Hello should be present");
+        assert!(matches!(
+            decode_message_line(&first),
+            Ok(ProtocolMessage::Hello(_))
+        ));
+
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_inbound_or_prefetched_protocol_line(
+                &mut reader,
+                &mut negotiation.prefetched_plaintext_lines,
+            ),
+        )
+        .await
+        .expect("the already-sent second line should not time out")
+        .expect("second line read should succeed")
+        .expect("the read-ahead Chat line must not be discarded");
+        assert!(matches!(
+            decode_message_line(&second),
+            Ok(ProtocolMessage::Chat(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_reinjects_only_application_messages_bundled_with_a_tls_refusal() {
+        for response in [
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
+                .as_slice(),
+            b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Error\":{\"message\":\"something went wrong\"}}\n"
+                .as_slice(),
+            b"{\"Error\":{\"message\":\"something went wrong\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}}}\n"
+                .as_slice(),
+            b"{\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+        ] {
+            let prefetched = prefer_tls_prefetched_lines_for_response(response).await;
+            let messages = prefetched
+                .iter()
+                .map(|line| {
+                    decode_message_line(line)
+                        .expect("each re-injected application message should decode")
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(messages.len(), 1);
+            assert!(
+                messages
+                    .iter()
+                    .all(|message| !matches!(message, ProtocolMessage::Tls(_)))
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| matches!(
+                        message,
+                        ProtocolMessage::Hello(_)
+                            | ProtocolMessage::Error(_)
+                            | ProtocolMessage::State(_)
+                    ))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prefer_tls_bundled_refusal_reinjects_only_application_messages() {
+        let response =
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n";
+        let mut prefetched = prefer_tls_prefetched_lines_for_response(response).await;
+        let mut session = sorotte_client_core::ClientSession::default();
+
+        session
+            .apply_message_json(
+                &prefetched
+                    .pop_front()
+                    .expect("the bundled Hello must be preserved"),
+            )
+            .expect("negotiation control must not poison normal plaintext inbound handling");
+        assert!(prefetched.is_empty());
+        assert_eq!(session.username(), Some("server"));
+        assert_eq!(session.room(), Some("room"));
+    }
+
+    #[tokio::test]
+    async fn require_tls_rejects_messages_bundled_with_a_tls_refusal_in_either_order() {
+        for response in [
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n"
+                .as_slice(),
+            b"{\"Hello\":{\"username\":\"server\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"Error\":{\"message\":\"something went wrong\"}}\n"
+                .as_slice(),
+            b"{\"Error\":{\"message\":\"something went wrong\"},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+            b"{\"TLS\":{\"startTLS\":\"false\"},\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}}}\n"
+                .as_slice(),
+            b"{\"State\":{\"playstate\":{\"position\":5.0,\"paused\":false,\"doSeek\":false}},\"TLS\":{\"startTLS\":\"false\"}}\n"
+                .as_slice(),
+        ] {
+            let error = required_tls_error_for_response(response).await;
+            assert!(error.contains("bundled additional protocol messages"));
+        }
+    }
+
+    #[tokio::test]
+    async fn starttls_response_and_handshake_have_independent_deadlines() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, _writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        });
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let response_timeout = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::RequireTls,
+            Duration::from_millis(25),
+            Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .expect("silent STARTTLS endpoint should time out");
+        assert!(
+            response_timeout
+                .to_string()
+                .contains("STARTTLS response timed out")
+        );
+        server_task.await.expect("server task should complete");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            lines
+                .next_line()
+                .await
+                .expect("TLS request read should succeed")
+                .expect("TLS request should be present");
+            writer
+                .write_all(b"{\"TLS\":{\"startTLS\":\"true\"}}\n")
+                .await
+                .expect("TLS acceptance should write");
+            writer.flush().await.expect("TLS acceptance should flush");
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        });
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let handshake_timeout = negotiate_start_tls_with_policy(
+            stream,
+            "127.0.0.1",
+            TlsPolicy::RequireTls,
+            Duration::from_secs(1),
+            Duration::from_millis(25),
+        )
+        .await
+        .err()
+        .expect("silent TLS handshake should time out");
+        assert!(
+            handshake_timeout
+                .to_string()
+                .contains("TLS handshake timed out")
+        );
+        server_task.await.expect("server task should complete");
     }
 }

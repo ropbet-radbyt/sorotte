@@ -18,6 +18,7 @@ pub struct StoredClientSettingsV1 {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub server_password: Option<SecretValue>,
+    pub tls_policy: Option<String>,
     pub username: Option<String>,
     pub room: Option<String>,
     pub room_list: Option<Vec<String>>,
@@ -132,6 +133,7 @@ impl fmt::Debug for StoredClientSettingsV1 {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("server_password", &self.server_password)
+            .field("tls_policy", &self.tls_policy)
             .field("username", &self.username)
             .field("room_configured", &self.room.is_some())
             .field("room_list_entries", &self.room_list.as_ref().map(Vec::len))

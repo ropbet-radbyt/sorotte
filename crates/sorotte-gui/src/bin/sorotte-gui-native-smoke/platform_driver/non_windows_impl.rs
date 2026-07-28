@@ -120,6 +120,15 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
+    fn click_named_control(
+        &self,
+        _window: Self::WindowHandle,
+        _name: &str,
+        _control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Err("native smoke is currently implemented only on Windows".to_owned())
+    }
+
     fn capture_window_png(
         &self,
         _window: Self::WindowHandle,

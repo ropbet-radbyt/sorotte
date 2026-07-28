@@ -59,7 +59,12 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            first_address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -84,6 +89,11 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     );
     assert!(first_hello_line.contains("\"Hello\""));
     assert!(first_hello_line.contains("\"alice\""));
+    let first_transport_generation = owner
+        .session_transport
+        .as_ref()
+        .expect("first server should own a transport queue")
+        .clone();
 
     let mut stale_main_window = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_main_window.shared_playlist_enabled = true;
@@ -136,6 +146,14 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
             .iter()
             .any(|action| matches!(action, GuiShellAction::CompleteSelectedPublicServerConnect)),
         "public-server connect should complete through the client-core session runtime"
+    );
+    assert!(
+        !owner
+            .session_transport
+            .as_ref()
+            .expect("replacement server should own a transport queue")
+            .shares_protocol_queues_with(&first_transport_generation),
+        "replacement TCP drivers must not share queues with a retiring worker"
     );
     assert!(
         reconnect_actions.iter().any(|action| matches!(
@@ -260,7 +278,12 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            first_address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -476,7 +499,12 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            first_address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")

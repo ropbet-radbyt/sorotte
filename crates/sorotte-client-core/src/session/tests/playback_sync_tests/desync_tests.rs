@@ -141,7 +141,7 @@ fn desync_correction_fastforward_requires_sustained_behind_window() {
 }
 
 #[test]
-fn desync_correction_skips_actions_when_set_by_matches_local_user() {
+fn desync_correction_rearms_after_local_room_state_echo() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -153,9 +153,232 @@ fn desync_correction_skips_actions_when_set_by_matches_local_user() {
                 r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
             )
             .expect("state should apply");
+    session
+        .model
+        .room
+        .playstate_authority_changed_at_seconds
+        .insert("room1".to_owned(), 0.0);
+
+    let action = session.evaluate_desync_correction(3.0, 6.0, false, false, true);
+    assert_eq!(
+        action,
+        DesyncCorrectionAction::Rewind {
+            target_position: 0.0,
+            set_by: Some("alice".to_owned())
+        },
+        "the last room controller must not remain exempt from steady-state correction forever"
+    );
+}
+
+#[test]
+fn repeated_self_attributed_room_updates_do_not_extend_correction_grace() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            0.0,
+        )
+        .expect("initial self echo should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            10.0,
+        )
+        .expect("periodic self-attributed state should apply");
+
+    assert_eq!(
+        session.evaluate_desync_correction(10.0, 16.0, false, false, true),
+        DesyncCorrectionAction::Rewind {
+            target_position: 10.0,
+            set_by: Some("alice".to_owned())
+        }
+    );
+}
+
+#[test]
+fn a_new_self_attributed_seek_gets_a_fresh_bounded_correction_grace() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            0.0,
+        )
+        .expect("initial self echo should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"alice"}}}"#,
+            10.0,
+        )
+        .expect("new self seek should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.1,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            10.1,
+        )
+        .expect("post-seek steady state should apply");
+
+    assert_eq!(
+        session.evaluate_desync_correction(11.0, 16.0, false, false, true),
+        DesyncCorrectionAction::None
+    );
+    assert!(matches!(
+        session.evaluate_desync_correction(13.0, 20.0, false, false, true),
+        DesyncCorrectionAction::Rewind { .. }
+    ));
+}
+
+#[test]
+fn self_origin_grace_covers_the_deferred_fastforward_window() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            0.0,
+        )
+        .expect("self-originated state should apply");
+
+    assert_eq!(
+        session.evaluate_desync_correction(0.0, 0.0, false, false, true),
+        DesyncCorrectionAction::None
+    );
+    assert_eq!(
+        session.model.playback.behind_first_detected_at_seconds,
+        Some(0.0),
+        "the candidate remains available if room authority changes to a remote user"
+    );
+
+    assert_eq!(
+        session.evaluate_desync_correction(4.0, 0.0, false, false, true),
+        DesyncCorrectionAction::None,
+        "the self-origin grace must cover the configured sustain window"
+    );
+    assert_eq!(
+        session.model.playback.behind_first_detected_at_seconds,
+        Some(7.0)
+    );
+    assert!(
+        matches!(
+            session.evaluate_desync_correction(11.0, 0.0, false, false, true),
+            DesyncCorrectionAction::FastForward { .. }
+        ),
+        "stale self attribution must still be bounded"
+    );
+}
+
+#[test]
+fn reconciled_self_origin_state_uses_the_runtime_clock_for_correction_grace() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(0.0)
+                .with_paused(false)
+                .with_do_seek(false)
+                .with_set_by("alice"),
+        ),
+        false,
+        42.0,
+    );
+
+    assert_eq!(
+        runtime
+            .session()
+            .model
+            .room
+            .playstate_authority_changed_at_seconds
+            .get("room1"),
+        Some(&42.0),
+        "inbound authority timestamps must share the correction loop's clock domain"
+    );
+    runtime
+        .run_desync_correction_if_needed(42.5, false, false, true)
+        .expect("fresh self-origin state should suppress correction");
+    assert!(runtime.player().player_effects.is_empty());
+}
+
+#[test]
+fn ordinary_behind_drift_does_not_change_playback_rate() {
+    let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
 
     let action = session.evaluate_desync_correction(0.0, 6.0, false, false, true);
-    assert_eq!(action, DesyncCorrectionAction::None);
+    assert_eq!(
+        action,
+        DesyncCorrectionAction::None,
+        "ordinary drift must not feed a high-latency client speed-up back into the room clock"
+    );
+}
+
+#[test]
+fn behind_controller_drift_does_not_change_playback_rate() {
+    let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+    assert_eq!(
+        session.evaluate_desync_correction(0.0, 6.0, true, false, true),
+        DesyncCorrectionAction::None,
+        "controllers must not accelerate toward a room clock that may already be based on their delayed sample"
+    );
+}
+
+#[test]
+fn slowdown_restores_normal_speed_when_client_jumps_behind_room_position() {
+    let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+    assert!(matches!(
+        session.evaluate_desync_correction(0.0, 12.0, true, false, true),
+        DesyncCorrectionAction::SlowDown { rate: 0.95, .. }
+    ));
+    assert_eq!(
+        session.evaluate_desync_correction(0.1, 6.0, true, false, true),
+        DesyncCorrectionAction::RestoreSpeed { rate: 1.0 },
+        "crossing from ahead to behind must neutralize slowdown"
+    );
+}
+
+#[test]
+fn desync_correction_reasserts_rate_after_player_reports_external_reset() {
+    let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+
+    assert!(matches!(
+        session.evaluate_desync_correction(0.0, 2.0, true, false, true),
+        DesyncCorrectionAction::SlowDown { rate: 0.95, .. }
+    ));
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default().with_playback_rate(1.0),
+    );
+    assert!(matches!(
+        session.evaluate_desync_correction(0.1, 2.0, true, false, true),
+        DesyncCorrectionAction::SlowDown { rate: 0.95, .. }
+    ));
 }
 
 #[test]
@@ -182,6 +405,189 @@ fn runtime_actions_for_desync_correction_maps_slowdown_to_rate_change() {
 
     let actions = session.runtime_actions_for_desync_correction(0.0, 2.0, true, false, true);
     assert_eq!(actions, vec![ClientRuntimeAction::SetPlaybackRate(0.95)]);
+}
+
+#[test]
+fn failed_desync_rate_command_rolls_back_correction_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        fail_set_playback_rate: true,
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    assert!(
+        runtime
+            .run_desync_correction_if_needed(0.0, true, false, true)
+            .is_err()
+    );
+    assert!(!runtime.session().model.playback.speed_changed);
+    assert_eq!(runtime.session().model.playback.speed_correction_rate, None);
+    assert_eq!(runtime.session().model.playback.local_playback_rate, None);
+}
+
+#[test]
+fn disabling_slow_on_desync_restores_speed_and_failed_restore_retains_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+
+    let mut config = runtime.session().desync_config().clone();
+    config.slow_on_desync = false;
+    runtime.session_mut().set_desync_config(config);
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+
+    assert!(
+        runtime
+            .run_desync_correction_if_needed(0.1, true, false, true)
+            .is_err()
+    );
+    assert!(runtime.session().model.playback.speed_changed);
+    assert_eq!(
+        runtime.session().model.playback.speed_correction_rate,
+        Some(0.95)
+    );
+    assert_eq!(
+        runtime.session().model.playback.local_playback_rate,
+        Some(0.95)
+    );
+
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+    runtime
+        .run_desync_correction_if_needed(0.2, true, false, true)
+        .expect("retry should restore normal speed");
+    assert_eq!(runtime.player().playback_rate, Some(1.0));
+    assert!(!runtime.session().model.playback.speed_changed);
+    assert_eq!(runtime.session().model.playback.speed_correction_rate, None);
+}
+
+#[test]
+fn reconnect_restores_desync_owned_rate_before_forgetting_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)
+                .with_playback_rate(1.0),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+    assert!(runtime.session().model.playback.speed_changed);
+
+    runtime
+        .run_disconnect(0.1)
+        .expect("disconnect cleanup should succeed");
+    runtime
+        .run_reconnect_retry(0)
+        .expect("reconnect reset should succeed");
+
+    assert_eq!(
+        runtime.player().playback_rate,
+        Some(1.0),
+        "network reconnect retains the player, so it must neutralize Sorotte's 0.95 correction before clearing its ownership"
+    );
+    assert!(!runtime.session().model.playback.speed_changed);
+}
+
+#[test]
+fn reconnect_retries_failed_desync_owned_rate_restore_before_resetting_session() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("slowdown command should apply");
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+
+    runtime
+        .run_reconnect_retry(0)
+        .expect("player cleanup failure must not block network reconnect scheduling");
+    assert!(
+        !runtime.session().model.playback.speed_changed,
+        "session reconnect state should reset independently of the retained player cleanup"
+    );
+    assert_eq!(runtime.player().playback_rate, Some(0.95));
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+
+    runtime
+        .run_reconnect_retry(1)
+        .expect("the retained cleanup should succeed on retry");
+    assert_eq!(runtime.player().playback_rate, Some(1.0));
+    assert!(!runtime.session().model.playback.speed_changed);
+}
+
+#[test]
+fn failed_reconnect_rate_restore_never_overwrites_new_session_speed_ownership() {
+    let session = desync_session_with_remote_state(0.0, false, false, "bob");
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+
+    runtime
+        .run_desync_correction_if_needed(0.0, true, false, true)
+        .expect("first-session slowdown should apply");
+    runtime.player_mut_for_test().fail_set_playback_rate = true;
+    runtime
+        .run_reconnect_retry(0)
+        .expect("failed cleanup must not block reconnect");
+
+    runtime.player_mut_for_test().fail_set_playback_rate = false;
+    runtime.player_mut_for_test().playback_rate = Some(0.95);
+    runtime.session_mut_for_test().model.playback.speed_changed = true;
+    runtime
+        .session_mut_for_test()
+        .model
+        .playback
+        .speed_correction_rate = Some(0.95);
+
+    runtime
+        .run_reconnect_transition_if_needed()
+        .expect("new-session transition should remain healthy");
+
+    assert_eq!(
+        runtime.player().playback_rate,
+        Some(0.95),
+        "retained cleanup from the disconnected session must not overwrite the new session's owned correction"
+    );
+    assert!(runtime.session().model.playback.speed_changed);
 }
 
 #[test]

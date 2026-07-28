@@ -31,7 +31,21 @@ function Assert-PathInsideRepo {
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $repoPath = [System.IO.Path]::GetFullPath($RepoRoot)
-    if (-not $fullPath.StartsWith($repoPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $repoPrefix = if ($repoPath.EndsWith([string]$separator)) {
+        $repoPath
+    } else {
+        "$repoPath$separator"
+    }
+    $comparison = if ($separator -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    if (
+        -not $fullPath.Equals($repoPath, $comparison) -and
+        -not $fullPath.StartsWith($repoPrefix, $comparison)
+    ) {
         throw "Refusing to mutate path outside repo: $fullPath"
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::runtime_owner::{GuiAttachedSystemSeekSource, GuiUpdateRuntime};
 use crate::app::{GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceStatus};
 
 #[test]
@@ -109,6 +109,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             state: player_state.clone(),
         }))),
         player_attachment_epoch: 0,
+        ordered_player_events: Default::default(),
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
         player_apply_state: Default::default(),
         managed_mpv_process: None,
@@ -144,6 +145,11 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
+        attached_media_observation_cursor: Default::default(),
+        attached_native_seek_tracker: Default::default(),
+        attached_system_seek_ownership: std::collections::VecDeque::new(),
+        attached_system_seek_fail_closed: None,
+        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -576,6 +582,19 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_positions,
         vec![12.5, 10.0, 42.0]
+    );
+    assert_eq!(
+        owner
+            .attached_system_seek_ownership
+            .iter()
+            .map(|ownership| (ownership.source, ownership.target_position_seconds))
+            .collect::<Vec<_>>(),
+        vec![
+            (GuiAttachedSystemSeekSource::RuntimeAction, 12.5),
+            (GuiAttachedSystemSeekSource::RuntimeAction, 10.0),
+            (GuiAttachedSystemSeekSource::RuntimeAction, 42.0),
+        ],
+        "GUI seek controls should retain physical-effect ownership until their player echoes arrive"
     );
     assert_eq!(
         player_state

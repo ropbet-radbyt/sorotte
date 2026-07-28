@@ -23,8 +23,104 @@ function Assert-PathInsideRepo {
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $repoPath = [System.IO.Path]::GetFullPath($RepoRoot)
-    if (-not $fullPath.StartsWith($repoPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $repoPrefix = if ($repoPath.EndsWith([string]$separator)) {
+        $repoPath
+    } else {
+        "$repoPath$separator"
+    }
+    $comparison = if ($separator -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    if (
+        -not $fullPath.Equals($repoPath, $comparison) -and
+        -not $fullPath.StartsWith($repoPrefix, $comparison)
+    ) {
         throw "Refusing to mutate path outside repo: $fullPath"
+    }
+    if ($fullPath.Equals($repoPath, $comparison)) {
+        return
+    }
+
+    $currentPath = $repoPath
+    $relativePath = $fullPath.Substring($repoPrefix.Length)
+    foreach ($component in ($relativePath -split '[\\/]')) {
+        if ([string]::IsNullOrEmpty($component)) {
+            continue
+        }
+        $currentPath = Join-Path $currentPath $component
+        if (-not (Test-Path -LiteralPath $currentPath)) {
+            break
+        }
+        $item = Get-Item -Force -LiteralPath $currentPath
+        if (
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne
+            0
+        ) {
+            throw "Refusing to mutate path through reparse point: $currentPath"
+        }
+    }
+}
+
+function Write-Utf8ArtifactFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    Assert-PathInsideRepo $fullPath
+    $directory = Split-Path -Parent $fullPath
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "Artifact directory does not exist: $directory"
+    }
+    $leaf = Split-Path -Leaf $fullPath
+    $temporaryPath = Join-Path $directory ".$leaf.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$temporaryPath.backup"
+    Assert-PathInsideRepo $temporaryPath
+    Assert-PathInsideRepo $backupPath
+    $stream = $null
+    try {
+        $encoding = [System.Text.UTF8Encoding]::new($false)
+        $text = if (
+            $Content.EndsWith("`n", [System.StringComparison]::Ordinal)
+        ) {
+            $Content
+        }
+        else {
+            "$Content$([System.Environment]::NewLine)"
+        }
+        $bytes = $encoding.GetBytes($text)
+        $stream = [System.IO.File]::Open(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        if ([System.IO.File]::Exists($fullPath)) {
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+    }
+    finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force
+        }
     }
 }
 
@@ -91,6 +187,8 @@ $symbolsRoot = Join-Path $stagingRoot $symbolsPackageName
 
 Assert-PathInsideRepo $stagingRoot
 Assert-PathInsideRepo $artifactsRoot
+Assert-PathInsideRepo $packageRoot
+Assert-PathInsideRepo $symbolsRoot
 if (Test-Path -LiteralPath $packageRoot) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
 }
@@ -143,7 +241,9 @@ if ($packageForWindows) {
 
 $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 $checksumPath = "$archivePath.sha256"
-"$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)" | Set-Content -LiteralPath $checksumPath -Encoding UTF8
+Write-Utf8ArtifactFile `
+    -Path $checksumPath `
+    -Content "$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)"
 
 if ($null -ne $pdbPath) {
     New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
@@ -154,7 +254,9 @@ if ($null -ne $pdbPath) {
     Compress-Archive -LiteralPath $symbolsContents.FullName -DestinationPath $symbolsArchivePath -Force
 
     $symbolsHash = Get-FileHash -LiteralPath $symbolsArchivePath -Algorithm SHA256
-    "$($symbolsHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $symbolsArchivePath)" | Set-Content -LiteralPath $symbolsChecksumPath -Encoding UTF8
+    Write-Utf8ArtifactFile `
+        -Path $symbolsChecksumPath `
+        -Content "$($symbolsHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $symbolsArchivePath)"
 }
 
 Write-Host ""

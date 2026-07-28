@@ -140,6 +140,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
             state: player_state.clone(),
         }))),
         player_attachment_epoch: 0,
+        ordered_player_events: Default::default(),
         player_launch_state: GuiPlayerLaunchRuntimeState::None,
         player_apply_state: Default::default(),
         managed_mpv_process: None,
@@ -175,6 +176,11 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_attached_room_unpause_observation: None,
         pending_attached_player_pause_confirmation_pump: None,
         pending_attached_player_pause_command: None,
+        attached_media_observation_cursor: Default::default(),
+        attached_native_seek_tracker: Default::default(),
+        attached_system_seek_ownership: std::collections::VecDeque::new(),
+        attached_system_seek_fail_closed: None,
+        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -227,6 +233,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(false),
+        // This test asserts exact player-projection actions. Keep unrelated
+        // asynchronous public-server hydration out of that action stream.
+        public_servers: Some(Vec::new()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -481,6 +490,95 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
             level: GuiTransientNotificationLevel::Error,
             message,
         } if message.contains("network timeout")
+    )));
+}
+
+#[test]
+fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_context() {
+    struct ReacquiredFailurePlayer {
+        batch: Option<sorotte_player_api::PlayerObservationBatch>,
+    }
+
+    impl PlayerAdapter for ReacquiredFailurePlayer {
+        fn name(&self) -> &'static str {
+            "reacquired-failure"
+        }
+
+        fn take_ordered_event_batch(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerObservationBatch> {
+            self.batch.take()
+        }
+    }
+
+    let requested_target = "https://cdn.example.com/early-failure.m3u8".to_owned();
+    let generation = sorotte_player_api::PlayerMediaGeneration::new(1);
+    let failure = sorotte_player_api::PlayerMediaLoadObservation::new(
+        sorotte_player_api::PlayerMediaLoadOutcome::failure(
+            requested_target.clone(),
+            None,
+            sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+            "network failed before start-file",
+        ),
+        Some(generation),
+        None,
+    );
+    let batch = sorotte_player_api::PlayerObservationBatch {
+        dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(10)),
+        ordered_events: vec![
+            sorotte_player_api::PlayerOrderedEvent::new(
+                sorotte_player_api::PlayerEventSequence::new(11),
+                sorotte_player_api::PlayerOrderedEventKind::MediaLoad(failure),
+            ),
+            sorotte_player_api::PlayerOrderedEvent::new(
+                sorotte_player_api::PlayerEventSequence::new(12),
+                sorotte_player_api::PlayerOrderedEventKind::Transport(
+                    sorotte_player_api::PlayerTransportTelemetryUpdate::new(
+                        generation,
+                        sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
+                            std::time::Duration::from_secs(1),
+                        ),
+                    )
+                    .with_phase(sorotte_player_api::PlayerTransportPhase::Failed),
+                ),
+            ),
+        ],
+        legacy_playback_telemetry: None,
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(ReacquiredFailurePlayer {
+        batch: Some(batch),
+    })));
+    owner.player_local_file =
+        Some(GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path(&requested_target));
+    owner.player_local_file_placeholder = true;
+    owner.pending_stream_retry_target = Some(requested_target.clone());
+    owner.pending_stream_load_context = Some(GuiPendingStreamLoadContext {
+        requested_target: requested_target.clone(),
+        user_initiated: true,
+    });
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, None);
+    assert!(!owner.player_local_file_placeholder);
+    assert_eq!(owner.player_position_seconds, None);
+    assert_eq!(
+        owner.pending_stream_retry_target.as_deref(),
+        Some(requested_target.as_str())
+    );
+    assert_eq!(owner.pending_stream_load_context, None);
+    assert_eq!(owner.pending_stream_feedback.len(), 1);
+    let actions = owner
+        .pending_stream_feedback
+        .front()
+        .expect("reacquired failure should queue GUI feedback");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("network failed before start-file")
     )));
 }
 

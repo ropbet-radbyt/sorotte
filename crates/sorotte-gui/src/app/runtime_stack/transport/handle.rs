@@ -7,6 +7,14 @@ use std::{
     },
 };
 
+use crate::app::support::system_time_seconds;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::app) struct GuiInboundProtocolLine {
+    pub(in crate::app) line: String,
+    pub(in crate::app) received_at_seconds: f64,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::app) struct GuiOutboundProtocolDelivery {
     pub(in crate::app) token: u64,
@@ -98,30 +106,98 @@ struct GuiTrackedOutboundProtocolDelivery {
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct GuiQueuedSessionTransportHandle {
-    queued_inbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+    queued_inbound_protocol_lines: Arc<Mutex<VecDeque<GuiInboundProtocolLine>>>,
+    queued_transport_warnings: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_liveness_protocol_line: Arc<Mutex<Option<String>>>,
     tracked_outbound_protocol_delivery: Arc<Mutex<GuiTrackedOutboundProtocolDeliveryState>>,
     queued_outbound_protocol_activity_revision: Arc<AtomicU64>,
+    active_worker_generation: Arc<AtomicU64>,
+    bound_worker_generation: Option<u64>,
 }
 
 impl GuiQueuedSessionTransportHandle {
+    pub(super) fn begin_worker_generation(&self) -> Self {
+        let previous_generation = self
+            .active_worker_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .expect("GUI transport worker generation exhausted");
+        let mut bound = self.clone();
+        bound.bound_worker_generation = Some(previous_generation + 1);
+        bound
+    }
+
+    pub(super) fn invalidate_worker_generation(&self) {
+        let Some(generation) = self.bound_worker_generation else {
+            return;
+        };
+        let next_generation = generation
+            .checked_add(1)
+            .expect("GUI transport worker generation exhausted");
+        let _ = self.active_worker_generation.compare_exchange(
+            generation,
+            next_generation,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn worker_generation_is_current(&self) -> bool {
+        self.bound_worker_generation.is_none_or(|generation| {
+            self.active_worker_generation.load(Ordering::Acquire) == generation
+        })
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn shares_protocol_queues_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            &self.queued_outbound_protocol_activity_revision,
+            &other.queued_outbound_protocol_activity_revision,
+        )
+    }
+
     pub(in crate::app) fn push_inbound_protocol_line(&self, line: impl Into<String>) {
-        self.push_inbound_protocol_lines([line.into()]);
+        self.push_inbound_protocol_line_at(line, system_time_seconds());
+    }
+
+    pub(in crate::app) fn push_inbound_protocol_line_at(
+        &self,
+        line: impl Into<String>,
+        received_at_seconds: f64,
+    ) {
+        self.push_inbound_protocol_lines_at([line.into()], received_at_seconds);
     }
 
     pub(in crate::app) fn push_inbound_protocol_lines<I>(&self, lines: I)
     where
         I: IntoIterator<Item = String>,
     {
+        self.push_inbound_protocol_lines_at(lines, system_time_seconds());
+    }
+
+    pub(in crate::app) fn push_inbound_protocol_lines_at<I>(
+        &self,
+        lines: I,
+        received_at_seconds: f64,
+    ) where
+        I: IntoIterator<Item = String>,
+    {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         let mut queue = self
             .queued_inbound_protocol_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.extend(lines);
+        queue.extend(lines.into_iter().map(|line| GuiInboundProtocolLine {
+            line,
+            received_at_seconds,
+        }));
     }
 
-    pub(in crate::app) fn drain_inbound_protocol_lines(&self) -> Vec<String> {
+    pub(in crate::app) fn drain_inbound_protocol_lines(&self) -> Vec<GuiInboundProtocolLine> {
         let mut queue = self
             .queued_inbound_protocol_lines
             .lock()
@@ -134,6 +210,24 @@ impl GuiQueuedSessionTransportHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+
+    pub(in crate::app) fn push_transport_warning(&self, warning: impl Into<String>) {
+        if !self.worker_generation_is_current() {
+            return;
+        }
+        self.queued_transport_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(warning.into());
+    }
+
+    pub(in crate::app) fn drain_transport_warnings(&self) -> Vec<String> {
+        self.queued_transport_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+            .collect()
     }
 
     pub(in crate::app) fn try_push_outbound_protocol_delivery(
@@ -178,6 +272,9 @@ impl GuiQueuedSessionTransportHandle {
     pub(in crate::app) fn take_outbound_protocol_delivery_for_driver(
         &self,
     ) -> Option<GuiOutboundProtocolDelivery> {
+        if !self.worker_generation_is_current() {
+            return None;
+        }
         let mut state = self
             .tracked_outbound_protocol_delivery
             .lock()
@@ -194,6 +291,9 @@ impl GuiQueuedSessionTransportHandle {
         &self,
         result: GuiOutboundProtocolDeliveryResult,
     ) {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         let mut state = self
             .tracked_outbound_protocol_delivery
             .lock()
@@ -213,6 +313,9 @@ impl GuiQueuedSessionTransportHandle {
         bytes_written: usize,
         message: impl Into<String>,
     ) {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         let mut state = self
             .tracked_outbound_protocol_delivery
             .lock()
@@ -239,6 +342,9 @@ impl GuiQueuedSessionTransportHandle {
     where
         I: IntoIterator<Item = String>,
     {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         let mut queue = self
             .queued_outbound_protocol_lines
             .lock()
@@ -255,6 +361,9 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn push_outbound_liveness_protocol_line(&self, line: impl Into<String>) {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         *self
             .queued_outbound_liveness_protocol_line
             .lock()
@@ -262,6 +371,9 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn take_outbound_liveness_protocol_line_for_driver(&self) -> Option<String> {
+        if !self.worker_generation_is_current() {
+            return None;
+        }
         self.queued_outbound_liveness_protocol_line
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -269,6 +381,9 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn clear_outbound_liveness_protocol_line(&self) {
+        if !self.worker_generation_is_current() {
+            return;
+        }
         *self
             .queued_outbound_liveness_protocol_line
             .lock()
@@ -276,6 +391,9 @@ impl GuiQueuedSessionTransportHandle {
     }
 
     pub(in crate::app) fn drain_untracked_outbound_protocol_lines_for_driver(&self) -> Vec<String> {
+        if !self.worker_generation_is_current() {
+            return Vec::new();
+        }
         self.queued_outbound_protocol_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

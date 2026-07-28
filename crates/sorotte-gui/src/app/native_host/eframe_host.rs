@@ -114,11 +114,12 @@ impl GuiEframeNativeHost {
         username: impl Into<String>,
         room: impl Into<String>,
         host_arg: impl AsRef<str>,
+        tls_policy: TlsPolicy,
         config_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
-                .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
+                .with_client_core_chat_tcp_session_runtime(username, room, host_arg, tls_policy)?;
         Self::apply_player_settings_degraded_test_override(&mut owner);
         Ok(Self::with_queued_runtime_owner(false, owner))
     }

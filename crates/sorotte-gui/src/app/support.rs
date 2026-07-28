@@ -215,19 +215,19 @@ fn parse_command_line_like_text_legacy_compatible(value: &str) -> Vec<String> {
         }
 
         let mut token = String::new();
+        let mut quote = None;
         while let Some(&character) = characters.peek() {
-            if character.is_whitespace() {
+            if quote.is_none() && character.is_whitespace() {
                 break;
             }
-            if character == '"' {
-                token.push(character);
+            if quote == Some(character) {
+                quote = None;
                 characters.next();
-                for next_character in characters.by_ref() {
-                    token.push(next_character);
-                    if next_character == '"' {
-                        break;
-                    }
-                }
+                continue;
+            }
+            if quote.is_none() && matches!(character, '"' | '\'') {
+                quote = Some(character);
+                characters.next();
                 continue;
             }
             token.push(character);
@@ -240,4 +240,44 @@ fn parse_command_line_like_text_legacy_compatible(value: &str) -> Vec<String> {
     }
 
     parsed
+}
+
+pub(super) fn normalize_stored_player_argument_legacy_compatible(argument: &str) -> String {
+    for quote in ['"', '\''] {
+        if argument.len() >= 2 && argument.starts_with(quote) && argument.ends_with(quote) {
+            return argument[1..argument.len() - 1].to_owned();
+        }
+    }
+    argument.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        normalize_stored_player_argument_legacy_compatible,
+        parse_command_line_like_text_legacy_compatible,
+    };
+
+    #[test]
+    fn player_argument_quotes_group_text_without_reaching_mpv() {
+        assert_eq!(
+            parse_command_line_like_text_legacy_compatible(
+                r#""--ytdl-format=bestvideo[height<=1440]+bestaudio/best[height<=1440]" --profile="high quality""#,
+            ),
+            vec![
+                "--ytdl-format=bestvideo[height<=1440]+bestaudio/best[height<=1440]",
+                "--profile=high quality",
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_outer_quotes_are_removed_from_stored_player_arguments() {
+        assert_eq!(
+            normalize_stored_player_argument_legacy_compatible(
+                r#""--ytdl-format=bestvideo[height<=1440]+bestaudio""#,
+            ),
+            "--ytdl-format=bestvideo[height<=1440]+bestaudio"
+        );
+    }
 }

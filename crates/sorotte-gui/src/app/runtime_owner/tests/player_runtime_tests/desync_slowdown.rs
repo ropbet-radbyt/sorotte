@@ -1,10 +1,11 @@
 use super::*;
 
 #[test]
-fn gui_persisted_config_runtime_owner_applies_desync_slowdown_when_room_playstate_is_unchanged() {
+fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         set_playback_rates: Vec<f64>,
+        fail_next_playback_rate: bool,
     }
 
     struct RecordingPlayerAdapter {
@@ -17,11 +18,16 @@ fn gui_persisted_config_runtime_owner_applies_desync_slowdown_when_room_playstat
         }
 
         fn set_playback_rate(&mut self, rate: f64) -> Result<(), sorotte_player_api::PlayerError> {
-            self.state
+            let mut state = self
+                .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .set_playback_rates
-                .push(rate);
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.set_playback_rates.push(rate);
+            if std::mem::take(&mut state.fail_next_playback_rate) {
+                return Err(sorotte_player_api::PlayerError::OperationFailed(
+                    "simulated playback-rate rejection".to_owned(),
+                ));
+            }
             Ok(())
         }
     }
@@ -84,6 +90,28 @@ fn gui_persisted_config_runtime_owner_applies_desync_slowdown_when_room_playstat
         .sync_local_playback_telemetry(Some(false), Some(12.0))
         .expect("desynced local telemetry should sync");
 
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .fail_next_playback_rate = true;
+
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("caught-up room playstate should apply");
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .fail_next_playback_rate = true;
+
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
     owner.sync_session_playstate_to_attached_player_impl(&state, false);
 
     let recorded = player_state
@@ -91,8 +119,8 @@ fn gui_persisted_config_runtime_owner_applies_desync_slowdown_when_room_playstat
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(
         recorded.set_playback_rates,
-        vec![0.95],
-        "steady-state attached-player sync should still apply slowdown corrections while playback continues"
+        vec![0.95, 0.95, 1.0, 1.0],
+        "rejected slowdown and restore commands must each roll back ownership so the next production GUI pump retries them"
     );
 }
 

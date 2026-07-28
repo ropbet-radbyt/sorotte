@@ -2,11 +2,19 @@ use super::*;
 
 use crate::control::client_effect_player_error;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "test-support")]
+use sorotte_player_api::{LifecycleVerificationAttemptProjection, LifecycleVerificationProjection};
 use sorotte_player_api::{
-    PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState,
-    PlayerCommandResult, PlayerMediaGeneration, PlayerTransportTelemetryUpdate,
+    LoadAttemptId, PlayerActiveLoadSnapshot, PlayerAttachmentEpoch, PlayerCommand,
+    PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
+    PlayerCommandSemanticResult, PlayerEvent, PlayerEventAcknowledgementToken, PlayerEventBatch,
+    PlayerEventDeliveryMode, PlayerEventOrder, PlayerLoadAttemptResult, PlayerMediaGeneration,
+    PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSemanticOutcome,
+    PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportSnapshot,
+    PlayerTransportTelemetryUpdate, SequencedPlayerEvent, SequencedPlayerSemanticOutcome,
+    SnapshotField,
 };
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
@@ -26,6 +34,562 @@ use crate::player_transition::{
 const PLAYBACK_BARRIER_RETRY_MIN_SECONDS: f64 = 0.1;
 const PLAYBACK_BARRIER_RETRY_MAX_SECONDS: f64 = 30.0;
 const PLAYBACK_BARRIER_RETRY_MAX_BACKOFF_EXPONENT: u32 = 5;
+const MAX_MISMATCHING_LOCAL_PAUSE_INTENT_UPDATES: u8 = 3;
+const LOCAL_PAUSE_INTENT_MISMATCH_WINDOW_SECONDS: f64 = 10.0;
+const MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS: f64 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrderedLoadBinding {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    owns_transport: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
+    physical_terminal: bool,
+    logical_ownership_revoked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrderedLoadInstall {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    owns_transport: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
+    logical_ownership_revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct OrderedPlayerEventConsumer {
+    attachment_epoch: Option<PlayerAttachmentEpoch>,
+    last_sequence: u64,
+    last_snapshot_boundary: Option<PlayerSequenceBoundary>,
+    transport: PlayerTransportSnapshot,
+    attempts: BTreeMap<LoadAttemptId, OrderedLoadBinding>,
+    transport_owner_attempt: Option<LoadAttemptId>,
+    acknowledged_semantic_sequence: u64,
+    applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
+    applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OrderedPlayerDelivery {
+    Event(SequencedPlayerEvent),
+    SemanticOutcome(SequencedPlayerSemanticOutcome),
+}
+
+impl OrderedPlayerDelivery {
+    fn order(&self) -> PlayerEventOrder {
+        match self {
+            Self::Event(event) => event.order,
+            Self::SemanticOutcome(outcome) => outcome.order,
+        }
+    }
+}
+
+fn ordered_batch_error(message: impl Into<String>) -> PlayerError {
+    PlayerError::OperationFailed(format!(
+        "invalid ordered player event batch: {}",
+        message.into()
+    ))
+}
+
+fn snapshot_known_copy<T: Copy>(field: &SnapshotField<T>) -> Option<T> {
+    match field {
+        SnapshotField::Known(value) => Some(*value),
+        SnapshotField::KnownAbsent | SnapshotField::Unavailable => None,
+    }
+}
+
+fn snapshot_known_clone<T: Clone>(field: &SnapshotField<T>) -> Option<T> {
+    match field {
+        SnapshotField::Known(value) => Some(value.clone()),
+        SnapshotField::KnownAbsent | SnapshotField::Unavailable => None,
+    }
+}
+
+fn local_file_updates_share_identity(left: &LocalFileUpdate, right: &LocalFileUpdate) -> bool {
+    match (&left.path, &right.path) {
+        (Some(left_path), Some(right_path)) => left_path == right_path,
+        _ => left.name == right.name,
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn verification_optional_field<T>(value: Option<T>) -> SnapshotField<T> {
+    match value {
+        Some(value) => SnapshotField::Known(value),
+        None => SnapshotField::KnownAbsent,
+    }
+}
+
+impl OrderedPlayerEventConsumer {
+    fn reset_for_epoch(&mut self, attachment_epoch: PlayerAttachmentEpoch) {
+        self.attachment_epoch = Some(attachment_epoch);
+        self.last_sequence = 0;
+        self.last_snapshot_boundary = None;
+        self.transport = PlayerTransportSnapshot::default();
+        self.attempts.clear();
+        self.transport_owner_attempt = None;
+        self.acknowledged_semantic_sequence = 0;
+        self.applied_semantic_outcomes.clear();
+        self.applied_unacknowledged_token = None;
+    }
+
+    fn begin_batch(&mut self, batch: &PlayerEventBatch) -> Result<(), PlayerError> {
+        if batch.sequence_boundary.attachment_epoch != batch.attachment_epoch {
+            return Err(ordered_batch_error(
+                "batch sequence boundary belongs to another attachment",
+            ));
+        }
+        if batch.acknowledgement_token.attachment_epoch() != batch.attachment_epoch {
+            return Err(ordered_batch_error(
+                "acknowledgement token belongs to another attachment",
+            ));
+        }
+        if let Some(snapshot) = batch.authoritative_snapshot.as_ref()
+            && (snapshot.attachment_epoch != batch.attachment_epoch
+                || snapshot.sequence_boundary.attachment_epoch != batch.attachment_epoch
+                || snapshot.sequence_boundary.through_sequence
+                    > batch.sequence_boundary.through_sequence)
+        {
+            return Err(ordered_batch_error(
+                "authoritative snapshot boundary is inconsistent with its batch",
+            ));
+        }
+
+        match self.attachment_epoch {
+            None => self.reset_for_epoch(batch.attachment_epoch),
+            Some(current) if batch.attachment_epoch < current => {
+                return Err(ordered_batch_error("stale attachment epoch"));
+            }
+            Some(current) if batch.attachment_epoch > current => {
+                let replacement_announced = batch.events.iter().any(|event| {
+                    event.order.attachment_epoch == batch.attachment_epoch
+                        && matches!(
+                            event.event,
+                            PlayerEvent::AttachmentReplaced { previous_epoch }
+                                if previous_epoch == current
+                        )
+                });
+                if batch.authoritative_snapshot.is_none() && !replacement_announced {
+                    return Err(ordered_batch_error(
+                        "new attachment epoch lacks replacement evidence",
+                    ));
+                }
+                self.reset_for_epoch(batch.attachment_epoch);
+            }
+            Some(_) => {}
+        }
+
+        let mut previous = None;
+        let mut orders = batch
+            .events
+            .iter()
+            .map(|event| event.order)
+            .chain(batch.semantic_outcomes.iter().map(|outcome| outcome.order))
+            .collect::<Vec<_>>();
+        orders.sort_unstable();
+        for order in orders {
+            if order.attachment_epoch != batch.attachment_epoch {
+                return Err(ordered_batch_error(
+                    "delivery belongs to another attachment",
+                ));
+            }
+            if order.sequence > batch.sequence_boundary.through_sequence {
+                return Err(ordered_batch_error(
+                    "delivery exceeds the batch sequence boundary",
+                ));
+            }
+            if previous == Some(order.sequence) {
+                return Err(ordered_batch_error("duplicate delivery order"));
+            }
+            previous = Some(order.sequence);
+        }
+        Ok(())
+    }
+
+    fn merged_deliveries(batch: &PlayerEventBatch) -> Vec<OrderedPlayerDelivery> {
+        let mut deliveries = batch
+            .events
+            .iter()
+            .cloned()
+            .map(OrderedPlayerDelivery::Event)
+            .chain(
+                batch
+                    .semantic_outcomes
+                    .iter()
+                    .cloned()
+                    .map(OrderedPlayerDelivery::SemanticOutcome),
+            )
+            .collect::<Vec<_>>();
+        deliveries.sort_by_key(OrderedPlayerDelivery::order);
+        deliveries
+    }
+
+    fn validate_sequence_continuity(&self, batch: &PlayerEventBatch) -> Result<(), PlayerError> {
+        let snapshot_boundary = batch
+            .authoritative_snapshot
+            .as_ref()
+            .filter(|snapshot| self.should_rebase_snapshot(snapshot.sequence_boundary))
+            .map(|snapshot| snapshot.sequence_boundary.through_sequence);
+        let mut cursor = snapshot_boundary.map_or(self.last_sequence, |boundary| {
+            self.last_sequence.max(boundary)
+        });
+        for delivery in Self::merged_deliveries(batch) {
+            let order = delivery.order();
+            let covered_event = matches!(delivery, OrderedPlayerDelivery::Event(_))
+                && snapshot_boundary.is_some_and(|boundary| order.sequence <= boundary);
+            let covered_outcome = matches!(delivery, OrderedPlayerDelivery::SemanticOutcome(_))
+                && order.sequence <= cursor;
+            if covered_event || covered_outcome || order.sequence <= cursor {
+                continue;
+            }
+            let expected = cursor.saturating_add(1);
+            if order.sequence != expected {
+                return Err(ordered_batch_error(format!(
+                    "sequence gap: expected {expected}, received {}",
+                    order.sequence
+                )));
+            }
+            cursor = order.sequence;
+        }
+        Ok(())
+    }
+
+    fn should_rebase_snapshot(&self, boundary: PlayerSequenceBoundary) -> bool {
+        self.last_snapshot_boundary
+            .is_none_or(|current| boundary.through_sequence > current.through_sequence)
+    }
+
+    fn rebase_snapshot(&mut self, snapshot: &sorotte_player_api::PlayerAuthoritativeSnapshot) {
+        self.transport.rebase(snapshot.transport.clone());
+        self.attempts.clear();
+        self.transport_owner_attempt = None;
+        if let SnapshotField::Known(active) = &snapshot.active_load {
+            self.install_active_load(*active);
+        }
+        self.last_snapshot_boundary = Some(snapshot.sequence_boundary);
+        self.last_sequence = self
+            .last_sequence
+            .max(snapshot.sequence_boundary.through_sequence);
+    }
+
+    fn install_active_load(&mut self, active: PlayerActiveLoadSnapshot) {
+        self.install_attempt(
+            active.attempt_id,
+            OrderedLoadInstall {
+                media_generation: active.media_generation,
+                command_id: active.command_id,
+                playlist_entry_id: active.playlist_entry_id,
+                owns_transport: true,
+                semantic_load_result: active.semantic_load_result,
+                logical_ownership_revoked: active.logical_ownership_revoked,
+            },
+        );
+    }
+
+    fn install_attempt(&mut self, attempt_id: LoadAttemptId, install: OrderedLoadInstall) {
+        let OrderedLoadInstall {
+            media_generation,
+            command_id,
+            playlist_entry_id,
+            owns_transport,
+            semantic_load_result,
+            logical_ownership_revoked,
+        } = install;
+        let existing = self.attempts.get(&attempt_id).copied();
+        let physical_terminal = existing.is_some_and(|binding| binding.physical_terminal);
+        let owns_transport = owns_transport && !physical_terminal;
+        self.attempts.insert(
+            attempt_id,
+            OrderedLoadBinding {
+                media_generation,
+                command_id: command_id.or_else(|| existing.and_then(|binding| binding.command_id)),
+                playlist_entry_id: playlist_entry_id
+                    .or_else(|| existing.and_then(|binding| binding.playlist_entry_id)),
+                owns_transport,
+                semantic_load_result: semantic_load_result
+                    .or_else(|| existing.and_then(|binding| binding.semantic_load_result)),
+                physical_terminal,
+                logical_ownership_revoked: logical_ownership_revoked
+                    || existing.is_some_and(|binding| binding.logical_ownership_revoked),
+            },
+        );
+        if owns_transport {
+            for (other_attempt_id, binding) in &mut self.attempts {
+                if *other_attempt_id != attempt_id {
+                    binding.owns_transport = false;
+                }
+            }
+            self.transport_owner_attempt = Some(attempt_id);
+        }
+    }
+
+    fn ensure_attempt(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+    ) {
+        if !self.attempts.contains_key(&attempt_id) {
+            self.install_attempt(
+                attempt_id,
+                OrderedLoadInstall {
+                    media_generation,
+                    command_id,
+                    playlist_entry_id: None,
+                    owns_transport: false,
+                    semantic_load_result: None,
+                    logical_ownership_revoked: false,
+                },
+            );
+        }
+    }
+
+    fn mark_semantic_load_result(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        result: PlayerLoadAttemptResult,
+    ) {
+        if let Some(binding) = self.attempts.get_mut(&attempt_id)
+            && binding.media_generation == media_generation
+        {
+            binding.semantic_load_result.get_or_insert(result);
+        }
+    }
+
+    fn revoke_logical_ownership(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        if let Some(binding) = self.attempts.get_mut(&attempt_id)
+            && binding.media_generation == media_generation
+        {
+            binding.logical_ownership_revoked = true;
+        }
+    }
+
+    fn attempt_can_clear_timeout_player_failure(
+        &self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) -> bool {
+        self.attempts.get(&attempt_id).is_some_and(|binding| {
+            binding.media_generation == media_generation
+                && matches!(
+                    binding.semantic_load_result,
+                    Some(PlayerLoadAttemptResult::Loaded | PlayerLoadAttemptResult::Indeterminate)
+                )
+                && !binding.physical_terminal
+                && !binding.logical_ownership_revoked
+        })
+    }
+
+    fn attempt_owns_transport(
+        &self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) -> bool {
+        self.transport_owner_attempt == Some(attempt_id)
+            && self.attempts.get(&attempt_id).is_some_and(|binding| {
+                binding.media_generation == media_generation
+                    && binding.owns_transport
+                    && !binding.physical_terminal
+            })
+    }
+
+    fn mark_indeterminate(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        let Some(binding) = self.attempts.get_mut(&attempt_id) else {
+            return;
+        };
+        if binding.media_generation != media_generation {
+            return;
+        }
+        binding
+            .semantic_load_result
+            .get_or_insert(PlayerLoadAttemptResult::Indeterminate);
+    }
+
+    fn terminate_attempt(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        let Some(binding) = self.attempts.get_mut(&attempt_id) else {
+            return;
+        };
+        if binding.media_generation != media_generation {
+            return;
+        }
+        binding.physical_terminal = true;
+        binding.owns_transport = false;
+        if self.transport_owner_attempt == Some(attempt_id) {
+            self.transport_owner_attempt = None;
+        }
+    }
+
+    fn apply_delta_if_owned(
+        &mut self,
+        delta: PlayerTransportDelta,
+    ) -> Option<PlayerTransportDelta> {
+        let mut candidate = self.transport.clone();
+        candidate.apply_delta(delta.clone());
+        let attempt_id = snapshot_known_copy(&candidate.load_attempt_id)?;
+        let media_generation = snapshot_known_copy(&candidate.media_generation)?;
+        let binding = self.attempts.get(&attempt_id)?;
+        if binding.physical_terminal
+            || !binding.owns_transport
+            || binding.media_generation != media_generation
+            || self.transport_owner_attempt != Some(attempt_id)
+        {
+            return None;
+        }
+        self.transport = candidate;
+        Some(delta)
+    }
+
+    fn event_is_covered_by_snapshot(&self, order: PlayerEventOrder) -> bool {
+        self.last_snapshot_boundary.is_some_and(|boundary| {
+            boundary.attachment_epoch == order.attachment_epoch
+                && order.sequence <= boundary.through_sequence
+        })
+    }
+
+    fn require_next_order(&self, order: PlayerEventOrder) -> Result<(), PlayerError> {
+        if order.sequence <= self.last_sequence {
+            return Ok(());
+        }
+        let expected = self.last_sequence.saturating_add(1);
+        if order.sequence != expected {
+            return Err(ordered_batch_error(format!(
+                "sequence gap: expected {expected}, received {}",
+                order.sequence
+            )));
+        }
+        Ok(())
+    }
+
+    fn record_order(&mut self, order: PlayerEventOrder) {
+        self.last_sequence = self.last_sequence.max(order.sequence);
+    }
+
+    fn semantic_outcome_was_applied(&self, order: PlayerEventOrder) -> bool {
+        order.sequence <= self.acknowledged_semantic_sequence
+            || self.applied_semantic_outcomes.contains(&order)
+    }
+
+    fn record_semantic_outcome(&mut self, order: PlayerEventOrder) {
+        self.applied_semantic_outcomes.insert(order);
+        self.record_order(order);
+    }
+
+    fn compact_acknowledged_delivery(
+        &mut self,
+        acknowledgement_token: PlayerEventAcknowledgementToken,
+        sequence_boundary: PlayerSequenceBoundary,
+    ) {
+        if self.applied_unacknowledged_token != Some(acknowledgement_token) {
+            return;
+        }
+        self.acknowledged_semantic_sequence = self
+            .acknowledged_semantic_sequence
+            .max(sequence_boundary.through_sequence);
+        self.applied_semantic_outcomes.clear();
+        let transport_owner_attempt = self.transport_owner_attempt;
+        self.attempts.retain(|attempt_id, binding| {
+            !binding.physical_terminal || Some(*attempt_id) == transport_owner_attempt
+        });
+        self.applied_unacknowledged_token = None;
+    }
+
+    #[cfg(feature = "test-support")]
+    fn lifecycle_verification_projection(&self) -> LifecycleVerificationProjection {
+        let physical_binding = self
+            .transport_owner_attempt
+            .and_then(|attempt_id| self.attempts.get(&attempt_id));
+        let attempts: BTreeMap<_, _> = self
+            .attempts
+            .iter()
+            .map(|(attempt_id, binding)| {
+                (
+                    *attempt_id,
+                    LifecycleVerificationAttemptProjection {
+                        media_generation: binding.media_generation,
+                        command_id: binding.command_id,
+                        playlist_entry_id: binding.playlist_entry_id,
+                        owns_transport: SnapshotField::Known(binding.owns_transport),
+                        semantic_load_result: SnapshotField::Known(binding.semantic_load_result),
+                        logical_ownership_revoked: SnapshotField::Known(
+                            binding.logical_ownership_revoked,
+                        ),
+                        physical_terminal: SnapshotField::Known(binding.physical_terminal),
+                    },
+                )
+            })
+            .collect();
+        let terminal_load_results = attempts
+            .iter()
+            .filter_map(|(attempt_id, attempt)| match attempt.semantic_load_result {
+                SnapshotField::Known(Some(result)) => Some((*attempt_id, result)),
+                SnapshotField::Known(None)
+                | SnapshotField::KnownAbsent
+                | SnapshotField::Unavailable => None,
+            })
+            .collect();
+
+        LifecycleVerificationProjection {
+            attachment_epoch: verification_optional_field(self.attachment_epoch),
+            sequence_boundary: self.attachment_epoch.map_or(
+                SnapshotField::KnownAbsent,
+                |attachment_epoch| {
+                    SnapshotField::Known(PlayerSequenceBoundary::new(
+                        attachment_epoch,
+                        self.last_sequence,
+                    ))
+                },
+            ),
+            in_flight_acknowledgement: verification_optional_field(
+                self.applied_unacknowledged_token,
+            ),
+            pending_event_count: SnapshotField::Unavailable,
+            retained_semantic_outcome_count: SnapshotField::Known(
+                self.applied_semantic_outcomes.len(),
+            ),
+            snapshot_required: SnapshotField::Unavailable,
+
+            physical_transport_owner: verification_optional_field(self.transport_owner_attempt),
+            physical_media_generation: verification_optional_field(
+                physical_binding.map(|binding| binding.media_generation),
+            ),
+            physical_playlist_entry_id: match physical_binding {
+                Some(binding) => verification_optional_field(binding.playlist_entry_id),
+                None => SnapshotField::KnownAbsent,
+            },
+            physical_path: SnapshotField::Unavailable,
+            physical_file_loaded: SnapshotField::Unavailable,
+            logical_owner: SnapshotField::Unavailable,
+
+            transport: self.transport.clone(),
+            attempts,
+            pending_commands: SnapshotField::Unavailable,
+            terminal_command_results: SnapshotField::Unavailable,
+            terminal_load_results: SnapshotField::Known(terminal_load_results),
+
+            pending_playlist_resolution_attempt: SnapshotField::Unavailable,
+            playlist_resolution_state: SnapshotField::Unavailable,
+            fallback_pending: SnapshotField::Unavailable,
+            player_local_file: SnapshotField::Unavailable,
+            player_local_file_placeholder: SnapshotField::Unavailable,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackBarrierStartConfig {
@@ -224,7 +788,7 @@ struct ConnectionLocalControlAuthority {
     freshness: LocalControlAuthorityFreshness,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PendingLocalPauseIntent {
     paused: bool,
     room: String,
@@ -232,6 +796,9 @@ struct PendingLocalPauseIntent {
     connection_generation: u64,
     authorization: LocalIntentAuthorization,
     replay_player_after_reauthorization: bool,
+    last_canonical_playstate_updated_at_seconds: Option<f64>,
+    mismatching_canonical_playstate_updates: u8,
+    first_mismatching_canonical_playstate_at_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +813,15 @@ struct NativePlayAuthorityState {
 struct PendingNativePlayAuthorityFence {
     first_observed_at_seconds: f64,
     authority: NativePlayAuthorityState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LocalPositionObservation {
+    media_generation: u64,
+    observed_at_seconds: f64,
+    last_actual_position_observed_at_seconds: f64,
+    position_seconds: f64,
+    playback_rate: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +855,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
+    latest_position_observation: Option<LocalPositionObservation>,
     adapter_clock_offset_seconds: Option<f64>,
     last_external_now_seconds: Option<f64>,
     last_coordinator_now_seconds: Option<f64>,
@@ -292,6 +869,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_forced_seek_revision: Option<u64>,
     transport_telemetry_observed: bool,
     transport_telemetry_available: bool,
+    awaiting_ordered_snapshot: bool,
     reconnect_reconciliation: Option<ReconnectReconciliation>,
     last_applied_revision: Option<u64>,
     last_started_revision: Option<u64>,
@@ -312,6 +890,26 @@ pub(crate) struct RuntimePlaybackCoordination {
 }
 
 impl RuntimePlaybackCoordination {
+    fn clear_timeout_player_failure_for_recovered_load(
+        &mut self,
+        adapter_generation: PlayerMediaGeneration,
+    ) {
+        let logical_generation = self
+            .adapter_generation_bindings
+            .get(&adapter_generation.get())
+            .map(|binding| binding.logical_generation)
+            .or_else(|| self.coordinator.current_media_generation());
+        if self
+            .last_technical_readiness_fingerprint
+            .is_some_and(|fingerprint| {
+                fingerprint.reason == Some(TechnicalBlockCause::PlayerFailure)
+                    && logical_generation == Some(fingerprint.media_generation)
+            })
+        {
+            self.last_technical_readiness_fingerprint = None;
+        }
+    }
+
     pub(crate) fn set_config(&mut self, config: PlaybackCoordinatorConfig) {
         self.coordinator.set_config(config);
     }
@@ -355,7 +953,7 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, None, now_seconds)
+        self.prepare_media_internal(logical_id, kind, None, now_seconds, false)
     }
 
     pub(crate) fn prepare_media_with_intent(
@@ -365,7 +963,22 @@ impl RuntimePlaybackCoordination {
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds)
+        self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds, false)
+    }
+
+    pub(crate) fn prepare_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.prepare_media_internal(
+            logical_id,
+            kind,
+            Some(MediaLoadIntent::TransportRefresh),
+            now_seconds,
+            true,
+        )
     }
 
     fn prepare_media_internal(
@@ -374,25 +987,34 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         intent: Option<MediaLoadIntent>,
         now_seconds: f64,
+        room_participation: bool,
     ) -> MediaLoadPlan {
         let placeholder_adapter_generation = self
             .coordinator
             .current_logical_media_id()
             .filter(|logical_id| logical_id.as_str().starts_with("adapter-media-generation-"))
             .and(self.highest_bound_adapter_generation);
-        let plan = match intent {
-            Some(intent) => {
-                self.coordinator
-                    .prepare_media_with_intent(logical_id, kind, intent, now_seconds)
+        let plan = if room_participation {
+            self.coordinator
+                .prepare_media_for_room_participation(logical_id, kind, now_seconds)
+        } else {
+            match intent {
+                Some(intent) => self.coordinator.prepare_media_with_intent(
+                    logical_id,
+                    kind,
+                    intent,
+                    now_seconds,
+                ),
+                None => self
+                    .coordinator
+                    .prepare_media(logical_id, kind, now_seconds),
             }
-            None => self
-                .coordinator
-                .prepare_media(logical_id, kind, now_seconds),
         };
         self.adapter_generation_bindings
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
         self.latest_observation = None;
+        self.latest_position_observation = None;
         self.transport_telemetry_observed = false;
         self.player_command_bindings.clear();
         let classifier_adapter_epoch = self.classifier_adapter_epoch();
@@ -416,16 +1038,18 @@ impl RuntimePlaybackCoordination {
             self.accepted_barrier = None;
             self.pending_barrier_recovery = None;
             self.accepted_barrier_terminal = false;
-            self.pending_media_coordination = Some(PendingMediaCoordinationIntent {
-                local_media_generation: plan.media_generation,
-                load_intent: plan.load_intent,
-                include_start_barrier: true,
-                request_id: new_playback_barrier_request_id(plan.media_generation),
-                retry_request_nonce: None,
-                retry_not_before_seconds: None,
-                retry_attempts: 0,
-                room: None,
-            });
+            self.pending_media_coordination = (plan.load_intent
+                != MediaLoadIntent::TransportRefresh)
+                .then(|| PendingMediaCoordinationIntent {
+                    local_media_generation: plan.media_generation,
+                    load_intent: plan.load_intent,
+                    include_start_barrier: true,
+                    request_id: new_playback_barrier_request_id(plan.media_generation),
+                    retry_request_nonce: None,
+                    retry_not_before_seconds: None,
+                    retry_attempts: 0,
+                    room: None,
+                });
             self.handled_barrier_timeout = None;
             self.pending_barrier_timeout_action = None;
             self.last_reported_room_buffering = None;
@@ -446,6 +1070,16 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn reset_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
         self.adapter_epoch = self.adapter_epoch.saturating_add(1);
+        // A new adapter cannot complete commands, recovery decisions, or a
+        // degraded seek hold that belonged to the player it replaced. Treat
+        // the boundary as a lifecycle supersession and make the next
+        // canonical room state establish a fresh, still-bounded alignment
+        // attempt against the replacement transport.
+        let _ = self.coordinator.interrupt_recovery();
+        self.coordinator.clear_seek_preparation_terminal();
+        self.desired_generation = None;
+        self.desired_fingerprint = None;
+        self.pending_forced_seek_revision = None;
         self.adapter_generation_bindings.clear();
         self.highest_bound_adapter_generation = None;
         self.pending_media_identity = self
@@ -462,6 +1096,7 @@ impl RuntimePlaybackCoordination {
         self.pending_native_play_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
+        self.latest_position_observation = None;
         self.adapter_clock_offset_seconds = None;
         self.last_external_now_seconds = None;
         self.last_coordinator_now_seconds = None;
@@ -1126,14 +1761,10 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
     ) -> Option<u64> {
         let adapter_generation = adapter_generation.get();
-        if let Some(binding) = self.adapter_generation_bindings.get(&adapter_generation) {
-            let current_identity = self
-                .coordinator
-                .current_media_generation()
-                .zip(self.coordinator.current_load_attempt());
-            return (current_identity == Some((binding.logical_generation, binding.load_attempt))
-                && binding.adapter_generation == adapter_generation)
-                .then_some(binding.logical_generation);
+        if let Some(logical_generation) =
+            self.logical_generation_for_adapter_generation(adapter_generation)
+        {
+            return Some(logical_generation);
         }
 
         let (logical_generation, load_attempt) = match self.pending_media_identity {
@@ -1188,22 +1819,41 @@ impl RuntimePlaybackCoordination {
         Some(logical_generation)
     }
 
+    fn logical_generation_for_adapter_generation(&self, adapter_generation: u64) -> Option<u64> {
+        let binding = self.adapter_generation_bindings.get(&adapter_generation)?;
+        let current_identity = self
+            .coordinator
+            .current_media_generation()
+            .zip(self.coordinator.current_load_attempt());
+        (current_identity == Some((binding.logical_generation, binding.load_attempt))
+            && binding.adapter_generation == adapter_generation)
+            .then_some(binding.logical_generation)
+    }
+
     fn map_observation_time(
         &self,
-        update: &PlayerTransportTelemetryUpdate,
+        observed_at: Option<PlayerObservationTimestamp>,
         external_now_seconds: f64,
-    ) -> (f64, Option<f64>) {
-        let raw_seconds = update
-            .observed_at
-            .map(|timestamp| timestamp.elapsed_since_adapter_start().as_secs_f64());
-        match raw_seconds {
-            Some(raw_seconds) => {
+    ) -> (f64, Option<f64>, f64) {
+        match observed_at {
+            Some(timestamp) => {
+                let raw_seconds = timestamp.elapsed_since_adapter_start().as_secs_f64();
+                let delivery_reference_seconds = timestamp
+                    .delivery_reference_since_adapter_start()
+                    .as_secs_f64();
                 let offset = self
                     .adapter_clock_offset_seconds
-                    .unwrap_or(external_now_seconds - raw_seconds);
-                (raw_seconds + offset, Some(offset))
+                    .unwrap_or(external_now_seconds - delivery_reference_seconds);
+                (
+                    raw_seconds + offset,
+                    Some(offset),
+                    delivery_reference_seconds + offset,
+                )
             }
-            None => (self.coordinator_now(external_now_seconds), None),
+            None => {
+                let coordinator_now = self.coordinator_now(external_now_seconds);
+                (coordinator_now, None, coordinator_now)
+            }
         }
     }
 
@@ -1222,7 +1872,7 @@ impl RuntimePlaybackCoordination {
     fn commit_observation_clock(
         &mut self,
         external_now_seconds: f64,
-        observed_at_seconds: f64,
+        delivery_reference_seconds: f64,
         candidate_offset_seconds: Option<f64>,
     ) {
         if self.adapter_clock_offset_seconds.is_none() {
@@ -1236,16 +1886,134 @@ impl RuntimePlaybackCoordination {
         );
         self.last_coordinator_now_seconds = Some(
             self.last_coordinator_now_seconds
-                .map_or(observed_at_seconds, |current| {
-                    current.max(observed_at_seconds)
+                .map_or(delivery_reference_seconds, |current| {
+                    current.max(delivery_reference_seconds)
                 }),
         );
+    }
+
+    fn update_latest_position_observation(
+        &mut self,
+        update: &PlayerTransportObservation,
+        replace_previous_state: bool,
+    ) {
+        let reported_or_retained_playback_rate = update.playback_rate.or_else(|| {
+            (!replace_previous_state)
+                .then(|| {
+                    self.latest_observation
+                        .as_ref()
+                        .and_then(|current| current.playback_rate)
+                })
+                .flatten()
+        });
+        let motion_regime_transition = !replace_previous_state
+            && self.latest_observation.as_ref().is_some_and(|current| {
+                update
+                    .phase
+                    .is_some_and(|phase| current.phase != Some(phase))
+                    || update
+                        .playback_rate
+                        .is_some_and(|rate| current.playback_rate != Some(rate))
+                    || update
+                        .logical_pause
+                        .is_some_and(|paused| current.logical_pause != Some(paused))
+                    || update
+                        .paused_for_cache
+                        .is_some_and(|paused| current.paused_for_cache != Some(paused))
+                    || update
+                        .seeking
+                        .is_some_and(|seeking| current.seeking != Some(seeking))
+                    || update
+                        .core_idle
+                        .is_some_and(|core_idle| current.core_idle != Some(core_idle))
+            });
+        let invalid_playback_rate =
+            reported_or_retained_playback_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0);
+        let effective_playback_rate = reported_or_retained_playback_rate
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+            .unwrap_or(NORMAL_PLAYBACK_RATE);
+        if invalid_playback_rate {
+            self.latest_position_observation = None;
+        } else if update.position_seconds.is_some() {
+            self.latest_position_observation = update
+                .position_seconds
+                .filter(|position| position.is_finite())
+                .map(|position_seconds| LocalPositionObservation {
+                    media_generation: update.media_generation,
+                    observed_at_seconds: update.observed_at_seconds,
+                    last_actual_position_observed_at_seconds: update.observed_at_seconds,
+                    position_seconds,
+                    playback_rate: effective_playback_rate,
+                });
+        } else if replace_previous_state {
+            self.latest_position_observation = None;
+        } else if motion_regime_transition {
+            self.latest_position_observation = self
+                .project_position_observation_to(update.observed_at_seconds)
+                .map(|mut position| {
+                    if update.playback_rate.is_some() {
+                        position.playback_rate = effective_playback_rate;
+                    }
+                    position
+                });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_mapped_transport_observation(
+        &mut self,
+        observation: PlayerTransportObservation,
+        position_update: &PlayerTransportObservation,
+        external_now_seconds: f64,
+        delivery_reference_seconds: f64,
+        candidate_offset_seconds: Option<f64>,
+        replace_latest_observation: bool,
+        replace_position_state: bool,
+    ) -> bool {
+        if self.coordinator.current_media_generation() != Some(observation.media_generation)
+            || !self.observation_timestamp_is_accepted(
+                observation.media_generation,
+                observation.observed_at_seconds,
+            )
+        {
+            return false;
+        }
+        self.commit_observation_clock(
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+        );
+        self.transport_telemetry_observed = true;
+        self.update_latest_position_observation(position_update, replace_position_state);
+        if replace_latest_observation {
+            self.latest_observation = Some(observation);
+        } else {
+            self.merge_latest_observation(observation);
+        }
+        true
     }
 
     pub(crate) fn observe_transport(
         &mut self,
         update: PlayerTransportTelemetryUpdate,
         external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_transport_with_semantics(update, external_now_seconds, false)
+    }
+
+    pub(crate) fn rebase_transport(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_transport_with_semantics(update, external_now_seconds, true)
+    }
+
+    fn observe_transport_with_semantics(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+        replace_previous_state: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
         // Receiving an update establishes adapter capability even when the
         // event itself is stale or cannot be bound to the active load. Once
@@ -1260,10 +2028,8 @@ impl RuntimePlaybackCoordination {
         else {
             return Vec::new();
         };
-        let owns_current_media =
-            self.coordinator.current_media_generation() == Some(media_generation);
-        let (observed_at_seconds, candidate_offset_seconds) =
-            self.map_observation_time(&update, external_now_seconds);
+        let (observed_at_seconds, candidate_offset_seconds, delivery_reference_seconds) =
+            self.map_observation_time(update.observed_at, external_now_seconds);
         let observation = PlayerTransportObservation {
             media_generation,
             observed_at_seconds,
@@ -1283,16 +2049,166 @@ impl RuntimePlaybackCoordination {
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         };
-        let timestamp_accepted =
-            self.observation_timestamp_is_accepted(media_generation, observed_at_seconds);
-        if owns_current_media && timestamp_accepted {
-            self.commit_observation_clock(
+        let position_update = observation.clone();
+        self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+            replace_previous_state,
+            replace_previous_state,
+        );
+        let actions = if replace_previous_state {
+            self.coordinator.rebase_observation(observation)
+        } else {
+            self.coordinator.observe(observation)
+        };
+        self.record_observation_outcomes(&actions);
+        actions
+    }
+
+    fn observation_from_ordered_transport(
+        &mut self,
+        transport: &PlayerTransportSnapshot,
+        external_now_seconds: f64,
+    ) -> Option<(PlayerTransportObservation, Option<f64>, f64)> {
+        let adapter_generation = snapshot_known_copy(&transport.media_generation)?;
+        let media_generation =
+            self.bind_adapter_generation(adapter_generation, external_now_seconds)?;
+        let (observed_at_seconds, candidate_offset_seconds, delivery_reference_seconds) = self
+            .map_observation_time(
+                snapshot_known_copy(&transport.observed_at),
                 external_now_seconds,
-                observed_at_seconds,
-                candidate_offset_seconds,
             );
-            self.transport_telemetry_observed = true;
-            self.merge_latest_observation(observation.clone());
+        Some((
+            PlayerTransportObservation {
+                media_generation,
+                observed_at_seconds,
+                phase: snapshot_known_copy(&transport.phase),
+                position_seconds: snapshot_known_copy(&transport.position_seconds),
+                playback_rate: snapshot_known_copy(&transport.playback_rate),
+                logical_pause: snapshot_known_copy(&transport.logical_pause),
+                paused_for_cache: snapshot_known_copy(&transport.paused_for_cache),
+                seeking: snapshot_known_copy(&transport.seeking),
+                seekable: snapshot_known_copy(&transport.seekable),
+                timeline_kind: snapshot_known_copy(&transport.timeline_kind),
+                seekable_ranges: snapshot_known_clone(&transport.seekable_ranges),
+                known_live_seekable_window: snapshot_known_copy(
+                    &transport.known_live_seekable_window,
+                ),
+                core_idle: snapshot_known_copy(&transport.core_idle),
+                playback_restart_sequence: snapshot_known_copy(
+                    &transport.playback_restart_sequence,
+                ),
+                cache_buffering_percent: snapshot_known_copy(&transport.cache_percentage),
+                buffered_ahead_seconds: snapshot_known_copy(&transport.buffered_duration_seconds),
+                input_rate_bytes_per_second: snapshot_known_copy(
+                    &transport.input_rate_bytes_per_second,
+                ),
+            },
+            candidate_offset_seconds,
+            delivery_reference_seconds,
+        ))
+    }
+
+    fn position_update_from_ordered_delta(
+        delta: &PlayerTransportDelta,
+        mapped_observation: &PlayerTransportObservation,
+    ) -> PlayerTransportObservation {
+        PlayerTransportObservation {
+            media_generation: mapped_observation.media_generation,
+            observed_at_seconds: mapped_observation.observed_at_seconds,
+            phase: delta.phase,
+            position_seconds: delta.position_seconds,
+            playback_rate: delta.playback_rate,
+            logical_pause: delta.logical_pause,
+            paused_for_cache: delta.paused_for_cache,
+            seeking: delta.seeking,
+            seekable: None,
+            timeline_kind: None,
+            seekable_ranges: None,
+            known_live_seekable_window: None,
+            core_idle: delta.core_idle,
+            playback_restart_sequence: None,
+            cache_buffering_percent: None,
+            buffered_ahead_seconds: None,
+            input_rate_bytes_per_second: None,
+        }
+    }
+
+    fn fence_ordered_transport_until_snapshot(&mut self, external_now_seconds: f64) {
+        self.awaiting_ordered_snapshot = true;
+        self.latest_observation = None;
+        self.latest_position_observation = None;
+        self.transport_telemetry_observed = false;
+        let coordinator_now = self.coordinator_now(external_now_seconds);
+        self.coordinator
+            .reset_transport_adapter_epoch(coordinator_now);
+    }
+
+    pub(crate) fn ordered_transport_awaits_snapshot(&self) -> bool {
+        self.awaiting_ordered_snapshot
+    }
+
+    pub(crate) fn rebase_ordered_transport_snapshot(
+        &mut self,
+        transport: &PlayerTransportSnapshot,
+        external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.awaiting_ordered_snapshot = false;
+        self.transport_telemetry_available = true;
+        self.latest_observation = None;
+        self.latest_position_observation = None;
+        self.transport_telemetry_observed = false;
+        let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
+            self.observation_from_ordered_transport(transport, external_now_seconds)
+        else {
+            return Vec::new();
+        };
+        let position_update = observation.clone();
+        if !self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+            true,
+            true,
+        ) {
+            return Vec::new();
+        }
+        let actions = self.coordinator.observe(observation);
+        self.record_observation_outcomes(&actions);
+        actions
+    }
+
+    pub(crate) fn observe_ordered_transport_delta(
+        &mut self,
+        transport: &PlayerTransportSnapshot,
+        delta: &PlayerTransportDelta,
+        external_now_seconds: f64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        if self.awaiting_ordered_snapshot {
+            return Vec::new();
+        }
+        self.transport_telemetry_available = true;
+        let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
+            self.observation_from_ordered_transport(transport, external_now_seconds)
+        else {
+            return Vec::new();
+        };
+        let position_update = Self::position_update_from_ordered_delta(delta, &observation);
+        if !self.commit_mapped_transport_observation(
+            observation.clone(),
+            &position_update,
+            external_now_seconds,
+            delivery_reference_seconds,
+            candidate_offset_seconds,
+            true,
+            false,
+        ) {
+            return Vec::new();
         }
         let actions = self.coordinator.observe(observation);
         self.record_observation_outcomes(&actions);
@@ -1309,6 +2225,18 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         }
         self.observe_transport(update, external_now_seconds)
+    }
+
+    pub(crate) fn rebase_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        external_now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        if adapter_epoch != self.adapter_epoch {
+            return Vec::new();
+        }
+        self.rebase_transport(update, external_now_seconds)
     }
 
     /// Records an EOF discovered by a legacy attached-player surface that
@@ -1540,6 +2468,105 @@ impl RuntimePlaybackCoordination {
             .map(|observation| observation.observed_at_seconds)
     }
 
+    fn project_position_observation_to(
+        &self,
+        observed_at_seconds: f64,
+    ) -> Option<LocalPositionObservation> {
+        let observation = self.latest_observation.as_ref()?;
+        let mut position = self.latest_position_observation?;
+        if observation.media_generation != position.media_generation
+            || !observed_at_seconds.is_finite()
+            || observed_at_seconds < position.observed_at_seconds
+            || observation.seeking == Some(true)
+        {
+            return None;
+        }
+        let elapsed_seconds = observed_at_seconds - position.observed_at_seconds;
+        let advancing = observation.phase
+            == Some(sorotte_player_api::PlayerTransportPhase::Playing)
+            && observation.logical_pause == Some(false)
+            && observation.paused_for_cache != Some(true)
+            && observation.core_idle != Some(true)
+            && position.playback_rate.is_finite()
+            && position.playback_rate > 0.0;
+        let stationary = observation.logical_pause == Some(true)
+            || observation.paused_for_cache == Some(true)
+            || observation.core_idle == Some(true)
+            || matches!(
+                observation.phase,
+                Some(
+                    sorotte_player_api::PlayerTransportPhase::ReadyPaused
+                        | sorotte_player_api::PlayerTransportPhase::Prebuffering
+                        | sorotte_player_api::PlayerTransportPhase::Rebuffering
+                )
+            );
+        if advancing {
+            let actual_sample_age_seconds =
+                observed_at_seconds - position.last_actual_position_observed_at_seconds;
+            if !actual_sample_age_seconds.is_finite()
+                || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS)
+                    .contains(&actual_sample_age_seconds)
+            {
+                return None;
+            }
+            position.position_seconds += elapsed_seconds * position.playback_rate;
+        } else if !stationary {
+            return None;
+        }
+        position.observed_at_seconds = observed_at_seconds;
+        Some(position)
+    }
+
+    pub(crate) fn projected_local_position_at(
+        &self,
+        external_now_seconds: f64,
+        legacy_position_seconds: Option<f64>,
+    ) -> Option<f64> {
+        if self.awaiting_ordered_snapshot {
+            return None;
+        }
+        if !self.transport_telemetry_observed {
+            return legacy_position_seconds;
+        }
+        let observation = self.latest_observation.as_ref()?;
+        let position = self.latest_position_observation?;
+        if self.coordinator.current_media_generation() != Some(position.media_generation)
+            || observation.media_generation != position.media_generation
+            || observation.paused_for_cache == Some(true)
+            || observation.seeking == Some(true)
+        {
+            return None;
+        }
+        if observation.phase == Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused)
+            && observation.logical_pause == Some(true)
+        {
+            return Some(position.position_seconds);
+        }
+        if observation.phase != Some(sorotte_player_api::PlayerTransportPhase::Playing)
+            || observation.logical_pause == Some(true)
+            || observation.core_idle == Some(true)
+        {
+            return None;
+        }
+        let playback_rate = position.playback_rate;
+        if !playback_rate.is_finite() || playback_rate <= 0.0 {
+            return None;
+        }
+        let sample_age_seconds = self.coordinator_now(external_now_seconds)
+            - position.last_actual_position_observed_at_seconds;
+        if !sample_age_seconds.is_finite()
+            || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS).contains(&sample_age_seconds)
+        {
+            return None;
+        }
+        let projection_elapsed_seconds =
+            self.coordinator_now(external_now_seconds) - position.observed_at_seconds;
+        if !projection_elapsed_seconds.is_finite() || projection_elapsed_seconds < 0.0 {
+            return None;
+        }
+        Some(position.position_seconds + projection_elapsed_seconds * playback_rate)
+    }
+
     pub(crate) fn stage_local_pause_intent(&mut self, paused: bool, session: &ClientSession) {
         let Some(room) = session.room() else {
             self.pending_local_pause_intent = None;
@@ -1595,6 +2622,14 @@ impl RuntimePlaybackCoordination {
             authorization,
             replay_player_after_reauthorization: authorization
                 == LocalIntentAuthorization::AwaitingControlledRoomReauthentication,
+            last_canonical_playstate_updated_at_seconds: session
+                .model
+                .room
+                .playstate_updated_at_seconds
+                .get(room)
+                .copied(),
+            mismatching_canonical_playstate_updates: 0,
+            first_mismatching_canonical_playstate_at_seconds: None,
         });
         self.last_local_pause_intent_stage_accepted = Some(true);
     }
@@ -1806,7 +2841,80 @@ impl RuntimePlaybackCoordination {
         if self.pending_local_pause_intent.is_some() && !intent_context_matches {
             self.pending_local_pause_intent = None;
         }
-        if canonical_local_echo
+        let canonical_playstate_updated_at_seconds = session.room().and_then(|room| {
+            session
+                .model
+                .room
+                .playstate_updated_at_seconds
+                .get(room)
+                .copied()
+        });
+        let mut retire_confirmed_or_stale_local_intent = false;
+        if let Some(intent) = self.pending_local_pause_intent.as_mut() {
+            let canonical_playstate_changed = match (
+                canonical_playstate_updated_at_seconds,
+                intent.last_canonical_playstate_updated_at_seconds,
+            ) {
+                // State messages are applied in transport order. Treat any
+                // changed receipt timestamp as a new canonical observation so
+                // a wall-clock rollback cannot strand an overlay indefinitely;
+                // equal timestamps still coalesce batched/replayed updates.
+                (Some(current), Some(previous)) => current != previous,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if canonical_playstate_changed && intent.paused == paused {
+                // The server may attribute a matching state to another user
+                // after selecting its room anchor. Matching canonical truth
+                // still acknowledges the command and must retire the overlay.
+                retire_confirmed_or_stale_local_intent = true;
+            } else if authority_may_accept_local_intent
+                && intent.paused != paused
+                && intent.connection_generation == self.connection_generation
+                && intent.authorization == LocalIntentAuthorization::Authorized
+            {
+                if canonical_playstate_changed {
+                    intent.last_canonical_playstate_updated_at_seconds =
+                        canonical_playstate_updated_at_seconds;
+                    intent.mismatching_canonical_playstate_updates = intent
+                        .mismatching_canonical_playstate_updates
+                        .saturating_add(1);
+                    intent
+                        .first_mismatching_canonical_playstate_at_seconds
+                        .get_or_insert(external_now_seconds);
+                }
+                let mismatch_window_elapsed = intent
+                    .first_mismatching_canonical_playstate_at_seconds
+                    .is_some_and(|first_mismatch_at| {
+                        let elapsed_seconds = external_now_seconds - first_mismatch_at;
+                        elapsed_seconds.is_finite()
+                            && elapsed_seconds >= LOCAL_PAUSE_INTENT_MISMATCH_WINDOW_SECONDS
+                    });
+                if intent
+                    .first_mismatching_canonical_playstate_at_seconds
+                    .is_some_and(|first_mismatch_at| external_now_seconds < first_mismatch_at)
+                {
+                    // GUI session clocks are wall-clock based. If the system
+                    // clock moves backwards, restart the bounded wait on the
+                    // adjusted timeline rather than waiting for the old wall
+                    // time to catch up.
+                    intent.first_mismatching_canonical_playstate_at_seconds =
+                        Some(external_now_seconds);
+                }
+                retire_confirmed_or_stale_local_intent = intent
+                    .mismatching_canonical_playstate_updates
+                    >= MAX_MISMATCHING_LOCAL_PAUSE_INTENT_UPDATES
+                    && mismatch_window_elapsed;
+            }
+        }
+        if retire_confirmed_or_stale_local_intent {
+            // A local overlay only bridges the command/echo race. Matching
+            // canonical truth acknowledges it; repeated, sufficiently spaced
+            // disagreement means it was rejected, lost, or superseded.
+            self.pending_local_pause_intent = None;
+        }
+        if self.pending_local_pause_intent.is_some()
+            && canonical_local_echo
             && self
                 .pending_local_pause_intent
                 .as_ref()
@@ -2139,6 +3247,34 @@ impl RuntimePlaybackCoordination {
             }
         }
         pause_command_failed
+    }
+
+    pub(crate) fn apply_player_command_outcome(
+        &mut self,
+        outcome: sorotte_player_api::PlayerCommandOutcome,
+        external_now_seconds: f64,
+    ) -> bool {
+        let result = match outcome.result {
+            PlayerCommandSemanticResult::Completed => PlayerCommandResult::Completed,
+            PlayerCommandSemanticResult::Superseded => PlayerCommandResult::Superseded,
+            PlayerCommandSemanticResult::Failed(failure) => PlayerCommandResult::Failed(failure),
+            PlayerCommandSemanticResult::CompletionNotObserved => {
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut)
+            }
+            PlayerCommandSemanticResult::TransportDisconnected => {
+                PlayerCommandResult::Failed(PlayerCommandFailureKind::TransportDisconnected)
+            }
+        };
+        self.apply_player_command_progress(
+            sorotte_player_api::PlayerCommandProgress::finished(
+                outcome.command_id,
+                outcome.media_generation,
+                None,
+                None,
+                result,
+            ),
+            external_now_seconds,
+        )
     }
 }
 
@@ -2773,7 +3909,7 @@ fn normalized_positive_seconds(value: f64, fallback: f64) -> f64 {
 
 fn new_playback_barrier_request_id(local_media_generation: u64) -> String {
     let mut bytes = [0_u8; 16];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     }
 
@@ -2874,6 +4010,24 @@ where
         actions
     }
 
+    pub fn rebase_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        let mut actions = self.playback_coordination.rebase_transport_at_epoch(
+            update,
+            now_seconds,
+            adapter_epoch,
+        );
+        let _ = self.handle_latest_player_readiness_observation();
+        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
+        let _ = self.report_playback_barrier_observations(&actions);
+        self.apply_external_coordinator_control_actions(&actions);
+        actions
+    }
+
     /// Feeds a legacy attached-player EOF signal through the same technical
     /// readiness and causal-classification path as an adapter-reported
     /// `PlayerTransportPhase::Ended` observation.
@@ -2913,6 +4067,26 @@ where
             intent,
             now_seconds,
         );
+        self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    pub fn prepare_playback_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        let plan = self
+            .playback_coordination
+            .prepare_media_for_room_participation(logical_id, kind, now_seconds);
+        self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    fn finish_prepared_playback_media(
+        &mut self,
+        plan: MediaLoadPlan,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
         if let Some(room) = self.session.room() {
             self.control
                 .retain_protocol_playback_barrier_scope(room, plan.media_generation);
@@ -2946,6 +4120,14 @@ where
 
     pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
         self.playback_coordination.snapshot()
+    }
+
+    pub fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.playback_coordination
+            .logical_generation_for_adapter_generation(adapter_generation.get())
     }
 
     /// Whether the exact currently tracked media is held paused by a
@@ -3148,6 +4330,11 @@ where
         update: PlayerTransportTelemetryUpdate,
         now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
+        if let Some(playback_rate) = update.playback_rate {
+            self.session.apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default().with_playback_rate(playback_rate),
+            );
+        }
         let mut actions = self
             .playback_coordination
             .observe_transport(update, now_seconds);
@@ -3243,10 +4430,445 @@ where
         }
     }
 
+    fn record_ordered_playback_projection(&mut self, delta: &PlayerTransportDelta) {
+        let update = PlayerPlaybackTelemetryUpdate {
+            paused: delta.logical_pause,
+            position_seconds: delta.position_seconds,
+            playback_rate: delta.playback_rate,
+            paused_for_cache: delta.paused_for_cache,
+            cache_buffering_percent: delta.cache_percentage,
+        };
+        if update == PlayerPlaybackTelemetryUpdate::default() {
+            return;
+        }
+        self.session
+            .apply_ordered_player_playback_telemetry_update(&update);
+        if let Some(pending) = self.pending_player_playback_telemetry_updates.back_mut() {
+            pending.paused = update.paused.or(pending.paused);
+            pending.position_seconds = update.position_seconds.or(pending.position_seconds);
+            pending.playback_rate = update.playback_rate.or(pending.playback_rate);
+            pending.paused_for_cache = update.paused_for_cache.or(pending.paused_for_cache);
+            pending.cache_buffering_percent = update
+                .cache_buffering_percent
+                .or(pending.cache_buffering_percent);
+        } else {
+            self.pending_player_playback_telemetry_updates
+                .push_back(update);
+        }
+    }
+
+    fn apply_ordered_coordination_actions(
+        &mut self,
+        mut actions: Vec<PlaybackCoordinatorAction>,
+        now_seconds: f64,
+        first_error: &mut Option<PlayerError>,
+    ) {
+        if let Err(error) = self.handle_latest_player_readiness_observation()
+            && first_error.is_none()
+        {
+            *first_error = Some(error);
+        }
+        if let Err(error) = self.promote_pending_native_play_before_pause_correction(&mut actions)
+            && first_error.is_none()
+        {
+            *first_error = Some(error);
+        }
+        if let Err(error) = self.report_playback_barrier_observations(&actions)
+            && first_error.is_none()
+        {
+            *first_error = Some(crate::control::client_effect_player_error(error));
+        }
+        if let Err(error) = self.execute_playback_coordinator_actions(actions, now_seconds)
+            && first_error.is_none()
+        {
+            *first_error = Some(error);
+        }
+    }
+
+    fn apply_ordered_snapshot(
+        &mut self,
+        snapshot: &sorotte_player_api::PlayerAuthoritativeSnapshot,
+        now_seconds: f64,
+        first_error: &mut Option<PlayerError>,
+    ) {
+        let previous_file = self.last_local_file_update.clone();
+        let snapshot_file = match (&snapshot.active_load, &snapshot.current_path) {
+            (SnapshotField::Known(active), SnapshotField::Known(path))
+                if active.physical_file_loaded =>
+            {
+                Some(LocalFileUpdate::new(path.clone()).with_path(path.clone()))
+            }
+            _ => None,
+        };
+        let matching_pending_file = snapshot_file.as_ref().and_then(|snapshot_file| {
+            self.pending_ordered_local_file_updates
+                .pending()
+                .iter()
+                .rev()
+                .find(|pending| local_file_updates_share_identity(pending, snapshot_file))
+                .cloned()
+        });
+        let had_matching_pending_file = matching_pending_file.is_some();
+        let recovered_file = matching_pending_file.or_else(|| snapshot_file.clone());
+
+        self.ordered_player_events.rebase_snapshot(snapshot);
+        self.observe_pending_reconnect_rate_reset(snapshot_known_copy(
+            &snapshot.transport.playback_rate,
+        ));
+        self.pending_player_playback_telemetry_updates = EffectOutbox::default();
+        self.pending_ordered_local_file_updates = EffectOutbox::default();
+        self.session
+            .replace_player_playback_telemetry_from_authoritative_snapshot(
+                &PlayerPlaybackTelemetryUpdate {
+                    paused: snapshot_known_copy(&snapshot.transport.logical_pause),
+                    position_seconds: snapshot_known_copy(&snapshot.transport.position_seconds),
+                    playback_rate: snapshot_known_copy(&snapshot.transport.playback_rate),
+                    paused_for_cache: snapshot_known_copy(&snapshot.transport.paused_for_cache),
+                    cache_buffering_percent: snapshot_known_copy(
+                        &snapshot.transport.cache_percentage,
+                    ),
+                },
+            );
+        self.last_local_file_update.clone_from(&recovered_file);
+        if let Some(recovered_file) = recovered_file
+            && (had_matching_pending_file
+                || previous_file.as_ref().is_none_or(|previous| {
+                    !local_file_updates_share_identity(previous, &recovered_file)
+                }))
+        {
+            self.pending_ordered_local_file_updates
+                .push_back(recovered_file);
+        }
+        let actions = self
+            .playback_coordination
+            .rebase_ordered_transport_snapshot(&snapshot.transport, now_seconds);
+        self.apply_ordered_coordination_actions(actions, now_seconds, first_error);
+    }
+
+    fn apply_ordered_event(
+        &mut self,
+        event: SequencedPlayerEvent,
+        now_seconds: f64,
+        first_error: &mut Option<PlayerError>,
+    ) {
+        match event.event {
+            PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => {
+                self.pending_player_playback_telemetry_updates = EffectOutbox::default();
+                self.session
+                    .replace_player_playback_telemetry_from_authoritative_snapshot(
+                        &PlayerPlaybackTelemetryUpdate::default(),
+                    );
+                self.playback_coordination
+                    .fence_ordered_transport_until_snapshot(now_seconds);
+            }
+            PlayerEvent::LocalFileChanged {
+                attempt_id,
+                media_generation,
+                update,
+            } => {
+                if !self
+                    .ordered_player_events
+                    .attempt_owns_transport(attempt_id, media_generation)
+                {
+                    return;
+                }
+                self.last_local_file_update = Some(update.clone());
+                self.pending_ordered_local_file_updates.push_back(update);
+            }
+            PlayerEvent::TransportDelta(delta) => {
+                let Some(accepted) = self.ordered_player_events.apply_delta_if_owned(delta) else {
+                    return;
+                };
+                if self.playback_coordination.awaiting_ordered_snapshot {
+                    return;
+                }
+                self.observe_pending_reconnect_rate_reset(accepted.playback_rate);
+                self.record_ordered_playback_projection(&accepted);
+                let transport = self.ordered_player_events.transport.clone();
+                let actions = self.playback_coordination.observe_ordered_transport_delta(
+                    &transport,
+                    &accepted,
+                    now_seconds,
+                );
+                self.apply_ordered_coordination_actions(actions, now_seconds, first_error);
+            }
+            PlayerEvent::LoadAttemptBound {
+                attempt_id,
+                media_generation,
+                command_id,
+                playlist_entry_id,
+            } => self.ordered_player_events.install_attempt(
+                attempt_id,
+                OrderedLoadInstall {
+                    media_generation,
+                    command_id,
+                    playlist_entry_id: Some(playlist_entry_id),
+                    owns_transport: false,
+                    semantic_load_result: None,
+                    logical_ownership_revoked: false,
+                },
+            ),
+            PlayerEvent::LoadAttemptStarting {
+                attempt_id,
+                media_generation,
+                command_id,
+                playlist_entry_id,
+                owns_transport,
+            } => self.ordered_player_events.install_attempt(
+                attempt_id,
+                OrderedLoadInstall {
+                    media_generation,
+                    command_id,
+                    playlist_entry_id: Some(playlist_entry_id),
+                    owns_transport,
+                    semantic_load_result: None,
+                    logical_ownership_revoked: false,
+                },
+            ),
+            PlayerEvent::LoadAttemptActive {
+                attempt_id,
+                media_generation,
+                command_id,
+                playlist_entry_id,
+            } => {
+                self.ordered_player_events.install_attempt(
+                    attempt_id,
+                    OrderedLoadInstall {
+                        media_generation,
+                        command_id,
+                        playlist_entry_id: Some(playlist_entry_id),
+                        owns_transport: true,
+                        semantic_load_result: None,
+                        logical_ownership_revoked: false,
+                    },
+                );
+                if self
+                    .ordered_player_events
+                    .attempt_can_clear_timeout_player_failure(attempt_id, media_generation)
+                {
+                    self.playback_coordination
+                        .clear_timeout_player_failure_for_recovered_load(media_generation);
+                }
+            }
+            PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
+                attempt_id,
+                media_generation,
+                ..
+            } => self
+                .ordered_player_events
+                .revoke_logical_ownership(attempt_id, media_generation),
+            PlayerEvent::LoadAttemptTerminal {
+                attempt_id,
+                media_generation,
+                ..
+            } => self
+                .ordered_player_events
+                .terminate_attempt(attempt_id, media_generation),
+            PlayerEvent::LogicalPlaybackTerminal {
+                attempt_id,
+                media_generation,
+                ..
+            } => {
+                let terminal_is_owned = self
+                    .ordered_player_events
+                    .attempts
+                    .get(&attempt_id)
+                    .is_some_and(|binding| binding.media_generation == media_generation);
+                if terminal_is_owned {
+                    let mut terminal = self.ordered_player_events.transport.clone();
+                    terminal.load_attempt_id = SnapshotField::Known(attempt_id);
+                    terminal.media_generation = SnapshotField::Known(media_generation);
+                    terminal.phase =
+                        SnapshotField::Known(sorotte_player_api::PlayerTransportPhase::Ended);
+                    terminal.logical_pause = SnapshotField::Known(true);
+                    self.ordered_player_events.transport = terminal.clone();
+                    let terminal_delta = PlayerTransportDelta {
+                        load_attempt_id: Some(attempt_id),
+                        media_generation: Some(media_generation),
+                        phase: Some(sorotte_player_api::PlayerTransportPhase::Ended),
+                        logical_pause: Some(true),
+                        ..PlayerTransportDelta::default()
+                    };
+                    let actions = self.playback_coordination.observe_ordered_transport_delta(
+                        &terminal,
+                        &terminal_delta,
+                        now_seconds,
+                    );
+                    self.apply_ordered_coordination_actions(actions, now_seconds, first_error);
+                }
+            }
+        }
+    }
+
+    fn apply_ordered_semantic_outcome(
+        &mut self,
+        outcome: SequencedPlayerSemanticOutcome,
+        now_seconds: f64,
+        first_error: &mut Option<PlayerError>,
+    ) {
+        match outcome.outcome {
+            PlayerSemanticOutcome::Command(command) => {
+                if self
+                    .playback_coordination
+                    .apply_player_command_outcome(command, now_seconds)
+                    && let Err(error) = self.report_player_command_failure_readiness(now_seconds)
+                    && first_error.is_none()
+                {
+                    *first_error = Some(error);
+                }
+            }
+            PlayerSemanticOutcome::LoadAttempt(load) => {
+                self.ordered_player_events.ensure_attempt(
+                    load.attempt_id,
+                    load.media_generation,
+                    load.command_id,
+                );
+                self.ordered_player_events.mark_semantic_load_result(
+                    load.attempt_id,
+                    load.media_generation,
+                    load.result,
+                );
+                match load.result {
+                    PlayerLoadAttemptResult::Loaded => {}
+                    PlayerLoadAttemptResult::Superseded => self
+                        .ordered_player_events
+                        .revoke_logical_ownership(load.attempt_id, load.media_generation),
+                    PlayerLoadAttemptResult::Indeterminate => self
+                        .ordered_player_events
+                        .mark_indeterminate(load.attempt_id, load.media_generation),
+                    PlayerLoadAttemptResult::Failed(_)
+                    | PlayerLoadAttemptResult::NeverStarted
+                    | PlayerLoadAttemptResult::TransportDisconnected => self
+                        .ordered_player_events
+                        .terminate_attempt(load.attempt_id, load.media_generation),
+                }
+            }
+        }
+    }
+
+    fn apply_ordered_player_event_batch(
+        &mut self,
+        batch: &PlayerEventBatch,
+        now_seconds: f64,
+    ) -> Result<Option<PlayerError>, PlayerError> {
+        let mut prepared_consumer = self.ordered_player_events.clone();
+        prepared_consumer.begin_batch(batch)?;
+        prepared_consumer.validate_sequence_continuity(batch)?;
+        self.ordered_player_events = prepared_consumer;
+        if let Some(pending) = self.ordered_player_events.applied_unacknowledged_token
+            && pending != batch.acknowledgement_token
+        {
+            return Err(ordered_batch_error(
+                "adapter replaced an applied batch before acknowledgement",
+            ));
+        }
+        if self.ordered_player_events.applied_unacknowledged_token
+            == Some(batch.acknowledgement_token)
+        {
+            return Ok(None);
+        }
+
+        let mut first_error = None;
+        if let Some(snapshot) = batch.authoritative_snapshot.as_ref()
+            && self
+                .ordered_player_events
+                .should_rebase_snapshot(snapshot.sequence_boundary)
+        {
+            self.apply_ordered_snapshot(snapshot, now_seconds, &mut first_error);
+        }
+
+        for delivery in OrderedPlayerEventConsumer::merged_deliveries(batch) {
+            let order = delivery.order();
+            match delivery {
+                OrderedPlayerDelivery::Event(event) => {
+                    if self
+                        .ordered_player_events
+                        .event_is_covered_by_snapshot(order)
+                        || order.sequence <= self.ordered_player_events.last_sequence
+                    {
+                        continue;
+                    }
+                    self.ordered_player_events.require_next_order(order)?;
+                    self.apply_ordered_event(event, now_seconds, &mut first_error);
+                    self.ordered_player_events.record_order(order);
+                }
+                OrderedPlayerDelivery::SemanticOutcome(outcome) => {
+                    if self
+                        .ordered_player_events
+                        .semantic_outcome_was_applied(order)
+                    {
+                        continue;
+                    }
+                    if order.sequence > self.ordered_player_events.last_sequence {
+                        self.ordered_player_events.require_next_order(order)?;
+                    }
+                    self.apply_ordered_semantic_outcome(outcome, now_seconds, &mut first_error);
+                    self.ordered_player_events.record_semantic_outcome(order);
+                }
+            }
+        }
+        self.ordered_player_events.applied_unacknowledged_token = Some(batch.acknowledgement_token);
+        Ok(first_error)
+    }
+
+    /// Applies an ordered batch through the exact production consumer.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn apply_ordered_player_event_batch_for_verification(
+        &mut self,
+        batch: &PlayerEventBatch,
+        now_seconds: f64,
+    ) -> Result<Option<PlayerError>, PlayerError> {
+        self.apply_ordered_player_event_batch(batch, now_seconds)
+    }
+
+    /// Compacts consumer state after the harness has acknowledged the batch externally.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn compact_acknowledged_player_event_batch_for_verification(
+        &mut self,
+        acknowledgement_token: PlayerEventAcknowledgementToken,
+        sequence_boundary: PlayerSequenceBoundary,
+    ) {
+        self.ordered_player_events
+            .compact_acknowledged_delivery(acknowledgement_token, sequence_boundary);
+    }
+
+    /// Returns the ordered consumer's comparable lifecycle projection.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn lifecycle_verification_projection(&self) -> LifecycleVerificationProjection {
+        self.ordered_player_events
+            .lifecycle_verification_projection()
+    }
+
+    fn drain_ordered_player_events(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
+        loop {
+            let Some(batch) = self.player.take_player_event_batch() else {
+                return Ok(());
+            };
+            let application_error = self.apply_ordered_player_event_batch(&batch, now_seconds)?;
+            self.player
+                .acknowledge_player_event_batch(batch.acknowledgement_token)?;
+            self.ordered_player_events.compact_acknowledged_delivery(
+                batch.acknowledgement_token,
+                batch.sequence_boundary,
+            );
+            if let Some(error) = application_error {
+                return Err(error);
+            }
+        }
+    }
+
     pub(crate) fn drain_player_transport_coordination(
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
+        if self.player.player_event_delivery_mode()
+            == PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            return self.drain_ordered_player_events(now_seconds);
+        }
         let mut first_error = None;
         while let Some(progress) = self.player.take_command_progress() {
             if self
@@ -3891,6 +5513,41 @@ mod tests {
         assert_eq!(PlaybackBarrierStartConfig::default().policy, None);
     }
 
+    #[test]
+    fn changed_media_transport_refresh_does_not_start_a_room_barrier() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"controller":true}}}}"#,
+            )
+            .expect("controller authority should apply");
+        let mut runtime =
+            ClientRuntime::new(session, DisconnectedPlayer, QueuedRuntimeControl::default());
+        runtime.set_playback_barrier_start_config(PlaybackBarrierStartConfig {
+            policy: Some(PlaybackBarrierPolicy::Controller),
+            ..PlaybackBarrierStartConfig::default()
+        });
+
+        let plan = runtime.prepare_playback_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode").unwrap(),
+            MediaTransportKind::LocalFile,
+            1.0,
+        );
+
+        assert_eq!(plan.load_intent, MediaLoadIntent::TransportRefresh);
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_media_coordination
+                .is_none(),
+            "room participation must not queue a controller-owned start barrier"
+        );
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "room participation must not emit a playback-barrier request"
+        );
+    }
+
     fn barrier_session() -> ClientSession {
         let mut session = ClientSession::default();
         session
@@ -4052,6 +5709,10 @@ mod tests {
     struct CoordinatedTestPlayer {
         transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
         command_progress_updates: VecDeque<sorotte_player_api::PlayerCommandProgress>,
+        ordered_batches: VecDeque<PlayerEventBatch>,
+        acknowledged_batches: Vec<PlayerEventAcknowledgementToken>,
+        ordered_delivery: bool,
+        reject_next_acknowledgement: bool,
         commands: Vec<PlayerCommand>,
         next_command_id: u64,
         advertises_telemetry: bool,
@@ -4125,6 +5786,1760 @@ mod tests {
         fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
             self.command_progress_updates.pop_front()
         }
+
+        fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+            if self.ordered_delivery {
+                PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+            } else {
+                PlayerEventDeliveryMode::LegacyTypedQueues
+            }
+        }
+
+        fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+            self.ordered_batches.front().cloned()
+        }
+
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: PlayerEventAcknowledgementToken,
+        ) -> Result<(), PlayerError> {
+            if self.reject_next_acknowledgement {
+                self.reject_next_acknowledgement = false;
+                return Err(PlayerError::OperationFailed(
+                    "test acknowledgement failure".to_owned(),
+                ));
+            }
+            let Some(batch) = self.ordered_batches.front() else {
+                return Err(PlayerError::OperationFailed(
+                    "no ordered batch is pending".to_owned(),
+                ));
+            };
+            if batch.acknowledgement_token != token {
+                return Err(PlayerError::OperationFailed(
+                    "wrong ordered batch acknowledgement".to_owned(),
+                ));
+            }
+            self.acknowledged_batches.push(token);
+            self.ordered_batches.pop_front();
+            Ok(())
+        }
+    }
+
+    fn ordered_runtime() -> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl> {
+        ClientRuntime::new(
+            ClientSession::default(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        )
+    }
+
+    fn active_snapshot(
+        epoch: PlayerAttachmentEpoch,
+        through_sequence: u64,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        transport: PlayerTransportSnapshot,
+    ) -> sorotte_player_api::PlayerAuthoritativeSnapshot {
+        sorotte_player_api::PlayerAuthoritativeSnapshot {
+            attachment_epoch: epoch,
+            sequence_boundary: PlayerSequenceBoundary::new(epoch, through_sequence),
+            transport,
+            active_load: SnapshotField::Known(PlayerActiveLoadSnapshot {
+                attempt_id,
+                media_generation,
+                command_id: None,
+                playlist_entry_id: Some(10),
+                physical_file_loaded: true,
+                semantic_load_result: Some(PlayerLoadAttemptResult::Loaded),
+                logical_ownership_revoked: false,
+            }),
+            current_playlist_entry_id: SnapshotField::Known(10),
+            current_path: SnapshotField::Known("episode.mkv".to_owned()),
+        }
+    }
+
+    fn ordered_batch(
+        epoch: PlayerAttachmentEpoch,
+        through_sequence: u64,
+        token: u64,
+        snapshot: Option<sorotte_player_api::PlayerAuthoritativeSnapshot>,
+        events: Vec<SequencedPlayerEvent>,
+        semantic_outcomes: Vec<SequencedPlayerSemanticOutcome>,
+    ) -> PlayerEventBatch {
+        PlayerEventBatch {
+            attachment_epoch: epoch,
+            sequence_boundary: PlayerSequenceBoundary::new(epoch, through_sequence),
+            authoritative_snapshot: snapshot,
+            events,
+            semantic_outcomes,
+            acknowledgement_token: PlayerEventAcknowledgementToken::new(epoch, token),
+        }
+    }
+
+    fn ordered_playing_transport(
+        media_generation: PlayerMediaGeneration,
+        observed_at: PlayerObservationTimestamp,
+        position_seconds: f64,
+    ) -> PlayerTransportSnapshot {
+        PlayerTransportSnapshot {
+            load_attempt_id: SnapshotField::Known(LoadAttemptId::new(1)),
+            media_generation: SnapshotField::Known(media_generation),
+            observed_at: SnapshotField::Known(observed_at),
+            phase: SnapshotField::Known(PlayerTransportPhase::Playing),
+            position_seconds: SnapshotField::Known(position_seconds),
+            playback_rate: SnapshotField::Known(1.0),
+            logical_pause: SnapshotField::Known(false),
+            paused_for_cache: SnapshotField::Known(false),
+            seeking: SnapshotField::Known(false),
+            core_idle: SnapshotField::Known(false),
+            ..PlayerTransportSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn ordered_playing_snapshot_seeds_fresh_position_projection() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-position-projection").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        assert_eq!(plan.media_generation, media_generation.get());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("ordered snapshot should drain");
+
+        assert_eq!(
+            runtime.projected_local_position_at(1.0),
+            Some(42.0),
+            "a fresh ordered playing snapshot must seed the steady-state desync position projection"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs_f64(1.5),
+                    )),
+                    playback_rate: Some(2.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.5)
+            .expect("ordered sparse rate transition should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(1.75),
+            Some(43.0),
+            "an ordered sparse rate transition must close the old motion segment and project the new rate"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            3,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs(2),
+                    )),
+                    cache_percentage: Some(75.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("ordered non-position delta should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(3.1),
+            None,
+            "a retained snapshot position must not be relabelled as a fresh actual sample by an unrelated ordered delta"
+        );
+    }
+
+    #[test]
+    fn ordered_gap_marker_invalidates_position_projection_until_snapshot_recovery() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-gap-projection").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial ordered snapshot should drain");
+        assert_eq!(runtime.projected_local_position_at(1.0), Some(42.0));
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.1)
+            .expect("gap marker is a valid acknowledged batch");
+
+        assert_eq!(
+            runtime.projected_local_position_at(1.1),
+            None,
+            "a gap means transport deltas were lost, so stale pre-gap position must stay fenced until an authoritative snapshot rebases the consumer"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            3,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs_f64(1.5),
+                    )),
+                    position_seconds: Some(99.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.5)
+            .expect("post-gap delta should be acknowledged but remain fenced");
+        assert_eq!(
+            runtime.projected_local_position_at(1.5),
+            None,
+            "ordinary deltas cannot re-authorize transport after a declared event gap"
+        );
+        assert_eq!(
+            runtime.session().local_position_seconds(),
+            None,
+            "partial post-gap deltas must not leak into the session telemetry projection before \
+             an authoritative snapshot"
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            4,
+            4,
+            Some(active_snapshot(
+                epoch,
+                4,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                    50.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("authoritative recovery snapshot should drain");
+        assert_eq!(
+            runtime.projected_local_position_at(2.0),
+            Some(50.0),
+            "an authoritative snapshot must clear the event-gap fence"
+        );
+    }
+
+    #[test]
+    fn ordered_transport_maps_adapter_generation_to_pending_logical_media() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let adapter_generation = PlayerMediaGeneration::new(2);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("logical-generation-one-after-failed-physical-load").unwrap(),
+            MediaTransportKind::NetworkVod,
+            2.0,
+        );
+        assert_eq!(plan.media_generation, 1);
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                adapter_generation,
+                ordered_playing_transport(
+                    adapter_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                    20.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("ordered snapshot should drain");
+
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .transport_telemetry_observed,
+            "physical adapter generation 2 must bind to pending logical generation 1 instead of being discarded by numeric comparison"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .latest_observation
+                .as_ref()
+                .map(|observation| observation.media_generation),
+            Some(plan.media_generation),
+            "accepted ordered telemetry must be projected into the logical media generation"
+        );
+    }
+
+    #[test]
+    fn ordered_transport_timestamp_preserves_queue_dwell() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-queue-dwell").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        assert_eq!(plan.media_generation, media_generation.get());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_observation(
+                        Duration::from_secs(1),
+                        Duration::from_secs(5),
+                    ),
+                    10.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(105.0)
+            .expect("ordered snapshot should drain");
+
+        let mapped_observation_time = runtime
+            .playback_coordination
+            .latest_observation
+            .as_ref()
+            .expect("matching ordered telemetry should be retained")
+            .observed_at_seconds;
+        assert!(
+            (mapped_observation_time - 101.0).abs() <= 0.000_001,
+            "an observation sampled at adapter t=1 and delivered at adapter t=5/external t=105 must map to external t=101, got {mapped_observation_time}"
+        );
+    }
+
+    #[test]
+    fn ordered_local_file_event_survives_ack_retry_and_publishes_once() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.reject_next_acknowledgement = true;
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            1,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptStarting {
+                        attempt_id,
+                        media_generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                        owns_transport: true,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::LocalFileChanged {
+                        attempt_id,
+                        media_generation,
+                        update: LocalFileUpdate::new("episode.mkv")
+                            .with_duration_seconds(120.0)
+                            .with_path("C:/media/episode.mkv"),
+                    },
+                },
+            ],
+            Vec::new(),
+        ));
+
+        assert!(
+            runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .is_err(),
+            "the first ordered batch acknowledgement is deliberately rejected"
+        );
+        assert_eq!(
+            runtime.pending_ordered_local_file_updates.pending().len(),
+            1,
+            "an applied effect must survive acknowledgement retry"
+        );
+
+        assert!(
+            runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the replayed batch and file publication should succeed")
+        );
+        assert!(
+            !runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("an empty follow-up pump should be harmless")
+        );
+
+        let files = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| {
+                let ProtocolMessage::Set(set) = message else {
+                    return None;
+                };
+                set.set.file.as_ref()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name.as_deref(), Some("episode.mkv"));
+        assert_eq!(files[0].duration, Some(120.0));
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
+        assert!(
+            runtime
+                .pending_ordered_local_file_updates
+                .pending()
+                .is_empty(),
+            "successful privacy-aware publication acknowledges the local effect"
+        );
+    }
+
+    #[test]
+    fn ordered_snapshot_preserves_matching_richer_pending_file_announcement() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            1,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptStarting {
+                        attempt_id,
+                        media_generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                        owns_transport: true,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::LocalFileChanged {
+                        attempt_id,
+                        media_generation,
+                        update: LocalFileUpdate::new("episode.mkv")
+                            .with_duration_seconds(120.0)
+                            .with_size_bytes(4096)
+                            .with_path("C:/media/episode.mkv"),
+                    },
+                },
+            ],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("ordered file event should drain");
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        assert!(
+            !runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("gap handling should remain nonfatal"),
+            "a pre-gap file announcement must remain fenced until the snapshot proves its identity"
+        );
+        assert!(
+            runtime.control().outbound_messages().iter().all(|message| {
+                !matches!(
+                    message,
+                    ProtocolMessage::Set(set) if set.set.file.is_some()
+                )
+            }),
+            "no file identity may be published from an incomplete ordered event stream"
+        );
+
+        let mut snapshot = active_snapshot(
+            epoch,
+            4,
+            attempt_id,
+            media_generation,
+            ordered_playing_transport(
+                media_generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+                10.0,
+            ),
+        );
+        snapshot.current_path = SnapshotField::Known("C:/media/episode.mkv".to_owned());
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            4,
+            3,
+            Some(snapshot),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("authoritative snapshot should drain");
+
+        let pending = runtime
+            .pending_ordered_local_file_updates
+            .front()
+            .expect("the unreported matching file must remain pending");
+        assert_eq!(
+            runtime.pending_ordered_local_file_updates.pending().len(),
+            1,
+            "snapshot recovery should restore exactly one matching rich file announcement"
+        );
+        assert_eq!(pending.name, "episode.mkv");
+        assert_eq!(pending.duration_seconds, Some(120.0));
+        assert_eq!(pending.size_bytes, Some(4096));
+        assert_eq!(pending.path.as_deref(), Some("C:/media/episode.mkv"));
+    }
+
+    #[test]
+    fn ordered_snapshot_recovers_local_file_announcement_after_lost_event() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("snapshot-file-recovery").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    10.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        assert!(
+            runtime
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("snapshot recovery and file publication should succeed"),
+            "an authoritative active-load snapshot is the recovery source when LocalFileChanged was dropped"
+        );
+        let published_files = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(set) if set.set.file.is_some()
+                )
+            })
+            .count();
+        assert_eq!(published_files, 1);
+    }
+
+    #[test]
+    fn ordered_snapshot_rebase_clears_every_omitted_transport_field() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("episode").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        assert_eq!(plan.media_generation, media_generation.get());
+
+        let populated = PlayerTransportSnapshot {
+            load_attempt_id: SnapshotField::Known(attempt_id),
+            media_generation: SnapshotField::Known(media_generation),
+            observed_at: SnapshotField::Known(PlayerObservationTimestamp::from_adapter_start(
+                Duration::from_secs(1),
+            )),
+            phase: SnapshotField::Known(PlayerTransportPhase::Playing),
+            position_seconds: SnapshotField::Known(42.0),
+            playback_rate: SnapshotField::Known(1.25),
+            logical_pause: SnapshotField::Known(false),
+            paused_for_cache: SnapshotField::Known(true),
+            cache_percentage: SnapshotField::Known(55.0),
+            seeking: SnapshotField::Known(true),
+            seekable: SnapshotField::Known(true),
+            timeline_kind: SnapshotField::Known(
+                sorotte_player_api::PlayerTimelineKind::SlidingLive,
+            ),
+            core_idle: SnapshotField::Known(false),
+            demuxer_cache_idle: SnapshotField::Known(false),
+            playback_restart_sequence: SnapshotField::Known(7),
+            eof_reached: SnapshotField::Known(true),
+            seekable_ranges: SnapshotField::Known(vec![
+                sorotte_player_api::PlayerSeekableRange::new(10.0, 50.0),
+            ]),
+            known_live_seekable_window: SnapshotField::Known(
+                sorotte_player_api::PlayerSeekableRange::new(10.0, 50.0),
+            ),
+            buffered_duration_seconds: SnapshotField::Known(8.0),
+            buffered_bytes: SnapshotField::Known(4096),
+            input_rate_bytes_per_second: SnapshotField::Known(2048),
+            error_kind: SnapshotField::Known(
+                sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+            ),
+        };
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                populated,
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .latest_observation
+                .as_ref()
+                .and_then(|observation| observation.position_seconds),
+            Some(42.0)
+        );
+        assert_eq!(runtime.session().local_paused(), Some(false));
+        assert_eq!(runtime.session().local_position_seconds(), Some(42.0));
+        assert_eq!(runtime.session().local_playback_rate(), Some(1.25));
+        assert_eq!(runtime.session().local_paused_for_cache(), Some(true));
+        assert_eq!(
+            runtime.session().local_cache_buffering_percent(),
+            Some(55.0)
+        );
+        assert!(
+            runtime
+                .session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    load_attempt_id: Some(attempt_id),
+                    media_generation: Some(media_generation),
+                    position_seconds: Some(43.0),
+                    logical_pause: Some(true),
+                    playback_rate: Some(1.0),
+                    paused_for_cache: Some(false),
+                    cache_percentage: Some(60.0),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(1.5).unwrap();
+        assert_eq!(
+            runtime
+                .pending_player_playback_telemetry_updates
+                .pending()
+                .len(),
+            1
+        );
+
+        let identity_only = PlayerTransportSnapshot {
+            load_attempt_id: SnapshotField::Known(attempt_id),
+            media_generation: SnapshotField::Known(media_generation),
+            logical_pause: SnapshotField::KnownAbsent,
+            playback_rate: SnapshotField::KnownAbsent,
+            paused_for_cache: SnapshotField::KnownAbsent,
+            ..PlayerTransportSnapshot::default()
+        };
+        let mut clearing = active_snapshot(epoch, 3, attempt_id, media_generation, identity_only);
+        clearing.current_path = SnapshotField::KnownAbsent;
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            3,
+            Some(clearing),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(2.0).unwrap();
+
+        assert!(matches!(
+            runtime.ordered_player_events.transport.position_seconds,
+            SnapshotField::Unavailable
+        ));
+        assert!(matches!(
+            runtime.ordered_player_events.transport.error_kind,
+            SnapshotField::Unavailable
+        ));
+        assert!(matches!(
+            runtime.ordered_player_events.transport.seekable_ranges,
+            SnapshotField::Unavailable
+        ));
+        let observation = runtime
+            .playback_coordination
+            .latest_observation
+            .as_ref()
+            .unwrap();
+        assert_eq!(observation.position_seconds, None);
+        assert_eq!(observation.playback_rate, None);
+        assert_eq!(observation.paused_for_cache, None);
+        assert_eq!(observation.seeking, None);
+        assert_eq!(observation.seekable, None);
+        assert_eq!(observation.seekable_ranges, None);
+        assert_eq!(observation.input_rate_bytes_per_second, None);
+        assert!(runtime.last_local_file_update.is_none());
+        assert_eq!(runtime.session().local_paused(), None);
+        assert_eq!(runtime.session().local_position_seconds(), None);
+        assert_eq!(runtime.session().local_playback_rate(), None);
+        assert_eq!(runtime.session().local_paused_for_cache(), None);
+        assert_eq!(runtime.session().local_cache_buffering_percent(), None);
+        assert!(
+            !runtime
+                .session
+                .model
+                .playback
+                .pending_cache_room_playstate_resync
+        );
+        assert_eq!(
+            runtime
+                .session
+                .model
+                .playback
+                .cache_recovery_observation_position,
+            None
+        );
+        assert!(
+            !runtime
+                .session
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position
+        );
+        assert!(
+            runtime
+                .pending_player_playback_telemetry_updates
+                .pending()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn ordered_transport_delta_acceptance_is_scoped_to_the_active_attempt() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let first_attempt = LoadAttemptId::new(1);
+        let second_attempt = LoadAttemptId::new(2);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("same-logical-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let event = |sequence, event| SequencedPlayerEvent {
+            order: PlayerEventOrder::new(epoch, sequence),
+            event,
+        };
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            5,
+            1,
+            None,
+            vec![
+                event(
+                    1,
+                    PlayerEvent::LoadAttemptActive {
+                        attempt_id: first_attempt,
+                        media_generation: generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                    },
+                ),
+                event(
+                    2,
+                    PlayerEvent::TransportDelta(PlayerTransportDelta {
+                        load_attempt_id: Some(first_attempt),
+                        media_generation: Some(generation),
+                        position_seconds: Some(10.0),
+                        ..PlayerTransportDelta::default()
+                    }),
+                ),
+                event(
+                    3,
+                    PlayerEvent::LoadAttemptActive {
+                        attempt_id: second_attempt,
+                        media_generation: generation,
+                        command_id: None,
+                        playlist_entry_id: 11,
+                    },
+                ),
+                event(
+                    4,
+                    PlayerEvent::TransportDelta(PlayerTransportDelta {
+                        load_attempt_id: Some(first_attempt),
+                        media_generation: Some(generation),
+                        position_seconds: Some(99.0),
+                        ..PlayerTransportDelta::default()
+                    }),
+                ),
+                event(
+                    5,
+                    PlayerEvent::TransportDelta(PlayerTransportDelta {
+                        load_attempt_id: Some(second_attempt),
+                        media_generation: Some(generation),
+                        position_seconds: Some(20.0),
+                        ..PlayerTransportDelta::default()
+                    }),
+                ),
+            ],
+            Vec::new(),
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.load_attempt_id),
+            Some(second_attempt)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.position_seconds),
+            Some(20.0)
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .latest_observation
+                .as_ref()
+                .and_then(|observation| observation.position_seconds),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn ordered_batch_replay_after_ack_failure_is_idempotent() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.reject_next_acknowledgement = true;
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            9,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 1),
+                event: PlayerEvent::LoadAttemptActive {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: None,
+                    playlist_entry_id: 10,
+                },
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: None,
+                        requested_target: "episode".to_owned(),
+                        loaded_target: Some("episode".to_owned()),
+                        result: PlayerLoadAttemptResult::Loaded,
+                    },
+                ),
+            }],
+        ));
+
+        assert!(runtime.drain_player_transport_coordination(1.0).is_err());
+        assert_eq!(runtime.ordered_player_events.last_sequence, 2);
+        assert_eq!(runtime.ordered_player_events.attempts.len(), 1);
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .applied_semantic_outcomes
+                .len(),
+            1,
+            "failed acknowledgement must retain replay-only outcome identity"
+        );
+        runtime.drain_player_transport_coordination(2.0).unwrap();
+        assert_eq!(runtime.ordered_player_events.last_sequence, 2);
+        assert_eq!(runtime.ordered_player_events.attempts.len(), 1);
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .applied_semantic_outcomes
+                .len(),
+            0,
+            "successful acknowledgement should compact replay-only outcome identity"
+        );
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
+        assert!(runtime.player.ordered_batches.is_empty());
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn verification_seam_uses_production_batch_application_and_ack_compaction() {
+        let epoch = PlayerAttachmentEpoch::new(3);
+        let generation = PlayerMediaGeneration::new(7);
+        let attempt_id = LoadAttemptId::new(11);
+        let command_id = PlayerCommandId::new(13);
+        let batch = ordered_batch(
+            epoch,
+            2,
+            17,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptStarting {
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(command_id),
+                        playlist_entry_id: 19,
+                        owns_transport: true,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                        load_attempt_id: Some(attempt_id),
+                        media_generation: Some(generation),
+                        phase: Some(PlayerTransportPhase::Loading),
+                        paused_for_cache: Some(true),
+                        ..PlayerTransportDelta::default()
+                    }),
+                },
+            ],
+            Vec::new(),
+        );
+        let mut runtime = ordered_runtime();
+
+        assert_eq!(
+            runtime
+                .apply_ordered_player_event_batch_for_verification(&batch, 1.0)
+                .unwrap(),
+            None
+        );
+        let projection = runtime.lifecycle_verification_projection();
+        assert_eq!(projection.attachment_epoch, SnapshotField::Known(epoch));
+        assert_eq!(
+            projection.sequence_boundary,
+            SnapshotField::Known(batch.sequence_boundary)
+        );
+        assert_eq!(
+            projection.in_flight_acknowledgement,
+            SnapshotField::Known(batch.acknowledgement_token)
+        );
+        assert_eq!(
+            projection.physical_transport_owner,
+            SnapshotField::Known(attempt_id)
+        );
+        assert_eq!(
+            projection.physical_media_generation,
+            SnapshotField::Known(generation)
+        );
+        assert_eq!(
+            projection.physical_playlist_entry_id,
+            SnapshotField::Known(19)
+        );
+        assert_eq!(
+            projection.transport.phase,
+            SnapshotField::Known(PlayerTransportPhase::Loading)
+        );
+        let attempt = projection.attempts.get(&attempt_id).unwrap();
+        assert_eq!(attempt.command_id, Some(command_id));
+        assert_eq!(attempt.owns_transport, SnapshotField::Known(true));
+        assert_eq!(attempt.semantic_load_result, SnapshotField::Known(None));
+        assert_eq!(projection.pending_event_count, SnapshotField::Unavailable);
+        assert_eq!(projection.physical_path, SnapshotField::Unavailable);
+        assert_eq!(projection.logical_owner, SnapshotField::Unavailable);
+
+        runtime.compact_acknowledged_player_event_batch_for_verification(
+            PlayerEventAcknowledgementToken::new(epoch, 99),
+            batch.sequence_boundary,
+        );
+        assert_eq!(
+            runtime
+                .lifecycle_verification_projection()
+                .in_flight_acknowledgement,
+            SnapshotField::Known(batch.acknowledgement_token),
+            "a nonmatching external acknowledgement must not compact the consumer"
+        );
+        runtime.compact_acknowledged_player_event_batch_for_verification(
+            batch.acknowledgement_token,
+            batch.sequence_boundary,
+        );
+        assert_eq!(
+            runtime
+                .lifecycle_verification_projection()
+                .in_flight_acknowledgement,
+            SnapshotField::KnownAbsent
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn verification_projection_reports_only_semantic_facts_the_consumer_retains() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let loaded = LoadAttemptId::new(1);
+        let superseded = LoadAttemptId::new(2);
+        let indeterminate = LoadAttemptId::new(3);
+        let mut consumer = OrderedPlayerEventConsumer::default();
+        consumer.reset_for_epoch(epoch);
+        consumer.install_attempt(
+            loaded,
+            OrderedLoadInstall {
+                media_generation: generation,
+                command_id: None,
+                playlist_entry_id: Some(10),
+                owns_transport: false,
+                semantic_load_result: Some(PlayerLoadAttemptResult::Loaded),
+                logical_ownership_revoked: false,
+            },
+        );
+        consumer.install_attempt(
+            superseded,
+            OrderedLoadInstall {
+                media_generation: generation,
+                command_id: None,
+                playlist_entry_id: Some(20),
+                owns_transport: false,
+                semantic_load_result: Some(PlayerLoadAttemptResult::Superseded),
+                logical_ownership_revoked: false,
+            },
+        );
+        consumer.revoke_logical_ownership(superseded, generation);
+        consumer.install_attempt(
+            indeterminate,
+            OrderedLoadInstall {
+                media_generation: generation,
+                command_id: None,
+                playlist_entry_id: Some(30),
+                owns_transport: false,
+                semantic_load_result: Some(PlayerLoadAttemptResult::Indeterminate),
+                logical_ownership_revoked: false,
+            },
+        );
+        consumer.mark_indeterminate(indeterminate, generation);
+
+        let projection = consumer.lifecycle_verification_projection();
+        assert_eq!(
+            projection.attempts[&loaded].semantic_load_result,
+            SnapshotField::Known(Some(PlayerLoadAttemptResult::Loaded))
+        );
+        assert_eq!(
+            projection.attempts[&superseded].semantic_load_result,
+            SnapshotField::Known(Some(PlayerLoadAttemptResult::Superseded))
+        );
+        assert_eq!(
+            projection.attempts[&indeterminate].semantic_load_result,
+            SnapshotField::Known(Some(PlayerLoadAttemptResult::Indeterminate)),
+            "the consumer retains the reducer's exact semantic result"
+        );
+    }
+
+    #[test]
+    fn starting_attempt_transport_is_accepted_only_with_explicit_physical_ownership() {
+        for (owns_transport, expected_phase) in
+            [(true, Some(PlayerTransportPhase::Loading)), (false, None)]
+        {
+            let epoch = PlayerAttachmentEpoch::new(1);
+            let generation = PlayerMediaGeneration::new(1);
+            let attempt_id = LoadAttemptId::new(1);
+            let mut runtime = ordered_runtime();
+            runtime.player.ordered_batches.push_back(ordered_batch(
+                epoch,
+                2,
+                20 + u64::from(owns_transport),
+                None,
+                vec![
+                    SequencedPlayerEvent {
+                        order: PlayerEventOrder::new(epoch, 1),
+                        event: PlayerEvent::LoadAttemptStarting {
+                            attempt_id,
+                            media_generation: generation,
+                            command_id: Some(PlayerCommandId::new(9)),
+                            playlist_entry_id: 10,
+                            owns_transport,
+                        },
+                    },
+                    SequencedPlayerEvent {
+                        order: PlayerEventOrder::new(epoch, 2),
+                        event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                            load_attempt_id: Some(attempt_id),
+                            media_generation: Some(generation),
+                            phase: Some(PlayerTransportPhase::Loading),
+                            paused_for_cache: Some(true),
+                            cache_percentage: Some(25.0),
+                            ..PlayerTransportDelta::default()
+                        }),
+                    },
+                ],
+                Vec::new(),
+            ));
+
+            runtime.drain_player_transport_coordination(1.0).unwrap();
+
+            assert_eq!(
+                runtime.ordered_player_events.transport_owner_attempt,
+                owns_transport.then_some(attempt_id)
+            );
+            assert_eq!(
+                snapshot_known_copy(&runtime.ordered_player_events.transport.phase),
+                expected_phase
+            );
+            assert_eq!(
+                snapshot_known_copy(&runtime.ordered_player_events.transport.paused_for_cache),
+                owns_transport.then_some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn same_generation_successor_start_accepts_transport_before_predecessor_terminal() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(7);
+        let predecessor = LoadAttemptId::new(1);
+        let successor = LoadAttemptId::new(2);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            4,
+            24,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptActive {
+                        attempt_id: predecessor,
+                        media_generation: generation,
+                        command_id: None,
+                        playlist_entry_id: 10,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 3),
+                    event: PlayerEvent::LoadAttemptStarting {
+                        attempt_id: successor,
+                        media_generation: generation,
+                        command_id: None,
+                        playlist_entry_id: 20,
+                        owns_transport: true,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 4),
+                    event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                        load_attempt_id: Some(successor),
+                        media_generation: Some(generation),
+                        phase: Some(PlayerTransportPhase::Prebuffering),
+                        paused_for_cache: Some(true),
+                        ..PlayerTransportDelta::default()
+                    }),
+                },
+            ],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id: predecessor,
+                        media_generation: generation,
+                        command_id: None,
+                        requested_target: "stream".to_owned(),
+                        loaded_target: Some("stream".to_owned()),
+                        result: PlayerLoadAttemptResult::Superseded,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(
+            runtime.ordered_player_events.transport_owner_attempt,
+            Some(successor)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.phase),
+            Some(PlayerTransportPhase::Prebuffering)
+        );
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .get(&predecessor)
+                .map(|binding| (binding.logical_ownership_revoked, binding.physical_terminal,)),
+            Some((true, false))
+        );
+    }
+
+    #[test]
+    fn superseded_late_active_does_not_clear_timeout_failure_readiness() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("replacement.mkv").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime
+            .playback_coordination
+            .last_technical_readiness_fingerprint = Some(TechnicalReadinessFingerprint {
+            connection_generation: 0,
+            membership_epoch: 1,
+            media_generation: 1,
+            authoritative_playback_revision: None,
+            phase: TechnicalPlayabilityPhase::TemporarilyBlocked,
+            reason: Some(TechnicalBlockCause::PlayerFailure),
+            recovery: Some(RecoveryStage::NotStarted),
+        });
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            25,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 1),
+                    event: PlayerEvent::LoadAttemptBound {
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        playlist_entry_id: 10,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 3),
+                    event: PlayerEvent::LoadAttemptActive {
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        playlist_entry_id: 10,
+                    },
+                },
+            ],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        requested_target: "superseded.mkv".to_owned(),
+                        loaded_target: None,
+                        result: PlayerLoadAttemptResult::Superseded,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(
+            runtime.ordered_player_events.transport_owner_attempt,
+            Some(attempt_id),
+            "supersession revokes logical success without inventing a physical terminal"
+        );
+        assert!(
+            runtime
+                .playback_coordination
+                .last_technical_readiness_fingerprint
+                .is_some_and(|fingerprint| {
+                    fingerprint.reason == Some(TechnicalBlockCause::PlayerFailure)
+                }),
+            "a superseded physical attempt must not recover logical readiness"
+        );
+    }
+
+    #[test]
+    fn loaded_semantic_outcome_for_quiescent_start_does_not_claim_transport_ownership() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            21,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 1),
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                    owns_transport: false,
+                },
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        requested_target: "superseded-physical-load".to_owned(),
+                        loaded_target: Some("superseded-physical-load".to_owned()),
+                        result: PlayerLoadAttemptResult::Loaded,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(runtime.ordered_player_events.transport_owner_attempt, None);
+        assert!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .contains_key(&attempt_id)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.load_attempt_id),
+            None
+        );
+    }
+
+    #[test]
+    fn indeterminate_load_outcome_preserves_binding_for_a_late_active_event() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("late-load.mkv").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime
+            .playback_coordination
+            .last_technical_readiness_fingerprint = Some(TechnicalReadinessFingerprint {
+            connection_generation: 0,
+            membership_epoch: 1,
+            media_generation: 1,
+            authoritative_playback_revision: None,
+            phase: TechnicalPlayabilityPhase::TemporarilyBlocked,
+            reason: Some(TechnicalBlockCause::PlayerFailure),
+            recovery: Some(RecoveryStage::NotStarted),
+        });
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            22,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 1),
+                event: PlayerEvent::LoadAttemptStarting {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                    owns_transport: true,
+                },
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 2),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: Some(PlayerCommandId::new(9)),
+                        requested_target: "late-load.mkv".to_owned(),
+                        loaded_target: None,
+                        result: PlayerLoadAttemptResult::Indeterminate,
+                    },
+                ),
+            }],
+        ));
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert_eq!(
+            runtime.ordered_player_events.transport_owner_attempt,
+            Some(attempt_id)
+        );
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .get(&attempt_id)
+                .map(|binding| (
+                    binding.owns_transport,
+                    binding.semantic_load_result,
+                    binding.physical_terminal,
+                )),
+            Some((true, Some(PlayerLoadAttemptResult::Indeterminate), false))
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            3,
+            23,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::LoadAttemptActive {
+                    attempt_id,
+                    media_generation: generation,
+                    command_id: Some(PlayerCommandId::new(9)),
+                    playlist_entry_id: 10,
+                },
+            }],
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(2.0).unwrap();
+
+        assert_eq!(
+            runtime.ordered_player_events.transport_owner_attempt,
+            Some(attempt_id)
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .last_technical_readiness_fingerprint,
+            None,
+            "late positive load evidence must clear the stale timeout failure fingerprint"
+        );
+        assert_eq!(
+            runtime
+                .ordered_player_events
+                .attempts
+                .get(&attempt_id)
+                .and_then(|binding| binding.semantic_load_result),
+            Some(PlayerLoadAttemptResult::Indeterminate),
+            "late physical activation must not rewrite the write-once semantic result"
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.load_attempt_id),
+            None
+        );
+    }
+
+    #[test]
+    fn acknowledged_terminal_batch_compacts_consumer_replay_state() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            12,
+            None,
+            Vec::new(),
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 1),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: None,
+                        requested_target: "retired-private-target".to_owned(),
+                        loaded_target: None,
+                        result: PlayerLoadAttemptResult::NeverStarted,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        assert!(runtime.ordered_player_events.attempts.is_empty());
+        assert!(
+            runtime
+                .ordered_player_events
+                .applied_semantic_outcomes
+                .is_empty()
+        );
+        assert_eq!(
+            runtime.ordered_player_events.acknowledged_semantic_sequence,
+            1
+        );
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
+    }
+
+    #[test]
+    fn gap_snapshot_rebases_events_but_retains_covered_semantic_outcomes() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("gap-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let snapshot = active_snapshot(
+            epoch,
+            5,
+            attempt_id,
+            generation,
+            PlayerTransportSnapshot {
+                load_attempt_id: SnapshotField::Known(attempt_id),
+                media_generation: SnapshotField::Known(generation),
+                position_seconds: SnapshotField::Known(30.0),
+                ..PlayerTransportSnapshot::default()
+            },
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            5,
+            1,
+            Some(snapshot),
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 3),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            vec![SequencedPlayerSemanticOutcome {
+                order: PlayerEventOrder::new(epoch, 4),
+                outcome: PlayerSemanticOutcome::LoadAttempt(
+                    sorotte_player_api::LoadAttemptOutcome {
+                        attachment_epoch: epoch,
+                        attempt_id,
+                        media_generation: generation,
+                        command_id: None,
+                        requested_target: "gap-media".to_owned(),
+                        loaded_target: Some("gap-media".to_owned()),
+                        result: PlayerLoadAttemptResult::Loaded,
+                    },
+                ),
+            }],
+        ));
+
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+        assert_eq!(runtime.ordered_player_events.last_sequence, 5);
+        assert!(
+            runtime
+                .ordered_player_events
+                .semantic_outcome_was_applied(PlayerEventOrder::new(epoch, 4))
+        );
+        assert_eq!(
+            runtime.ordered_player_events.transport_owner_attempt,
+            Some(attempt_id)
+        );
+        assert_eq!(
+            snapshot_known_copy(&runtime.ordered_player_events.transport.position_seconds),
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn ordered_batches_reject_stale_attachments_and_uncovered_sequence_gaps_transactionally() {
+        let current_epoch = PlayerAttachmentEpoch::new(2);
+        let stale_epoch = PlayerAttachmentEpoch::new(1);
+        let generation = PlayerMediaGeneration::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("fenced-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            current_epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                current_epoch,
+                1,
+                attempt_id,
+                generation,
+                PlayerTransportSnapshot {
+                    load_attempt_id: SnapshotField::Known(attempt_id),
+                    media_generation: SnapshotField::Known(generation),
+                    position_seconds: SnapshotField::Known(10.0),
+                    ..PlayerTransportSnapshot::default()
+                },
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            stale_epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(stale_epoch, 2),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        assert!(runtime.drain_player_transport_coordination(2.0).is_err());
+        assert_eq!(
+            runtime.ordered_player_events.attachment_epoch,
+            Some(current_epoch)
+        );
+        assert_eq!(runtime.ordered_player_events.last_sequence, 1);
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
+        runtime.player.ordered_batches.pop_front();
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            current_epoch,
+            3,
+            3,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(current_epoch, 3),
+                event: PlayerEvent::EventGapDetected,
+            }],
+            Vec::new(),
+        ));
+        assert!(runtime.drain_player_transport_coordination(3.0).is_err());
+        assert_eq!(
+            runtime.ordered_player_events.attachment_epoch,
+            Some(current_epoch)
+        );
+        assert_eq!(runtime.ordered_player_events.last_sequence, 1);
+        assert_eq!(runtime.player.acknowledged_batches.len(), 1);
     }
 
     fn reconnect_runtime(
@@ -4320,6 +7735,26 @@ mod tests {
         coordination.observe_transport(catchup, 13.0);
         assert!(coordination.snapshot().recovery_episode.is_some());
         coordination
+    }
+
+    #[test]
+    fn external_transport_rate_updates_legacy_correction_ownership() {
+        let mut runtime = ClientRuntime::new(
+            ClientSession::default(),
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.session.model.playback.local_playback_rate = Some(0.95);
+        let mut observed = transport(1, 0.0, PlayerTransportPhase::Playing, 0.0);
+        observed.playback_rate = Some(1.0);
+
+        runtime.observe_external_player_transport(observed, 0.0);
+
+        assert_eq!(
+            runtime.session.model.playback.local_playback_rate,
+            Some(1.0),
+            "an external coordinator/mpv rate reset must re-arm legacy drift correction"
+        );
     }
 
     #[test]
@@ -5757,8 +9192,17 @@ mod tests {
         let initial =
             runtime.prepare_media(logical_id.clone(), MediaTransportKind::NetworkVod, 0.0);
         runtime.observe_transport(transport(10, 1.0, PlayerTransportPhase::Playing, 1.0), 1.0);
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(10),
+            Some(initial.media_generation)
+        );
 
         let refreshed = runtime.prepare_media(logical_id, MediaTransportKind::NetworkVod, 2.0);
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(10),
+            None,
+            "a mapping from the previous load attempt must not identify the refreshed transport"
+        );
         runtime.observe_transport(
             transport(11, 3.0, PlayerTransportPhase::ReadyPaused, 1.0),
             3.0,
@@ -5769,6 +9213,10 @@ mod tests {
         assert!(runtime.snapshot().transport_telemetry_observed);
         assert_eq!(
             runtime.snapshot().media_generation,
+            Some(initial.media_generation)
+        );
+        assert_eq!(
+            runtime.logical_generation_for_adapter_generation(11),
             Some(initial.media_generation)
         );
         assert_eq!(
@@ -6422,6 +9870,540 @@ mod tests {
     }
 
     #[test]
+    fn desync_position_projection_uses_the_position_sample_clock_and_rejects_stale_samples() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        assert_eq!(
+            runtime.projected_local_position_at(100.0, Some(7.0)),
+            Some(7.0),
+            "legacy adapters without transport timestamps retain point-sample compatibility"
+        );
+        runtime.prepare_media(
+            LogicalMediaId::new("clock-aligned-position").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+
+        let mut sparse_update = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.5)),
+        )
+        .with_phase(PlayerTransportPhase::Playing)
+        .with_logical_pause(false);
+        sparse_update.paused_for_cache = Some(false);
+        sparse_update.seeking = Some(false);
+        sparse_update.core_idle = Some(false);
+        runtime.observe_transport(sparse_update, 101.5);
+
+        let projected = runtime
+            .projected_local_position_at(101.8, Some(10.0))
+            .expect("a fresh playing sample should be projected");
+        assert!(
+            (projected - 10.8).abs() <= 0.000_001,
+            "a newer sparse event must not rewrite the older position field's sample clock"
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(103.1, Some(10.0)),
+            None,
+            "room synchronization must wait for fresh telemetry instead of aging a stale point sample indefinitely"
+        );
+
+        let mut slowed = transport(1, 4.0, PlayerTransportPhase::Playing, 20.0);
+        slowed.playback_rate = Some(0.95);
+        runtime.observe_transport(slowed, 104.0);
+        let projected_slowed = runtime
+            .projected_local_position_at(104.5, Some(20.0))
+            .expect("fresh slowed playback should remain projectable");
+        assert!((projected_slowed - 20.475).abs() <= 0.000_001);
+
+        runtime.observe_transport(
+            paused_transport(1, 5.0, PlayerTransportPhase::ReadyPaused, 30.0),
+            105.0,
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(120.0, Some(30.0)),
+            Some(30.0),
+            "a positively paused point sample does not age"
+        );
+
+        runtime.observe_transport(
+            transport(1, 6.0, PlayerTransportPhase::Rebuffering, 30.0),
+            106.0,
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(106.1, Some(30.0)),
+            None,
+            "room synchronization must not project a cache-stalled sample"
+        );
+    }
+
+    #[test]
+    fn authoritative_transport_rebase_clears_every_absent_sparse_field() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("authoritative-rebase").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let generation = PlayerMediaGeneration::new(1);
+        let mut stale = PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.0)),
+        )
+        .with_phase(PlayerTransportPhase::Seeking)
+        .with_position_seconds(45.0)
+        .with_logical_pause(true);
+        stale.playback_rate = Some(0.95);
+        stale.paused_for_cache = Some(true);
+        stale.cache_buffering_percent = Some(12.0);
+        stale.seeking = Some(true);
+        stale.seekable = Some(true);
+        stale.timeline_kind = Some(sorotte_player_api::PlayerTimelineKind::SlidingLive);
+        stale.core_idle = Some(true);
+        stale.playback_restart_sequence = Some(9);
+        stale.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+            100.0, 160.0,
+        )]);
+        stale.known_live_seekable_window =
+            Some(sorotte_player_api::PlayerSeekableRange::new(100.0, 160.0));
+        stale.buffered_ahead_seconds = Some(60.0);
+        stale.input_rate_bytes_per_second = Some(1_000_000);
+        runtime.observe_transport(stale, 1.0);
+
+        let replacement = PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
+        )
+        .with_phase(PlayerTransportPhase::Playing);
+        runtime.rebase_transport(replacement, 2.0);
+
+        let latest = runtime
+            .latest_observation
+            .as_ref()
+            .expect("replacement observation should remain current");
+        assert_eq!(latest.phase, Some(PlayerTransportPhase::Playing));
+        assert_eq!(latest.position_seconds, None);
+        assert_eq!(latest.playback_rate, None);
+        assert_eq!(latest.logical_pause, None);
+        assert_eq!(latest.paused_for_cache, None);
+        assert_eq!(latest.seeking, None);
+        assert_eq!(latest.seekable, None);
+        assert_eq!(latest.timeline_kind, None);
+        assert_eq!(latest.seekable_ranges, None);
+        assert_eq!(latest.known_live_seekable_window, None);
+        assert_eq!(latest.core_idle, None);
+        assert_eq!(latest.playback_restart_sequence, None);
+        assert_eq!(latest.cache_buffering_percent, None);
+        assert_eq!(latest.buffered_ahead_seconds, None);
+        assert_eq!(latest.input_rate_bytes_per_second, None);
+        assert!(runtime.latest_position_observation.is_none());
+
+        let observed = runtime
+            .coordinator
+            .observed_transport_for_test()
+            .expect("coordinator should accept the replacement");
+        assert_eq!(observed.phase, Some(PlayerTransportPhase::Playing));
+        assert_eq!(observed.position_seconds, None);
+        assert_eq!(observed.playback_rate, None);
+        assert_eq!(observed.logical_pause, None);
+        assert_eq!(observed.paused_for_cache, Some(false));
+        assert_eq!(observed.seeking, Some(false));
+        assert_eq!(observed.seekable, None);
+        assert_eq!(observed.timeline_kind, None);
+        assert_eq!(observed.seekable_ranges, None);
+        assert_eq!(observed.known_live_seekable_window, None);
+        assert_eq!(observed.core_idle, None);
+        assert_eq!(observed.playback_restart_sequence, Some(0));
+        assert_eq!(observed.cache_buffering_percent, None);
+        assert_eq!(observed.buffered_ahead_seconds, None);
+        assert_eq!(runtime.snapshot().metrics.last_buffered_ahead_seconds, None);
+        assert_eq!(
+            runtime.snapshot().metrics.last_input_rate_bytes_per_second,
+            None
+        );
+    }
+
+    #[test]
+    fn sparse_rate_transitions_preserve_piecewise_position_and_actual_sample_age() {
+        for playback_rate in [0.5, 0.95, 2.0, 4.0] {
+            let mut position_then_speed = RuntimePlaybackCoordination::default();
+            position_then_speed.prepare_media(
+                LogicalMediaId::new(format!("position-then-speed-{playback_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            position_then_speed.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
+            );
+            speed.playback_rate = Some(playback_rate);
+            position_then_speed.observe_transport(speed, 102.0);
+
+            let projected = position_then_speed
+                .projected_local_position_at(102.5, None)
+                .expect("a fresh piecewise position should remain projectable");
+            let expected = 11.0 + 0.5 * playback_rate;
+            assert!(
+                (projected - expected).abs() <= 0.000_001,
+                "position->speed at {playback_rate}x projected {projected}, expected {expected}"
+            );
+            assert_eq!(
+                position_then_speed.projected_local_position_at(103.1, None),
+                None,
+                "a rate transition must not refresh the last actual position at {playback_rate}x"
+            );
+
+            let mut speed_then_position = RuntimePlaybackCoordination::default();
+            speed_then_position.prepare_media(
+                LogicalMediaId::new(format!("speed-then-position-{playback_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            let mut initial = transport(1, 0.0, PlayerTransportPhase::Playing, 0.0);
+            initial.playback_rate = Some(1.0);
+            speed_then_position.observe_transport(initial, 100.0);
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.0)),
+            );
+            speed.playback_rate = Some(playback_rate);
+            speed_then_position.observe_transport(speed, 101.0);
+            let expected_position = 1.0 + playback_rate;
+            let mut position = transport(1, 2.0, PlayerTransportPhase::Playing, expected_position);
+            position.playback_rate = None;
+            speed_then_position.observe_transport(position, 102.0);
+
+            let projected = speed_then_position
+                .projected_local_position_at(102.5, None)
+                .expect("a position after a sparse rate should remain projectable");
+            let expected = expected_position + 0.5 * playback_rate;
+            assert!(
+                (projected - expected).abs() <= 0.000_001,
+                "speed->position at {playback_rate}x projected {projected}, expected {expected}"
+            );
+        }
+
+        let mut multiple_transitions = RuntimePlaybackCoordination::default();
+        multiple_transitions.prepare_media(
+            LogicalMediaId::new("multiple-rate-transitions").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        multiple_transitions.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+        for (observed_at_seconds, playback_rate) in [(1.5, 2.0), (2.0, 0.5)] {
+            let mut speed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(
+                    observed_at_seconds,
+                )),
+            );
+            speed.playback_rate = Some(playback_rate);
+            multiple_transitions.observe_transport(speed, 100.0 + observed_at_seconds);
+        }
+        let projected = multiple_transitions
+            .projected_local_position_at(102.5, None)
+            .expect("multiple sparse rate segments should remain projectable");
+        assert!((projected - 11.75).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn first_delayed_transport_sample_preserves_queue_dwell_and_invalid_rates_fail_closed() {
+        let mut delayed = RuntimePlaybackCoordination::default();
+        delayed.prepare_media(
+            LogicalMediaId::new("first-delayed-transport-sample").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        let mut delayed_position = transport(1, 1.0, PlayerTransportPhase::Playing, 10.0);
+        delayed_position.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        ));
+        delayed.observe_transport(delayed_position, 105.0);
+        assert_eq!(
+            delayed.projected_local_position_at(105.0, None),
+            None,
+            "the first rich sample must retain its four seconds of queue dwell"
+        );
+
+        for invalid_rate in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut runtime = RuntimePlaybackCoordination::default();
+            runtime.prepare_media(
+                LogicalMediaId::new(format!("invalid-rate-{invalid_rate}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            runtime.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut invalid = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+            );
+            invalid.playback_rate = Some(invalid_rate);
+            runtime.observe_transport(invalid, 102.0);
+            assert_eq!(
+                runtime.projected_local_position_at(102.1, None),
+                None,
+                "invalid playback rate {invalid_rate} must make projection unavailable"
+            );
+            runtime.observe_transport(
+                transport(1, 2.2, PlayerTransportPhase::Playing, 11.0),
+                102.2,
+            );
+            assert_eq!(
+                runtime.projected_local_position_at(102.3, None),
+                None,
+                "an absent rate must not silently replace invalid rate {invalid_rate}"
+            );
+            let mut recovered = transport(1, 2.4, PlayerTransportPhase::Playing, 11.2);
+            recovered.playback_rate = Some(1.0);
+            runtime.observe_transport(recovered, 102.4);
+            assert!(
+                runtime.projected_local_position_at(102.5, None).is_some(),
+                "a later valid rate should recover projection"
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_pause_and_cache_transitions_close_and_resume_the_position_clock() {
+        for cache_pause in [false, true] {
+            let mut runtime = RuntimePlaybackCoordination::default();
+            runtime.prepare_media(
+                LogicalMediaId::new(format!("sparse-motion-transition-{cache_pause}")).unwrap(),
+                MediaTransportKind::NetworkVod,
+                100.0,
+            );
+            runtime.observe_transport(
+                transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+                101.0,
+            );
+            let mut stopped = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.5)),
+            );
+            stopped.phase = Some(if cache_pause {
+                PlayerTransportPhase::Rebuffering
+            } else {
+                PlayerTransportPhase::ReadyPaused
+            });
+            stopped.logical_pause = Some(!cache_pause);
+            stopped.paused_for_cache = Some(cache_pause);
+            stopped.core_idle = Some(!cache_pause);
+            runtime.observe_transport(stopped, 101.5);
+            if !cache_pause {
+                assert_eq!(
+                    runtime.projected_local_position_at(120.0, None),
+                    Some(10.5),
+                    "pause edge must retain progress through its own timestamp"
+                );
+            }
+
+            let mut resumed = PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(2)),
+            );
+            resumed.phase = Some(PlayerTransportPhase::Playing);
+            resumed.logical_pause = Some(false);
+            resumed.paused_for_cache = Some(false);
+            resumed.core_idle = Some(false);
+            runtime.observe_transport(resumed, 102.0);
+            let projected = runtime
+                .projected_local_position_at(102.2, None)
+                .expect("a short sparse stop should remain projectable after resume");
+            assert!(
+                (projected - 10.7).abs() <= 0.000_001,
+                "projection must exclude the stopped interval for cache_pause={cache_pause}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_playing_sample_cannot_become_a_trusted_sparse_pause_anchor() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("stale-playing-to-sparse-pause").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+        let mut paused = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(4)),
+        );
+        paused.phase = Some(PlayerTransportPhase::ReadyPaused);
+        paused.logical_pause = Some(true);
+        paused.paused_for_cache = Some(false);
+        paused.seeking = Some(false);
+        paused.core_idle = Some(true);
+
+        runtime.observe_transport(paused, 104.0);
+
+        assert_eq!(
+            runtime.projected_local_position_at(104.0, None),
+            None,
+            "a sparse pause must not make a position last sampled three seconds ago authoritative"
+        );
+        assert_eq!(
+            runtime.projected_local_position_at(120.0, None),
+            None,
+            "the rejected inferred pause anchor must not become permanently trusted"
+        );
+    }
+
+    #[test]
+    fn outbound_state_sync_projects_rich_position_and_omits_blocked_samples() {
+        let mut session = barrier_session();
+        session.model.playback.local_position = Some(10.0);
+        session.model.playback.local_paused = Some(false);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("outbound-position-clock").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        runtime.playback_coordination.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 10.0),
+            101.0,
+        );
+
+        let outbound_position = runtime
+            .outbound_state_sync_position_seconds(101.8, false)
+            .expect("fresh rich transport should emit a playback sample");
+        assert!(
+            (outbound_position - 10.8).abs() <= 0.000_001,
+            "the server must receive the local position projected to the State message clock"
+        );
+
+        runtime.playback_coordination.observe_transport(
+            transport(1, 4.5, PlayerTransportPhase::Playing, 14.5),
+            104.5,
+        );
+        assert!(
+            runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(5.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                ),
+                false,
+                100.0,
+                105.0,
+                100.0,
+            )
+        );
+        let ProtocolMessage::State(delayed_response) = runtime
+            .control()
+            .outbound_messages()
+            .back()
+            .expect("the delayed inbound State should receive a response")
+        else {
+            panic!("the delayed inbound State response should remain a State message");
+        };
+        let delayed_response_position = delayed_response
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position);
+        assert!(
+            delayed_response_position.is_some_and(|position| (position - 15.0).abs() <= 0.000_001),
+            "receipt time remains the inbound clock, but the outbound local sample must be projected to the later response clock: {delayed_response_position:?}"
+        );
+
+        runtime.playback_coordination.observe_transport(
+            transport(1, 5.0, PlayerTransportPhase::Rebuffering, 15.0),
+            105.0,
+        );
+        assert_eq!(
+            runtime.outbound_state_sync_position_seconds(105.1, false),
+            None,
+            "cache-stalled rich telemetry must produce ping-only State instead of re-anchoring the room"
+        );
+    }
+
+    #[test]
+    fn delayed_inbound_state_does_not_publish_false_local_seek() {
+        let mut session = barrier_session();
+        session.model.playback.local_position = Some(5.0);
+        session.model.playback.local_paused = Some(false);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("delayed-inbound-state").unwrap(),
+            MediaTransportKind::NetworkVod,
+            99.0,
+        );
+        runtime
+            .playback_coordination
+            .observe_transport(transport(1, 1.0, PlayerTransportPhase::Playing, 5.0), 100.0);
+        runtime
+            .playback_coordination
+            .observe_transport(transport(1, 5.5, PlayerTransportPhase::Playing, 9.5), 104.5);
+
+        assert!(
+            runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(5.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                ),
+                false,
+                100.0,
+                105.0,
+                100.0,
+            )
+        );
+        let ProtocolMessage::State(response) = runtime
+            .control()
+            .outbound_messages()
+            .back()
+            .expect("the delayed inbound State should receive a response")
+        else {
+            panic!("the delayed inbound State response should remain a State message");
+        };
+        let response_playstate = response
+            .state
+            .playstate
+            .as_ref()
+            .expect("fresh local telemetry should remain present");
+        assert!(
+            response_playstate
+                .position
+                .is_some_and(|position| (position - 10.0).abs() <= 0.000_001),
+            "local state should be projected to reply time"
+        );
+        assert_ne!(
+            response_playstate.do_seek,
+            Some(true),
+            "matching room and local positions at receipt time must not become a local seek solely because the GUI processes the inbound State later"
+        );
+    }
+
+    #[test]
     fn adapter_epoch_reset_accepts_restarted_generation_and_rejects_old_epoch() {
         let mut runtime = RuntimePlaybackCoordination::default();
         runtime.prepare_media(
@@ -6458,6 +10440,68 @@ mod tests {
                 .map(|observation| observation.observed_at_seconds),
             Some(102.0)
         );
+    }
+
+    #[test]
+    fn adapter_epoch_reset_rearms_degraded_seek_for_same_room_state() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":40.0,"paused":true,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("remote seek should apply");
+        let mut runtime = RuntimePlaybackCoordination::default();
+        runtime.prepare_media(
+            LogicalMediaId::new("episode-1").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.update_desired_from_session(&session, 0.0);
+
+        let initial = runtime.observe_transport_at_epoch(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0),
+            0.1,
+            0,
+        );
+        assert!(initial.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
+
+        runtime.coordinator.tick(1_000.0);
+        assert!(matches!(
+            runtime.coordinator.last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Degraded(_))
+        ));
+
+        let next_epoch = runtime.reset_adapter_epoch(1_001.0);
+        assert_eq!(next_epoch, 1);
+        assert_eq!(
+            runtime.coordinator.last_seek_preparation_terminal_outcome(),
+            None,
+            "a replacement player must not inherit the old degraded seek hold"
+        );
+        assert!(
+            runtime.coordinator.recovery_episode().is_none(),
+            "a replacement player must receive a fresh recovery budget"
+        );
+
+        runtime.update_desired_from_session(&session, 1_001.1);
+        let replacement = runtime.observe_transport_at_epoch(
+            paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 5.0),
+            1_001.2,
+            next_epoch,
+        );
+        assert!(replacement.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position),
+                ..
+            } if (*position - 40.0).abs() <= f64::EPSILON
+        )));
     }
 
     #[test]
@@ -6681,6 +10725,173 @@ mod tests {
     }
 
     #[test]
+    fn matching_remote_canonical_pause_state_retires_the_local_overlay() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("remote-acknowledged-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                0.3,
+            )
+            .unwrap();
+        coordination.update_desired_from_session(&session, 0.3);
+        assert_eq!(
+            coordination.snapshot().pending_local_pause_intent,
+            None,
+            "matching canonical truth acknowledges the command even when the room anchor is attributed to another user"
+        );
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.4,
+            )
+            .unwrap();
+        coordination.update_desired_from_session(&session, 0.4);
+        assert!(
+            coordination
+                .desired_fingerprint
+                .as_ref()
+                .is_some_and(|desired| desired.paused && !desired.local_echo),
+            "a retired command must not override a later legitimate room pause"
+        );
+    }
+
+    #[test]
+    fn staged_local_unpause_retires_after_repeated_newer_canonical_pauses() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("stale-local-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+        coordination.observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+
+        for update_at in [1.0, 6.0] {
+            session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    update_at,
+                )
+                .unwrap();
+            let actions = coordination.update_desired_from_session(&session, update_at);
+            assert!(!has_pause_play_or_seek(&actions));
+            assert_eq!(
+                coordination.snapshot().pending_local_pause_intent,
+                Some(false),
+                "a bounded command/echo window must tolerate delayed canonical delivery"
+            );
+        }
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                11.0,
+            )
+            .unwrap();
+        let reconciliation = coordination.update_desired_from_session(&session, 11.0);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        assert!(
+            reconciliation.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "after the bounded echo window the canonical room pause must regain player authority"
+        );
+    }
+
+    #[test]
+    fn rapid_canonical_pause_burst_does_not_cancel_a_high_latency_local_command() {
+        let mut session = barrier_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("high-latency-local-unpause").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 10.0),
+            0.0,
+        );
+        coordination.stage_local_pause_intent(false, &session);
+        coordination.update_desired_from_session_with_replay(&session, 0.1, false);
+        coordination.observe_transport(transport(1, 0.1, PlayerTransportPhase::Playing, 10.0), 0.1);
+
+        for (received_at, evaluated_at) in [(0.2, 0.2), (-0.1, -0.1), (0.4, 0.4)] {
+            session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    received_at,
+                )
+                .unwrap();
+            let actions = coordination.update_desired_from_session(&session, evaluated_at);
+            assert!(!has_pause_play_or_seek(&actions));
+            assert_eq!(
+                coordination.snapshot().pending_local_pause_intent,
+                Some(false),
+                "packet bursts inside the echo window must retain the in-flight command even across a wall-clock rollback"
+            );
+        }
+
+        let reconciliation = coordination.update_desired_from_session(&session, 10.3);
+        assert_eq!(coordination.snapshot().pending_local_pause_intent, None);
+        assert!(
+            reconciliation.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "after both the packet-count and elapsed-time bounds, canonical pause authority must recover"
+        );
+    }
+
+    #[test]
     fn staged_controller_decision_survives_awaiting_decision_but_not_committed_start() {
         let logical_id = "phase-aware-local-intent";
         let mut awaiting_session = barrier_session();
@@ -6739,6 +10950,27 @@ mod tests {
                 .as_ref()
                 .is_some_and(|desired| !desired.paused && desired.local_echo),
             "a room controller must be able to resolve AwaitingDecision with ordinary play"
+        );
+        for update_at in [1.0, 6.0, 11.0] {
+            awaiting_session
+                .apply_message_json_at(
+                    r#"{"State":{"playstate":{"position":4.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                    update_at,
+                )
+                .unwrap();
+            assert!(matches!(
+                awaiting_session.current_room_playstate_authority(),
+                Some(RoomPlaystateAuthority::ServerBarrier {
+                    media_generation: 21,
+                    ..
+                })
+            ));
+            awaiting.update_desired_from_session(&awaiting_session, update_at);
+        }
+        assert_eq!(
+            awaiting.snapshot().pending_local_pause_intent,
+            None,
+            "an overlay-capable barrier authority must also retire a repeatedly rejected local command"
         );
 
         let mut committed_session = barrier_session();
@@ -9093,6 +13325,40 @@ mod tests {
                 completion: PlayerCommandCompletion::TimedOut { .. },
             }) if owned_id == command_id
         ));
+    }
+
+    #[test]
+    fn completion_not_observed_outcome_terminally_removes_client_core_command_binding() {
+        let mut runtime = RuntimePlaybackCoordination::default();
+        let player_command_id = PlayerCommandId::new(81);
+        runtime.bind_player_command(
+            player_command_id,
+            CoordinatorCommandId::new(17),
+            PlayerCommandCause::RemoteRoomSynchronization,
+            None,
+            0.0,
+        );
+        assert!(
+            runtime
+                .player_command_bindings
+                .contains_key(&player_command_id)
+        );
+
+        runtime.apply_player_command_outcome(
+            sorotte_player_api::PlayerCommandOutcome {
+                attachment_epoch: sorotte_player_api::PlayerAttachmentEpoch::new(1),
+                command_id: player_command_id,
+                media_generation: Some(PlayerMediaGeneration::new(3)),
+                result: sorotte_player_api::PlayerCommandSemanticResult::CompletionNotObserved,
+            },
+            1.0,
+        );
+
+        assert!(
+            !runtime
+                .player_command_bindings
+                .contains_key(&player_command_id)
+        );
     }
 
     #[test]

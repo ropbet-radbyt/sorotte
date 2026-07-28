@@ -289,6 +289,7 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
         username: Some("saved-alice".to_owned()),
         room: Some("saved-room".to_owned()),
         server_password: Some("saved-secret".into()),
+        tls_policy: Some("Plaintext".to_owned()),
         language: Some("en".to_owned()),
         shared_playlist_enabled: Some(false),
         chat_input_enabled: Some(false),
@@ -547,7 +548,15 @@ fn threaded_connect_requests_use_submitted_settings_before_the_latest_input_arri
         let dead_address = dead_listener
             .local_addr()
             .expect("stale listener should expose its address");
-        drop(dead_listener);
+        let (stale_connect_tx, stale_connect_rx) = mpsc::channel();
+        let stale_server_thread = thread::spawn(move || {
+            let _ = dead_listener
+                .accept()
+                .expect("stale listener should receive the initial projected connection");
+            stale_connect_tx
+                .send(())
+                .expect("stale listener should report the initial connection");
+        });
 
         let original = StoredClientSettingsMvp {
             host: Some(dead_address.ip().to_string()),
@@ -592,26 +601,9 @@ fn threaded_connect_requests_use_submitted_settings_before_the_latest_input_arri
         let mut state = SorotteGuiShellAppState::from_stored_settings(&original);
 
         GuiNativeRuntimePump::pump(&mut pump, &state);
-        let stale_deadline = Instant::now() + Duration::from_secs(2);
-        let mut stale_projection_attempted = false;
-        while !stale_projection_attempted {
-            assert!(
-                Instant::now() < stale_deadline,
-                "threaded runtime did not consume the stale initial input"
-            );
-            stale_projection_attempted = handle.drain_actions().iter().any(|action| {
-                matches!(
-                    action,
-                    GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Error,
-                        message,
-                    } if message.contains("Configured server connect through the detached session runtime failed")
-                )
-            });
-            if !stale_projection_attempted {
-                thread::sleep(Duration::from_millis(5));
-            }
-        }
+        stale_connect_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("threaded runtime should consume the stale initial input asynchronously");
 
         for (id, value) in [
             (SettingId::ConnectionHost, live_address.ip().to_string()),
@@ -681,6 +673,9 @@ fn threaded_connect_requests_use_submitted_settings_before_the_latest_input_arri
         }
 
         drop(pump);
+        stale_server_thread
+            .join()
+            .expect("stale endpoint server thread should exit cleanly");
         server_thread
             .join()
             .expect("submitted endpoint server thread should exit cleanly");

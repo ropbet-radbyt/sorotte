@@ -29,12 +29,21 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     let first_queue_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("first queue lines should encode");
-    assert_eq!(first_queue_lines.len(), 2);
+    assert_eq!(first_queue_lines.len(), 3);
     assert!(first_queue_lines[0].contains("\"playlistChange\""));
     assert!(first_queue_lines[0].contains("episode1.mkv"));
     assert!(first_queue_lines[1].contains("\"playlistIndex\""));
     assert!(first_queue_lines[1].contains("\"index\":0"));
-    for line in &first_queue_lines {
+    assert!(
+        first_queue_lines
+            .iter()
+            .any(|line| line.contains("\"State\"") && line.contains("\"paused\":true")),
+        "queue-and-select should finalize its media transition before the echo"
+    );
+    for line in first_queue_lines
+        .iter()
+        .filter(|line| line.contains("\"Set\""))
+    {
         adapter
             .apply_message_json(line)
             .expect("first queue echo should apply");
@@ -45,11 +54,20 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     let second_queue_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("second queue lines should encode");
-    assert_eq!(second_queue_lines.len(), 2);
+    assert_eq!(second_queue_lines.len(), 3);
     assert!(second_queue_lines[0].contains("episode1.mkv"));
     assert!(second_queue_lines[0].contains("episode2.mkv"));
     assert!(second_queue_lines[1].contains("\"index\":1"));
-    for line in &second_queue_lines {
+    assert!(
+        second_queue_lines
+            .iter()
+            .any(|line| line.contains("\"State\"") && line.contains("\"paused\":true")),
+        "a later queue-and-select should also finalize before its echo"
+    );
+    for line in second_queue_lines
+        .iter()
+        .filter(|line| line.contains("\"Set\""))
+    {
         adapter
             .apply_message_json(line)
             .expect("second queue echo should apply");
@@ -119,6 +137,12 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":0")),
         "playlist deletion should emit the updated playlist index"
     );
+    assert!(
+        delete_lines
+            .iter()
+            .any(|line| line.contains("\"State\"") && line.contains("\"paused\":true")),
+        "playlist deletion should finalize the effective selection before its echo"
+    );
     for line in &delete_lines {
         adapter
             .apply_message_json(line)
@@ -147,6 +171,12 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .iter()
             .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":1")),
         "playlist replacement should emit the selected playlist index"
+    );
+    assert!(
+        replace_lines
+            .iter()
+            .any(|line| line.contains("\"State\"") && line.contains("\"paused\":true")),
+        "playlist replacement should finalize the effective selection before its echo"
     );
     for line in &replace_lines {
         adapter

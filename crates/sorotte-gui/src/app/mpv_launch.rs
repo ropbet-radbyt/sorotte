@@ -18,6 +18,7 @@ use sorotte_player_mpv::{
 use sorotte_secret::RedactedCommandArgs;
 
 use super::child_process::configure_gui_child_process;
+use super::support::normalize_stored_player_argument_legacy_compatible;
 
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
@@ -142,7 +143,12 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
         .per_player_arguments
         .as_ref()
         .and_then(|arguments| arguments.get(player_path))
-        .cloned()
+        .map(|arguments| {
+            arguments
+                .iter()
+                .map(|argument| normalize_stored_player_argument_legacy_compatible(argument))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let streaming = ClientConfig::resolve(settings).config.playback.streaming;
     let effective_streaming_options = streaming.effective_mpv_options(&extra_args);
@@ -743,6 +749,8 @@ mod tests {
                 "--profile=syncplay".to_owned(),
                 "--keep-open=yes".to_owned(),
                 "--cache-secs=75".to_owned(),
+                r#""--ytdl-format=bestvideo[height<=1440]+bestaudio/best[height<=1440]""#
+                    .to_owned(),
             ],
         );
         let decision =
@@ -766,12 +774,23 @@ mod tests {
         assert_eq!(cache_secs.configured_value, "30");
         assert_eq!(cache_secs.effective_value, "75");
         assert!(cache_secs.overridden_by_advanced_arguments);
+        let ytdl_format = config
+            .effective_streaming_options
+            .iter()
+            .find(|option| option.name == "ytdl-format")
+            .expect("quoted legacy YouTube format should become an effective override");
+        assert_eq!(
+            ytdl_format.effective_value,
+            "bestvideo[height<=1440]+bestaudio/best[height<=1440]"
+        );
+        assert!(ytdl_format.overridden_by_advanced_arguments);
         assert_eq!(
             config.extra_args,
             vec![
                 "--profile=syncplay".to_owned(),
                 "--keep-open=yes".to_owned(),
                 "--cache-secs=75".to_owned(),
+                "--ytdl-format=bestvideo[height<=1440]+bestaudio/best[height<=1440]".to_owned(),
             ]
         );
         assert!(!config.ui_settings.show_osd);

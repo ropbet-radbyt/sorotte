@@ -734,6 +734,36 @@ async fn server_network_sustained_full_queue_signals_explicit_overload_close() {
 }
 
 #[tokio::test]
+async fn server_network_full_queue_drops_periodic_state_without_disconnect() {
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, _event_rx) = crate::network::client_event_queue(metrics.clone());
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("client-1".to_owned(), event_tx);
+    }
+    fill_reliable_outbound_queue(&client_event_senders).await;
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![test_outbound_line(
+            "periodic-state",
+            ServerOutboundDelivery::CoalesciblePeriodicState,
+        )],
+    )
+    .await;
+
+    assert!(
+        client_event_senders.lock().await.contains_key("client-1"),
+        "a disposable periodic state must not overload-disconnect a client whose reliable lane is full"
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.full_queue_events, 1);
+    assert_eq!(snapshot.overload_disconnects, 0);
+    assert_eq!(snapshot.dropped_messages, 1);
+}
+
+#[tokio::test]
 async fn server_network_closed_queue_is_not_reported_as_overload() {
     let metrics = crate::ServerOutboundBackpressureMetrics::default();
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
@@ -795,6 +825,405 @@ async fn server_network_periodic_state_updates_coalesce_to_latest() {
 }
 
 #[tokio::test]
+async fn authoritative_buffering_pause_is_not_dropped_as_periodic_backpressure() {
+    let room = controlled_room_name_for_test("room", "AB-123-456");
+    let mut runtime = ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT);
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
+        let hello = format!(
+            r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room}"}},"version":"1.7.5","features":{{"sorottePlaybackBarrierV1":true}}}}}}"#
+        );
+        runtime
+            .handle_line(client_id, &hello)
+            .expect("hello should succeed");
+    }
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"controllerAuth":{"password":"AB-123-456"}}}"#,
+        )
+        .expect("policy controller authentication should succeed");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("room should start playing");
+    runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":2,"policy":"pauseAnyEligible","debounceMs":1000,"resumeHysteresisMs":1500,"maxPauseMs":10000}}}}"#,
+        )
+        .expect("policy should configure");
+    runtime
+        .handle_line_fanout(
+            "bob-client",
+            r#"{"State":{"sorottePlaybackBarrierV1":{"transport":{"mediaGeneration":2,"buffering":true}}}}"#,
+        )
+        .expect("buffering report should succeed");
+    let paused = runtime
+        .collect_dispatch_at(101.0)
+        .expect("debounce deadline should pause");
+    let mut authoritative_pause = paused
+        .outbound_lines
+        .into_iter()
+        .find(|line| {
+            line.client_id == "alice-client"
+                && matches!(
+                    decode_message_line(&line.line),
+                    Ok(ProtocolMessage::State(ref state))
+                        if state.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.paused == Some(true)
+                        })
+                )
+        })
+        .expect("maintenance should emit an authoritative pause");
+    let pause_line = authoritative_pause.line.clone();
+    authoritative_pause.client_id = "client-1".to_owned();
+
+    let metrics = crate::ServerOutboundBackpressureMetrics::default();
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) = crate::network::client_event_queue(metrics.clone());
+    client_event_senders
+        .lock()
+        .await
+        .insert("client-1".to_owned(), event_tx);
+    fill_reliable_outbound_queue(&client_event_senders).await;
+    let pause_dispatch_senders = client_event_senders.clone();
+    let pause_dispatch = tokio::spawn(async move {
+        crate::network::dispatch_outbound_lines_to_clients(
+            &pause_dispatch_senders,
+            vec![authoritative_pause],
+        )
+        .await;
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        event_rx.receive_reliable_line_for_test().await.is_some(),
+        "transient congestion should clear"
+    );
+    pause_dispatch
+        .await
+        .expect("authoritative pause dispatch should join");
+    let mut delivered = Vec::new();
+    assert!(
+        client_event_senders.lock().await.contains_key("client-1"),
+        "transient congestion must leave the connection registered"
+    );
+    while let Ok(Some(line)) = timeout(
+        Duration::from_millis(10),
+        event_rx.receive_reliable_line_for_test(),
+    )
+    .await
+    {
+        delivered.push(line);
+    }
+    let pause_delivered = delivered.iter().any(|line| line == &pause_line);
+    let recovery_tick = runtime
+        .collect_dispatch_at(102.0)
+        .expect("the next maintenance tick should succeed");
+    let periodic_recovery_delivered = recovery_tick.outbound_lines.iter().any(|line| {
+        line.client_id == "alice-client"
+            && matches!(
+                decode_message_line(&line.line),
+                Ok(ProtocolMessage::State(ref state)) if state.state.playstate.is_some()
+            )
+    });
+    assert!(
+        pause_delivered || periodic_recovery_delivered,
+        "the room-authoritative pause was dropped and its unseen server-ignoring counter also \
+         suppressed the next periodic recovery state: pause_delivered={pause_delivered}, \
+         periodic_recovery_delivered={periodic_recovery_delivered}"
+    );
+}
+
+#[tokio::test]
+async fn actor_commit_order_is_preserved_when_session_dispatches_resume_out_of_order() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username) in [
+        ("source-a", "alice"),
+        ("source-b", "bob"),
+        ("observer", "carol"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) =
+        crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("observer".to_owned(), event_tx);
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+
+    let first_committed = Arc::new(tokio::sync::Notify::new());
+    let release_first_session = Arc::new(tokio::sync::Notify::new());
+    let first_runtime = runtime.clone();
+    let first_senders = client_event_senders.clone();
+    let first_dispatch_order = dispatch_order.clone();
+    let first_committed_task = first_committed.clone();
+    let release_first_session_task = release_first_session.clone();
+    let first_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &first_runtime,
+            &first_dispatch_order,
+            "source-a",
+            r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+            &first_senders,
+            async move {
+                first_committed_task.notify_one();
+                // Hold the production dispatch helper across the exact
+                // suspension point that previously let a later actor commit
+                // overtake peer fanout.
+                release_first_session_task.notified().await;
+            },
+        )
+        .await
+        .expect("first actor mutation and dispatch should succeed");
+    });
+    first_committed.notified().await;
+
+    let second_runtime = runtime.clone();
+    let second_senders = client_event_senders.clone();
+    let second_dispatch_order = dispatch_order.clone();
+    let second_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &second_runtime,
+            &second_dispatch_order,
+            "source-b",
+            r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+            &second_senders,
+            std::future::ready(()),
+        )
+        .await
+        .expect("second actor mutation and dispatch should succeed");
+    });
+    tokio::task::yield_now().await;
+    release_first_session.notify_one();
+    first_session
+        .await
+        .expect("first session dispatch task should join");
+    second_session
+        .await
+        .expect("second session dispatch task should join");
+
+    let mut observed_playlists = Vec::new();
+    while observed_playlists.len() < 2 {
+        let line = timeout(
+            Duration::from_secs(1),
+            event_rx.receive_reliable_line_for_test(),
+        )
+        .await
+        .expect("observer should receive both committed playlist changes")
+        .expect("observer queue should remain open");
+        if let ProtocolMessage::Set(payload) =
+            decode_message_line(&line).expect("observer fanout should decode")
+            && let Some(playlist) = payload.set.playlist_change
+        {
+            observed_playlists.push(playlist.files);
+        }
+    }
+
+    assert_eq!(
+        observed_playlists,
+        vec![vec!["first.mkv".to_owned()], vec!["second.mkv".to_owned()]],
+        "network fanout must preserve the actor's authoritative mutation order"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
+async fn source_local_response_does_not_overtake_older_peer_dispatch() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username) in [("source-a", "alice"), ("source-b", "bob")] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, mut event_rx) =
+        crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+    client_event_senders
+        .lock()
+        .await
+        .insert("source-b".to_owned(), event_tx);
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+
+    crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+        &runtime,
+        &dispatch_order,
+        "source-a",
+        r#"{"Set":{"playlistChange":{"files":["first.mkv"]}}}"#,
+        &client_event_senders,
+        std::future::ready(()),
+    )
+    .await
+    .expect("first actor mutation and peer dispatch should succeed");
+
+    crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+        &runtime,
+        &dispatch_order,
+        "source-b",
+        r#"{"Set":{"playlistChange":{"files":["second.mkv"]}}}"#,
+        &client_event_senders,
+        std::future::ready(()),
+    )
+    .await
+    .expect("second actor mutation and local dispatch should succeed");
+
+    let mut observed_playlists = Vec::new();
+    for _ in 0..8 {
+        let queued = timeout(
+            Duration::from_secs(1),
+            event_rx.receive_reliable_line_for_test(),
+        )
+        .await
+        .expect("both playlist dispatches should already be queued")
+        .expect("source-b queue should remain open");
+        if let ProtocolMessage::Set(payload) =
+            decode_message_line(&queued).expect("queued dispatch should decode")
+            && let Some(playlist) = payload.set.playlist_change
+        {
+            observed_playlists.push(playlist.files);
+            if observed_playlists.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        observed_playlists,
+        vec![vec!["first.mkv".to_owned()], vec!["second.mkv".to_owned()]],
+        "a recipient's later source-local response must not bypass an older authoritative peer \
+         dispatch that is still queued for the same socket"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
+async fn stalled_peer_backpressure_grace_does_not_accumulate_across_unrelated_rooms() {
+    let runtime = ServerActorHandle::spawn(ServerRuntime::new());
+    for (client_id, username, room) in [
+        ("source-a", "alice", "room-a"),
+        ("slow-a", "bob", "room-a"),
+        ("slow-b", "carol", "room-a"),
+        ("slow-c", "dave", "room-a"),
+        ("slow-d", "erin", "room-a"),
+        ("source-b", "frank", "room-b"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room}"}},"version":"1.7.5"}}}}"#
+                ),
+                None,
+            )
+            .await
+            .expect("hello actor command should succeed");
+    }
+
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let mut slow_receivers = Vec::new();
+    for client_id in ["slow-a", "slow-b", "slow-c", "slow-d"] {
+        let (event_tx, event_rx) =
+            crate::network::client_event_queue(crate::ServerOutboundBackpressureMetrics::default());
+        client_event_senders
+            .lock()
+            .await
+            .insert(client_id.to_owned(), event_tx);
+        let lines = (0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY).map(|index| DirectedOutboundLine {
+            client_id: client_id.to_owned(),
+            line: format!("queued-{client_id}-{index}"),
+            delivery: ServerOutboundDelivery::Reliable,
+        });
+        crate::network::dispatch_outbound_lines_to_clients(&client_event_senders, lines.collect())
+            .await;
+        slow_receivers.push(event_rx);
+    }
+
+    let dispatch_order: crate::network::SharedNetworkDispatchOrder = Arc::new(Mutex::new(()));
+    let first_committed = Arc::new(tokio::sync::Notify::new());
+    let first_runtime = runtime.clone();
+    let first_senders = client_event_senders.clone();
+    let first_dispatch_order = dispatch_order.clone();
+    let first_committed_task = first_committed.clone();
+    let first_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &first_runtime,
+            &first_dispatch_order,
+            "source-a",
+            r#"{"Set":{"playlistChange":{"files":["episode.mkv"]}}}"#,
+            &first_senders,
+            async move {
+                first_committed_task.notify_one();
+            },
+        )
+        .await
+        .expect("first room mutation and dispatch should succeed");
+    });
+    first_committed.notified().await;
+
+    let second_runtime = runtime.clone();
+    let second_senders = client_event_senders.clone();
+    let second_dispatch_order = dispatch_order.clone();
+    let mut unrelated_session = tokio::spawn(async move {
+        crate::network::handle_line_and_queue_peer_dispatch_after_commit_for_test(
+            &second_runtime,
+            &second_dispatch_order,
+            "source-b",
+            r#"{"List":null}"#,
+            &second_senders,
+            std::future::ready(()),
+        )
+        .await
+        .expect("unrelated room command should succeed");
+    });
+
+    timeout(Duration::from_millis(250), &mut unrelated_session)
+        .await
+        .expect(
+            "one room's stalled recipients must not accumulate serial overload grace periods while holding the global dispatch-order gate",
+        )
+        .expect("unrelated room dispatch task should join");
+
+    first_session
+        .await
+        .expect("first room dispatch task should join");
+    drop(slow_receivers);
+    runtime
+        .shutdown()
+        .await
+        .expect("server actor should shut down cleanly");
+}
+
+#[tokio::test]
 async fn server_network_accept_queue_is_bounded() {
     let (accepted_tx, _accepted_rx): (
         mpsc::Sender<io::Result<(TcpStream, std::net::SocketAddr)>>,
@@ -845,6 +1274,36 @@ async fn server_network_direct_response_write_timeout_does_not_block_loop() {
             .expect_err("stalled direct response write should time out");
 
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn committed_peer_fanout_is_queued_before_a_stalled_source_write() {
+    let (source_result, peer_line, committed_files) =
+        crate::network::stalled_source_write_still_queues_peer_fanout_for_test(
+            Duration::from_millis(20),
+        )
+        .await;
+
+    assert_eq!(
+        source_result
+            .expect_err("source write should still report its timeout")
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(committed_files, vec!["committed.mkv".to_owned()]);
+    let peer_message = decode_message_line(
+        peer_line
+            .as_deref()
+            .expect("peer mutation should be queued before the source timeout"),
+    )
+    .expect("queued peer mutation should decode");
+    assert!(matches!(
+        peer_message,
+        ProtocolMessage::Set(payload)
+            if payload.set.playlist_change.as_ref().is_some_and(|playlist| {
+                playlist.files == ["committed.mkv"]
+            })
+    ));
 }
 
 #[tokio::test]
@@ -1534,6 +1993,87 @@ async fn server_network_starttls_success_still_allows_hello() {
         .expect("clean TLS client close should not fail the session");
 
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[tokio::test]
+async fn server_network_does_not_write_bundled_hello_response_before_starttls_upgrade() {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let cert_path = temporary_directory_path("tls-bundled-hello-plaintext");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let (client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = server_actor_with_tls_cert_path(&cert_path);
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_timeouts(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime.clone(),
+            client_event_senders,
+            None,
+            crate::network::ServerNetworkClientSessionTimeouts::new(
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ),
+        ),
+    );
+    let mut client_stream = tokio::io::BufReader::new(client_stream);
+
+    client_stream
+        .get_mut()
+        .write_all(
+            br#"{"TLS":{"startTLS":"send"},"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .await
+        .expect("bundled STARTTLS request should write");
+    client_stream
+        .get_mut()
+        .write_all(b"\n")
+        .await
+        .expect("bundled STARTTLS newline should write");
+    client_stream
+        .get_mut()
+        .flush()
+        .await
+        .expect("bundled STARTTLS request should flush");
+
+    let mut tls_response = String::new();
+    timeout(
+        Duration::from_secs(2),
+        client_stream.read_line(&mut tls_response),
+    )
+    .await
+    .expect("STARTTLS response should arrive")
+    .expect("STARTTLS response should be readable");
+    assert!(
+        matches!(
+            decode_message_line(tls_response.trim()),
+            Ok(ProtocolMessage::Tls(_))
+        ),
+        "the first plaintext response should acknowledge STARTTLS"
+    );
+
+    let mut plaintext_suffix = String::new();
+    let plaintext_suffix_result = timeout(
+        Duration::from_millis(100),
+        client_stream.read_line(&mut plaintext_suffix),
+    )
+    .await;
+
+    session_task.abort();
+    let _ = session_task.await;
+    drop(runtime);
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+
+    assert!(
+        plaintext_suffix_result.is_err(),
+        "the transport should be waiting for a TLS ClientHello, but wrote another plaintext protocol response: {plaintext_suffix:?}"
+    );
 }
 
 #[tokio::test]

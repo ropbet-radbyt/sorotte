@@ -327,6 +327,7 @@ impl ServerRuntime {
             .remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
+        self.client_peer_ips.remove(client_id);
         Some(session)
     }
 
@@ -336,30 +337,111 @@ impl ServerRuntime {
     ) {
         let now_seconds = self.current_time_seconds();
         for (room_name, persisted_room) in persisted_rooms {
-            self.room_playlists.insert(
-                room_name.clone(),
-                RoomPlaylistState {
-                    files: persisted_room.files,
-                    index: persisted_room.index,
-                },
-            );
-            let room_playback = self.room_playback_states.entry(room_name).or_default();
-            room_playback.position = persisted_room.position;
+            let persisted_last_activity_at_seconds = persisted_room.last_activity_at_seconds;
+            let position = persisted_room.position;
+            let owner_bucket = persisted_room
+                .owner_bucket
+                .unwrap_or_else(|| LEGACY_PERSISTENT_ROOM_OWNER_BUCKET.to_owned());
+            let mut playlist = RoomPlaylistState {
+                files: persisted_room.files,
+                index: persisted_room.index,
+            };
+            playlist.normalize_index();
+            self.room_playlists.insert(room_name.clone(), playlist);
+            // Historical rows used zero as a placeholder. Treat missing,
+            // non-finite, or future timestamps as activity at startup so a
+            // legacy database is never purged immediately after upgrading.
+            let has_valid_persisted_activity = persisted_last_activity_at_seconds.is_finite()
+                && persisted_last_activity_at_seconds > 0.0
+                && persisted_last_activity_at_seconds <= now_seconds;
+            let last_activity_at_seconds = if has_valid_persisted_activity {
+                persisted_last_activity_at_seconds
+            } else {
+                now_seconds
+            };
+            self.persistent_room_last_activity_at
+                .insert(room_name.clone(), last_activity_at_seconds);
+            let created_at_seconds = if persisted_room.created_at_seconds.is_finite()
+                && persisted_room.created_at_seconds > 0.0
+                && persisted_room.created_at_seconds <= now_seconds
+            {
+                persisted_room.created_at_seconds
+            } else {
+                last_activity_at_seconds
+            };
+            self.persistent_room_owner_by_room
+                .insert(room_name.clone(), owner_bucket.clone());
+            self.persistent_room_created_at_by_room
+                .insert(room_name.clone(), created_at_seconds);
+            self.persistent_room_last_creation_by_identity
+                .entry(owner_bucket.clone())
+                .and_modify(|last_creation| {
+                    *last_creation = last_creation.max(created_at_seconds);
+                })
+                .or_insert(created_at_seconds);
+            let room_playback = self
+                .room_playback_states
+                .entry(room_name.clone())
+                .or_default();
+            room_playback.position = position;
             room_playback.updated_at_seconds = now_seconds;
+            if !has_valid_persisted_activity && self.room_persistence.is_some() {
+                // Make the startup-time fallback a one-time migration. Without
+                // this write-back, repeatedly restarting a legacy database
+                // whose placeholder is zero would renew its grace forever.
+                let playlist = self.room_playlist_state(&room_name).clone();
+                let version = self.next_room_persistence_version();
+                self.room_persistence
+                    .as_ref()
+                    .expect("room persistence presence checked above")
+                    .enqueue(ServerPersistenceEffect::SaveRoom {
+                        room_name,
+                        files: playlist.files,
+                        playlist_index: playlist.index,
+                        position,
+                        last_activity_at_seconds,
+                        owner_bucket: Some(owner_bucket),
+                        created_at_seconds,
+                        version,
+                    });
+            }
         }
     }
 
-    pub(crate) fn apply_permanent_rooms_snapshot(&mut self) {
-        if self.room_persistence.is_none() {
-            return;
+    pub(crate) fn replace_persisted_rooms_snapshot(
+        &mut self,
+        persisted_rooms: BTreeMap<String, PersistedRoomState>,
+    ) {
+        let replacement_names = persisted_rooms.keys().cloned().collect::<BTreeSet<_>>();
+        let replaced_names = self
+            .persisted_room_names
+            .union(&replacement_names)
+            .cloned()
+            .collect::<Vec<_>>();
+        for room_name in replaced_names {
+            self.remove_room_runtime_state(&room_name);
         }
+        self.persistent_room_owner_by_room.clear();
+        self.persistent_room_created_at_by_room.clear();
+        self.persistent_room_last_creation_by_identity.clear();
+        self.persistent_room_last_activity_at.clear();
+        self.persisted_room_names = replacement_names;
+        self.next_room_persistence_version = persisted_rooms
+            .values()
+            .map(|room| room.version)
+            .max()
+            .unwrap_or(0);
+        self.apply_persisted_rooms_snapshot(persisted_rooms);
+    }
+
+    pub(crate) fn apply_permanent_rooms_snapshot(&mut self) {
         let now_seconds = self.current_time_seconds();
         for room_name in self.permanent_rooms.clone() {
             self.room_playlists
                 .entry(room_name.clone())
                 .or_insert_with(|| RoomPlaylistState {
                     files: Vec::new(),
-                    index: Some(0),
+                    index: None,
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
             self.room_playback_states
@@ -368,31 +450,229 @@ impl ServerRuntime {
         }
     }
 
+    pub(crate) fn reconcile_permanent_rooms_snapshot(
+        &mut self,
+        previous_permanent_rooms: &BTreeSet<String>,
+    ) {
+        let removed_rooms = previous_permanent_rooms
+            .difference(&self.permanent_rooms)
+            .cloned()
+            .collect::<Vec<_>>();
+        for room_name in removed_rooms {
+            if self.clients_in_room(&room_name).is_empty()
+                && self.room_playlist_state(&room_name).files.is_empty()
+            {
+                self.remove_room_runtime_state(&room_name);
+                self.delete_persisted_room_if_needed(&room_name)
+                    .expect("enqueueing a permanent-room deletion cannot fail");
+            }
+        }
+        self.apply_permanent_rooms_snapshot();
+    }
+
     pub(crate) fn room_is_persistent(&self, room_name: &str) -> bool {
         self.persistent_rooms_enabled && !room_name_is_marked_temporary(room_name)
     }
 
     pub(crate) fn room_is_permanent(&self, room_name: &str) -> bool {
-        self.room_persistence.is_some() && self.permanent_rooms.contains(room_name)
+        self.permanent_rooms.contains(room_name)
     }
 
     pub(crate) fn room_should_be_retained_when_empty(&self, room_name: &str) -> bool {
         self.room_is_persistent(room_name) && !self.room_playlist_state(room_name).files.is_empty()
     }
 
+    pub(crate) fn persistent_room_creation_identity(&self, client_id: &str) -> String {
+        let source_identity = self
+            .client_peer_ips
+            .get(client_id)
+            .map(|peer_ip| {
+                let normalized_peer_ip = match peer_ip.trim().parse::<IpAddr>() {
+                    Ok(IpAddr::V6(address)) => address
+                        .to_ipv4_mapped()
+                        .map(IpAddr::V4)
+                        .unwrap_or(IpAddr::V6(address))
+                        .to_string(),
+                    Ok(address) => address.to_string(),
+                    Err(_) => peer_ip.trim().to_ascii_lowercase(),
+                };
+                format!("peer-ip:{normalized_peer_ip}")
+            })
+            // Direct-runtime callers do not have a transport peer address. Keep
+            // their quota namespace session-scoped; production network sessions
+            // are keyed by peer IP above.
+            .unwrap_or_else(|| format!("session:{client_id}"));
+        self.persistent_room_owner_bucket(&source_identity)
+    }
+
+    fn persistent_room_owner_bucket(&self, source_identity: &str) -> String {
+        let mut inner_pad = [0x36_u8; 64];
+        let mut outer_pad = [0x5c_u8; 64];
+        for (index, secret_byte) in self.persistent_room_quota_secret.iter().enumerate() {
+            inner_pad[index] ^= secret_byte;
+            outer_pad[index] ^= secret_byte;
+        }
+        let mut inner = Sha256::new();
+        inner.update(inner_pad);
+        inner.update(source_identity.as_bytes());
+        let inner_digest = inner.finalize();
+        let mut outer = Sha256::new();
+        outer.update(outer_pad);
+        outer.update(inner_digest);
+        let digest = outer.finalize();
+        let mut bucket = String::with_capacity("quota:v1:".len() + digest.len() * 2);
+        bucket.push_str("quota:v1:");
+        for byte in digest {
+            write!(&mut bucket, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        bucket
+    }
+
+    pub(crate) fn persistent_room_creation_required(
+        &self,
+        room_name: &str,
+        files: &[String],
+    ) -> bool {
+        !files.is_empty()
+            && self.room_is_persistent(room_name)
+            && !self.room_is_permanent(room_name)
+            && self.room_playlist_state(room_name).files.is_empty()
+    }
+
+    pub(crate) fn persistent_room_creation_allowed(
+        &self,
+        room_name: &str,
+        files: &[String],
+        identity: &str,
+        now_seconds: f64,
+    ) -> bool {
+        if !self.persistent_room_creation_required(room_name, files) {
+            return true;
+        }
+
+        let retained_client_rooms = self
+            .room_playlists
+            .iter()
+            .filter(|(existing_room, playlist)| {
+                !playlist.files.is_empty()
+                    && self.room_is_persistent(existing_room)
+                    && !self.room_is_permanent(existing_room)
+            })
+            .count();
+        if retained_client_rooms >= self.max_persistent_rooms {
+            return false;
+        }
+        let rooms_owned_by_identity = self
+            .persistent_room_owner_by_room
+            .values()
+            .filter(|owner| owner.as_str() == identity)
+            .count();
+        if rooms_owned_by_identity >= self.max_persistent_rooms_per_identity {
+            return false;
+        }
+        self.persistent_room_last_creation_by_identity
+            .get(identity)
+            .is_none_or(|last_creation| {
+                now_seconds >= *last_creation
+                    && now_seconds - *last_creation
+                        >= self.persistent_room_creation_cooldown_seconds
+            })
+    }
+
+    pub(crate) fn record_persistent_room_creation(
+        &mut self,
+        room_name: &str,
+        identity: String,
+        now_seconds: f64,
+    ) {
+        self.persistent_room_owner_by_room
+            .insert(room_name.to_owned(), identity.clone());
+        self.persistent_room_created_at_by_room
+            .insert(room_name.to_owned(), now_seconds);
+        self.persistent_room_last_creation_by_identity
+            .insert(identity, now_seconds);
+        let active_owners: BTreeSet<_> = self
+            .persistent_room_owner_by_room
+            .values()
+            .cloned()
+            .collect();
+        self.persistent_room_last_creation_by_identity
+            .retain(|identity, last_creation| {
+                active_owners.contains(identity)
+                    || (now_seconds >= *last_creation
+                        && now_seconds - *last_creation
+                            <= self.persistent_room_creation_cooldown_seconds)
+            });
+    }
+
+    pub(crate) fn release_persistent_room_ownership(&mut self, room_name: &str) {
+        self.persistent_room_owner_by_room.remove(room_name);
+        self.persistent_room_created_at_by_room.remove(room_name);
+    }
+
+    pub(crate) fn expire_inactive_persistent_rooms_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, ServerRuntimeError> {
+        if self.persistent_room_inactivity_expiry_seconds <= 0.0 {
+            return Ok(false);
+        }
+        let expired_rooms: Vec<_> = self
+            .persistent_room_last_activity_at
+            .iter()
+            .filter(|(room_name, last_activity)| {
+                self.clients_in_room(room_name).is_empty()
+                    && self.room_is_persistent(room_name)
+                    && !self.room_is_permanent(room_name)
+                    && now_seconds >= **last_activity
+                    && now_seconds - **last_activity
+                        >= self.persistent_room_inactivity_expiry_seconds
+            })
+            .map(|(room_name, _)| room_name.clone())
+            .collect();
+        for room_name in &expired_rooms {
+            self.remove_room_runtime_state(room_name);
+            self.delete_persisted_room_if_needed(room_name)?;
+        }
+        Ok(!expired_rooms.is_empty())
+    }
+
     pub(crate) fn persist_room_if_needed(
         &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
+        self.persist_room_at_if_needed(room_name, self.current_time_seconds())
+    }
+
+    fn persist_room_at_if_needed(
+        &mut self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
         if !self.room_is_persistent(room_name) {
             return Ok(());
         }
+        self.persistent_room_last_activity_at
+            .insert(room_name.to_owned(), now_seconds);
         if self.room_persistence.is_none() {
             return Ok(());
         }
         let playlist = self.room_playlist_state(room_name).clone();
-        let playback = self.room_playback_state_at(room_name, self.current_time_seconds());
-        let version = self.next_room_persistence_version(room_name);
+        if !self.persisted_room_names.contains(room_name)
+            && !self.room_is_permanent(room_name)
+            && playlist.files.is_empty()
+        {
+            return Ok(());
+        }
+        let playback = self.room_playback_state_at(room_name, now_seconds);
+        let version = self.next_room_persistence_version();
+        let owner_bucket = self.persistent_room_owner_by_room.get(room_name).cloned();
+        let created_at_seconds = self
+            .persistent_room_created_at_by_room
+            .get(room_name)
+            .copied()
+            .unwrap_or(now_seconds);
+        self.persisted_room_names.insert(room_name.to_owned());
         self.room_persistence
             .as_ref()
             .expect("room persistence presence checked above")
@@ -401,8 +681,60 @@ impl ServerRuntime {
                 files: playlist.files,
                 playlist_index: playlist.index,
                 position: playback.position,
+                last_activity_at_seconds: now_seconds,
+                owner_bucket,
+                created_at_seconds,
                 version,
             });
+        Ok(())
+    }
+
+    fn persistent_room_activity_heartbeat_interval_seconds(&self) -> f64 {
+        if self.persistent_room_inactivity_expiry_seconds <= 0.0 {
+            return PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS;
+        }
+        (self.persistent_room_inactivity_expiry_seconds / 2.0).clamp(
+            SERVER_NETWORK_TICK_INTERVAL_SECONDS,
+            PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS,
+        )
+    }
+
+    pub(crate) fn persist_occupied_room_activity_if_due_at(
+        &mut self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
+        if !self.room_is_persistent(room_name)
+            || self.clients_in_room(room_name).is_empty()
+            || (!self.persisted_room_names.contains(room_name)
+                && !self.room_is_permanent(room_name)
+                && self.room_playlist_state(room_name).files.is_empty())
+            || self
+                .persistent_room_last_activity_at
+                .get(room_name)
+                .is_some_and(|last_activity| {
+                    now_seconds >= *last_activity
+                        && now_seconds - *last_activity
+                            < self.persistent_room_activity_heartbeat_interval_seconds()
+                })
+        {
+            return Ok(());
+        }
+        self.persist_room_at_if_needed(room_name, now_seconds)
+    }
+
+    pub(crate) fn persist_occupied_room_activity_if_due_at_for_all_rooms(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
+        let occupied_rooms = self
+            .sessions
+            .values()
+            .map(|session| session.room.clone())
+            .collect::<BTreeSet<_>>();
+        for room_name in occupied_rooms {
+            self.persist_occupied_room_activity_if_due_at(&room_name, now_seconds)?;
+        }
         Ok(())
     }
 
@@ -410,10 +742,10 @@ impl ServerRuntime {
         &mut self,
         room_name: &str,
     ) -> Result<(), ServerRuntimeError> {
-        if self.room_persistence.is_none() {
+        if self.room_persistence.is_none() || !self.persisted_room_names.remove(room_name) {
             return Ok(());
         }
-        let version = self.next_room_persistence_version(room_name);
+        let version = self.next_room_persistence_version();
         self.room_persistence
             .as_ref()
             .expect("room persistence presence checked above")
@@ -424,13 +756,13 @@ impl ServerRuntime {
         Ok(())
     }
 
-    fn next_room_persistence_version(&mut self, room_name: &str) -> u64 {
-        let version = self
-            .room_persistence_versions
-            .entry(room_name.to_owned())
-            .or_default();
-        *version = version.saturating_add(1);
-        *version
+    fn next_room_persistence_version(&mut self) -> u64 {
+        self.next_room_persistence_version = self
+            .next_room_persistence_version
+            .checked_add(1)
+            .filter(|version| *version <= i64::MAX as u64)
+            .expect("room persistence version exhausted");
+        self.next_room_persistence_version
     }
 
     pub(crate) fn cleanup_room_if_empty(
@@ -448,6 +780,12 @@ impl ServerRuntime {
             self.persist_room_if_needed(room_name)?;
             return Ok(());
         }
+        self.remove_room_runtime_state(room_name);
+        self.delete_persisted_room_if_needed(room_name)?;
+        Ok(())
+    }
+
+    fn remove_room_runtime_state(&mut self, room_name: &str) {
         self.room_controllers.remove(room_name);
         self.room_playlists.remove(room_name);
         self.room_playback_states.remove(room_name);
@@ -457,8 +795,9 @@ impl ServerRuntime {
             .retain(|(tombstone_room, _), _| tombstone_room != room_name);
         self.playback_barrier_new_identity_rate_by_room
             .remove(room_name);
-        self.delete_persisted_room_if_needed(room_name)?;
-        Ok(())
+        self.persistent_room_owner_by_room.remove(room_name);
+        self.persistent_room_created_at_by_room.remove(room_name);
+        self.persistent_room_last_activity_at.remove(room_name);
     }
 
     pub(crate) fn ensure_room_state(&mut self, room_name: &str) {
@@ -1074,8 +1413,7 @@ impl ServerRuntime {
         &self,
         username: &str,
         excluded_client_id: Option<&str>,
-    ) -> String {
-        let mut chosen_username = username.to_owned();
+    ) -> Option<String> {
         let all_names: BTreeSet<String> = self
             .sessions
             .iter()
@@ -1085,18 +1423,42 @@ impl ServerRuntime {
             .map(|(_, session)| session.username.to_ascii_lowercase())
             .collect();
 
-        if all_names.contains(&chosen_username.to_ascii_lowercase())
-            && chosen_username.ends_with('_')
-        {
-            chosen_username = chosen_username.trim_end_matches('_').to_owned();
-            if chosen_username.is_empty() {
-                chosen_username = "_".to_owned();
-            }
+        if !all_names.contains(&username.to_ascii_lowercase()) {
+            return Some(username.to_owned());
         }
 
-        while all_names.contains(&chosen_username.to_ascii_lowercase()) {
-            chosen_username.push('_');
+        let mut generated_candidates = BTreeSet::new();
+        for ordinal in 2_u64.. {
+            let suffix = format!("_{ordinal}");
+            let suffix_chars = suffix.chars().count();
+            let chosen_username = if suffix_chars <= self.max_username_length {
+                let prefix_chars = self.max_username_length - suffix_chars;
+                format!(
+                    "{}{}",
+                    username.chars().take(prefix_chars).collect::<String>(),
+                    suffix
+                )
+            } else {
+                // Extremely small configured limits cannot fit the separator.
+                // Keep the least-significant scalar digits, which still gives
+                // a deterministic bounded namespace until it is exhausted.
+                ordinal
+                    .to_string()
+                    .chars()
+                    .rev()
+                    .take(self.max_username_length)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect()
+            };
+            if !generated_candidates.insert(chosen_username.clone()) {
+                return None;
+            }
+            if !all_names.contains(&chosen_username.to_ascii_lowercase()) {
+                return Some(chosen_username);
+            }
         }
-        chosen_username
+        None
     }
 }

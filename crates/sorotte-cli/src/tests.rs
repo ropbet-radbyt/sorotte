@@ -109,6 +109,7 @@ static STORED_SETTINGS_CONFIG_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 static SOROTTE_GUI_STATE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
 static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
+static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct TestEnvGuard<'a> {
     _guard: MutexGuard<'a, ()>,
@@ -192,7 +193,7 @@ fn is_legacy_generated_room_password_shape(password: &str) -> bool {
         && chars[9].is_ascii_digit()
 }
 
-fn test_client_loop_config() -> ClientLoopConfig {
+pub(crate) fn test_client_loop_config() -> ClientLoopConfig {
     ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,

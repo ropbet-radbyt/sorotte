@@ -24,10 +24,9 @@ use sorotte_client_app::app_boundary::{
         persist_sorotte_client_install_locator,
     },
 };
-use sorotte_player_api::PlayerAdapter;
 
 use super::super::media_match_support::{
-    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult,
+    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildRequest, MediaMatchIndexRebuildResult,
     MediaMatchInventoryExactResolution, MediaMatchRemoteCandidateRebuildRequest, MediaMatchTool,
     MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
     import_managed_media_match_tool_with_progress,
@@ -35,15 +34,14 @@ use super::super::media_match_support::{
     media_match_cached_probable_candidate_for_remote_signature,
     media_match_inventory_exact_resolution_for_targets, media_match_tool_paths_for_settings,
     rebuild_persisted_media_match_candidates_with_progress_and_cancel,
-    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
+    rebuild_persisted_media_match_index_with_tool_root_and_cancel,
     rebuild_persisted_media_match_remote_candidates_with_progress_and_cancel,
 };
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState,
-    GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter, GuiSessionTransportDriver,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver, GuiThreadedTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiMediaMatchToolHealth, GuiMediaSourceProviderId,
@@ -51,7 +49,6 @@ use super::super::shell_state::{
     GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
     SorotteGuiShellAppState, browser_stream_target_kind,
 };
-use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
     StreamHelperRemediationProgress, import_managed_stream_helper_downloader_with_progress,
@@ -77,7 +74,6 @@ impl GuiPersistedConfigRuntimeOwner {
             .config_path
             .as_deref()
             .map(PathBuf::from)
-            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)
     }
 
     pub(in crate::app::runtime_owner) fn persist_saved_settings_patch(

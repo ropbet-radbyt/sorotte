@@ -807,26 +807,28 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         };
-        let transport_driver = match GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(
-            &target.address,
-        ) {
-            Ok(driver) => driver,
-            Err(error) => {
-                let message = format!(
-                    "Configured server connect through the detached session runtime failed: {error}"
-                );
-                if clear_pending {
-                    self.clear_pending_operation_with_runtime_error(
-                        handle,
-                        projected_state,
-                        message,
+        let transport_driver =
+            match GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                &target.address,
+                runtime_settings.config.connection.tls_policy,
+            ) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    let message = format!(
+                        "Configured server connect through the detached session runtime failed: {error}"
                     );
-                } else {
-                    Self::push_runtime_error_notification(handle, projected_state, message);
+                    if clear_pending {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            projected_state,
+                            message,
+                        );
+                    } else {
+                        Self::push_runtime_error_notification(handle, projected_state, message);
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         let default_room = target.room.clone();
         let mut session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,
@@ -871,13 +873,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.clear_session_attached_player_sync_state();
-        if self.session_transport.is_none() {
-            self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
-        }
-        if let Some(session_transport) = self.session_transport.as_ref() {
-            session_transport.clear_protocol_lines();
-        }
-        self.session_transport_driver = Some(Box::new(transport_driver));
+        self.replace_owned_session_transport_driver(Box::new(transport_driver));
 
         let mut actions = self.sessionless_projection_actions(projected_state);
         if clear_pending {

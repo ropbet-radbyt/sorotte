@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use sorotte_client_app::app_boundary::state::TlsPolicy;
 
 mod chat_readiness_media_transport;
 mod public_server_reconnect;

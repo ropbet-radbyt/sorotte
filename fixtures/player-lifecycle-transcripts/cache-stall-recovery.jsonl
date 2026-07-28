@@ -1,0 +1,12 @@
+{"attachment_epoch":1,"ingress_sequence":1,"monotonic_receipt_tick":0,"command_id":11,"playlist_entry_id":70,"raw_json":{"event":"start-file","playlist_entry_id":70}}
+{"attachment_epoch":1,"ingress_sequence":2,"monotonic_receipt_tick":1,"command_id":11,"playlist_entry_id":70,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":3,"monotonic_receipt_tick":2,"command_id":null,"playlist_entry_id":70,"raw_json":{"event":"playback-restart"}}
+{"attachment_epoch":1,"ingress_sequence":4,"monotonic_receipt_tick":20,"command_id":null,"playlist_entry_id":70,"raw_json":{"event":"property-change","name":"paused-for-cache","data":true}}
+{"attachment_epoch":1,"ingress_sequence":5,"monotonic_receipt_tick":40,"command_id":null,"playlist_entry_id":70,"raw_json":{"event":"property-change","name":"demuxer-cache-state","data":{"cache-duration":0.0,"fw-bytes":0,"raw-input-rate":0,"reader-pts":128.0,"cache-end":128.0,"eof":false,"underrun":true}}}
+{"attachment_epoch":1,"ingress_sequence":6,"monotonic_receipt_tick":60,"command_id":12,"playlist_entry_id":null,"raw_json":{"command":["loadfile","https://media.invalid/stalled/video.mkv","replace",-1,{"start":"128.0"}],"request_id":12}}
+{"attachment_epoch":1,"ingress_sequence":7,"monotonic_receipt_tick":61,"command_id":12,"playlist_entry_id":null,"raw_json":{"request_id":12,"error":"success","data":[{"id":71,"filename":"https://media.invalid/stalled/video.mkv","current":true}]}}
+{"attachment_epoch":1,"ingress_sequence":8,"monotonic_receipt_tick":62,"command_id":null,"playlist_entry_id":70,"raw_json":{"event":"end-file","playlist_entry_id":70,"reason":"stop"}}
+{"attachment_epoch":1,"ingress_sequence":9,"monotonic_receipt_tick":63,"command_id":null,"playlist_entry_id":71,"raw_json":{"event":"start-file","playlist_entry_id":71}}
+{"attachment_epoch":1,"ingress_sequence":10,"monotonic_receipt_tick":64,"command_id":12,"playlist_entry_id":71,"raw_json":{"event":"file-loaded"}}
+{"attachment_epoch":1,"ingress_sequence":11,"monotonic_receipt_tick":65,"command_id":null,"playlist_entry_id":71,"raw_json":{"event":"playback-restart"}}
+{"attachment_epoch":1,"ingress_sequence":12,"monotonic_receipt_tick":66,"command_id":null,"playlist_entry_id":71,"raw_json":{"event":"property-change","name":"time-pos","data":130.25}}

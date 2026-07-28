@@ -145,7 +145,7 @@ impl GuiMediaResolutionPlan {
                 GuiMediaResolutionPriority::LocalExact,
             ),
             GuiUserMediaTargetResolutionSource::MediaMatchExactInventory => (
-                GuiMediaResolutionProviderKind::MediaMatch,
+                GuiMediaResolutionProviderKind::Core,
                 GuiMediaResolutionPhase::ExactLocal,
                 GuiMediaResolutionPriority::LocalExact,
             ),

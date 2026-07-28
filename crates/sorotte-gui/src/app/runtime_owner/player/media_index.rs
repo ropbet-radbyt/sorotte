@@ -187,7 +187,10 @@ impl GuiPersistedConfigRuntimeOwner {
         if !seconds.is_finite() || seconds <= 0.0 {
             Duration::ZERO
         } else {
-            Duration::from_secs_f64(seconds)
+            Duration::try_from_secs_f64(seconds).unwrap_or_else(|_| {
+                Duration::try_from_secs_f64(default_seconds)
+                    .expect("the built-in media-search timeout must fit in Duration")
+            })
         }
     }
 
@@ -924,5 +927,21 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_media_search_next_retry_at = None;
         self.queue_attached_media_search_index_build(refresh_roots, roots.to_vec(), search_timeout);
         true
+    }
+}
+
+#[cfg(test)]
+mod timeout_overflow_regression {
+    use super::*;
+
+    #[test]
+    fn extreme_finite_media_search_timeout_falls_back_without_panicking() {
+        assert_eq!(
+            GuiPersistedConfigRuntimeOwner::positive_duration_from_seconds_or_default(
+                Some(f64::MAX),
+                LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
+            ),
+            Duration::from_secs_f64(LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT),
+        );
     }
 }

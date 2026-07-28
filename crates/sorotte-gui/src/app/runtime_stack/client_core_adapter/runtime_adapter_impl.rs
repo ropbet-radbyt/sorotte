@@ -92,6 +92,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
     }
 
+    fn apply_message_json_at(
+        &mut self,
+        json_line: &str,
+        received_at_seconds: f64,
+    ) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::apply_message_json_at(
+            self,
+            json_line,
+            received_at_seconds,
+        )
+    }
+
     fn set_room(&mut self, room: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room,
@@ -599,12 +611,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> Result<Option<MediaLoadPlan>, String> {
-        Ok(Some(self.runtime.prepare_playback_media_with_intent(
-            logical_id,
-            kind,
-            intent,
-            now_seconds,
-        )))
+        let plan = if intent == MediaLoadIntent::TransportRefresh {
+            self.runtime.prepare_playback_media_for_room_participation(
+                logical_id,
+                kind,
+                now_seconds,
+            )
+        } else {
+            self.runtime
+                .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
+        };
+        Ok(Some(plan))
     }
 
     fn sync_attached_player_transport_telemetry(
@@ -614,6 +631,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         Ok(gui_actions_from_playback_coordinator(
             self.runtime.observe_external_player_transport_at_epoch(
+                update,
+                now_seconds,
+                self.playback_transport_adapter_epoch,
+            ),
+        ))
+    }
+
+    fn rebase_attached_player_transport_telemetry(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(gui_actions_from_playback_coordinator(
+            self.runtime.rebase_external_player_transport_at_epoch(
                 update,
                 now_seconds,
                 self.playback_transport_adapter_epoch,
@@ -677,6 +708,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         Some(self.runtime.playback_coordination_snapshot())
+    }
+
+    fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.runtime
+            .logical_generation_for_adapter_generation(adapter_generation)
     }
 
     fn keep_waiting_for_seek_preparation(
@@ -827,6 +866,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn local_username(&self) -> Option<&str> {
         self.runtime.session().username()
+    }
+
+    fn current_room_name(&self) -> Option<&str> {
+        self.runtime.session().room()
     }
 
     fn server_handshake_completed(&self) -> bool {
@@ -1153,15 +1196,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
         let Some(room_playstate) = self
             .runtime
-            .current_room_playstate_legacy_ping_compatible_now()
+            .current_room_playstate_legacy_ping_compatible_at(now_seconds)
         else {
             return Ok(Vec::new());
         };
-        let Some(local_position) = self.runtime.session().local_position_seconds() else {
+        let Some(local_position) = self.runtime.projected_local_position_at(now_seconds) else {
             return Ok(Vec::new());
         };
 
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        let rollback = self
+            .runtime
+            .session_mut()
+            .desync_correction_dispatch_snapshot();
         let actions = self
             .runtime
             .session_mut()
@@ -1185,13 +1232,26 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
                 }
                 ClientRuntimeAction::SetPlaybackRate(playback_rate) => {
-                    Some(GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate))
+                    Some(GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate {
+                        playback_rate,
+                        rollback,
+                    })
                 }
                 _ => None,
             })
             .collect::<Vec<_>>();
         actions.splice(0..0, coordinator_actions);
         Ok(actions)
+    }
+
+    fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .restore_desync_correction_dispatch_snapshot(snapshot);
+        Ok(())
     }
 
     fn publish_local_file_legacy_compatible(

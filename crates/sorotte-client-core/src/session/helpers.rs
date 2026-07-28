@@ -9,6 +9,8 @@ impl ClientSession {
     ) {
         let room_key = room_name.clone();
         let room_playstate = self.model.room.playstates.entry(room_name).or_default();
+        let authority_changed =
+            room_playstate.set_by != playstate.set_by || playstate.do_seek == Some(true);
         if let Some(position) = playstate.position {
             room_playstate.position = Some(position);
         }
@@ -17,6 +19,12 @@ impl ClientSession {
         }
         room_playstate.do_seek = Some(playstate.do_seek.unwrap_or(false));
         room_playstate.set_by = playstate.set_by;
+        if authority_changed {
+            self.model
+                .room
+                .playstate_authority_changed_at_seconds
+                .insert(room_key.clone(), updated_at_seconds);
+        }
         self.model
             .room
             .playstate_updated_at_seconds
@@ -236,22 +244,23 @@ impl ClientSession {
         local_paused: bool,
         local_position: f64,
     ) -> (bool, bool) {
-        self.determine_local_state_change_with_global_playstate_override(
+        self.determine_local_state_change_with_global_playstate_override_at(
             local_paused,
             local_position,
             None,
+            unix_wall_clock_time_seconds_legacy_compatible(),
         )
     }
 
-    pub(super) fn determine_local_state_change_with_global_playstate_override(
+    pub(super) fn determine_local_state_change_with_global_playstate_override_at(
         &self,
         local_paused: bool,
         local_position: f64,
         global_playstate_override: Option<RoomPlaystateView>,
+        now_seconds: f64,
     ) -> (bool, bool) {
-        let global_playstate = global_playstate_override.or_else(|| {
-            self.current_room_playstate_at(unix_wall_clock_time_seconds_legacy_compatible())
-        });
+        let global_playstate =
+            global_playstate_override.or_else(|| self.current_room_playstate_at(now_seconds));
         let global_paused = global_playstate
             .as_ref()
             .and_then(|playstate| playstate.paused)

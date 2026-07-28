@@ -2,12 +2,15 @@ use std::path::Path;
 
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapabilities, PlayerCommand,
-    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerMediaLoadOutcome,
+    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken,
+    PlayerEventBatch, PlayerEventDeliveryMode, PlayerLocalFileObservation,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 
 use crate::MpvAdapter;
 
+#[derive(Debug)]
 pub struct ConnectedMpvPlayer(MpvAdapter);
 
 impl ConnectedMpvPlayer {
@@ -95,6 +98,10 @@ macro_rules! impl_player_wrapper {
                 self.0.take_local_file_update()
             }
 
+            fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
+                self.0.take_local_file_observation()
+            }
+
             fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
                 self.0.take_playback_telemetry_update()
             }
@@ -115,6 +122,33 @@ macro_rules! impl_player_wrapper {
 
             fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
                 self.0.take_media_load_outcome()
+            }
+
+            fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
+                self.0.take_media_load_observation()
+            }
+
+            fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
+                self.0.take_ordered_event_batch()
+            }
+
+            fn request_ordered_event_reacquisition(&mut self) {
+                self.0.request_ordered_event_reacquisition();
+            }
+
+            fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+                self.0.take_player_event_batch()
+            }
+
+            fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+                self.0.player_event_delivery_mode()
+            }
+
+            fn acknowledge_player_event_batch(
+                &mut self,
+                token: PlayerEventAcknowledgementToken,
+            ) -> Result<(), PlayerError> {
+                self.0.acknowledge_player_event_batch(token)
             }
 
             fn take_pending_chat_request(&mut self) -> Option<String> {

@@ -1,12 +1,19 @@
 use super::*;
+use crate::MpvNetworkOptionsHookHealth;
 
 #[test]
 #[ignore = "opt-in real-mpv bridge test; set SOROTTE_TEST_MPV_BIN"]
 fn real_mpv_bridge_lifecycle_over_json_ipc() {
     use std::{
+        io::{Read, Write},
+        net::{SocketAddr, TcpListener, TcpStream},
         path::PathBuf,
         process::{Child, Command, Stdio},
-        thread::sleep,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread::{JoinHandle, sleep},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -23,6 +30,86 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+
+    struct LoopbackMediaServerGuard {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Drop for LoopbackMediaServerGuard {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect(self.address);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn silent_wav_bytes() -> Vec<u8> {
+        const SAMPLE_RATE: u32 = 8_000;
+        const CHANNELS: u16 = 1;
+        const BITS_PER_SAMPLE: u16 = 16;
+        const DURATION_SECONDS: u32 = 2;
+        let data_len =
+            SAMPLE_RATE * DURATION_SECONDS * u32::from(CHANNELS) * u32::from(BITS_PER_SAMPLE / 8);
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&CHANNELS.to_le_bytes());
+        wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+        wav.extend_from_slice(
+            &(SAMPLE_RATE * u32::from(CHANNELS) * u32::from(BITS_PER_SAMPLE / 8)).to_le_bytes(),
+        );
+        wav.extend_from_slice(&(CHANNELS * (BITS_PER_SAMPLE / 8)).to_le_bytes());
+        wav.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(44 + data_len as usize, 0);
+        wav
+    }
+
+    fn start_loopback_media_server() -> (LoopbackMediaServerGuard, String) {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("loopback media listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("loopback media listener should have an address");
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let body = Arc::new(silent_wav_bytes());
+        let server_body = Arc::clone(&body);
+        let thread = std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                if server_stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                let mut request = [0_u8; 4_096];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    server_body.len()
+                );
+                if stream.write_all(response.as_bytes()).is_ok() {
+                    let _ = stream.write_all(&server_body);
+                }
+            }
+        });
+        let url = format!("http://{address}/sorotte-network-hook-smoke.wav");
+        (
+            LoopbackMediaServerGuard {
+                address,
+                stop,
+                thread: Some(thread),
+            },
+            url,
+        )
     }
 
     fn connect_with_retry(endpoint: &str) -> MpvAdapter {
@@ -183,11 +270,18 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
     assert!(busy_error.to_string().contains("owned by"));
     assert!(hook_contender.is_connected());
 
+    let (_network_media_server, network_media_url) = start_loopback_media_server();
     hook_contender
-        .open_file("https://127.0.0.1:9/sorotte-network-hook-smoke.m3u8")
+        .open_file(&network_media_url)
         .expect("real mpv should accept the asynchronous network load request");
+    let network_outcome = wait_for_network_outcome(&mut contender);
+    if let MpvNetworkMediaOptionsTransitionOutcome::Failed(error)
+    | MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) = &network_outcome
+    {
+        panic!("the real-mpv network hook failed: {error}");
+    }
     assert_eq!(
-        wait_for_network_outcome(&mut contender),
+        network_outcome,
         MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
         "the on-load hook should apply the owned option map to network media"
     );
@@ -206,23 +300,35 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         "local on-load must complete the installed policy without a file-local write"
     );
 
-    sleep(Duration::from_millis(2_200));
+    sleep(Duration::from_millis(10_200));
+    let takeover_deadline = Instant::now() + Duration::from_secs(3);
+    let _takeover = loop {
+        match hook_contender.apply_network_media_options_to_active_media_classified() {
+            Ok(takeover) => break takeover,
+            Err(error)
+                if error.to_string().contains("owned by") && Instant::now() < takeover_deadline =>
+            {
+                sleep(Duration::from_millis(100));
+            }
+            Err(error) => panic!("an expired lease should allow takeover: {error}"),
+        }
+    };
+    assert_eq!(
+        hook_contender
+            .network_options_runtime_health_snapshot()
+            .hook_health,
+        MpvNetworkOptionsHookHealth::Ready
+    );
     assert!(matches!(
         wait_for_network_outcome(&mut contender),
         MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
-            if error.to_string().contains("lease expired")
+            if error.to_string().contains("ownership")
+                || error.to_string().contains("lease expired")
     ));
     assert!(
         contender.is_connected(),
-        "lease expiry must not detach playback"
+        "lease replacement must not detach playback"
     );
-    assert!(matches!(
-        hook_contender
-            .apply_network_media_options_to_active_media_classified()
-            .expect("an expired lease should allow the contender to take over"),
-        MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
-            | MpvActiveNetworkMediaOptionsApplyOutcome::LocalMediaUnchanged
-    ));
     hook_contender.release_sorotte_bridge_best_effort();
 
     settings.chat_input_enabled = false;

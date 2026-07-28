@@ -353,29 +353,66 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_playlist_index_set(index);
-        let replay_media = self.v2_replay_media_for_playlist_actions(&actions);
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        self.finalize_local_playlist_index_switch_if_needed(&actions)?;
-        self.begin_v2_replay_episode(replay_media);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_advance_playlist_index(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_next();
-        let replay_media = self.v2_replay_media_for_playlist_actions(&actions);
-        let sent = !actions.is_empty();
+        self.run_local_playlist_action_batch(actions)
+    }
+
+    fn current_local_playlist_target(&self) -> Option<String> {
+        let playlist = self.session.current_room_playlist()?;
+        let index = playlist
+            .index
+            .and_then(|index| usize::try_from(index).ok())?;
+        playlist.files.get(index).cloned()
+    }
+
+    fn run_local_playlist_action_batch(
+        &mut self,
+        actions: Vec<ClientRuntimeAction>,
+    ) -> Result<bool, PlayerError> {
+        if actions.is_empty() {
+            return Ok(false);
+        }
+
+        let selected_target_before = self
+            .current_local_playlist_target()
+            // Before a shared playlist has an index, the attached player can
+            // already be playing the target that a compound batch selects.
+            // Treat that announced local file as the effective prior target so
+            // importing/reordering a playlist around it does not rewind it.
+            .or_else(|| self.session.current_user_file_name().map(str::to_owned));
+        let dedicated_index_request = actions.len() == 1
+            && matches!(actions[0], ClientRuntimeAction::SetPlaylistIndex { .. });
+        let replay_media = dedicated_index_request
+            .then(|| self.v2_replay_media_for_playlist_actions(&actions))
+            .flatten();
+
         self.dispatch_runtime_actions_with_pause_cause(
             &actions,
             PlayerCommandCause::PlaylistTransition,
         )?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        self.finalize_local_playlist_index_switch_if_needed(&actions)?;
+
+        // Do not use the attached-file fallback after applying the batch: an
+        // empty or index-less playlist has no selectable target and therefore
+        // cannot consume a reset intent.
+        let selected_target_after = self.current_local_playlist_target();
+        let selected_target_changed =
+            selected_target_after.is_some() && selected_target_before != selected_target_after;
+        // An explicit index request is also a replay request when it selects the
+        // already-active row. Compound batches reset only when their optimistic
+        // projection changes the selected media target. A pure playlist reorder
+        // can move the active target to a different numeric index and must not
+        // reopen or rewind that same media.
+        self.finalize_local_playlist_selection_switch_if_needed(
+            selected_target_changed || dedicated_index_request,
+        )?;
         self.begin_v2_replay_episode(replay_media);
-        Ok(sent)
+        Ok(true)
     }
 
     fn v2_replay_media_for_playlist_actions(
@@ -422,22 +459,14 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_playlist_queue(file_name.into(), select_after_queue);
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_delete_playlist_index(&mut self, index: i64) -> Result<bool, PlayerError> {
         let actions = self
             .session
             .runtime_actions_for_local_playlist_delete(index);
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_replace_playlist(
@@ -448,42 +477,26 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_playlist_replace(files, selected_index);
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_undo_playlist_change(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_undo();
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_shuffle_remaining_playlist(&mut self) -> Result<bool, PlayerError> {
         let actions = self
             .session
             .runtime_actions_for_local_playlist_shuffle_remaining();
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_shuffle_entire_playlist(&mut self) -> Result<bool, PlayerError> {
         let actions = self
             .session
             .runtime_actions_for_local_playlist_shuffle_entire();
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
-        Ok(sent)
+        self.run_local_playlist_action_batch(actions)
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
@@ -555,7 +568,23 @@ where
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<bool, PlayerError> {
-        let Some(local_file_update) = self.player.take_local_file_update() else {
+        let ordered_delivery = self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches;
+        let local_file_update = if ordered_delivery {
+            self.drain_player_transport_coordination(
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            )?;
+            if self
+                .playback_coordination
+                .ordered_transport_awaits_snapshot()
+            {
+                return Ok(false);
+            }
+            self.pending_ordered_local_file_updates.front().cloned()
+        } else {
+            self.player.take_local_file_update()
+        };
+        let Some(local_file_update) = local_file_update else {
             return Ok(false);
         };
 
@@ -586,6 +615,9 @@ where
             MediaLoadIntent::TransportRefresh,
             unix_wall_clock_time_seconds_legacy_compatible(),
         );
+        if ordered_delivery {
+            self.pending_ordered_local_file_updates.acknowledge_front();
+        }
         Ok(true)
     }
 
@@ -608,7 +640,13 @@ where
     }
 
     pub(crate) fn sync_player_playback_telemetry_into_session_and_buffer(&mut self) {
+        if self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            return;
+        }
         while let Some(update) = self.player.take_playback_telemetry_update() {
+            self.observe_pending_reconnect_rate_reset(update.playback_rate);
             self.session.apply_player_playback_telemetry_update(&update);
             // Telemetry is a coalescible state effect: keep one pending snapshot
             // and let newer fields supersede older values before delivery.

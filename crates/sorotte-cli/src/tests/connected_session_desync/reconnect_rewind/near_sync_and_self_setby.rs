@@ -172,8 +172,13 @@ async fn connected_client_session_reconnect_prevents_stale_speed_restore_when_se
         .run_reconnect_retry(0)
         .expect("reconnect retry planning should succeed");
 
-    // Re-seed telemetry after reconnect reset while keeping visible playback-rate=0.95 so
-    // a stale restore-speed action would be observable.
+    assert!(
+        (runtime.player().playback_rate() - 1.0).abs() < 1e-6,
+        "reconnect must neutralize the first session's Sorotte-owned slowdown"
+    );
+    // Reintroduce 0.95 as an unowned sentinel after reconnect. The second
+    // session must not mistake the old ownership bit for authority to restore it.
+    seed_stub_player_playback_rate(&mut runtime, 0.95);
     seed_stub_player_pause_position_telemetry(&mut runtime, false, 10.0);
 
     run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
@@ -361,8 +366,13 @@ async fn connected_client_session_reconnect_prevents_stale_speed_restore_when_se
         .run_reconnect_retry(0)
         .expect("reconnect retry planning should succeed");
 
-    // Re-seed telemetry after reconnect reset while keeping visible playback-rate=0.95 so
-    // stale restore-speed behavior would be observable.
+    assert!(
+        (runtime.player().playback_rate() - 1.0).abs() < 1e-6,
+        "reconnect must neutralize the first session's Sorotte-owned slowdown"
+    );
+    // Reintroduce 0.95 as an unowned sentinel after reconnect. The second
+    // session must not emit a stale restore-speed action.
+    seed_stub_player_playback_rate(&mut runtime, 0.95);
     seed_stub_player_pause_position_telemetry(&mut runtime, false, 10.0);
 
     run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;

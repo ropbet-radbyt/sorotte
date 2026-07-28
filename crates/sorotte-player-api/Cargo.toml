@@ -8,5 +8,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+test-support = []
+
 [dependencies]
 sorotte-secret = { path = "../sorotte-secret" }

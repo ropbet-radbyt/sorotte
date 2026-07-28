@@ -134,13 +134,65 @@ impl ClientSession {
             .as_deref()
             .zip(set_by.as_deref())
             .is_some_and(|(username, set_by)| username == set_by);
+        let self_origin_grace_active = set_by_is_self
+            && self
+                .model
+                .room
+                .name
+                .as_deref()
+                .and_then(|room| {
+                    self.model
+                        .room
+                        .playstate_authority_changed_at_seconds
+                        .get(room)
+                })
+                .is_none_or(|updated_at| {
+                    let elapsed_seconds = now_seconds - updated_at;
+                    (0.0..=SELF_ORIGIN_CORRECTION_GRACE_SECONDS).contains(&elapsed_seconds)
+                });
+        let fastforward_sustain_seconds = (self
+            .model
+            .playback
+            .desync_config
+            .fastforward_threshold_seconds
+            - self
+                .model
+                .playback
+                .desync_config
+                .fastforward_behind_threshold_seconds)
+            .max(0.0);
+        let self_origin_fastforward_grace_active = set_by_is_self
+            && self
+                .model
+                .room
+                .name
+                .as_deref()
+                .and_then(|room| {
+                    self.model
+                        .room
+                        .playstate_authority_changed_at_seconds
+                        .get(room)
+                })
+                .is_none_or(|updated_at| {
+                    let elapsed_seconds = now_seconds - updated_at;
+                    (0.0..=SELF_ORIGIN_CORRECTION_GRACE_SECONDS + fastforward_sustain_seconds)
+                        .contains(&elapsed_seconds)
+                });
 
         if self.model.playback.desync_config.rewind_on_desync
             && diff > self.model.playback.desync_config.rewind_threshold_seconds
         {
             self.model.playback.behind_first_detected_at_seconds = None;
-            if set_by_is_self {
+            if self_origin_grace_active {
                 return DesyncCorrectionAction::None;
+            }
+            if self.model.playback.speed_changed {
+                self.model.playback.speed_changed = false;
+                self.model.playback.speed_correction_rate = None;
+                self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
+                return DesyncCorrectionAction::RestoreSpeed {
+                    rate: NORMAL_PLAYBACK_RATE,
+                };
             }
             return DesyncCorrectionAction::Rewind {
                 target_position: global_position,
@@ -188,8 +240,16 @@ impl ClientSession {
                                     .desync_config
                                     .fastforward_reset_threshold_seconds,
                         );
-                        if set_by_is_self {
+                        if self_origin_fastforward_grace_active {
                             return DesyncCorrectionAction::None;
+                        }
+                        if self.model.playback.speed_changed {
+                            self.model.playback.speed_changed = false;
+                            self.model.playback.speed_correction_rate = None;
+                            self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
+                            return DesyncCorrectionAction::RestoreSpeed {
+                                rate: NORMAL_PLAYBACK_RATE,
+                            };
                         }
                         return DesyncCorrectionAction::FastForward {
                             target_position: global_position
@@ -207,28 +267,77 @@ impl ClientSession {
             self.model.playback.behind_first_detected_at_seconds = None;
         }
 
+        if speed_supported
+            && self.model.playback.speed_changed
+            && !self.model.playback.desync_config.slow_on_desync
+        {
+            self.model.playback.speed_changed = false;
+            self.model.playback.speed_correction_rate = None;
+            self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
+            return DesyncCorrectionAction::RestoreSpeed {
+                rate: NORMAL_PLAYBACK_RATE,
+            };
+        }
+
         if speed_supported && !global_paused && self.model.playback.desync_config.slow_on_desync {
-            if diff > self.model.playback.desync_config.slowdown_threshold_seconds
-                && !self.model.playback.speed_changed
-            {
-                if set_by_is_self {
+            let threshold = self.model.playback.desync_config.slowdown_threshold_seconds;
+            let reset_threshold = self
+                .model
+                .playback
+                .desync_config
+                .slowdown_reset_threshold_seconds;
+            let active_correction_crossed_target = self
+                .model
+                .playback
+                .speed_correction_rate
+                .is_some_and(|rate| rate < NORMAL_PLAYBACK_RATE && diff <= reset_threshold);
+            if self.model.playback.speed_changed && active_correction_crossed_target {
+                self.model.playback.speed_changed = false;
+                self.model.playback.speed_correction_rate = None;
+                self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
+                return DesyncCorrectionAction::RestoreSpeed {
+                    rate: NORMAL_PLAYBACK_RATE,
+                };
+            }
+            if diff > threshold {
+                if self_origin_grace_active {
+                    return DesyncCorrectionAction::None;
+                }
+                let target_rate = self.model.playback.desync_config.slowdown_rate;
+                let correction_matches = self
+                    .model
+                    .playback
+                    .speed_correction_rate
+                    .is_some_and(|rate| (rate - target_rate).abs() <= 0.001);
+                let observed_rate_matches = self
+                    .model
+                    .playback
+                    .local_playback_rate
+                    .is_none_or(|rate| (rate - target_rate).abs() <= 0.001);
+                if correction_matches && observed_rate_matches {
                     return DesyncCorrectionAction::None;
                 }
                 self.model.playback.speed_changed = true;
+                self.model.playback.speed_correction_rate = Some(target_rate);
+                // Treat the accepted command as the current value until fresh player telemetry
+                // arrives. If the coordinator or mpv restores 1.0, that observation re-arms this
+                // correction instead of leaving the client to drift at the wrong rate.
+                self.model.playback.local_playback_rate = Some(target_rate);
                 return DesyncCorrectionAction::SlowDown {
-                    rate: self.model.playback.desync_config.slowdown_rate,
+                    rate: target_rate,
                     set_by,
                 };
             }
-            if self.model.playback.speed_changed
-                && diff
-                    < self
-                        .model
-                        .playback
-                        .desync_config
-                        .slowdown_reset_threshold_seconds
-            {
+            // Ordinary behind-client drift is handled by the existing sustained
+            // fast-forward policy for followers. Speeding a client up here is
+            // unstable under asymmetric RTT: its samples can become the room
+            // clock while other clients respond with the opposite correction.
+            // Recovery-owned catch-up remains in PlaybackCoordinator, where it
+            // is scoped to a verified cache-recovery episode.
+            if self.model.playback.speed_changed && diff.abs() < reset_threshold {
                 self.model.playback.speed_changed = false;
+                self.model.playback.speed_correction_rate = None;
+                self.model.playback.local_playback_rate = Some(NORMAL_PLAYBACK_RATE);
                 return DesyncCorrectionAction::RestoreSpeed {
                     rate: NORMAL_PLAYBACK_RATE,
                 };

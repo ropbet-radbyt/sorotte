@@ -32,109 +32,19 @@ pub(in crate::app) fn browser_domain_from_url(value: &str) -> Option<String> {
     })
 }
 
-pub(in crate::app) fn browser_parse_trustable_web_uri_host_and_path(
-    value: &str,
-) -> Option<(String, String)> {
-    let value = value.trim();
-    let authority_and_path = if let Some(rest) = value.strip_prefix("http://") {
-        rest
-    } else {
-        value.strip_prefix("https://")?
-    };
-    if authority_and_path.is_empty() {
-        return None;
-    }
-    let (authority, path_tail) = authority_and_path
-        .split_once('/')
-        .unwrap_or((authority_and_path, ""));
-    if authority.is_empty() {
-        return None;
-    }
-    let authority = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, trimmed)| trimmed);
-    if authority.is_empty() {
-        return None;
-    }
-    let host = authority
-        .split(':')
-        .next()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if host.is_empty() {
-        return None;
-    }
-    let path_with_query = if path_tail.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("/{path_tail}")
-    };
-    let path = path_with_query
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("/")
-        .to_owned();
-    Some((host, path))
-}
-
-pub(in crate::app) fn browser_trusted_domain_matches_host(
-    host: &str,
-    trusted_domain: &str,
-) -> bool {
-    if host == trusted_domain || host == format!("www.{trusted_domain}") {
-        return true;
-    }
-    if !trusted_domain.contains('*') {
-        return false;
-    }
-    let host_parts = host.split('.').collect::<Vec<_>>();
-    let pattern_parts = trusted_domain.split('.').collect::<Vec<_>>();
-    if host_parts.len() != pattern_parts.len() {
-        return false;
-    }
-    host_parts
-        .iter()
-        .zip(pattern_parts.iter())
-        .all(|(host_part, pattern_part)| {
-            if *pattern_part == "*" {
-                !host_part.is_empty()
-            } else {
-                host_part.eq_ignore_ascii_case(pattern_part)
-            }
-        })
-}
-
 pub(in crate::app) fn browser_uri_is_trusted(
     uri: &str,
     only_switch_to_trusted_domains: bool,
     trusted_domains: &[String],
 ) -> bool {
-    if !browser_is_web_url(uri) {
+    if !browser_is_url(uri) {
         return true;
     }
-    let Some((host, path)) = browser_parse_trustable_web_uri_host_and_path(uri) else {
-        return false;
-    };
-    if !only_switch_to_trusted_domains {
-        return true;
-    }
-    trusted_domains.iter().any(|entry| {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            return false;
-        }
-        let (trusted_domain, required_path_prefix) = entry.split_once('/').unwrap_or((entry, ""));
-        let trusted_domain = trusted_domain.trim().to_ascii_lowercase();
-        if trusted_domain.is_empty() || !browser_trusted_domain_matches_host(&host, &trusted_domain)
-        {
-            return false;
-        }
-        if required_path_prefix.is_empty() {
-            return true;
-        }
-        path.starts_with(&format!("/{required_path_prefix}"))
-    })
+    sorotte_client_core::playback_uri_is_trusted_legacy_compatible(
+        uri,
+        only_switch_to_trusted_domains,
+        trusted_domains,
+    )
 }
 
 fn browser_media_url_path_looks_direct(path: &str) -> bool {
@@ -159,7 +69,6 @@ pub(in crate::app) fn browser_stream_target_kind(
     }
 
     if let Some((only_switch_to_trusted_domains, trusted_domains)) = trust_policy
-        && browser_is_web_url(value)
         && !browser_uri_is_trusted(value, only_switch_to_trusted_domains, trusted_domains)
     {
         return GuiStreamTargetKind::UntrustedUrl;

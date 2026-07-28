@@ -297,6 +297,18 @@ impl<'a> ClientSessionUpdate<'a> {
             )
     }
 
+    pub fn desync_correction_dispatch_snapshot(&self) -> DesyncCorrectionDispatchSnapshot {
+        self.session.desync_correction_dispatch_snapshot()
+    }
+
+    pub fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) {
+        self.session
+            .restore_desync_correction_dispatch_snapshot(snapshot);
+    }
+
     pub fn set_autoplay_enabled(&mut self, enabled: bool) {
         self.session.set_autoplay_enabled(enabled);
     }
@@ -499,19 +511,19 @@ where
             control,
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
+            pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
+            pending_reconnect_rate_reset: false,
             playback_coordination: RuntimePlaybackCoordination::default(),
+            ordered_player_events: OrderedPlayerEventConsumer::default(),
         }
     }
 
-    pub(crate) fn finalize_local_playlist_index_switch_if_needed(
+    pub(crate) fn finalize_local_playlist_selection_switch_if_needed(
         &mut self,
-        actions: &[ClientRuntimeAction],
+        selection_changed: bool,
     ) -> Result<(), PlayerError> {
-        if !actions
-            .iter()
-            .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
-        {
+        if !selection_changed {
             return Ok(());
         }
 
@@ -776,6 +788,11 @@ where
         self.current_room_playstate_legacy_ping_compatible_at(
             unix_wall_clock_time_seconds_legacy_compatible(),
         )
+    }
+
+    pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {
+        self.playback_coordination
+            .projected_local_position_at(now_seconds, self.session.model.playback.local_position)
     }
 
     pub fn into_parts(self) -> (ClientSession, P, C) {

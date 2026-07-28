@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     io::Cursor,
     path::{Component, Path, PathBuf},
@@ -21,6 +22,15 @@ use zip::ZipArchive;
 use super::child_process::configure_gui_child_process;
 
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
+
+fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
 const LEGACY_SYNCPLAY_MILESTONE: &str = "Yoitsu";
 const LEGACY_SYNCPLAY_RELEASE_NUMBER: &str = "116";
 const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 86_400;
@@ -44,6 +54,8 @@ const SOROTTE_GUI_DEV_ARTIFACT_NAME: &str = "sorotte-gui-windows-x86_64";
 const SOROTTE_GUI_INSTALL_MARKER: &str = "sorotte-install.json";
 const SOROTTE_GUI_EXECUTABLE: &str = "sorotte-gui.exe";
 const SOROTTE_GUI_UPDATER_EXECUTABLE: &str = "sorotte-gui-updater.exe";
+#[cfg(windows)]
+const SOROTTE_GUI_UPDATE_JOURNAL: &str = ".sorotte-update-journal-v1.jsonl";
 const SOROTTE_PUBLIC_SERVER_LIST_URL_ENV: &str = "SOROTTE_GUI_PUBLIC_SERVER_LIST_URL";
 const SOROTTE_PUBLIC_SERVER_LIST_RESPONSE_ENV: &str = "SOROTTE_GUI_PUBLIC_SERVER_LIST_RESPONSE";
 const SOROTTE_UPDATE_CHECK_RESPONSE_ENV: &str = "SOROTTE_GUI_UPDATE_CHECK_RESPONSE";
@@ -362,13 +374,114 @@ pub(crate) fn launch_staged_update(staged_update: &StagedUpdate) -> UpdateApplyL
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn launch_pending_update_recovery() -> Result<bool, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current GUI executable: {error}"))?;
+    let target_dir = current_exe
+        .parent()
+        .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?;
+    let journal_path = target_dir.join(SOROTTE_GUI_UPDATE_JOURNAL);
+    match fs::symlink_metadata(&journal_path) {
+        Ok(metadata) if !metadata.is_file() || metadata_is_link_or_reparse(&metadata) => {
+            return Err(format!(
+                "pending update journal is not a regular file: {}",
+                journal_path.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting pending update journal {}: {error}",
+                journal_path.display()
+            ));
+        }
+    }
+
+    let updater_path = target_dir.join(SOROTTE_GUI_UPDATER_EXECUTABLE);
+    match fs::symlink_metadata(&updater_path) {
+        Ok(metadata) if metadata.is_file() && !metadata_is_link_or_reparse(&metadata) => {}
+        Ok(_) => {
+            return Err(format!(
+                "installed update recovery helper is not a regular file: {}",
+                updater_path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting installed update recovery helper {}: {error}",
+                updater_path.display()
+            ));
+        }
+    }
+
+    let pid = std::process::id().to_string();
+    let log_path = std::env::temp_dir().join(format!("sorotte-gui-update-recovery-{pid}.log"));
+    let mut command = Command::new(&updater_path);
+    command.args(pending_update_recovery_args(target_dir, &pid, &log_path));
+    configure_gui_child_process(&mut command);
+    command
+        .spawn()
+        .map_err(|error| format!("failed to launch interrupted-update recovery: {error}"))?;
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn launch_pending_update_recovery() -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn pending_update_recovery_args(target_dir: &Path, pid: &str, log_path: &Path) -> Vec<String> {
+    vec![
+        "--recover".to_owned(),
+        "--pid".to_owned(),
+        pid.to_owned(),
+        "--target-dir".to_owned(),
+        target_dir.display().to_string(),
+        "--target-exe".to_owned(),
+        SOROTTE_GUI_EXECUTABLE.to_owned(),
+        "--log".to_owned(),
+        log_path.display().to_string(),
+        "--restart".to_owned(),
+    ]
+}
+
+#[cfg(windows)]
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 pub(crate) fn cleanup_update_staging_root(gui_config_root: Option<&Path>) -> Result<(), String> {
     let Some(gui_config_root) = gui_config_root else {
         return Ok(());
     };
     let updates_root = gui_config_root.join("updates");
-    if !updates_root.exists() {
-        return Ok(());
+    match fs::symlink_metadata(&updates_root) {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
+            return Err(format!(
+                "update staging path is not a regular directory: {}",
+                updates_root.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed inspecting update staging directory {}: {error}",
+                updates_root.display()
+            ));
+        }
     }
     cleanup_updates_root_entries(&updates_root, None)?;
     match fs::remove_dir(&updates_root) {
@@ -387,45 +500,37 @@ fn check_for_github_update(
     _user_initiated: bool,
     update_channel: Option<&str>,
 ) -> Result<LegacyUpdateCheckResult, String> {
-    if !update_supported_platform() {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
-            message: "GitHub self-update is currently supported for Windows x64 GUI packages only."
-                .to_owned(),
-            url: None,
-            candidate: None,
-            self_update_supported: false,
-            public_servers: None,
-            checked_at_utc: String::new(),
-            user_initiated: false,
-        });
-    }
-
-    if !self_update_supported_current_install() {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
-            message: "GitHub self-update is only available for packaged Sorotte GUI installs."
-                .to_owned(),
-            url: None,
-            candidate: None,
-            self_update_supported: false,
-            public_servers: None,
-            checked_at_utc: String::new(),
-            user_initiated: false,
-        });
-    }
-
+    let capability = self_update_capability_current_install();
     if let Some(body) = env_response_override(SOROTTE_UPDATE_CHECK_RESPONSE_ENV)
         && let Some(result) = github_update_response_override_result(&body, language)?
     {
-        return Ok(result);
+        return Ok(apply_self_update_capability(result, capability));
     }
 
     let channel = UpdateChannel::selected(update_channel)?;
-    match channel {
+    let result = match channel {
         UpdateChannel::Stable => check_stable_release_update(language),
         UpdateChannel::Dev => check_dev_update(language),
+    }?;
+    Ok(apply_self_update_capability(result, capability))
+}
+
+fn apply_self_update_capability(
+    mut result: LegacyUpdateCheckResult,
+    capability: SelfUpdateCapability,
+) -> LegacyUpdateCheckResult {
+    result.self_update_supported = capability.supported();
+    if !capability.supported()
+        && result.status == LegacyUpdateCheckStatus::UpdateAvailable
+        && !result.message.contains(capability.unavailable_message())
+    {
+        result.message = format!(
+            "{} {}",
+            result.message.trim(),
+            capability.unavailable_message()
+        );
     }
+    result
 }
 
 fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
@@ -785,7 +890,8 @@ fn validate_manifest(
             manifest.target, SOROTTE_GUI_TARGET
         ));
     }
-    if !manifest.package.starts_with("sorotte-gui-")
+    if !normal_package_basename(&manifest.package)
+        || !manifest.package.starts_with("sorotte-gui-")
         || !manifest
             .package
             .ends_with(SOROTTE_GUI_RELEASE_PACKAGE_SUFFIX)
@@ -797,6 +903,18 @@ fn validate_manifest(
     }
     validate_sha256_hex(&manifest.sha256)?;
     Ok(())
+}
+
+fn normal_package_basename(value: &str) -> bool {
+    if value.is_empty()
+        || matches!(value, "." | "..")
+        || value.contains(['/', '\\', ':'])
+        || has_windows_drive_prefix(value)
+    {
+        return false;
+    }
+    let mut components = Path::new(value).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 fn validate_sha256_hex(value: &str) -> Result<(), String> {
@@ -849,18 +967,36 @@ fn dev_candidate_newer_than_current(
             .as_ref()
             .and_then(|marker| marker.git_sha.clone())
     });
-    if let Some(candidate_sha) = candidate_sha
-        && Some(candidate_sha.to_owned()) == current_sha
-    {
-        return false;
-    }
     let current_created_at = env_trimmed(SOROTTE_GUI_BUILD_CREATED_AT_UTC_ENV).or_else(|| {
         install_marker
             .as_ref()
             .and_then(|marker| marker.created_at_utc.clone())
     });
+    dev_candidate_is_newer(
+        candidate_sha,
+        candidate_created_at,
+        current_sha.as_deref(),
+        current_created_at.as_deref(),
+    )
+}
+
+fn dev_candidate_is_newer(
+    candidate_sha: Option<&str>,
+    candidate_created_at: &str,
+    current_sha: Option<&str>,
+    current_created_at: Option<&str>,
+) -> bool {
+    if let (Some(candidate_sha), Some(current_sha)) = (candidate_sha, current_sha) {
+        // The rolling dev release is published only from the verified current
+        // main tip. Git author/committer timestamps are not monotonic along
+        // history, so a different authoritative SHA is the newer build even
+        // when its timestamp sorts earlier.
+        return !candidate_sha
+            .trim()
+            .eq_ignore_ascii_case(current_sha.trim());
+    }
     match current_created_at {
-        Some(current_created_at) => candidate_created_at > current_created_at.as_str(),
+        Some(current_created_at) => candidate_created_at > current_created_at,
         None => true,
     }
 }
@@ -878,6 +1014,39 @@ fn update_supported_platform() -> bool {
     cfg!(all(windows, target_arch = "x86_64"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfUpdateCapability {
+    SupportedWritable,
+    RequiresElevation,
+    TargetDirectoryNotWritable,
+    UnsupportedPlatform,
+    UnpackagedInstall,
+}
+
+impl SelfUpdateCapability {
+    fn supported(self) -> bool {
+        self == Self::SupportedWritable
+    }
+
+    fn unavailable_message(self) -> &'static str {
+        match self {
+            Self::SupportedWritable => "Automatic self-update is available.",
+            Self::RequiresElevation => {
+                "This Sorotte GUI install requires elevation to update. Automatic elevation is disabled until releases have a pinned signing trust anchor; install the release manually."
+            }
+            Self::TargetDirectoryNotWritable => {
+                "This Sorotte GUI install directory is not writable, so automatic self-update is unavailable. Install the release manually."
+            }
+            Self::UnsupportedPlatform => {
+                "GitHub self-update is currently supported for Windows x64 GUI packages only."
+            }
+            Self::UnpackagedInstall => {
+                "GitHub self-update is only available for packaged Sorotte GUI installs."
+            }
+        }
+    }
+}
+
 fn current_install_marker_path() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|path| {
         path.parent()
@@ -892,12 +1061,115 @@ fn current_install_marker() -> Option<GuiInstallMarker> {
 }
 
 fn self_update_supported_current_install() -> bool {
-    if !update_supported_platform() {
-        return false;
+    self_update_capability_current_install().supported()
+}
+
+fn self_update_capability_current_install() -> SelfUpdateCapability {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return SelfUpdateCapability::UnpackagedInstall;
+    };
+    #[cfg(windows)]
+    let requires_elevation = current_exe
+        .parent()
+        .is_some_and(path_requires_update_elevation);
+    #[cfg(not(windows))]
+    let requires_elevation = false;
+    self_update_capability_for_install(
+        &current_exe,
+        update_supported_platform(),
+        requires_elevation,
+    )
+}
+
+fn self_update_capability_for_install(
+    current_exe: &Path,
+    platform_supported: bool,
+    requires_elevation: bool,
+) -> SelfUpdateCapability {
+    self_update_capability_for_install_with_probe(
+        current_exe,
+        platform_supported,
+        requires_elevation,
+        update_target_directory_is_writable,
+    )
+}
+
+fn self_update_capability_for_install_with_probe<F>(
+    current_exe: &Path,
+    platform_supported: bool,
+    requires_elevation: bool,
+    writable_probe: F,
+) -> SelfUpdateCapability
+where
+    F: FnOnce(&Path) -> bool,
+{
+    if !platform_supported {
+        return SelfUpdateCapability::UnsupportedPlatform;
     }
-    current_install_marker_path()
-        .map(|path| path.is_file())
-        .unwrap_or(false)
+    let Some(target_dir) = current_exe.parent() else {
+        return SelfUpdateCapability::UnpackagedInstall;
+    };
+    if !target_dir.join(SOROTTE_GUI_INSTALL_MARKER).is_file() {
+        return SelfUpdateCapability::UnpackagedInstall;
+    }
+    if requires_elevation {
+        return SelfUpdateCapability::RequiresElevation;
+    }
+    if !writable_probe(target_dir) {
+        return SelfUpdateCapability::TargetDirectoryNotWritable;
+    }
+    SelfUpdateCapability::SupportedWritable
+}
+
+fn update_target_directory_is_writable(target_dir: &Path) -> bool {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let probe = target_dir.join(format!(
+        ".sorotte-update-write-probe-{}-{nonce}",
+        std::process::id(),
+    ));
+    let directory_probe_succeeded = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(probe).is_ok()
+        }
+        Err(_) => false,
+    };
+    directory_probe_succeeded
+        && [
+            SOROTTE_GUI_EXECUTABLE,
+            SOROTTE_GUI_UPDATER_EXECUTABLE,
+            SOROTTE_GUI_INSTALL_MARKER,
+        ]
+        .iter()
+        .all(|name| update_target_file_is_replaceable(&target_dir.join(name)))
+}
+
+#[cfg(windows)]
+fn update_target_file_is_replaceable(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    const DELETE_ACCESS: u32 = 0x0001_0000;
+
+    fs::OpenOptions::new()
+        .access_mode(DELETE_ACCESS)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+fn update_target_file_is_replaceable(path: &Path) -> bool {
+    fs::OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn github_update_response_override_result(
@@ -991,14 +1263,9 @@ fn download_and_stage_update_inner(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,
 ) -> Result<StagedUpdate, String> {
-    if !update_supported_platform() {
-        return Err("Self-update is only supported for Windows x64 GUI packages.".to_owned());
-    }
-    if !self_update_supported_current_install() {
-        return Err(
-            "This Sorotte GUI build is not a packaged install; update checks are allowed, but self-replacement is disabled."
-                .to_owned(),
-        );
+    let capability = self_update_capability_current_install();
+    if !capability.supported() {
+        return Err(capability.unavailable_message().to_owned());
     }
     let Some(gui_config_root) = gui_config_root else {
         return Err(
@@ -1049,6 +1316,18 @@ fn cleanup_updates_root_entries(
     updates_root: &Path,
     active_stage_name: Option<&std::ffi::OsStr>,
 ) -> Result<(), String> {
+    let root_metadata = fs::symlink_metadata(updates_root).map_err(|error| {
+        format!(
+            "failed to inspect update staging directory {}: {error}",
+            updates_root.display()
+        )
+    })?;
+    if metadata_is_link_or_reparse(&root_metadata) || !root_metadata.is_dir() {
+        return Err(format!(
+            "update staging path is not a regular directory: {}",
+            updates_root.display()
+        ));
+    }
     for entry in fs::read_dir(updates_root).map_err(|error| {
         format!(
             "failed to read update staging directory {}: {error}",
@@ -1066,13 +1345,19 @@ fn cleanup_updates_root_entries(
             continue;
         }
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
             format!(
                 "failed to inspect stale update staging entry {}: {error}",
                 path.display()
             )
         })?;
-        remove_update_staging_entry(&path, file_type)?;
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(format!(
+                "refusing to remove stale update staging link or reparse point: {}",
+                path.display()
+            ));
+        }
+        remove_update_staging_entry(&path, metadata.file_type())?;
     }
     Ok(())
 }
@@ -1161,7 +1446,16 @@ fn stage_update_payload(
             backup_dir.display()
         )
     })?;
-    let updater_path = source_dir.join(SOROTTE_GUI_UPDATER_EXECUTABLE);
+    let updater_path = current_exe
+        .parent()
+        .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?
+        .join(SOROTTE_GUI_UPDATER_EXECUTABLE);
+    if !updater_path.is_file() {
+        return Err(format!(
+            "installed update helper is missing: {}",
+            updater_path.display()
+        ));
+    }
     let log_path = stage_dir.join("sorotte-gui-updater.log");
     Ok(StagedUpdate {
         candidate: staged_candidate,
@@ -1200,7 +1494,7 @@ fn validate_sha256_bytes(bytes: &[u8], expected: &str) -> Result<(), String> {
     validate_sha256_hex(expected)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = lowercase_hex(hasher.finalize());
     if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())
     } else {
@@ -1314,14 +1608,9 @@ fn validate_extracted_update_payload(source_dir: &Path) -> Result<(), String> {
 }
 
 fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String> {
-    if !update_supported_platform() {
-        return Err("Self-update is only supported for Windows x64 GUI packages.".to_owned());
-    }
-    if !self_update_supported_current_install() {
-        return Err(
-            "This Sorotte GUI build is not a packaged install; self-replacement is disabled."
-                .to_owned(),
-        );
+    let capability = self_update_capability_current_install();
+    if !capability.supported() {
+        return Err(capability.unavailable_message().to_owned());
     }
     let current_pid = std::process::id().to_string();
     let target_exe = PathBuf::from(&staged_update.target_exe_path);
@@ -1329,14 +1618,6 @@ fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String
         .parent()
         .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?;
     let helper_args = staged_update_helper_args(staged_update, target_dir, &current_pid);
-    #[cfg(windows)]
-    if path_requires_update_elevation(target_dir) {
-        return launch_staged_update_elevated(
-            Path::new(&staged_update.updater_path),
-            target_dir,
-            &helper_args,
-        );
-    }
     let mut command = Command::new(&staged_update.updater_path);
     command.args(&helper_args);
     configure_gui_child_process(&mut command);
@@ -1354,14 +1635,14 @@ fn staged_update_helper_args(
     let mut args = vec![
         "--pid".to_owned(),
         current_pid.to_owned(),
-        "--source-dir".to_owned(),
-        staged_update.source_dir.clone(),
+        "--package".to_owned(),
+        staged_update.package_path.clone(),
+        "--package-sha256".to_owned(),
+        staged_update.candidate.sha256.clone(),
         "--target-dir".to_owned(),
         target_dir.display().to_string(),
         "--target-exe".to_owned(),
         SOROTTE_GUI_EXECUTABLE.to_owned(),
-        "--backup-dir".to_owned(),
-        staged_update.backup_dir.clone(),
         "--log".to_owned(),
         staged_update.log_path.clone(),
     ];
@@ -1411,104 +1692,6 @@ fn normalized_windows_path_text(path: &Path) -> String {
         text = rest.to_owned();
     }
     text.trim_end_matches('\\').to_ascii_lowercase()
-}
-
-#[cfg(windows)]
-fn launch_staged_update_elevated(
-    updater_path: &Path,
-    working_dir: &Path,
-    args: &[String],
-) -> Result<(), String> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::UI::Shell::{
-        SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-
-    fn wide_null(value: &OsStr) -> Vec<u16> {
-        value.encode_wide().chain(std::iter::once(0)).collect()
-    }
-
-    let verb = wide_null(OsStr::new("runas"));
-    let file = wide_null(updater_path.as_os_str());
-    let parameters = windows_command_line_arguments(args);
-    let parameters = wide_null(OsStr::new(&parameters));
-    let directory = wide_null(working_dir.as_os_str());
-    // SAFETY: SHELLEXECUTEINFOW is a plain Win32 struct that is initialized before the API call.
-    let mut execute_info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    execute_info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    execute_info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    execute_info.lpVerb = verb.as_ptr();
-    execute_info.lpFile = file.as_ptr();
-    execute_info.lpParameters = parameters.as_ptr();
-    execute_info.lpDirectory = directory.as_ptr();
-    execute_info.nShow = SW_HIDE;
-
-    // SAFETY: All string pointers refer to null-terminated buffers that outlive the call.
-    let launched = unsafe { ShellExecuteExW(&mut execute_info) };
-    if launched == 0 {
-        return Err(format!(
-            "failed to launch elevated update helper: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    if !execute_info.hProcess.is_null() {
-        // SAFETY: hProcess is returned by ShellExecuteExW with SEE_MASK_NOCLOSEPROCESS.
-        unsafe {
-            CloseHandle(execute_info.hProcess);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn windows_command_line_arguments(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| quote_windows_command_arg(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-#[cfg(windows)]
-fn quote_windows_command_arg(arg: &str) -> String {
-    if arg.is_empty() {
-        return "\"\"".to_owned();
-    }
-    if !arg
-        .chars()
-        .any(|character| character.is_whitespace() || matches!(character, '"' | '\t' | '\n' | '\r'))
-    {
-        return arg.to_owned();
-    }
-    let mut quoted = String::from("\"");
-    let mut pending_backslashes = 0;
-    for character in arg.chars() {
-        match character {
-            '\\' => pending_backslashes += 1,
-            '"' => {
-                for _ in 0..(pending_backslashes * 2 + 1) {
-                    quoted.push('\\');
-                }
-                quoted.push('"');
-                pending_backslashes = 0;
-            }
-            _ => {
-                for _ in 0..pending_backslashes {
-                    quoted.push('\\');
-                }
-                pending_backslashes = 0;
-                quoted.push(character);
-            }
-        }
-    }
-    for _ in 0..(pending_backslashes * 2) {
-        quoted.push('\\');
-    }
-    quoted.push('"');
-    quoted
 }
 
 fn sanitize_stage_name(value: &str) -> String {
@@ -1915,31 +2098,31 @@ fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
-    use std::path::Path;
     use std::{
         fs,
         io::{Read, Write},
         net::TcpListener,
-        path::PathBuf,
+        path::{Path, PathBuf},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::{
-        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckStatus,
-        StoredClientSettingsMvp, UpdateChannel, UpdateManifest, check_for_github_update,
-        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
-        default_update_check_message, fetch_public_servers_from_url,
-        fetch_update_check_result_from_url, parse_public_server_response,
+        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckResult,
+        LegacyUpdateCheckStatus, SOROTTE_GUI_EXECUTABLE, SOROTTE_GUI_INSTALL_MARKER,
+        SOROTTE_GUI_TARGET, SelfUpdateCapability, StagedUpdate, StoredClientSettingsMvp,
+        UpdateCandidate, UpdateCandidateSource, UpdateChannel, UpdateManifest,
+        apply_self_update_capability, cleanup_failed_stage_dir, cleanup_update_staging_root,
+        cleanup_updates_root, default_update_check_message, fetch_public_servers_from_url,
+        fetch_update_check_result_from_url, normal_package_basename, parse_public_server_response,
         parse_update_check_response, parse_version, safe_zip_relative_path,
         sanitize_wordpress_public_server_response, sanitize_wordpress_update_check_response,
         select_newest_dev_artifact, select_stable_gui_release_asset,
-        self_update_supported_current_install, should_run_automatic_update_check,
-        update_supported_platform, validate_manifest, validate_sha256_bytes,
+        self_update_capability_for_install_with_probe, should_run_automatic_update_check,
+        staged_update_helper_args, validate_manifest, validate_sha256_bytes,
     };
     #[cfg(windows)]
-    use super::{path_is_equal_or_child_case_insensitive, quote_windows_command_arg};
+    use super::{path_is_equal_or_child_case_insensitive, pending_update_recovery_args};
 
     fn spawn_single_request_server(body: &'static str) -> (String, thread::JoinHandle<String>) {
         let listener =
@@ -2062,20 +2245,70 @@ mod tests {
     }
 
     #[test]
-    fn update_check_skips_github_for_unpackaged_local_builds() {
-        let result = check_for_github_update(Some("en"), true, Some("dev"))
-            .expect("local update check should return an immediate result");
+    fn protected_install_preserves_discovered_update_and_release_url() {
+        let candidate = UpdateCandidate {
+            channel: UpdateChannel::Stable,
+            version: "9.9.9".to_owned(),
+            git_sha: Some("abcdef123456".to_owned()),
+            created_at_utc: "2026-07-23T00:00:00Z".to_owned(),
+            target: SOROTTE_GUI_TARGET.to_owned(),
+            package: "sorotte-gui-9.9.9-windows-x86_64.zip".to_owned(),
+            sha256: "a".repeat(64),
+            download_url: "https://example.invalid/sorotte.zip".to_owned(),
+            details_url: Some("https://example.invalid/releases/9.9.9".to_owned()),
+            source: UpdateCandidateSource::ReleaseAsset,
+        };
+        let result = LegacyUpdateCheckResult {
+            status: LegacyUpdateCheckStatus::UpdateAvailable,
+            message: candidate.summary(),
+            url: candidate.details_url.clone(),
+            candidate: Some(candidate.clone()),
+            self_update_supported: true,
+            public_servers: None,
+            checked_at_utc: String::new(),
+            user_initiated: true,
+        };
 
-        if update_supported_platform() && !self_update_supported_current_install() {
-            assert_eq!(result.status, LegacyUpdateCheckStatus::UpToDate);
-            assert_eq!(
-                result.message,
-                "GitHub self-update is only available for packaged Sorotte GUI installs."
-            );
-            assert_eq!(result.url, None);
-            assert_eq!(result.candidate, None);
-            assert!(!result.self_update_supported);
-        }
+        let protected =
+            apply_self_update_capability(result, SelfUpdateCapability::RequiresElevation);
+
+        assert_eq!(protected.status, LegacyUpdateCheckStatus::UpdateAvailable);
+        assert_eq!(protected.url, candidate.details_url);
+        assert_eq!(protected.candidate, Some(candidate));
+        assert!(!protected.self_update_supported);
+        assert!(protected.message.contains("requires elevation"));
+    }
+
+    #[test]
+    fn update_capability_rejects_protected_and_unwritable_installs_before_download() {
+        let root = temp_update_root("capability");
+        let current_exe = root.join(SOROTTE_GUI_EXECUTABLE);
+
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, false, false, |_| true,),
+            SelfUpdateCapability::UnsupportedPlatform
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| true,),
+            SelfUpdateCapability::UnpackagedInstall
+        );
+
+        fs::write(root.join(SOROTTE_GUI_INSTALL_MARKER), b"{}")
+            .expect("packaged-install marker should be written");
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, true, |_| true,),
+            SelfUpdateCapability::RequiresElevation
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| false,),
+            SelfUpdateCapability::TargetDirectoryNotWritable
+        );
+        assert_eq!(
+            self_update_capability_for_install_with_probe(&current_exe, true, false, |_| true,),
+            SelfUpdateCapability::SupportedWritable
+        );
+
+        fs::remove_dir_all(root).expect("capability test root should be removed");
     }
 
     #[test]
@@ -2104,6 +2337,52 @@ mod tests {
             .expect_err("wrong target should fail validation");
 
         assert!(error.contains("target"));
+    }
+
+    #[test]
+    fn update_manifest_package_must_be_one_normal_basename() {
+        assert!(normal_package_basename(
+            "sorotte-gui-0.2.0-windows-x86_64.zip"
+        ));
+        for unsafe_name in [
+            ".",
+            "..",
+            "/sorotte-gui-0.2.0-windows-x86_64.zip",
+            r"C:\sorotte-gui-0.2.0-windows-x86_64.zip",
+            "sorotte-gui-../payload-windows-x86_64.zip",
+            r"sorotte-gui-..\payload-windows-x86_64.zip",
+            "sorotte-gui-payload:stream-windows-x86_64.zip",
+        ] {
+            assert!(
+                !normal_package_basename(unsafe_name),
+                "unsafe package name should be rejected: {unsafe_name:?}"
+            );
+        }
+
+        let base = UpdateManifest {
+            schema: "sorotte-gui-update-manifest-v1".to_owned(),
+            app: "sorotte-gui".to_owned(),
+            channel: UpdateChannel::Stable,
+            version: "0.2.0".to_owned(),
+            git_sha: Some("abcdef".to_owned()),
+            created_at_utc: "2026-05-20T00:00:00Z".to_owned(),
+            target: SOROTTE_GUI_TARGET.to_owned(),
+            package: String::new(),
+            sha256: "a".repeat(64),
+        };
+        for unsafe_name in [
+            "sorotte-gui-../payload-windows-x86_64.zip",
+            r"sorotte-gui-..\payload-windows-x86_64.zip",
+            "sorotte-gui-payload:stream-windows-x86_64.zip",
+        ] {
+            let manifest = UpdateManifest {
+                package: unsafe_name.to_owned(),
+                ..base.clone()
+            };
+            let error = validate_manifest(&manifest, UpdateChannel::Stable)
+                .expect_err("manifest traversal package must fail validation");
+            assert!(error.contains("unexpected name"));
+        }
     }
 
     #[test]
@@ -2152,6 +2431,61 @@ mod tests {
     }
 
     #[test]
+    fn update_helper_receives_original_package_and_authenticated_digest() {
+        let digest = "a".repeat(64);
+        let staged = StagedUpdate {
+            candidate: UpdateCandidate {
+                channel: UpdateChannel::Stable,
+                version: "0.2.4".to_owned(),
+                git_sha: None,
+                created_at_utc: "2026-07-22T00:00:00Z".to_owned(),
+                target: SOROTTE_GUI_TARGET.to_owned(),
+                package: "sorotte-gui-0.2.4-windows-x86_64.zip".to_owned(),
+                sha256: digest.clone(),
+                download_url: "https://example.invalid/update.zip".to_owned(),
+                details_url: None,
+                source: UpdateCandidateSource::ReleaseAsset,
+            },
+            package_path: "C:/updates/original.zip".to_owned(),
+            source_dir: "C:/updates/mutable-extracted".to_owned(),
+            updater_path: "C:/Sorotte/sorotte-gui-updater.exe".to_owned(),
+            target_exe_path: "C:/Sorotte/sorotte-gui.exe".to_owned(),
+            backup_dir: "C:/updates/mutable-backup".to_owned(),
+            log_path: "C:/updates/update.log".to_owned(),
+            restart: true,
+        };
+
+        let args = staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123");
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--package", staged.package_path.as_str()])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--package-sha256", digest.as_str()])
+        );
+        assert!(!args.iter().any(|arg| arg == "--source-dir"));
+        assert!(!args.iter().any(|arg| arg == "--backup-dir"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_journal_reentry_uses_recovery_only_updater_protocol() {
+        let args = pending_update_recovery_args(
+            Path::new("C:/Sorotte"),
+            "123",
+            Path::new("C:/Temp/recovery.log"),
+        );
+
+        assert!(args.iter().any(|arg| arg == "--recover"));
+        assert!(args.iter().any(|arg| arg == "--restart"));
+        assert!(args.windows(2).any(|pair| pair == ["--pid", "123"]));
+        assert!(!args.iter().any(|arg| arg == "--package"));
+        assert!(!args.iter().any(|arg| arg == "--source-dir"));
+    }
+
+    #[test]
     fn update_staging_cleanup_removes_stale_entries_and_keeps_active_stage() {
         let updates_root = temp_update_root("staging-cleanup");
         let active_stage_dir = updates_root.join("stable-2026-05-22T00-00-00Z");
@@ -2194,6 +2528,40 @@ mod tests {
 
         assert!(!updates_root.exists());
         fs::remove_dir_all(&config_root).expect("test config root should be removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn update_staging_root_cleanup_rejects_updates_junction_without_deleting_target() {
+        let root = temp_update_root("staging-root-junction");
+        let config_root = root.join("config");
+        let outside_root = root.join("outside");
+        fs::create_dir_all(&config_root).expect("config root should be created");
+        fs::create_dir_all(&outside_root).expect("outside root should be created");
+        let canary = outside_root.join("must-not-be-deleted.txt");
+        fs::write(&canary, b"outside").expect("outside canary should be written");
+        let updates_root = config_root.join("updates");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&updates_root)
+            .arg(&outside_root)
+            .status()
+            .expect("junction command should start");
+        assert!(status.success(), "test junction should be created");
+
+        let result = cleanup_update_staging_root(Some(&config_root));
+
+        assert!(
+            canary.is_file(),
+            "startup cleanup must not traverse the updates junction and delete external contents; got {result:?}"
+        );
+        assert!(
+            result.is_err(),
+            "startup cleanup must reject an updates junction; got {result:?}"
+        );
+
+        let _ = fs::remove_dir(&updates_root);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2239,24 +2607,6 @@ mod tests {
             Path::new(r"C:\Program Files Other\Sorotte"),
             Path::new(r"C:\Program Files")
         ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_update_helper_arguments_quote_spaced_paths() {
-        assert_eq!(quote_windows_command_arg("plain"), "plain");
-        assert_eq!(
-            quote_windows_command_arg(r"C:\Program Files\Sorotte"),
-            "\"C:\\Program Files\\Sorotte\""
-        );
-        assert_eq!(
-            quote_windows_command_arg(r#"say "hi""#),
-            "\"say \\\"hi\\\"\""
-        );
-        assert_eq!(
-            quote_windows_command_arg(r"C:\Program Files\Sorotte\"),
-            "\"C:\\Program Files\\Sorotte\\\\\""
-        );
     }
 
     #[test]
@@ -2414,6 +2764,40 @@ mod tests {
                 ..StoredClientSettingsMvp::default()
             }),
             now,
+        ));
+    }
+
+    #[test]
+    fn dev_update_order_uses_authoritative_sha_before_non_monotonic_git_timestamp() {
+        assert!(!super::dev_candidate_is_newer(
+            Some("same-main-tip"),
+            "2026-07-28T13:00:00Z",
+            Some("same-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(!super::dev_candidate_is_newer(
+            Some("ABCDEF"),
+            "2026-07-28T13:00:00Z",
+            Some("abcdef"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(super::dev_candidate_is_newer(
+            Some("new-main-tip"),
+            "2026-07-28T11:00:00Z",
+            Some("old-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(!super::dev_candidate_is_newer(
+            None,
+            "2026-07-28T11:00:00Z",
+            Some("old-main-tip"),
+            Some("2026-07-28T12:00:00Z"),
+        ));
+        assert!(super::dev_candidate_is_newer(
+            Some("new-main-tip"),
+            "2026-07-28T13:00:00Z",
+            None,
+            Some("2026-07-28T12:00:00Z"),
         ));
     }
 }

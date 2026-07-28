@@ -155,6 +155,7 @@ async fn connected_client_session_switches_and_identifies_on_new_controlled_room
 
 #[tokio::test]
 async fn client_network_loop_reconnects_after_transport_close() {
+    let _env = TestEnvGuard::lock(&CLIENT_CONNECTION_PHASE_ENV_LOCK);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -168,8 +169,25 @@ async fn client_network_loop_reconnects_after_transport_close() {
                 .accept()
                 .await
                 .expect("first accept should succeed");
-            let (reader_1, _writer_1) = socket_1.into_split();
+            let (reader_1, mut writer_1) = socket_1.into_split();
             let mut first_lines = BufReader::new(reader_1).lines();
+            let first_tls_request = first_lines
+                .next_line()
+                .await
+                .expect("first TLS request read should succeed")
+                .expect("first TLS request should be present");
+            assert!(
+                first_tls_request.contains(r#""TLS":{"startTLS":"send"}"#),
+                "first connection should request STARTTLS before Hello"
+            );
+            writer_1
+                .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
+                .await
+                .expect("first STARTTLS decline should write");
+            writer_1
+                .flush()
+                .await
+                .expect("first STARTTLS decline should flush");
             let first_hello = first_lines
                 .next_line()
                 .await
@@ -187,6 +205,23 @@ async fn client_network_loop_reconnects_after_transport_close() {
             .expect("second accept should succeed");
         let (reader_2, mut writer_2) = socket_2.into_split();
         let mut second_lines = BufReader::new(reader_2).lines();
+        let second_tls_request = second_lines
+            .next_line()
+            .await
+            .expect("second TLS request read should succeed")
+            .expect("second TLS request should be present");
+        assert!(
+            second_tls_request.contains(r#""TLS":{"startTLS":"send"}"#),
+            "second connection should request STARTTLS before Hello"
+        );
+        writer_2
+            .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
+            .await
+            .expect("second STARTTLS decline should write");
+        writer_2
+            .flush()
+            .await
+            .expect("second STARTTLS decline should flush");
         let second_hello = second_lines
             .next_line()
             .await
@@ -265,4 +300,89 @@ async fn client_network_loop_reconnects_after_transport_close() {
         .await
         .expect("network loop should reconnect and finish");
     server_task.await.expect("server task join should succeed");
+}
+
+#[tokio::test]
+async fn client_network_loop_retries_starttls_timeout_before_exhaustion() {
+    let timeout_key = "SOROTTE_CLIENT_STARTTLS_TIMEOUT_SECONDS";
+    let previous_timeout = std::env::var_os(timeout_key);
+    let env = TestEnvGuard::lock(&CLIENT_CONNECTION_PHASE_ENV_LOCK);
+    env.set_var(timeout_key, "0.025");
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("STARTTLS timeout listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("STARTTLS timeout listener should expose its address");
+    let server_task = tokio::spawn(async move {
+        let mut observed_tls_requests = Vec::new();
+        for attempt in 1..=2 {
+            let (socket, _) = listener.accept().await.unwrap_or_else(|error| {
+                panic!("STARTTLS timeout attempt {attempt} should accept: {error}")
+            });
+            let (reader, _writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let tls_request = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("STARTTLS timeout attempt {attempt} should receive a request")
+                })
+                .unwrap_or_else(|error| {
+                    panic!("STARTTLS timeout attempt {attempt} request should read: {error}")
+                })
+                .unwrap_or_else(|| {
+                    panic!("STARTTLS timeout attempt {attempt} request should exist")
+                });
+            observed_tls_requests.push(tls_request);
+
+            let application_line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .unwrap_or_else(|_| panic!("STARTTLS timeout attempt {attempt} should close"))
+                .unwrap_or_else(|error| {
+                    panic!("STARTTLS timeout attempt {attempt} close should read: {error}")
+                });
+            assert_eq!(
+                application_line, None,
+                "credentials/Hello must not be sent while STARTTLS is unresolved"
+            );
+        }
+        observed_tls_requests
+    });
+
+    let config = ClientLoopConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        server_password: Some("saved-secret".into()),
+        max_retries: 0,
+        ..test_client_loop_config()
+    };
+    let result = tokio::time::timeout(Duration::from_secs(3), run_client_network_loop(&config))
+        .await
+        .expect("STARTTLS timeout retries should remain bounded")
+        .expect_err("required STARTTLS timeouts should exhaust reconnects");
+    let observed_tls_requests = tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("server should observe the retry")
+        .expect("server task should complete without panic");
+
+    match previous_timeout {
+        Some(value) => env.set_var(timeout_key, value),
+        None => env.remove_var(timeout_key),
+    }
+
+    assert!(
+        result.to_string().contains("STARTTLS response timed out"),
+        "the final timeout should be preserved after reconnect exhaustion: {result:#}"
+    );
+    assert_eq!(
+        observed_tls_requests.len(),
+        2,
+        "one initial attempt plus one reconnect should reach the server"
+    );
+    assert!(
+        observed_tls_requests
+            .iter()
+            .all(|line| line.contains(r#""TLS":{"startTLS":"send"}"#))
+    );
 }

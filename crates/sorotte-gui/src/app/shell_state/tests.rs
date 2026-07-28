@@ -219,6 +219,53 @@ fn browser_stream_target_kind_classifies_direct_and_extractor_urls() {
 }
 
 #[test]
+fn browser_stream_target_kind_uses_hardened_room_url_trust_matching() {
+    let trusted_domains = vec![
+        "cdn.example.com/videos".to_owned(),
+        "BÜCHER.example/safe".to_owned(),
+        "example.test:8443/media".to_owned(),
+        "[2001:db8::1]/video".to_owned(),
+    ];
+    let trust_policy = Some((true, trusted_domains.as_slice()));
+
+    for trusted in [
+        "https://cdn.example.com/videos/movie.mkv",
+        "https://xn--bcher-kva.example/safe/movie.mkv",
+        "https://example.test:8443/media/movie.mkv",
+        "https://[2001:db8::1]/video/movie.mkv",
+    ] {
+        assert_eq!(
+            browser_stream_target_kind(trusted, trust_policy),
+            GuiStreamTargetKind::DirectMediaUrl,
+            "canonical trusted URL should remain loadable: {trusted}"
+        );
+    }
+
+    for untrusted in [
+        "https://cdn.example.com/videos-evil/movie.mkv",
+        "https://cdn.example.com//videos/movie.mkv",
+        "https://example.test:9443/media/movie.mkv",
+        "https://[2001:db8::2]/video/movie.mkv",
+        "ftp://cdn.example.com/videos/movie.mkv",
+    ] {
+        assert_eq!(
+            browser_stream_target_kind(untrusted, trust_policy),
+            GuiStreamTargetKind::UntrustedUrl,
+            "non-canonical or non-web URL must fail room-media preflight: {untrusted}"
+        );
+    }
+
+    assert_eq!(
+        browser_stream_target_kind(
+            "custom://cdn.example.com/videos/movie.mkv",
+            Some((false, &[])),
+        ),
+        GuiStreamTargetKind::UntrustedUrl,
+        "disabling the domain allowlist must not enable unsupported URL schemes"
+    );
+}
+
+#[test]
 fn gui_shell_app_state_defaults_to_setup_connection() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 

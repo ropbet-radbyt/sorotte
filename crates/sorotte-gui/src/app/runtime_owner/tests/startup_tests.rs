@@ -242,9 +242,10 @@ fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_op
     player
         .set_position(42.0)
         .expect("seek must remain available");
-    assert!(
-        player.take_transport_telemetry_update().is_some(),
-        "transport telemetry must remain available"
+    assert_eq!(
+        player.take_transport_telemetry_update(),
+        None,
+        "an accepted load without start-file must not fabricate a physical transport projection"
     );
     let _ = player.take_playback_telemetry_update();
     let retained_player_address = match player {

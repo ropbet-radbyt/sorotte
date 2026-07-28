@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::client_effect_player_error;
+use sorotte_player_api::PlayerCommand;
 
 impl<P, C> ClientRuntime<P, C>
 where
@@ -10,6 +11,7 @@ where
         self.control.begin_protocol_connection_generation();
         self.playback_coordination
             .begin_protocol_connection_generation(&self.session);
+        self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();
     }
 
     pub fn run_readiness_unpause_attempt(
@@ -77,6 +79,13 @@ where
     }
 
     pub fn run_reconnect_retry(&mut self, retries: u32) -> Result<(), PlayerError> {
+        // The transport reconnect keeps the same player process. Neutralize a
+        // Sorotte-owned desync correction before the session reset forgets
+        // that ownership. A player error must not prevent the network
+        // reconnect from being scheduled, so retain a separate obligation and
+        // retry it on later reconnect/telemetry boundaries.
+        self.pending_reconnect_rate_reset |= self.session.model.playback.speed_changed;
+        self.retry_pending_reconnect_rate_reset(true);
         self.begin_protocol_connection_generation();
         let actions = self.session.runtime_actions_for_reconnect_retry(retries);
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -146,10 +155,40 @@ where
     }
 
     pub fn run_reconnect_transition_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.retry_pending_reconnect_rate_reset(false);
         let actions = self
             .session
             .runtime_actions_for_reconnect_transition_if_needed();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+    }
+
+    fn retry_pending_reconnect_rate_reset(&mut self, resetting_disconnected_session: bool) {
+        if self.pending_reconnect_rate_reset
+            && !resetting_disconnected_session
+            && self.session.model.playback.speed_changed
+        {
+            // A newly connected session has taken speed ownership. Its
+            // correction supersedes the retained cleanup obligation from the
+            // disconnected session and must not be overwritten by it.
+            self.pending_reconnect_rate_reset = false;
+            return;
+        }
+        if self.pending_reconnect_rate_reset
+            && self
+                .player
+                .execute(PlayerCommand::SetPlaybackRate(NORMAL_PLAYBACK_RATE))
+                .is_ok()
+        {
+            self.pending_reconnect_rate_reset = false;
+        }
+    }
+
+    pub(super) fn observe_pending_reconnect_rate_reset(&mut self, playback_rate: Option<f64>) {
+        if self.pending_reconnect_rate_reset
+            && playback_rate.is_some_and(|rate| (rate - NORMAL_PLAYBACK_RATE).abs() <= 0.001)
+        {
+            self.pending_reconnect_rate_reset = false;
+        }
     }
 
     pub fn run_reconnect_state_restore_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -242,7 +281,7 @@ where
 
         let actions = self
             .session
-            .runtime_actions_for_reconnect_state_restore_validation_if_needed();
+            .runtime_actions_for_reconnect_state_restore_validation_if_needed_at(now_seconds);
         if actions.is_empty() {
             return Ok(());
         }
@@ -482,7 +521,7 @@ where
             self.session.model.playback.behind_first_detected_at_seconds = None;
             return Ok(());
         }
-        let Some(local_position) = self.session.model.playback.local_position else {
+        let Some(local_position) = self.projected_local_position_at(now_seconds) else {
             return Ok(());
         };
         let local_position =
@@ -492,6 +531,7 @@ where
             return Ok(());
         };
 
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
             .runtime_actions_for_desync_correction_against_room_playstate(
@@ -502,7 +542,13 @@ where
                 dont_slow_down_with_me,
                 speed_supported,
             );
-        self.dispatch_runtime_actions_with_causal_tracking(&actions)
+        match self.dispatch_runtime_actions_with_causal_tracking(&actions) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.session.restore_local_action_state(session_snapshot);
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn desync_local_position_with_legacy_ping_forward_delay(

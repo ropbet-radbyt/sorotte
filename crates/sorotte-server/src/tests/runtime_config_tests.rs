@@ -124,11 +124,20 @@ fn motd_for_client_context_reports_python_template_errors() {
 }
 
 #[test]
-fn motd_for_client_context_reports_overlong_rendered_template() {
-    let template = "x".repeat(10_000);
+fn motd_for_client_context_accepts_the_exact_limit_and_rejects_only_overlong_values() {
+    for length in [9_999, 10_000] {
+        let template = "x".repeat(length);
+        assert_eq!(
+            super::motd_for_client_context("1.7.5", Some(&template), "", "alice", "room1"),
+            template,
+            "a MOTD of {length} characters should be accepted"
+        );
+    }
+
+    let template = "x".repeat(10_001);
     assert_eq!(
         super::motd_for_client_context("1.7.5", Some(&template), "", "alice", "room1"),
-        "Message of the Day is too long - maximum of 10000 chars, 10000 given."
+        "Message of the Day is too long - maximum of 10000 chars, 10001 given."
     );
 }
 
@@ -558,6 +567,39 @@ fn tls_send_dispatch_includes_transport_action_bundle() {
     assert!(
         runtime.drain_transport_actions().is_empty(),
         "dispatch helper should drain transport action queue"
+    );
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[test]
+fn start_tls_is_a_transport_boundary_for_a_bundled_hello() {
+    let cert_path = temporary_directory_path("tls-bundled-hello-boundary");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions(
+            "client-1",
+            r#"{"TLS":{"startTLS":"send"},"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("STARTTLS negotiation should be handled");
+
+    assert!(
+        has_start_tls_transport_action(&dispatch.transport_actions, "client-1"),
+        "the server should still authorize the transport upgrade"
+    );
+    assert!(
+        runtime.session("client-1").is_none(),
+        "application commands bundled after STARTTLS must not execute on the plaintext side of the transport boundary"
+    );
+    assert_eq!(
+        dispatch.outbound_lines.len(),
+        1,
+        "only the STARTTLS acknowledgement may be written before the connection is upgraded"
     );
 
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");

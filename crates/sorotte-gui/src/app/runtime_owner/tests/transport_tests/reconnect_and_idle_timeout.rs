@@ -1,8 +1,77 @@
 use super::*;
 use crate::app::runtime_stack::{
-    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
-    GuiTcpSessionTransportDriver,
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
 };
+
+struct ReceiptTimeRecordingSession {
+    received_at_seconds: Arc<Mutex<Vec<f64>>>,
+}
+
+impl GuiSessionRuntimeAdapter for ReceiptTimeRecordingSession {
+    fn apply_message_json_at(
+        &mut self,
+        _json_line: &str,
+        received_at_seconds: f64,
+    ) -> Result<(), String> {
+        self.received_at_seconds
+            .lock()
+            .expect("receipt-time log should not be poisoned")
+            .push(received_at_seconds);
+        Ok(())
+    }
+
+    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn connect_public_server(
+        &mut self,
+        _selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Ok(current_servers)
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn queued_inbound_line_keeps_network_receipt_time_until_owner_drain() {
+    let received_at_seconds = Arc::new(Mutex::new(Vec::new()));
+    let session_transport = GuiQueuedSessionTransportHandle::default();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(ReceiptTimeRecordingSession {
+            received_at_seconds: Arc::clone(&received_at_seconds),
+        }),
+    );
+    owner.session_transport = Some(session_transport.clone());
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    session_transport.push_inbound_protocol_line_at("{}", 123.5);
+    owner.drain_session_transport_inbound(&handle, &mut state);
+
+    assert_eq!(
+        *received_at_seconds
+            .lock()
+            .expect("receipt-time log should not be poisoned"),
+        vec![123.5]
+    );
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ScriptedProtocolWrite {
@@ -89,6 +158,52 @@ impl GuiSessionTransportDriver for ScriptedPartialWriteTransportDriver {
 #[derive(Default)]
 struct QueueInboundThenFailTransportDriver {
     failed: bool,
+}
+
+#[derive(Default)]
+struct QueueSecurityWarningTransportDriver {
+    warned: bool,
+}
+
+impl GuiSessionTransportDriver for QueueSecurityWarningTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if !self.warned {
+            self.warned = true;
+            transport.push_transport_warning(
+                "Security warning: the connection is continuing without encryption.",
+            );
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn gui_runtime_owner_surfaces_transport_security_warnings_visibly() {
+    let (owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let mut owner = owner
+        .with_session_transport_driver(Box::new(QueueSecurityWarningTransportDriver::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Warning,
+            message,
+        } if message.contains("continuing without encryption")
+    )));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::AnnounceSystemChatEvent(message)
+            if message.contains("continuing without encryption")
+    )));
 }
 
 impl GuiSessionTransportDriver for QueueInboundThenFailTransportDriver {
@@ -407,7 +522,12 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.player_paused = Some(false);
@@ -576,7 +696,12 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .with_client_core_chat_tcp_session_runtime(
+            "alice",
+            "room1",
+            address.to_string(),
+            TlsPolicy::PreferTls,
+        )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -772,9 +897,12 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
     let (owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
-    let driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&address.to_string())
-        .expect("idle-timeout test transport driver should connect")
-        .with_inbound_idle_timeout(Duration::from_millis(100));
+    let driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &address.to_string(),
+        TlsPolicy::PreferTls,
+    )
+    .expect("idle-timeout test transport driver should connect")
+    .with_inbound_idle_timeout(Duration::from_millis(100));
     let mut owner = owner.with_session_transport_driver(Box::new(driver));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();

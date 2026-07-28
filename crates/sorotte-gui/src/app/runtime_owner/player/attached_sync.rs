@@ -1,9 +1,87 @@
 use super::*;
 use crate::app::runtime_localization::localize_gui_runtime_message_legacy_compatible;
+use sorotte_client_core::DesyncCorrectionDispatchSnapshot;
 
 const ATTACHED_UNPAUSE_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn restore_desync_correction_after_failed_rate_dispatch(
+        &mut self,
+        rollback: DesyncCorrectionDispatchSnapshot,
+        action_description: &str,
+    ) {
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.restore_desync_correction_dispatch_snapshot(rollback)
+        {
+            eprintln!(
+                "warning: failed to roll back attached-player {action_description} playback-rate ownership: {error}"
+            );
+        }
+    }
+
+    fn apply_attached_player_playback_rate_action(
+        &mut self,
+        playback_rate: f64,
+        rollback: Option<DesyncCorrectionDispatchSnapshot>,
+        action_description: &str,
+    ) {
+        let slowdown_osd_message = self.active_session_settings.as_ref().and_then(|settings| {
+            settings
+                .config
+                .interface
+                .show_slowdown_osd
+                .then(|| {
+                    if playback_rate < 1.0 {
+                        Some("Slowing playback to synchronize with the room.")
+                    } else if (playback_rate - 1.0).abs() < f64::EPSILON {
+                        Some("Restoring normal playback speed.")
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+                .map(|message| {
+                    localize_gui_runtime_message_legacy_compatible(
+                        message,
+                        Some(settings.config.interface.language.as_str()),
+                    )
+                })
+        });
+        let Some(player) = self.player.as_mut() else {
+            if let Some(rollback) = rollback {
+                self.restore_desync_correction_after_failed_rate_dispatch(
+                    rollback,
+                    action_description,
+                );
+            }
+            return;
+        };
+        match player.set_playback_rate(playback_rate) {
+            Ok(()) => {
+                if let Some(message) = slowdown_osd_message.as_deref()
+                    && let Some(player) = player.as_mpv_mut()
+                    && let Err(error) = player
+                        .show_syncplay_legacy_message(message, LegacySyncplayOsdKind::Notification)
+                {
+                    eprintln!(
+                        "warning: failed to display attached-player slowdown via mpv OSD: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: failed to apply attached-player {action_description} playback-rate action: {error}"
+                );
+                if let Some(rollback) = rollback {
+                    self.restore_desync_correction_after_failed_rate_dispatch(
+                        rollback,
+                        action_description,
+                    );
+                }
+            }
+        }
+    }
+
     fn update_pending_attached_room_unpause_observation(
         &mut self,
         requested_paused_state: Option<bool>,
@@ -149,8 +227,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     let Some(player) = self.player.as_mut() else {
                         return state_changed;
                     };
-                    match player.set_position(sync_position_seconds) {
-                        Ok(()) => {
+                    match player.set_position_tracked(sync_position_seconds) {
+                        Ok(adapter_player_command_id) => {
+                            self.note_attached_runtime_position_dispatched(
+                                adapter_player_command_id,
+                                position_seconds,
+                                sync_position_seconds,
+                            );
                             self.player_position_seconds = Some(position_seconds);
                             state_changed = true;
                             if let Some(session) = self.session.as_mut()
@@ -171,58 +254,32 @@ impl GuiPersistedConfigRuntimeOwner {
                         }
                     }
                 }
-                GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
-                    let slowdown_osd_message =
-                        self.active_session_settings.as_ref().and_then(|settings| {
-                            settings
-                                .config
-                                .interface
-                                .show_slowdown_osd
-                                .then(|| {
-                                    if playback_rate < 1.0 {
-                                        Some("Slowing playback to synchronize with the room.")
-                                    } else if (playback_rate - 1.0).abs() < f64::EPSILON {
-                                        Some("Restoring normal playback speed.")
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .flatten()
-                                .map(|message| {
-                                    localize_gui_runtime_message_legacy_compatible(
-                                        message,
-                                        Some(settings.config.interface.language.as_str()),
-                                    )
-                                })
-                        });
-                    let Some(player) = self.player.as_mut() else {
-                        return state_changed;
-                    };
-                    match player.set_playback_rate(playback_rate) {
-                        Ok(()) => {
-                            if let Some(message) = slowdown_osd_message.as_deref()
-                                && let Some(player) = player.as_mpv_mut()
-                                && let Err(error) = player.show_syncplay_legacy_message(
-                                    message,
-                                    LegacySyncplayOsdKind::Notification,
-                                )
-                            {
-                                eprintln!(
-                                    "warning: failed to display attached-player slowdown via mpv OSD: {error}"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "warning: failed to apply attached-player {action_description} playback-rate action: {error}"
-                            );
-                        }
-                    }
-                }
+                GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => self
+                    .apply_attached_player_playback_rate_action(
+                        playback_rate,
+                        None,
+                        action_description,
+                    ),
+                GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate {
+                    playback_rate,
+                    rollback,
+                } => self.apply_attached_player_playback_rate_action(
+                    playback_rate,
+                    Some(rollback),
+                    action_description,
+                ),
                 GuiAttachedPlayerRuntimeAction::Coordinator {
                     command_id,
                     command,
                 } => {
+                    let coordinator_seek_target = match command {
+                        CoordinatorPlayerCommand::SetPosition(position_seconds) => {
+                            Some(position_seconds)
+                        }
+                        CoordinatorPlayerCommand::SetPaused(_)
+                        | CoordinatorPlayerCommand::Play(_)
+                        | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
+                    };
                     let pause_target = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => Some(paused),
                         CoordinatorPlayerCommand::Play(_) => Some(false),
@@ -250,17 +307,34 @@ impl GuiPersistedConfigRuntimeOwner {
                         }
                         return state_changed;
                     };
+                    let mut adapter_player_command_id = None;
+                    let mut coordinator_player_seek_target = None;
                     let result = match command {
                         CoordinatorPlayerCommand::SetPaused(paused) => player.set_paused(paused),
                         CoordinatorPlayerCommand::Play(_) => player.set_paused(false),
                         CoordinatorPlayerCommand::SetPosition(position_seconds) => {
-                            player.set_position((position_seconds + user_offset_seconds).max(0.0))
+                            let player_target = (position_seconds + user_offset_seconds).max(0.0);
+                            coordinator_player_seek_target = Some(player_target);
+                            player
+                                .set_position_tracked(player_target)
+                                .map(|command_id| {
+                                    adapter_player_command_id = command_id;
+                                })
                         }
                         CoordinatorPlayerCommand::SetPlaybackRate(rate) => {
                             player.set_playback_rate(rate)
                         }
                     };
                     let accepted = result.is_ok();
+                    if accepted && let Some(target_position_seconds) = coordinator_seek_target {
+                        self.note_attached_coordinator_seek_dispatched(
+                            command_id,
+                            adapter_player_command_id,
+                            target_position_seconds,
+                            coordinator_player_seek_target
+                                .expect("accepted coordinator seek has a player target"),
+                        );
+                    }
                     if accepted && let Some(paused) = pause_target {
                         self.note_local_attached_player_pause_command(paused);
                     }
@@ -483,8 +557,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.last_applied_attached_room_playstate = None;
                     return;
                 };
-                match player.set_position(sync_position_seconds) {
-                    Ok(()) => {
+                let position_result = player.set_position_tracked(sync_position_seconds);
+                match position_result {
+                    Ok(adapter_player_command_id) => {
+                        self.note_attached_runtime_position_dispatched(
+                            adapter_player_command_id,
+                            position_seconds,
+                            sync_position_seconds,
+                        );
                         self.player_position_seconds = Some(position_seconds);
                         state_changed = true;
                     }

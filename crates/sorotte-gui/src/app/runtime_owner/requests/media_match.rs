@@ -10,19 +10,18 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier, MediaMatchWireSignature,
-    decide_media_match_against_wire_signature,
+    MediaExtractionSettings, MediaIndexCommitError, MediaIndexCommitOutcome, MediaMatchDecision,
+    MediaMatchTier, MediaMatchWireSignature, decide_media_match_against_wire_signature,
 };
 
 use crate::app::media_match_support::{
-    discard_media_match_index_rebuild_backup, media_match_record_for_path,
-    media_match_sqlite_index_exists, media_match_tier_label,
-    prepare_media_match_index_rebuild_backup, restore_media_match_index_rebuild_backup,
+    media_match_record_for_path, media_match_sqlite_index_exists, media_match_tier_label,
+    prepare_media_match_index_rebuild_backup,
 };
 
 use super::super::{
     GuiMediaMatchBackgroundCancelDisposition, GuiMediaMatchBackgroundWorkerEvent,
-    GuiMediaMatchIndexRebuildBackup, GuiMediaMatchRemoteLookupResult, GuiMediaMatchToolWorkerEvent,
+    GuiMediaMatchRemoteLookupResult, GuiMediaMatchToolWorkerEvent,
 };
 use super::*;
 
@@ -475,18 +474,22 @@ impl GuiPersistedConfigRuntimeOwner {
         false
     }
 
-    fn finish_media_match_background_index_backup(
+    fn commit_media_match_background_index_backup(
         &mut self,
-        preserve_new_index: bool,
-    ) -> Result<(), String> {
+    ) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
+        let Some(backup) = self.media_match_background_index_backup.take() else {
+            return Ok(MediaIndexCommitOutcome::Activated {
+                cleanup_warning: None,
+            });
+        };
+        backup.commit()
+    }
+
+    fn abort_media_match_background_index_backup(&mut self) -> Result<(), String> {
         let Some(backup) = self.media_match_background_index_backup.take() else {
             return Ok(());
         };
-        if preserve_new_index {
-            discard_media_match_index_rebuild_backup(&backup.root)
-        } else {
-            restore_media_match_index_rebuild_backup(&backup.root, backup.backup_existed)
-        }
+        backup.abort()
     }
 
     fn publish_media_match_background_cancel_status(
@@ -495,19 +498,20 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         disposition: GuiMediaMatchBackgroundCancelDisposition,
     ) {
-        let restore_result = self.finish_media_match_background_index_backup(
-            disposition == GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
-        );
-        let status = match (disposition, restore_result) {
-            (GuiMediaMatchBackgroundCancelDisposition::RestorePrevious, Ok(())) => {
-                "canceled: previous index restored".to_owned()
-            }
-            (GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint, Ok(())) => {
-                "canceled: checkpoint kept".to_owned()
-            }
-            (_, Err(error)) => {
-                format!("canceled: restore failed: {error}")
-            }
+        let status = match disposition {
+            GuiMediaMatchBackgroundCancelDisposition::RestorePrevious => self
+                .abort_media_match_background_index_backup()
+                .map(|()| "canceled: previous index restored".to_owned())
+                .unwrap_or_else(|error| format!("canceled: restore failed: {error}")),
+            GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint => self
+                .commit_media_match_background_index_backup()
+                .map(|MediaIndexCommitOutcome::Activated { cleanup_warning }| {
+                    cleanup_warning.map_or_else(
+                        || "canceled: checkpoint kept".to_owned(),
+                        |warning| format!("canceled: checkpoint kept; cleanup warning: {warning}"),
+                    )
+                })
+                .unwrap_or_else(|error| format!("canceled: checkpoint failed: {error}")),
         };
         let mut snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
@@ -517,6 +521,36 @@ impl GuiPersistedConfigRuntimeOwner {
             handle,
             projected_state,
             vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+        );
+    }
+
+    fn publish_media_match_activation_failure(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        error: String,
+    ) {
+        self.media_match_background_trigger_key = None;
+        self.media_match_wire_sync_token = None;
+        self.media_match_remote_lookup_trigger_key = None;
+        self.media_match_remote_lookup_result = None;
+        self.media_match_remote_lookup_rx = None;
+        let mut snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        let message = format!("Media Matching rebuild was not activated: {error}");
+        snapshot.message = Some(message.clone());
+        snapshot.background_status = Some("failed: previous index remains active".to_owned());
+        self.media_match_runtime_snapshot = snapshot.clone();
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![
+                GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message,
+                },
+            ],
         );
     }
 
@@ -685,8 +719,8 @@ impl GuiPersistedConfigRuntimeOwner {
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
         let (tx, rx) = mpsc::channel();
-        let backup_existed = match prepare_media_match_index_rebuild_backup(&root) {
-            Ok(backup_existed) => backup_existed,
+        let index_transaction = match prepare_media_match_index_rebuild_backup(&root) {
+            Ok(transaction) => transaction,
             Err(error) => {
                 if notify_on_finish {
                     Self::push_runtime_error_notification(handle, projected_state, error);
@@ -694,7 +728,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 return false;
             }
         };
-        let backup_root = root.clone();
+        let worker_root = index_transaction.staging_app_root().to_path_buf();
+        let tool_root = root.clone();
         let worker_path = path.clone();
 
         match thread::Builder::new()
@@ -702,11 +737,11 @@ impl GuiPersistedConfigRuntimeOwner {
             .spawn(move || {
                 let progress_tx = tx.clone();
                 let extraction_settings = media_match_sampled_fast_extraction_settings();
-                let result = media_match_tool_paths_for_settings(&root, &extraction_settings)
+                let result = media_match_tool_paths_for_settings(&tool_root, &extraction_settings)
                     .and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
-                                root: &root,
+                                root: &worker_root,
                                 candidates: vec![PathBuf::from(&worker_path)],
                                 current_player_path: Some(worker_path.as_str()),
                                 settings: &settings,
@@ -733,10 +768,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.media_match_background_worker_rx = Some(rx);
                 self.media_match_background_worker_cancel = Some(cancel_flag);
                 self.media_match_background_trigger_key = Some(trigger_key);
-                self.media_match_background_index_backup = Some(GuiMediaMatchIndexRebuildBackup {
-                    root: backup_root.clone(),
-                    backup_existed,
-                });
+                self.media_match_background_index_backup = Some(index_transaction);
                 self.media_match_background_cancel_disposition = None;
                 self.publish_media_match_background_status(
                     handle,
@@ -748,7 +780,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.media_match_background_worker_cancel = None;
                 self.media_match_background_worker_rx = None;
-                let _ = discard_media_match_index_rebuild_backup(&backup_root);
+                let _ = index_transaction.abort();
                 if notify_on_finish {
                     Self::push_runtime_error_notification(
                         handle,
@@ -1392,8 +1424,8 @@ impl GuiPersistedConfigRuntimeOwner {
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
         let (tx, rx) = mpsc::channel();
-        let backup_existed = match prepare_media_match_index_rebuild_backup(&root) {
-            Ok(backup_existed) => backup_existed,
+        let index_transaction = match prepare_media_match_index_rebuild_backup(&root) {
+            Ok(transaction) => transaction,
             Err(error) => {
                 if notify_on_finish {
                     Self::push_runtime_error_notification(handle, projected_state, error);
@@ -1401,7 +1433,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 return false;
             }
         };
-        let backup_root = root.clone();
+        let worker_root = index_transaction.staging_app_root().to_path_buf();
+        let tool_root = root.clone();
 
         match thread::Builder::new()
             .name("sorotte-gui-media-match-background".to_owned())
@@ -1411,9 +1444,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     if let Some(remote_candidate) = remote_candidate.clone() {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                        media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
+                        media_match_tool_paths_for_settings(&tool_root, &extraction_settings).and_then(|tools| {
                             let request = MediaMatchRemoteCandidateRebuildRequest {
-                                root: &root,
+                                root: &worker_root,
                                 search_roots: &search_roots,
                                 candidates: candidates.clone(),
                                 target_file_name: &remote_candidate.target_file_name,
@@ -1435,13 +1468,16 @@ impl GuiPersistedConfigRuntimeOwner {
                     } else {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                        rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
-                            &root,
-                            &search_roots,
-                            None,
-                            &settings,
-                            &extraction_settings,
-                            Some(worker_cancel_flag.as_ref()),
+                        rebuild_persisted_media_match_index_with_tool_root_and_cancel(
+                            MediaMatchIndexRebuildRequest {
+                                root: &worker_root,
+                                tool_root: &tool_root,
+                                search_roots: &search_roots,
+                                current_player_path: None,
+                                settings: &settings,
+                                extraction_settings: &extraction_settings,
+                                cancel_flag: Some(worker_cancel_flag.as_ref()),
+                            },
                             |progress| {
                                 let _ = progress_tx
                                     .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
@@ -1451,10 +1487,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else if let Some(candidates) = candidates.clone() {
                     let extraction_settings =
                         sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                    media_match_tool_paths_for_settings(&root, &extraction_settings).and_then(|tools| {
+                    media_match_tool_paths_for_settings(&tool_root, &extraction_settings).and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
-                                root: &root,
+                                root: &worker_root,
                                 candidates,
                                 current_player_path: current_player_path.as_deref(),
                                 settings: &settings,
@@ -1471,13 +1507,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else {
                     let extraction_settings =
                         sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
-                        &root,
-                        &search_roots,
-                        current_player_path.as_deref(),
-                        &settings,
-                        &extraction_settings,
-                        Some(worker_cancel_flag.as_ref()),
+                    rebuild_persisted_media_match_index_with_tool_root_and_cancel(
+                        MediaMatchIndexRebuildRequest {
+                            root: &worker_root,
+                            tool_root: &tool_root,
+                            search_roots: &search_roots,
+                            current_player_path: current_player_path.as_deref(),
+                            settings: &settings,
+                            extraction_settings: &extraction_settings,
+                            cancel_flag: Some(worker_cancel_flag.as_ref()),
+                        },
                         |progress| {
                             let _ = progress_tx
                                 .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
@@ -1490,10 +1529,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.media_match_background_worker_rx = Some(rx);
                 self.media_match_background_worker_cancel = Some(cancel_flag);
                 self.media_match_background_trigger_key = Some(trigger_key);
-                self.media_match_background_index_backup = Some(GuiMediaMatchIndexRebuildBackup {
-                    root: backup_root.clone(),
-                    backup_existed,
-                });
+                self.media_match_background_index_backup = Some(index_transaction);
                 self.media_match_background_cancel_disposition = None;
                 self.publish_media_match_background_status(
                     handle,
@@ -1505,7 +1541,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.media_match_background_worker_cancel = None;
                 self.media_match_background_worker_rx = None;
-                let _ = discard_media_match_index_rebuild_backup(&backup_root);
+                let _ = index_transaction.abort();
                 if notify_on_finish {
                     Self::push_runtime_error_notification(
                         handle,
@@ -1610,8 +1646,31 @@ impl GuiPersistedConfigRuntimeOwner {
                                 );
                                 break;
                             }
-                            let backup_warning =
-                                self.finish_media_match_background_index_backup(true).err();
+                            let cleanup_warning = match self
+                                .commit_media_match_background_index_backup()
+                            {
+                                Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }) => {
+                                    cleanup_warning
+                                }
+                                Err(MediaIndexCommitError::NotActivated(error)) => {
+                                    self.publish_media_match_activation_failure(
+                                        handle,
+                                        projected_state,
+                                        error,
+                                    );
+                                    break;
+                                }
+                                Err(MediaIndexCommitError::StaleBase(error)) => {
+                                    self.publish_media_match_activation_failure(
+                                            handle,
+                                            projected_state,
+                                            format!(
+                                                "{error}. The media index changed concurrently; retry the scan."
+                                            ),
+                                        );
+                                    break;
+                                }
+                            };
                             let background_status = if result.current_decision.as_deref()
                                 == Some("unknown: no resolved current local file")
                             {
@@ -1628,7 +1687,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             ) {
                                 break;
                             }
-                            if let Some(error) = backup_warning {
+                            if let Some(error) = cleanup_warning {
                                 Self::push_runtime_error_notification(
                                     handle,
                                     projected_state,
@@ -1655,7 +1714,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 break;
                             }
                             let restore_error =
-                                self.finish_media_match_background_index_backup(false).err();
+                                self.abort_media_match_background_index_backup().err();
                             let mut snapshot = self.refresh_media_match_runtime_snapshot(
                                 &projected_state.media_match.settings,
                             );
@@ -1695,7 +1754,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         break;
                     }
                     let status = self
-                        .finish_media_match_background_index_backup(false)
+                        .abort_media_match_background_index_backup()
                         .map(|()| "failed: previous index restored".to_owned())
                         .unwrap_or_else(|error| format!("failed: restore failed: {error}"));
                     let mut snapshot = self.refresh_media_match_runtime_snapshot(
@@ -2696,7 +2755,7 @@ mod tests {
         }
         .expect("inventory-only worker should succeed without media tools");
         owner
-            .finish_media_match_background_index_backup(true)
+            .commit_media_match_background_index_backup()
             .expect("backup should be discarded");
 
         let summary =
@@ -2716,6 +2775,187 @@ mod tests {
         );
         assert_eq!(result.nearest_match, None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broad_and_exact_background_results_are_not_published_when_index_activation_fails() {
+        for trigger_key in ["broad-rebuild", "exact-signature-rebuild"] {
+            let root = test_temp_root(&format!("media-match-activation-failure-{trigger_key}"));
+            let config_path = root.join("sorotte.ini");
+            let live_index_root = root.join("cache").join("media-match");
+            let live_index = sorotte_media_match::MediaIndexService::new(&live_index_root)
+                .open()
+                .expect("previous live index should initialize");
+            live_index
+                .refresh_inventory(
+                    &[sorotte_media_match::MediaIndexInventoryEntry::new(
+                        "previous-live.mkv",
+                        1,
+                        2,
+                    )],
+                    &["previous-live.mkv".to_owned()],
+                    &[],
+                    || false,
+                )
+                .expect("previous live inventory should be written");
+            drop(live_index);
+
+            let index_transaction =
+                crate::app::media_match_support::prepare_media_match_index_rebuild_backup(&root)
+                    .expect("background index transaction should be prepared");
+            let staging_index_root = index_transaction
+                .staging_app_root()
+                .join("cache")
+                .join("media-match");
+            let staging_index = sorotte_media_match::MediaIndexService::new(staging_index_root)
+                .open()
+                .expect("staging index should open");
+            staging_index
+                .refresh_inventory(
+                    &[sorotte_media_match::MediaIndexInventoryEntry::new(
+                        "staging-only.mkv",
+                        3,
+                        4,
+                    )],
+                    &[
+                        "previous-live.mkv".to_owned(),
+                        "staging-only.mkv".to_owned(),
+                    ],
+                    &[],
+                    || false,
+                )
+                .expect("staging inventory should be written");
+            drop(staging_index);
+
+            std::fs::create_dir_all(live_index_root.join("current.json"))
+                .expect("manifest destination conflict should be created");
+
+            let saved_settings = StoredClientSettingsMvp {
+                media_matching_plugin_enabled: Some(true),
+                media_match_fingerprinting_enabled: Some(true),
+                ..StoredClientSettingsMvp::default()
+            };
+            let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+            let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+            owner.media_match_runtime_snapshot.nearest_match =
+                Some("previous live nearest".to_owned());
+            owner.media_match_runtime_snapshot.current_decision =
+                Some("previous live decision".to_owned());
+            owner.media_match_background_index_backup = Some(index_transaction);
+            owner.media_match_background_trigger_key = Some(trigger_key.to_owned());
+            owner.media_match_wire_sync_token = Some("stale-wire-token".to_owned());
+            owner.media_match_remote_lookup_trigger_key = Some("stale-remote-trigger".to_owned());
+            owner.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
+                trigger_key: "stale-remote-trigger".to_owned(),
+                candidate_path: Some("staging-only.mkv".to_owned()),
+            });
+            let (_remote_tx, remote_rx) = mpsc::channel();
+            owner.media_match_remote_lookup_rx = Some(remote_rx);
+
+            let (worker_tx, worker_rx) = mpsc::channel();
+            worker_tx
+                .send(GuiMediaMatchBackgroundWorkerEvent::Finished(Ok(
+                    MediaMatchIndexRebuildResult {
+                        message: "staging rebuild succeeded".to_owned(),
+                        cache_status: "staging cache".to_owned(),
+                        current_decision: Some("staging decision".to_owned()),
+                        nearest_match: Some("staging nearest".to_owned()),
+                        last_evidence: Some("staging evidence".to_owned()),
+                    },
+                )))
+                .expect("worker result should be queued");
+            owner.media_match_background_worker_rx = Some(worker_rx);
+            owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(false)));
+            let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+            owner.pump_media_match_background_worker(&handle, &mut state);
+
+            assert!(owner.media_match_background_worker_rx.is_none());
+            assert!(owner.media_match_background_worker_cancel.is_none());
+            assert!(
+                owner.media_match_background_trigger_key.is_none(),
+                "failed activation must allow the same {trigger_key} request to retry"
+            );
+            assert!(owner.media_match_wire_sync_token.is_none());
+            assert!(owner.media_match_remote_lookup_trigger_key.is_none());
+            assert!(owner.media_match_remote_lookup_result.is_none());
+            assert!(owner.media_match_remote_lookup_rx.is_none());
+            assert_eq!(
+                owner.media_match_runtime_snapshot.nearest_match.as_deref(),
+                Some("previous live nearest")
+            );
+            assert_eq!(
+                owner
+                    .media_match_runtime_snapshot
+                    .current_decision
+                    .as_deref(),
+                Some("previous live decision")
+            );
+            assert_ne!(
+                owner.media_match_runtime_snapshot.cache_status.as_deref(),
+                Some("staging cache")
+            );
+            assert_eq!(
+                owner
+                    .media_match_runtime_snapshot
+                    .background_status
+                    .as_deref(),
+                Some("failed: previous index remains active")
+            );
+            assert!(
+                owner
+                    .media_match_runtime_snapshot
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("was not activated"))
+            );
+
+            let actions = handle.drain_actions();
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message,
+                    } if message.contains("was not activated")
+                )),
+                "activation failure should be visible as a warning"
+            );
+            assert!(
+                actions.iter().all(|action| !matches!(
+                    action,
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message,
+                    } if message == "staging rebuild succeeded"
+                )),
+                "failed activation must not publish a success notification"
+            );
+            assert!(
+                actions.iter().all(|action| !matches!(
+                    action,
+                    GuiShellAction::AnnounceSystemChatEvent(message)
+                        if message == "staging rebuild succeeded"
+                )),
+                "failed activation must not publish a success chat event"
+            );
+
+            let live_inventory = sorotte_media_match::MediaIndexService::new(&live_index_root)
+                .open()
+                .expect("previous live index should remain readable")
+                .inventory_paths()
+                .expect("previous live inventory should remain readable");
+            assert_eq!(live_inventory, vec!["previous-live.mkv".to_owned()]);
+            assert!(
+                !live_index_root
+                    .join("generations")
+                    .read_dir()
+                    .is_ok_and(|mut entries| entries.next().is_some()),
+                "a failed activation must remove its unreferenced generation"
+            );
+
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

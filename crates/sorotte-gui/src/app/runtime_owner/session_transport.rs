@@ -14,6 +14,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) {
+        self.clear_session_attached_player_sync_state();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active_session_settings = None;
         self.active_session_configured_settings = None;
@@ -33,6 +34,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn remove_session_runtime(&mut self) {
         if self.session.take().is_some() {
+            self.clear_session_attached_player_sync_state();
             self.session_generation = self.session_generation.wrapping_add(1);
         }
         self.active_session_settings = None;
@@ -58,6 +60,20 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Self {
         self.session_transport_driver = Some(session_transport_driver);
         self
+    }
+
+    pub(in crate::app) fn replace_owned_session_transport_driver(
+        &mut self,
+        session_transport_driver: Box<dyn GuiSessionTransportDriver + Send>,
+    ) {
+        if let Some(session_transport) = self.session_transport.as_ref() {
+            session_transport.clear_protocol_lines();
+        }
+        // A threaded driver owns a clone of its transport handle. Its stop request is
+        // asynchronous so reusing that handle would let the retiring worker consume a frame
+        // intended for the replacement connection before it observes the stop signal.
+        self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
+        self.session_transport_driver = Some(session_transport_driver);
     }
 
     pub(in crate::app) fn reset_session_transport_reconnect_state(&mut self) {
@@ -425,11 +441,15 @@ impl GuiPersistedConfigRuntimeOwner {
         username: impl Into<String>,
         room: impl Into<String>,
         host_arg: impl AsRef<str>,
+        tls_policy: TlsPolicy,
     ) -> Result<Self, String> {
         let (owner, _session_transport) =
             self.with_client_core_chat_session_runtime(username, room)?;
         Ok(owner.with_session_transport_driver(Box::new(
-            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
+            GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+                host_arg.as_ref(),
+                tls_policy,
+            )?,
         )))
     }
 
@@ -458,6 +478,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
                 session_transport_driver.pump(&session_transport)
             };
+            self.drain_session_transport_warnings(handle, projected_state, &session_transport);
             let frame_written =
                 self.apply_session_transport_outbound_delivery_results(handle, projected_state);
             if let Err(error) = pump_result {
@@ -477,6 +498,30 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
             self.flush_session_transport_outbound(handle, projected_state);
+        }
+    }
+
+    fn drain_session_transport_warnings(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        session_transport: &GuiQueuedSessionTransportHandle,
+    ) {
+        let actions = session_transport
+            .drain_transport_warnings()
+            .into_iter()
+            .flat_map(|message| {
+                [
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if !actions.is_empty() {
+            Self::push_actions_and_project(handle, projected_state, actions);
         }
     }
 
@@ -557,7 +602,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 let Some(session) = self.session.as_mut() else {
                     return false;
                 };
-                session.apply_message_json(&inbound_protocol_line)
+                session.apply_message_json_at(
+                    &inbound_protocol_line.line,
+                    inbound_protocol_line.received_at_seconds,
+                )
             };
             if let Err(error) = apply_result {
                 let stop_reconnect_requested = self

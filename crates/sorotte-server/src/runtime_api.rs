@@ -13,6 +13,9 @@ impl ServerRuntime {
 
     pub fn with_room_password_salt(salt: impl Into<SecretValue>) -> Self {
         let (persistence_events, _) = broadcast::channel(SERVER_PERSISTENCE_EVENT_CAPACITY);
+        let mut persistent_room_quota_secret = [0_u8; 32];
+        getrandom::fill(&mut persistent_room_quota_secret)
+            .expect("operating system random source should be available");
         Self {
             domain: SyncDomain::default(),
             sessions: BTreeMap::new(),
@@ -47,6 +50,7 @@ impl ServerRuntime {
             client_state_counters: BTreeMap::new(),
             client_last_state_update_at: BTreeMap::new(),
             client_next_periodic_state_at: BTreeMap::new(),
+            client_peer_ips: BTreeMap::new(),
             time_now_override_seconds: None,
             room_password_provider: RoomPasswordProvider::new(salt.into()),
             server_password_token: None,
@@ -65,13 +69,25 @@ impl ServerRuntime {
             tls_rotation_attempts: 0,
             pending_transport_actions: Vec::new(),
             persistent_rooms_enabled: false,
+            max_persistent_rooms: DEFAULT_MAX_PERSISTENT_ROOMS,
+            max_persistent_rooms_per_identity: DEFAULT_MAX_PERSISTENT_ROOMS_PER_IDENTITY,
+            persistent_room_creation_cooldown_seconds:
+                DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS,
+            persistent_room_inactivity_expiry_seconds:
+                DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS,
+            persistent_room_owner_by_room: BTreeMap::new(),
+            persistent_room_created_at_by_room: BTreeMap::new(),
+            persistent_room_last_creation_by_identity: BTreeMap::new(),
+            persistent_room_last_activity_at: BTreeMap::new(),
+            persistent_room_quota_secret,
             isolate_rooms: false,
             chat_enabled: true,
             readiness_enabled: true,
             max_chat_message_length: DEFAULT_MAX_CHAT_MESSAGE_LENGTH,
             max_username_length: DEFAULT_MAX_USERNAME_LENGTH,
             room_persistence: None,
-            room_persistence_versions: BTreeMap::new(),
+            persisted_room_names: BTreeSet::new(),
+            next_room_persistence_version: 0,
             persistence_events,
             persistence_degraded_worker_count: Arc::new(AtomicUsize::new(0)),
             permanent_rooms: BTreeSet::new(),
@@ -92,13 +108,7 @@ impl ServerRuntime {
     }
 
     pub fn set_motd_template(&mut self, template: Option<String>) {
-        self.motd_template = template.and_then(|template| {
-            if template.trim().is_empty() {
-                None
-            } else {
-                Some(template)
-            }
-        });
+        self.motd_template = template.filter(|template| !template.trim().is_empty());
     }
 
     pub fn set_server_password_token(&mut self, token: Option<SecretValue>) {
@@ -183,6 +193,32 @@ impl ServerRuntime {
         self.persistent_rooms_enabled = enabled;
     }
 
+    pub fn set_max_persistent_rooms(&mut self, max_rooms: usize) {
+        self.max_persistent_rooms = max_rooms;
+    }
+
+    pub fn set_max_persistent_rooms_per_identity(&mut self, max_rooms: usize) {
+        self.max_persistent_rooms_per_identity = max_rooms;
+    }
+
+    pub fn set_persistent_room_creation_cooldown_seconds(&mut self, cooldown_seconds: f64) {
+        self.persistent_room_creation_cooldown_seconds =
+            if cooldown_seconds.is_finite() && cooldown_seconds >= 0.0 {
+                cooldown_seconds
+            } else {
+                DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS
+            };
+    }
+
+    pub fn set_persistent_room_inactivity_expiry_seconds(&mut self, expiry_seconds: f64) {
+        self.persistent_room_inactivity_expiry_seconds =
+            if expiry_seconds.is_finite() && expiry_seconds >= 0.0 {
+                expiry_seconds
+            } else {
+                DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS
+            };
+    }
+
     pub fn set_isolate_rooms(&mut self, enabled: bool) {
         self.isolate_rooms = enabled;
     }
@@ -229,21 +265,49 @@ impl ServerRuntime {
     ) -> Result<(), ServerRuntimeError> {
         let Some(db_path) = db_path else {
             self.room_persistence = None;
-            self.room_persistence_versions.clear();
+            self.persisted_room_names.clear();
+            self.next_room_persistence_version = 0;
             return Ok(());
         };
-        // Flush and close the old reusable connection before loading the new
-        // snapshot, especially when reconfiguring the same database path.
-        drop(self.room_persistence.take());
+        if self
+            .room_persistence
+            .as_ref()
+            .is_some_and(|persistence| !persistence.flush())
+        {
+            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("room"));
+        }
+
+        // Prepare the complete replacement before touching the working
+        // service. A bad path or worker-start failure must leave the current
+        // durable store attached.
         let store = RoomPersistenceStore::open(&db_path)?;
+        let persistent_room_quota_secret = store.load_or_create_quota_secret()?;
         let persisted_rooms = store.load_rooms()?;
-        self.room_persistence = Some(RoomPersistenceService::start(
+        let affected_rooms = self
+            .persisted_room_names
+            .iter()
+            .chain(persisted_rooms.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Some(occupied_room) = affected_rooms
+            .iter()
+            .find(|room_name| !self.clients_in_room(room_name).is_empty())
+        {
+            return Err(
+                ServerRuntimeError::PersistentRoomDatabaseReconfigurationBusy(
+                    occupied_room.clone(),
+                ),
+            );
+        }
+        let replacement_service = RoomPersistenceService::start(
             store,
             self.persistence_events.clone(),
             self.persistence_degraded_worker_count.clone(),
-        )?);
-        self.room_persistence_versions.clear();
-        self.apply_persisted_rooms_snapshot(persisted_rooms);
+        )?;
+
+        self.persistent_room_quota_secret = persistent_room_quota_secret;
+        self.room_persistence = Some(replacement_service);
+        self.replace_persisted_rooms_snapshot(persisted_rooms);
         self.apply_permanent_rooms_snapshot();
         Ok(())
     }
@@ -253,8 +317,11 @@ impl ServerRuntime {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.permanent_rooms = permanent_rooms.into_iter().map(Into::into).collect();
-        self.apply_permanent_rooms_snapshot();
+        let previous_permanent_rooms = std::mem::replace(
+            &mut self.permanent_rooms,
+            permanent_rooms.into_iter().map(Into::into).collect(),
+        );
+        self.reconcile_permanent_rooms_snapshot(&previous_permanent_rooms);
     }
 
     pub fn set_permanent_rooms_file_path(
@@ -433,19 +500,28 @@ impl ServerRuntime {
             self.current_time_seconds()
         };
         self.prune_playback_barrier_request_tombstones();
-        let outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
+        self.persist_occupied_room_activity_if_due_at_for_all_rooms(now_seconds)?;
+        let expired_persistent_rooms = self.expire_inactive_persistent_rooms_at(now_seconds)?;
+        let mut outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
+        if expired_persistent_rooms && self.persistent_rooms_enabled {
+            self.enqueue_list_snapshots_for_clients(
+                &mut outbound_messages,
+                self.clients_receiving_to_gui_only_list_updates(None),
+            );
+        }
         self.collect_due_stats_snapshots_at(now_seconds)?;
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
                 let delivery = match &message.message {
                     ProtocolMessage::State(state)
-                        if state
-                            .state
-                            .playstate
-                            .as_ref()
-                            .and_then(|playstate| playstate.do_seek)
-                            != Some(true) =>
+                        if state.state.ignoring_on_the_fly.is_none()
+                            && state
+                                .state
+                                .playstate
+                                .as_ref()
+                                .and_then(|playstate| playstate.do_seek)
+                                != Some(true) =>
                     {
                         ServerOutboundDelivery::CoalesciblePeriodicState
                     }

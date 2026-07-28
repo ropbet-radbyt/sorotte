@@ -211,9 +211,10 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn apply_global_style(ctx: &egui::Context) {
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let theme = ctx.theme();
+        let dark_mode = theme == egui::Theme::Dark;
         let palette = Self::palette_for_dark_mode(dark_mode);
-        ctx.style_mut(|style| {
+        ctx.style_mut_of(theme, |style| {
             style.spacing.item_spacing = egui::vec2(8.0, 8.0);
             style.spacing.button_padding = egui::vec2(10.0, 6.0);
             style.spacing.interact_size = egui::vec2(36.0, 32.0);
@@ -288,13 +289,14 @@ impl GuiWidgetEguiRenderer {
 
     pub(super) fn show(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         state: &SorotteGuiShellAppState,
         show_manual_pending_controls: bool,
     ) -> Vec<GuiShellAction> {
-        Self::apply_global_style(ctx);
+        let ctx = ui.ctx().clone();
+        Self::apply_global_style(&ctx);
         self.actions
-            .extend(Self::consume_menu_shortcuts(ctx, state));
+            .extend(Self::consume_menu_shortcuts(&ctx, state));
         let hovered_files_active = ctx.input(|input| !input.raw.hovered_files.is_empty());
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         let external_file_drag_active = hovered_files_active || !dropped_files.is_empty();
@@ -305,13 +307,13 @@ impl GuiWidgetEguiRenderer {
         }
         self.dropped_files_request = None;
         if let Some(root) = self.root().cloned() {
-            self.show_menu_bar(ctx, &root, state);
-            self.show_modal_window(ctx, state);
-            self.show_status_bar(ctx, &root, show_manual_pending_controls);
-            self.show_navigation_panel(ctx, &root, state);
-            self.show_active_surface(ctx, &root, state);
+            self.show_menu_bar(ui, &root, state);
+            self.show_modal_window(&ctx, state);
+            self.show_status_bar(ui, &root, show_manual_pending_controls);
+            self.show_navigation_panel(ui, &root, state);
+            self.show_active_surface(ui, &root, state);
         } else {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.heading("Sorotte GUI");
                 ui.label("No widget tree is currently available.");
             });
@@ -329,14 +331,14 @@ impl GuiWidgetEguiRenderer {
 
     fn show_menu_bar(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         state: &SorotteGuiShellAppState,
     ) {
         let Some(menus) = root.find("menus-root") else {
             return;
         };
-        egui::TopBottomPanel::top("sorotte-native-menu-bar").show(ctx, |ui| {
+        egui::Panel::top("sorotte-native-menu-bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 for section in &menus.children {
                     ui.menu_button(&section.label, |ui| {
@@ -403,7 +405,7 @@ impl GuiWidgetEguiRenderer {
 
     fn show_status_bar(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         show_manual_pending_controls: bool,
     ) {
@@ -453,16 +455,16 @@ impl GuiWidgetEguiRenderer {
             || stream_helper_remediation_active
             || show_manual_controls
             || pending_operation != "(none)";
-        let mut panel = egui::TopBottomPanel::bottom("sorotte-native-status-bar");
+        let mut panel = egui::Panel::bottom("sorotte-native-status-bar");
         if !show_visible_status {
-            panel = panel.exact_height(1.0).frame(
+            panel = panel.exact_size(1.0).frame(
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(0))
                     .fill(egui::Color32::TRANSPARENT)
                     .stroke(egui::Stroke::NONE),
             );
         }
-        panel.show(ctx, |ui| {
+        panel.show(ui, |ui| {
             Self::render_status_accessibility_markers(
                 ui,
                 active_view,
@@ -540,16 +542,16 @@ impl GuiWidgetEguiRenderer {
 
     fn show_navigation_panel(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         _state: &SorotteGuiShellAppState,
     ) {
-        egui::SidePanel::left("sorotte-native-navigation")
-            .default_width(118.0)
-            .min_width(104.0)
-            .max_width(132.0)
+        egui::Panel::left("sorotte-native-navigation")
+            .default_size(118.0)
+            .min_size(104.0)
+            .max_size(132.0)
             .resizable(false)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.add_space(12.0);
                 let update_indicator = root.find("shell:update-indicator");
                 for child in &root.children {
@@ -594,7 +596,7 @@ impl GuiWidgetEguiRenderer {
 
     fn show_active_surface(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         state: &SorotteGuiShellAppState,
     ) {
@@ -608,7 +610,7 @@ impl GuiWidgetEguiRenderer {
                     .find(|node| Self::is_surface_node(node))
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show_viewport(ui, |ui, viewport| {

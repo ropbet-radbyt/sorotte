@@ -603,8 +603,8 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
     context.enable_accesskit();
     let mut renderer = GuiWidgetEguiRenderer::default();
 
-    let output = context.run(egui::RawInput::default(), |context| {
-        egui::CentralPanel::default().show(context, |ui| {
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             for node in &menu_nodes {
                 renderer.render_button_like(ui, node, &state);
             }
@@ -647,8 +647,8 @@ fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
         });
         let mut actions = Vec::new();
 
-        let _ = context.run(input, |context| {
-            actions = renderer.show(context, &state, false);
+        let _ = context.run_ui(input, |ui| {
+            actions = renderer.show(ui, &state, false);
         });
 
         assert_eq!(

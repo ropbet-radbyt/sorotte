@@ -4,9 +4,11 @@ mod bridge_resource;
 mod constants;
 mod ipc;
 mod legacy_ui;
+pub mod lifecycle;
 mod players;
 #[cfg(feature = "test-support")]
 mod test_support;
+pub mod transcript;
 
 use sorotte_player_api::PlayerError;
 
@@ -31,6 +33,12 @@ pub fn is_unsupported_mpv_version_error(error: &PlayerError) -> bool {
 /// generation and an observation that `seeking` is false.
 pub const MPV_SEEK_COMPLETION_TOLERANCE_SECONDS: f64 = 0.5;
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use adapter::{
+    LifecycleVerificationPlaylistEntry, LifecycleVerificationTrackedLoad,
+    MpvLifecycleVerificationHarness,
+};
 pub use adapter::{
     MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaDiagnosticSnapshot,
     MpvNetworkMediaOptionsTransitionOutcome, MpvNetworkMediaPolicyApplicationState,

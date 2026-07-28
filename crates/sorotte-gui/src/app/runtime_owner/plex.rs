@@ -3232,7 +3232,9 @@ mod tests {
 
     #[test]
     fn selecting_plex_server_clears_stale_server_scoped_workers() {
-        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let test_root = test_temp_root("selecting-plex-server-clears-workers");
+        let config_path = test_root.join("sorotte.ini");
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
         owner.plex_servers.push(PlexServerConnection {
             name: "Raptor".to_owned(),
             machine_identifier: "raptor-machine".to_owned(),
@@ -3292,6 +3294,21 @@ mod tests {
                 .plex_selected_server_url
                 .as_deref(),
             Some("https://raptor.example:32400")
+        );
+        assert!(config_path.exists());
+        let _ = std::fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn runtime_owner_without_config_path_does_not_fall_back_to_user_profile() {
+        let owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert_eq!(
+            owner.persisted_settings_config_path_for_request(&state),
+            None,
+            "an explicitly pathless runtime owner must never discover and write the user's profile"
         );
     }
 

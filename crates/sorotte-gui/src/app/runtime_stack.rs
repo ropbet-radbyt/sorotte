@@ -28,14 +28,16 @@ use sorotte_client_app::app_boundary::state::{
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
     ClientRuntimeAction, ClientSession, CoordinatorCommandId, CoordinatorPlayerCommand,
-    LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
-    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
-    PlayerCommandCause, PrivacyMode, ProtocolLineLease, RoomPlaylistView, RoomPlaystateView,
-    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
+    DesyncCorrectionDispatchSnapshot, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
+    MediaTransportKind, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+    PlaybackCoordinatorAction, PlayerCommandCause, PrivacyMode, ProtocolLineLease,
+    RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
-    PlayerCommandId, PlayerError, PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+    PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerPlaybackTelemetryUpdate,
+    PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
     HelloPayload, ListPayload, ProtocolMessage, SOROTTE_READINESS_RECONNECT_TOKEN,
@@ -52,7 +54,10 @@ use super::shell_state::{
 use super::support::{legacy_chat_input_enabled, system_time_seconds};
 
 pub(super) use self::client_core_adapter::GuiClientCoreChatSessionRuntimeAdapter;
-pub(super) use self::player::{GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter};
+pub(super) use self::player::{
+    GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter,
+    local_file_update_for_player_path,
+};
 pub(super) use self::session_adapter::{
     GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
     GuiSessionRuntimeAdapter,

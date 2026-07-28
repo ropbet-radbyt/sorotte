@@ -16,6 +16,7 @@ default = []
 gui-semantic-smoke = []
 gui-native-smoke = ["live-python-interop"]
 live-python-interop = ["dep:sorotte-compat"]
+updater-integration-test = []
 
 [dependencies]
 eframe.workspace = true
@@ -45,9 +46,11 @@ windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graph
 windows.workspace = true
 
 [build-dependencies]
-embed-resource = "3.0.9"
+embed-resource = "3.0.11"
 
 [dev-dependencies]
+sorotte-client-core = { path = "../sorotte-client-core", features = ["test-support"] }
+sorotte-player-api = { path = "../sorotte-player-api", features = ["test-support"] }
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
 
 [[bin]]

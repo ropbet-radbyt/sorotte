@@ -49,9 +49,6 @@ fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
         r#"{"request_id":9,"error":"success","data":"C:/media/movie.mkv"}"#,
         r#"{"request_id":10,"error":"success","data":1439.5}"#,
         r#"{"request_id":11,"error":"success","data":123456}"#,
-        r#"{"request_id":12,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":13,"error":"success","data":1439.5}"#,
-        r#"{"request_id":14,"error":"success","data":123456}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -70,7 +67,7 @@ fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
     );
 
     let writes = state.writes();
-    assert_eq!(writes.len(), 14);
+    assert_eq!(writes.len(), 11);
     let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
     let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
     let third_payload: Value = serde_json::from_str(writes[2].trim_end()).expect("valid json");
@@ -178,9 +175,11 @@ fn async_property_change_events_from_mpv_queue_local_file_update() {
         r#"{"request_id":7,"error":"success"}"#,
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"property unavailable"}"#,
+        r#"{"event":"start-file","playlist_entry_id":41}"#,
         r#"{"event":"property-change","name":"path","data":"C:/media/from-event.mkv"}"#,
         r#"{"event":"property-change","name":"duration","data":120.0}"#,
         r#"{"event":"property-change","name":"file-size","data":987654}"#,
+        r#"{"event":"file-loaded"}"#,
         r#"{"request_id":10,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
@@ -384,6 +383,7 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":41}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.invalid/watch?v=generation-test"}"#,
         r#"{"event":"property-change","name":"pause","data":false}"#,
         r#"{"event":"property-change","name":"seeking","data":false}"#,
         r#"{"event":"property-change","name":"seekable","data":true}"#,
@@ -435,10 +435,22 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
         .media_generation()
         .expect("start-file should establish a media generation");
     assert_eq!(generation.get(), 1);
+    let restart_index = updates
+        .iter()
+        .position(|update| update.playback_restart_sequence == Some(1))
+        .expect("playback-restart should establish strict physical ownership");
     assert!(
-        updates
+        updates[restart_index..]
             .iter()
-            .all(|update| update.media_generation == Some(generation))
+            .all(|update| update.media_generation == Some(generation)),
+        "transport updates after strict ownership must remain correlated: {updates:#?}"
+    );
+    assert!(
+        updates[..restart_index]
+            .iter()
+            .all(|update| update.media_generation.is_none()
+                || update.media_generation == Some(generation)),
+        "pre-binding observations must remain unowned rather than being assigned by a pending-generation guess: {updates:#?}"
     );
     assert!(updates.iter().all(|update| update.observed_at.is_some()));
     assert!(updates.windows(2).all(|window| {
@@ -450,10 +462,7 @@ fn transport_lifecycle_and_cache_hints_are_generation_correlated() {
             .iter()
             .any(|update| update.phase == Some(PlayerTransportPhase::Loading))
     );
-    let restarted = updates
-        .iter()
-        .find(|update| update.playback_restart_sequence == Some(1))
-        .expect("playback-restart should be preserved as a lifecycle boundary");
+    let restarted = &updates[restart_index];
     assert_eq!(restarted.phase, Some(PlayerTransportPhase::Playing));
     let rebuffering = updates
         .iter()
@@ -833,7 +842,7 @@ fn end_file_error_is_classified_for_the_matching_generation() {
 }
 
 #[test]
-fn stale_end_file_keeps_the_new_generation_loading() {
+fn ending_old_physical_file_before_replacement_start_leaves_transport_empty() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":100}"#,
@@ -870,32 +879,14 @@ fn stale_end_file_keeps_the_new_generation_loading() {
 
     assert_eq!(
         adapter.transport_phase(),
-        PlayerTransportPhase::Loading,
-        "the old end-file event must not overwrite the replacement generation phase"
-    );
-    let replacement_loading = adapter
-        .take_transport_telemetry_update()
-        .expect("replacement generation should emit loading telemetry");
-    assert_eq!(
-        replacement_loading
-            .media_generation
-            .map(|generation| generation.get()),
-        Some(2)
+        PlayerTransportPhase::Empty,
+        "the replacement cannot own transport until its start-file"
     );
     assert_eq!(
-        replacement_loading.phase,
-        Some(PlayerTransportPhase::Loading)
+        adapter.take_transport_telemetry_update(),
+        None,
+        "neither the unstarted successor nor the superseded physical episode may publish successor telemetry"
     );
-    let stale_end = adapter
-        .take_transport_telemetry_update()
-        .expect("old end-file should remain available with its original generation");
-    assert_eq!(
-        stale_end
-            .media_generation
-            .map(|generation| generation.get()),
-        Some(1)
-    );
-    assert_eq!(stale_end.phase, Some(PlayerTransportPhase::Ended));
 }
 
 #[test]

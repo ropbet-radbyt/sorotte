@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StateSyncReconcileClocks {
+    received_at_seconds: f64,
+    response_at_seconds: f64,
+}
+
 macro_rules! runtime_notification_outbox_methods {
     (
         $pending:ident,
@@ -38,15 +44,15 @@ where
         now_seconds: f64,
         dont_slow_down_with_me: bool,
     ) -> Option<f64> {
-        let local_position = self.session.model.playback.local_position?;
-        if !dont_slow_down_with_me {
-            return Some(local_position);
+        if dont_slow_down_with_me {
+            return self
+                .session
+                .current_room_playstate_at(now_seconds)
+                .and_then(|playstate| playstate.position)
+                .or_else(|| self.projected_local_position_at(now_seconds));
         }
 
-        self.session
-            .current_room_playstate_at(now_seconds)
-            .and_then(|playstate| playstate.position)
-            .or(Some(local_position))
+        self.projected_local_position_at(now_seconds)
     }
 
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
@@ -54,12 +60,47 @@ where
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
     ) -> bool {
+        self.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+            inbound_state,
+            dont_slow_down_with_me,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        &mut self,
+        inbound_state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+    ) -> bool {
+        self.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+            inbound_state,
+            dont_slow_down_with_me,
+            received_at_seconds,
+            received_at_seconds,
+            received_at_seconds,
+        )
+    }
+
+    /// Reconciles an inbound State while preserving separate receipt, reply,
+    /// and legacy ping clocks. The local playback sample is projected to the
+    /// reply clock; inbound room state remains anchored to network receipt.
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        &mut self,
+        inbound_state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+        response_at_seconds: f64,
+        ping_received_at_seconds: f64,
+    ) -> bool {
         let inbound_state = normalize_client_state_payload(inbound_state);
         self.ping_metrics_legacy_compatible
-            .observe_normalized_inbound_state(&inbound_state);
+            .observe_normalized_inbound_state_at(&inbound_state, ping_received_at_seconds);
         let local_state_change_global_playstate = self
             .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
                 &inbound_state,
+                received_at_seconds,
+                response_at_seconds,
             );
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             inbound_state,
@@ -68,6 +109,10 @@ where
             self.ping_metrics_legacy_compatible.client_rtt_seconds(),
             dont_slow_down_with_me,
             local_state_change_global_playstate,
+            StateSyncReconcileClocks {
+                received_at_seconds,
+                response_at_seconds,
+            },
         )
     }
 
@@ -78,22 +123,28 @@ where
         client_rtt: f64,
         dont_slow_down_with_me: bool,
     ) -> bool {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
             client_latency_calculation,
             client_rtt,
             dont_slow_down_with_me,
             None,
+            StateSyncReconcileClocks {
+                received_at_seconds: now_seconds,
+                response_at_seconds: now_seconds,
+            },
         )
     }
 
-    pub(crate) fn run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
+    fn run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
         &mut self,
         inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
         dont_slow_down_with_me: bool,
         local_state_change_global_playstate: Option<RoomPlaystateView>,
+        clocks: StateSyncReconcileClocks,
     ) -> bool {
         // Legacy peers may send State before their authoritative Hello. The
         // inbound message itself proves which live transport generation owns
@@ -101,16 +152,18 @@ where
         // remain gated on an active session below.
         self.control.activate_protocol_connection_generation();
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
-
         let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
+            self.outbound_state_sync_position_seconds(
+                clocks.response_at_seconds,
+                dont_slow_down_with_me,
+            ),
             self.session.model.playback.local_paused,
         ) else {
             let outbound_state = self.session.reconcile_ping_only_state_response(
                 inbound_state,
                 client_latency_calculation,
                 client_rtt,
+                clocks.received_at_seconds,
             );
             return self.control.queue_connection_scoped_state(outbound_state);
         };
@@ -123,7 +176,10 @@ where
                 local_paused,
                 client_latency_calculation,
                 client_rtt,
-                local_state_change_global_playstate,
+                crate::session::StateReconcileContext {
+                    local_state_change_global_playstate,
+                    received_at_seconds: clocks.received_at_seconds,
+                },
             );
         self.control.queue_connection_scoped_state(outbound_state)
     }
@@ -131,16 +187,23 @@ where
     pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
         &self,
         inbound_state: &ClientStateUpdate,
+        received_at_seconds: f64,
+        response_at_seconds: f64,
     ) -> Option<RoomPlaystateView> {
         let playstate = inbound_state.playstate.as_ref()?;
         let mut position = playstate.position;
         if playstate.paused == Some(false) {
-            let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
-            if forward_delay.is_finite()
-                && forward_delay > 0.0
+            let mut projection_seconds =
+                self.ping_metrics_legacy_compatible.forward_delay_seconds();
+            let response_delay_seconds = response_at_seconds - received_at_seconds;
+            if response_delay_seconds.is_finite() && response_delay_seconds > 0.0 {
+                projection_seconds += response_delay_seconds;
+            }
+            if projection_seconds.is_finite()
+                && projection_seconds > 0.0
                 && let Some(raw_position) = position.filter(|value| value.is_finite())
             {
-                position = Some(raw_position + forward_delay);
+                position = Some(raw_position + projection_seconds);
             }
         }
 
@@ -173,12 +236,13 @@ where
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
             self.session.model.playback.local_paused,
         ) {
-            self.session.reconcile_state_and_build_response(
+            self.session.reconcile_state_and_build_response_at(
                 StatePayload::new(),
                 local_position,
                 local_paused,
                 client_latency_calculation,
                 client_rtt,
+                now_seconds,
             )
         } else {
             StatePayload::new().with_ping(

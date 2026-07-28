@@ -284,6 +284,37 @@ impl LocalFileUpdate {
     }
 }
 
+/// One local-file identity observation tied to the adapter event stream.
+///
+/// The legacy [`LocalFileUpdate`] channel remains available for source
+/// compatibility. Adapters that can identify their media generation and
+/// observation time should expose this richer additive form so consumers can
+/// order the media boundary against transport and command observations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerLocalFileObservation {
+    pub update: LocalFileUpdate,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+}
+
+impl PlayerLocalFileObservation {
+    pub const fn new(
+        update: LocalFileUpdate,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Self {
+        Self {
+            update,
+            media_generation,
+            observed_at,
+        }
+    }
+
+    pub const fn unsequenced(update: LocalFileUpdate) -> Self {
+        Self::new(update, None, None)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerPlaybackTelemetryUpdate {
     pub paused: Option<bool>,
@@ -349,15 +380,38 @@ impl From<u64> for PlayerMediaGeneration {
 /// to order observations and calculate local elapsed durations without making
 /// a platform-specific `Instant` part of the player API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PlayerObservationTimestamp(std::time::Duration);
+pub struct PlayerObservationTimestamp {
+    observed_at: std::time::Duration,
+    delivery_reference: std::time::Duration,
+}
 
 impl PlayerObservationTimestamp {
     pub const fn from_adapter_start(elapsed: std::time::Duration) -> Self {
-        Self(elapsed)
+        Self {
+            observed_at: elapsed,
+            delivery_reference: elapsed,
+        }
+    }
+
+    /// Records an observation together with the adapter clock sampled when it
+    /// was delivered. Consumers can preserve queue dwell without exposing a
+    /// platform-specific monotonic clock.
+    pub const fn from_adapter_observation(
+        observed_at: std::time::Duration,
+        delivery_reference: std::time::Duration,
+    ) -> Self {
+        Self {
+            observed_at,
+            delivery_reference,
+        }
     }
 
     pub const fn elapsed_since_adapter_start(self) -> std::time::Duration {
-        self.0
+        self.observed_at
+    }
+
+    pub const fn delivery_reference_since_adapter_start(self) -> std::time::Duration {
+        self.delivery_reference
     }
 }
 
@@ -384,6 +438,89 @@ impl PlayerCommandId {
 impl From<u64> for PlayerCommandId {
     fn from(value: u64) -> Self {
         Self::new(value)
+    }
+}
+
+/// Identifies one attached player core.
+///
+/// Player-local identities such as playlist entry IDs and command bindings are
+/// valid only within one attachment epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PlayerAttachmentEpoch(u64);
+
+impl PlayerAttachmentEpoch {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+impl From<u64> for PlayerAttachmentEpoch {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Identifies one physical player load episode.
+///
+/// Several load attempts may belong to the same logical
+/// [`PlayerMediaGeneration`], for example during same-generation stream
+/// recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LoadAttemptId(u64);
+
+impl LoadAttemptId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for LoadAttemptId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Authoritative causal order of one normalized player event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerEventOrder {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence: u64,
+}
+
+impl PlayerEventOrder {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, sequence: u64) -> Self {
+        Self {
+            attachment_epoch,
+            sequence,
+        }
+    }
+}
+
+/// The inclusive ordered-event boundary established by a batch or snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PlayerSequenceBoundary {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub through_sequence: u64,
+}
+
+impl PlayerSequenceBoundary {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, through_sequence: u64) -> Self {
+        Self {
+            attachment_epoch,
+            through_sequence,
+        }
     }
 }
 
@@ -680,7 +817,177 @@ impl PlayerTransportTelemetryUpdate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One field in a complete authoritative player snapshot.
+///
+/// `KnownAbsent` and `Unavailable` both clear an older value. They remain
+/// distinct so consumers can distinguish an authoritative absence from a
+/// player that cannot currently provide the property.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SnapshotField<T> {
+    Known(T),
+    KnownAbsent,
+    #[default]
+    Unavailable,
+}
+
+impl<T> SnapshotField<T> {
+    pub const fn known(value: T) -> Self {
+        Self::Known(value)
+    }
+
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+
+    pub const fn is_known_absent(&self) -> bool {
+        matches!(self, Self::KnownAbsent)
+    }
+
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+
+    pub const fn as_ref(&self) -> SnapshotField<&T> {
+        match self {
+            Self::Known(value) => SnapshotField::Known(value),
+            Self::KnownAbsent => SnapshotField::KnownAbsent,
+            Self::Unavailable => SnapshotField::Unavailable,
+        }
+    }
+}
+
+/// A sparse ordered transport update.
+///
+/// Omitted fields retain their previously applied values. This contract is
+/// deliberately separate from [`PlayerTransportSnapshot`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerTransportDelta {
+    pub load_attempt_id: Option<LoadAttemptId>,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+    pub phase: Option<PlayerTransportPhase>,
+    pub position_seconds: Option<f64>,
+    pub playback_rate: Option<f64>,
+    pub logical_pause: Option<bool>,
+    pub paused_for_cache: Option<bool>,
+    pub cache_percentage: Option<f64>,
+    pub seeking: Option<bool>,
+    pub seekable: Option<bool>,
+    pub timeline_kind: Option<PlayerTimelineKind>,
+    pub core_idle: Option<bool>,
+    pub demuxer_cache_idle: Option<bool>,
+    pub playback_restart_sequence: Option<u64>,
+    pub eof_reached: Option<bool>,
+    pub seekable_ranges: Option<Vec<PlayerSeekableRange>>,
+    pub known_live_seekable_window: Option<PlayerSeekableRange>,
+    pub buffered_duration_seconds: Option<f64>,
+    pub buffered_bytes: Option<u64>,
+    pub input_rate_bytes_per_second: Option<u64>,
+    pub error_kind: Option<PlayerMediaLoadFailureKind>,
+}
+
+impl From<PlayerTransportTelemetryUpdate> for PlayerTransportDelta {
+    fn from(update: PlayerTransportTelemetryUpdate) -> Self {
+        Self {
+            load_attempt_id: None,
+            media_generation: update.media_generation,
+            observed_at: update.observed_at,
+            phase: update.phase,
+            position_seconds: update.position_seconds,
+            playback_rate: update.playback_rate,
+            logical_pause: update.logical_pause,
+            paused_for_cache: update.paused_for_cache,
+            cache_percentage: update.cache_buffering_percent,
+            seeking: update.seeking,
+            seekable: update.seekable,
+            timeline_kind: update.timeline_kind,
+            core_idle: update.core_idle,
+            demuxer_cache_idle: update.demuxer_cache_idle,
+            playback_restart_sequence: update.playback_restart_sequence,
+            eof_reached: update.eof_reached,
+            seekable_ranges: update.seekable_ranges,
+            known_live_seekable_window: update.known_live_seekable_window,
+            buffered_duration_seconds: update.buffered_ahead_seconds,
+            buffered_bytes: update.buffered_ahead_bytes,
+            input_rate_bytes_per_second: update.input_rate_bytes_per_second,
+            error_kind: update.error_kind,
+        }
+    }
+}
+
+/// A complete authoritative transport observation.
+///
+/// Consumers rebase to this structure as a whole. They must not route it
+/// through sparse-delta merge behavior.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerTransportSnapshot {
+    pub load_attempt_id: SnapshotField<LoadAttemptId>,
+    pub media_generation: SnapshotField<PlayerMediaGeneration>,
+    pub observed_at: SnapshotField<PlayerObservationTimestamp>,
+    pub phase: SnapshotField<PlayerTransportPhase>,
+    pub position_seconds: SnapshotField<f64>,
+    pub playback_rate: SnapshotField<f64>,
+    pub logical_pause: SnapshotField<bool>,
+    pub paused_for_cache: SnapshotField<bool>,
+    pub cache_percentage: SnapshotField<f64>,
+    pub seeking: SnapshotField<bool>,
+    pub seekable: SnapshotField<bool>,
+    pub timeline_kind: SnapshotField<PlayerTimelineKind>,
+    pub core_idle: SnapshotField<bool>,
+    pub demuxer_cache_idle: SnapshotField<bool>,
+    pub playback_restart_sequence: SnapshotField<u64>,
+    pub eof_reached: SnapshotField<bool>,
+    pub seekable_ranges: SnapshotField<Vec<PlayerSeekableRange>>,
+    pub known_live_seekable_window: SnapshotField<PlayerSeekableRange>,
+    pub buffered_duration_seconds: SnapshotField<f64>,
+    pub buffered_bytes: SnapshotField<u64>,
+    pub input_rate_bytes_per_second: SnapshotField<u64>,
+    pub error_kind: SnapshotField<PlayerMediaLoadFailureKind>,
+}
+
+impl PlayerTransportSnapshot {
+    /// Replaces every authoritative field, including absent and unavailable
+    /// fields.
+    pub fn rebase(&mut self, authoritative: Self) {
+        *self = authoritative;
+    }
+
+    /// Applies one sparse delta while retaining every omitted field.
+    pub fn apply_delta(&mut self, delta: PlayerTransportDelta) {
+        macro_rules! apply {
+            ($field:ident) => {
+                if let Some(value) = delta.$field {
+                    self.$field = SnapshotField::Known(value);
+                }
+            };
+        }
+
+        apply!(load_attempt_id);
+        apply!(media_generation);
+        apply!(observed_at);
+        apply!(phase);
+        apply!(position_seconds);
+        apply!(playback_rate);
+        apply!(logical_pause);
+        apply!(paused_for_cache);
+        apply!(cache_percentage);
+        apply!(seeking);
+        apply!(seekable);
+        apply!(timeline_kind);
+        apply!(core_idle);
+        apply!(demuxer_cache_idle);
+        apply!(playback_restart_sequence);
+        apply!(eof_reached);
+        apply!(seekable_ranges);
+        apply!(known_live_seekable_window);
+        apply!(buffered_duration_seconds);
+        apply!(buffered_bytes);
+        apply!(input_rate_bytes_per_second);
+        apply!(error_kind);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerMediaLoadFailureKind {
     LoadAborted,
     FormatUnsupported,
@@ -758,6 +1065,383 @@ impl PlayerMediaLoadOutcome {
     pub fn succeeded(&self) -> bool {
         self.failure.is_none()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerMediaLoadObservation {
+    pub outcome: PlayerMediaLoadOutcome,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub observed_at: Option<PlayerObservationTimestamp>,
+}
+
+impl PlayerMediaLoadObservation {
+    pub const fn new(
+        outcome: PlayerMediaLoadOutcome,
+        media_generation: Option<PlayerMediaGeneration>,
+        observed_at: Option<PlayerObservationTimestamp>,
+    ) -> Self {
+        Self {
+            outcome,
+            media_generation,
+            observed_at,
+        }
+    }
+
+    pub const fn unsequenced(outcome: PlayerMediaLoadOutcome) -> Self {
+        Self::new(outcome, None, None)
+    }
+}
+
+/// Monotonic adapter-local order assigned when a player event enters the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerEventSequence(u64);
+
+impl PlayerEventSequence {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One event from an adapter's causally ordered player stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerOrderedEventKind {
+    CommandProgress(PlayerCommandProgress),
+    LocalFile(PlayerLocalFileObservation),
+    MediaLoad(PlayerMediaLoadObservation),
+    Transport(PlayerTransportTelemetryUpdate),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerOrderedEvent {
+    pub sequence: PlayerEventSequence,
+    pub kind: PlayerOrderedEventKind,
+}
+
+impl PlayerOrderedEvent {
+    pub const fn new(sequence: PlayerEventSequence, kind: PlayerOrderedEventKind) -> Self {
+        Self { sequence, kind }
+    }
+}
+
+/// Atomic adapter snapshot used by owners that consume the ordered event stream.
+///
+/// Legacy playback telemetry remains available in the same batch for field-level fallback, so
+/// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerObservationBatch {
+    /// Highest sequence discarded before the authoritative snapshot in `ordered_events`.
+    ///
+    /// When present, consumers must discard causal inference derived from earlier events. Events
+    /// in this batch begin at the following sequence and re-establish the adapter's current file,
+    /// transport, and still-relevant command lifecycle state. This is an observation rebase, not
+    /// evidence that the media or player attachment changed.
+    pub dropped_events_through: Option<PlayerEventSequence>,
+    pub ordered_events: Vec<PlayerOrderedEvent>,
+    pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
+}
+
+/// Terminal state of one physical player load attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerPhysicalLoadOutcome {
+    Ended,
+    Failed(PlayerMediaLoadFailureKind),
+    NeverStarted,
+    TransportDisconnected,
+}
+
+/// Semantic media-load result retained independently from telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerLoadAttemptResult {
+    Loaded,
+    /// The physical attempt may still emit lifecycle events, but no longer
+    /// owns logical playback.
+    Superseded,
+    Failed(PlayerMediaLoadFailureKind),
+    NeverStarted,
+    TransportDisconnected,
+    /// Authoritative recovery could not prove either success or failure.
+    Indeterminate,
+}
+
+/// One semantic result for a physical media load attempt.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoadAttemptOutcome {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub attempt_id: LoadAttemptId,
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub requested_target: String,
+    pub loaded_target: Option<String>,
+    pub result: PlayerLoadAttemptResult,
+}
+
+impl std::fmt::Debug for LoadAttemptOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadAttemptOutcome")
+            .field("attachment_epoch", &self.attachment_epoch)
+            .field("attempt_id", &self.attempt_id)
+            .field("media_generation", &self.media_generation)
+            .field("command_id", &self.command_id)
+            .field("requested_target", &sorotte_secret::REDACTED_SECRET)
+            .field(
+                "loaded_target",
+                &self
+                    .loaded_target
+                    .as_ref()
+                    .map(|_| sorotte_secret::REDACTED_SECRET),
+            )
+            .field("result", &self.result)
+            .finish()
+    }
+}
+
+/// A complete state reacquisition delivered outside the ordinary event queue.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerAuthoritativeSnapshot {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence_boundary: PlayerSequenceBoundary,
+    pub transport: PlayerTransportSnapshot,
+    pub active_load: SnapshotField<PlayerActiveLoadSnapshot>,
+    pub current_playlist_entry_id: SnapshotField<i64>,
+    pub current_path: SnapshotField<String>,
+}
+
+/// Authoritative identity of the load that currently owns player transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerActiveLoadSnapshot {
+    pub attempt_id: LoadAttemptId,
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub playlist_entry_id: Option<i64>,
+    /// Whether mpv has crossed the physical `file-loaded` boundary for this
+    /// transport owner. A known path or `start-file` is not equivalent.
+    pub physical_file_loaded: bool,
+    /// The reducer's single semantic result, when one has been emitted.
+    ///
+    /// This remains `None` while the physical attempt is merely bound or
+    /// starting, and retains `Indeterminate` if late physical evidence arrives
+    /// after the semantic deadline.
+    pub semantic_load_result: Option<PlayerLoadAttemptResult>,
+    /// Whether this physical owner has permanently lost logical ownership.
+    ///
+    /// A previously loaded attempt may remain physically current while a
+    /// replacement is pending, so this cannot be inferred from the semantic
+    /// result or the physical owner identity.
+    pub logical_ownership_revoked: bool,
+}
+
+/// One normalized semantic or telemetry event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerEvent {
+    AttachmentReplaced {
+        previous_epoch: PlayerAttachmentEpoch,
+    },
+    LocalFileChanged {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        update: LocalFileUpdate,
+    },
+    TransportDelta(PlayerTransportDelta),
+    LoadAttemptBound {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+    },
+    LoadAttemptStarting {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+        /// Whether this start-file observation establishes the physical owner
+        /// of subsequent transport telemetry.
+        ///
+        /// A normal start owns transport immediately, before semantic
+        /// file-loaded completion. A late start for an indeterminate
+        /// quiescent attempt remains correlated but fails closed until a later
+        /// owned file-loaded observation restores transport ownership.
+        owns_transport: bool,
+    },
+    LoadAttemptActive {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        command_id: Option<PlayerCommandId>,
+        playlist_entry_id: i64,
+    },
+    /// The reducer has revoked this attempt's logical authority in favor of a
+    /// successor. Physical lifecycle events may still remain correlated to the
+    /// revoked attempt, but it can no longer report semantic success or recover
+    /// playlist resolution.
+    LoadAttemptLogicalOwnershipRevoked {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        successor_attempt_id: LoadAttemptId,
+    },
+    LoadAttemptTerminal {
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+        outcome: PlayerPhysicalLoadOutcome,
+    },
+    LogicalPlaybackTerminal {
+        media_generation: PlayerMediaGeneration,
+        attempt_id: LoadAttemptId,
+        outcome: PlayerPhysicalLoadOutcome,
+    },
+    EventGapDetected,
+}
+
+/// One normalized event carrying its authoritative ingress order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequencedPlayerEvent {
+    pub order: PlayerEventOrder,
+    pub event: PlayerEvent,
+}
+
+/// Terminal semantic result of one tracked player command.
+///
+/// Completion observation and physical-effect lifetime are deliberately
+/// separate. In particular, `CompletionNotObserved` does not mean that an
+/// accepted load or seek can no longer produce player events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerCommandSemanticResult {
+    Completed,
+    Superseded,
+    Failed(PlayerCommandFailureKind),
+    CompletionNotObserved,
+    TransportDisconnected,
+}
+
+/// One non-lossy terminal command outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerCommandOutcome {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub command_id: PlayerCommandId,
+    pub media_generation: Option<PlayerMediaGeneration>,
+    pub result: PlayerCommandSemanticResult,
+}
+
+/// A non-lossy semantic outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerSemanticOutcome {
+    Command(PlayerCommandOutcome),
+    LoadAttempt(LoadAttemptOutcome),
+}
+
+/// One semantic outcome carrying the same causal order as normalized events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SequencedPlayerSemanticOutcome {
+    pub order: PlayerEventOrder,
+    pub outcome: PlayerSemanticOutcome,
+}
+
+/// Opaque consumer acknowledgement for one event batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerEventAcknowledgementToken {
+    attachment_epoch: PlayerAttachmentEpoch,
+    value: u64,
+}
+
+impl PlayerEventAcknowledgementToken {
+    pub const fn new(attachment_epoch: PlayerAttachmentEpoch, value: u64) -> Self {
+        Self {
+            attachment_epoch,
+            value,
+        }
+    }
+
+    pub const fn attachment_epoch(self) -> PlayerAttachmentEpoch {
+        self.attachment_epoch
+    }
+
+    pub const fn get(self) -> u64 {
+        self.value
+    }
+}
+
+/// Ordered player delivery unit with explicit recovery and acknowledgement.
+///
+/// A batch is closed over exactly one attachment epoch: its header, sequence
+/// boundary, acknowledgement token, snapshot, events, semantic orders, and
+/// semantic payloads all belong to `attachment_epoch`. During attachment
+/// replacement, producers must retain and deliver any old-epoch terminal
+/// handoff batches before exposing the replacement epoch. Consumers may
+/// therefore reject mixed-epoch batches without losing handoff liveness.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerEventBatch {
+    pub attachment_epoch: PlayerAttachmentEpoch,
+    pub sequence_boundary: PlayerSequenceBoundary,
+    pub authoritative_snapshot: Option<PlayerAuthoritativeSnapshot>,
+    pub events: Vec<SequencedPlayerEvent>,
+    /// Retained until [`PlayerAdapter::acknowledge_player_event_batch`] accepts
+    /// this batch's token.
+    pub semantic_outcomes: Vec<SequencedPlayerSemanticOutcome>,
+    pub acknowledgement_token: PlayerEventAcknowledgementToken,
+}
+
+/// Test-only, cross-layer view of one physical load attempt.
+///
+/// This type is feature-gated because it exists only to compare the reducer,
+/// adapter, and production consumers without making private ownership ledgers
+/// part of the supported player API.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct LifecycleVerificationAttemptProjection {
+    pub media_generation: PlayerMediaGeneration,
+    pub command_id: Option<PlayerCommandId>,
+    pub playlist_entry_id: Option<i64>,
+    pub owns_transport: SnapshotField<bool>,
+    pub semantic_load_result: SnapshotField<Option<PlayerLoadAttemptResult>>,
+    pub logical_ownership_revoked: SnapshotField<bool>,
+    pub physical_terminal: SnapshotField<bool>,
+}
+
+/// Test-only comparable lifecycle projection shared by verification harnesses.
+///
+/// `SnapshotField::Unavailable` means the projecting layer does not claim that
+/// fact. `KnownAbsent` means the layer authoritatively projects no value.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct LifecycleVerificationProjection {
+    pub attachment_epoch: SnapshotField<PlayerAttachmentEpoch>,
+    pub sequence_boundary: SnapshotField<PlayerSequenceBoundary>,
+    pub in_flight_acknowledgement: SnapshotField<PlayerEventAcknowledgementToken>,
+    pub pending_event_count: SnapshotField<usize>,
+    pub retained_semantic_outcome_count: SnapshotField<usize>,
+    pub snapshot_required: SnapshotField<bool>,
+
+    pub physical_transport_owner: SnapshotField<LoadAttemptId>,
+    pub physical_media_generation: SnapshotField<PlayerMediaGeneration>,
+    pub physical_playlist_entry_id: SnapshotField<i64>,
+    pub physical_path: SnapshotField<String>,
+    pub physical_file_loaded: SnapshotField<bool>,
+    pub logical_owner: SnapshotField<LoadAttemptId>,
+
+    pub transport: PlayerTransportSnapshot,
+    pub attempts: std::collections::BTreeMap<LoadAttemptId, LifecycleVerificationAttemptProjection>,
+    pub pending_commands: SnapshotField<std::collections::BTreeSet<PlayerCommandId>>,
+    pub terminal_command_results:
+        SnapshotField<std::collections::BTreeMap<PlayerCommandId, PlayerCommandSemanticResult>>,
+    pub terminal_load_results:
+        SnapshotField<std::collections::BTreeMap<LoadAttemptId, PlayerLoadAttemptResult>>,
+
+    pub pending_playlist_resolution_attempt: SnapshotField<LoadAttemptId>,
+    pub playlist_resolution_state: SnapshotField<String>,
+    pub fallback_pending: SnapshotField<bool>,
+    pub player_local_file: SnapshotField<String>,
+    pub player_local_file_placeholder: SnapshotField<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerEventDeliveryMode {
+    LegacyTypedQueues,
+    OrderedAcknowledgedBatches,
 }
 
 pub trait PlayerAdapter: Send + Sync {
@@ -892,6 +1576,15 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
         None
     }
+    /// Returns a generation-aware local-file identity observation when the
+    /// adapter can preserve its media boundary.
+    ///
+    /// The default consumes the legacy update and marks it unsequenced, which
+    /// keeps existing external adapters source-compatible.
+    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
+        self.take_local_file_update()
+            .map(PlayerLocalFileObservation::unsequenced)
+    }
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         None
     }
@@ -910,6 +1603,54 @@ pub trait PlayerAdapter: Send + Sync {
     }
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
         None
+    }
+    /// Returns a generation-aware media-load result when the adapter can
+    /// preserve its position in the player event stream.
+    ///
+    /// The default keeps legacy adapters source-compatible and marks their
+    /// result unsequenced.
+    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
+        self.take_media_load_outcome()
+            .map(PlayerMediaLoadObservation::unsequenced)
+    }
+    /// Takes one atomic, causally ordered player-event snapshot.
+    ///
+    /// Returning `None` advertises legacy independent getter semantics. Adapters that return a
+    /// batch must perform maintenance and event polling exactly once before draining the batch.
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
+        None
+    }
+    /// Requests a fresh authoritative ordered snapshot after the consumer detects an unannounced
+    /// sequence gap.
+    ///
+    /// Legacy adapters may ignore this request. Ordered adapters should make the next batch carry
+    /// `dropped_events_through` and current file/transport observations.
+    fn request_ordered_event_reacquisition(&mut self) {}
+
+    /// Returns the next ordered batch without consuming it.
+    ///
+    /// Repeated calls before acknowledgement may return the same batch. The
+    /// default keeps adapters that expose only the legacy getters compatible.
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        None
+    }
+    /// Selects the lifecycle event-delivery contract for this adapter
+    /// attachment.
+    ///
+    /// The returned mode must remain constant for the lifetime of an
+    /// attachment. Changing modes requires a new attachment epoch or an
+    /// equivalent explicit consumer reset. Within one attachment, an adapter
+    /// must not expose lifecycle ownership through both delivery modes.
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        PlayerEventDeliveryMode::LegacyTypedQueues
+    }
+    /// Acknowledges a batch only after the consumer has successfully applied
+    /// it.
+    fn acknowledge_player_event_batch(
+        &mut self,
+        _token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        Err(PlayerError::Unsupported("acknowledge_player_event_batch"))
     }
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
@@ -939,8 +1680,9 @@ mod tests {
         DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate,
         PlayerCapabilities, PlayerCapability, PlayerCommand, PlayerCommandFailureKind,
         PlayerCommandId, PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult,
-        PlayerError, PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-        PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
+        PlayerError, PlayerEventSequence, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+        PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerOrderedEvent,
+        PlayerOrderedEventKind, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
         PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
 
@@ -952,9 +1694,34 @@ mod tests {
         }
     }
 
+    struct LegacyLocalFilePlayer(Option<LocalFileUpdate>);
+
+    impl PlayerAdapter for LegacyLocalFilePlayer {
+        fn name(&self) -> &'static str {
+            "legacy-local-file"
+        }
+
+        fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+            self.0.take()
+        }
+    }
+
+    struct LegacyMediaLoadPlayer(Option<PlayerMediaLoadOutcome>);
+
+    impl PlayerAdapter for LegacyMediaLoadPlayer {
+        fn name(&self) -> &'static str {
+            "legacy-media-load"
+        }
+
+        fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+            self.0.take()
+        }
+    }
+
     #[test]
     fn unsupported_methods_error_by_default() {
         let mut player = DummyPlayer;
+        assert_eq!(player.take_ordered_event_batch(), None);
         assert_eq!(
             player.open_file("movie.mkv"),
             Err(PlayerError::Unsupported("open_file"))
@@ -1049,9 +1816,11 @@ mod tests {
         );
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
+        assert_eq!(player.take_local_file_observation(), None);
         assert_eq!(player.take_playback_telemetry_update(), None);
         assert_eq!(player.take_command_progress(), None);
         assert_eq!(player.take_media_load_outcome(), None);
+        assert_eq!(player.take_media_load_observation(), None);
         assert_eq!(player.take_pending_chat_request(), None);
         assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
         assert_eq!(
@@ -1062,6 +1831,55 @@ mod tests {
             player.execute_tracked(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("execute_tracked"))
         );
+    }
+
+    #[test]
+    fn ordered_event_sequence_preserves_adapter_assigned_identity() {
+        let event = PlayerOrderedEvent::new(
+            PlayerEventSequence::new(42),
+            PlayerOrderedEventKind::CommandProgress(PlayerCommandProgress::accepted(
+                PlayerCommandId::new(9),
+                Some(PlayerMediaGeneration::new(3)),
+                None,
+            )),
+        );
+        assert_eq!(event.sequence.get(), 42);
+        assert!(matches!(
+            event.kind,
+            PlayerOrderedEventKind::CommandProgress(progress)
+                if progress.command_id == PlayerCommandId::new(9)
+        ));
+    }
+
+    #[test]
+    fn local_file_observation_wraps_legacy_unsequenced_adapters() {
+        let mut player =
+            LegacyLocalFilePlayer(Some(LocalFileUpdate::new("movie.mkv").with_size_bytes(123)));
+
+        let observation = player
+            .take_local_file_observation()
+            .expect("legacy local-file update");
+
+        assert_eq!(observation.update.name, "movie.mkv");
+        assert_eq!(observation.update.size_bytes, Some(123));
+        assert_eq!(observation.media_generation, None);
+        assert_eq!(observation.observed_at, None);
+        assert_eq!(player.take_local_file_observation(), None);
+    }
+
+    #[test]
+    fn media_load_observation_wraps_legacy_unsequenced_adapters() {
+        let outcome = PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()));
+        let mut player = LegacyMediaLoadPlayer(Some(outcome.clone()));
+
+        let observation = player
+            .take_media_load_observation()
+            .expect("legacy media-load outcome");
+
+        assert_eq!(observation.outcome, outcome);
+        assert_eq!(observation.media_generation, None);
+        assert_eq!(observation.observed_at, None);
+        assert_eq!(player.take_media_load_observation(), None);
     }
 
     #[test]

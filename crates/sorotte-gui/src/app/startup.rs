@@ -6,7 +6,10 @@ use std::{
 use sorotte_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
 use sorotte_client_app::app_boundary::{
     persistence::load_sorotte_ini_stored_client_settings_mvp_from_path,
-    state::StoredClientSettingsMvp,
+    state::{
+        StoredClientSettingsMvp, TlsPolicy,
+        stored_client_settings_runtime_snapshot_legacy_compatible,
+    },
     storage::{
         SorotteClientStoragePaths, SorotteClientStorageSource, current_sorotte_client_install_root,
         resolve_sorotte_client_storage_paths,
@@ -146,6 +149,13 @@ fn gui_startup_settings_from_env() -> Result<StoredClientSettingsMvp, String> {
     )
 }
 
+fn gui_startup_tcp_tls_policy(settings: &StoredClientSettingsMvp) -> TlsPolicy {
+    stored_client_settings_runtime_snapshot_legacy_compatible(settings)
+        .config
+        .connection
+        .tls_policy
+}
+
 pub(super) fn gui_startup_host_and_settings()
 -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String> {
     let config_path = resolve_sorotte_gui_config_path_legacy_compatible();
@@ -169,6 +179,7 @@ pub(super) fn gui_startup_host_and_settings()
         bootstrap.username.clone(),
         bootstrap.room.clone(),
         bootstrap.host_arg(),
+        gui_startup_tcp_tls_policy(&settings),
         config_path,
     )?;
     Ok((host, settings))

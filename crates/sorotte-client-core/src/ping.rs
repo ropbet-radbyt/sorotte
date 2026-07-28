@@ -19,11 +19,6 @@ impl ClientPingMetricsLegacyCompatible {
         self.observe_normalized_inbound_state_at(&state, now_seconds);
     }
 
-    pub(crate) fn observe_normalized_inbound_state(&mut self, state: &ClientStateUpdate) {
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
-        self.observe_normalized_inbound_state_at(state, now_seconds);
-    }
-
     pub(crate) fn observe_normalized_inbound_state_at(
         &mut self,
         state: &ClientStateUpdate,

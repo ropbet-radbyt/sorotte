@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -21,7 +21,8 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintError,
-    MediaFingerprintRecord, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
+    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexCommitError,
+    MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
     MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
     fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
@@ -41,10 +42,10 @@ use super::shell_state::{
 use zip::ZipArchive;
 
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
-const MEDIA_MATCH_INDEX_FILE: &str = "index-v3.sqlite3";
-const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v3.previous.sqlite3";
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+const MEDIA_MATCH_DISCOVERY_MAX_DEPTH: usize = 64;
+const MEDIA_MATCH_DISCOVERY_MAX_NODES: usize = 250_000;
 const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(windows)]
@@ -83,6 +84,16 @@ pub(super) struct MediaMatchIndexRebuildResult {
     pub(super) current_decision: Option<String>,
     pub(super) nearest_match: Option<String>,
     pub(super) last_evidence: Option<String>,
+}
+
+pub(super) struct MediaMatchIndexRebuildRequest<'a> {
+    pub(super) root: &'a Path,
+    pub(super) tool_root: &'a Path,
+    pub(super) search_roots: &'a [PathBuf],
+    pub(super) current_player_path: Option<&'a str>,
+    pub(super) settings: &'a MediaMatchSettings,
+    pub(super) extraction_settings: &'a MediaExtractionSettings,
+    pub(super) cancel_flag: Option<&'a AtomicBool>,
 }
 
 pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
@@ -382,99 +393,115 @@ fn managed_media_match_index_dir(root: &Path) -> PathBuf {
 }
 
 fn managed_media_match_index_path(root: &Path) -> PathBuf {
-    managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_FILE)
-}
-
-fn managed_media_match_index_backup_path(root: &Path) -> PathBuf {
-    managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_BACKUP_FILE)
-}
-
-fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut text = path.as_os_str().to_os_string();
-    text.push(suffix);
-    PathBuf::from(text)
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("failed removing '{}': {error}", path.display()))?;
-    }
-    Ok(())
-}
-
-fn remove_sqlite_file_set(path: &Path) -> Result<(), String> {
-    remove_file_if_exists(path)?;
-    remove_file_if_exists(&path_with_suffix(path, "-wal"))?;
-    remove_file_if_exists(&path_with_suffix(path, "-shm"))?;
-    remove_file_if_exists(&path_with_suffix(path, "-journal"))?;
-    Ok(())
+    MediaIndexService::new(managed_media_match_index_dir(root)).index_path()
 }
 
 pub(super) fn media_match_sqlite_index_exists(root: &Path) -> bool {
     managed_media_match_index_path(root).exists()
 }
 
-pub(super) fn prepare_media_match_index_rebuild_backup(root: &Path) -> Result<bool, String> {
-    let index_dir = managed_media_match_index_dir(root);
-    fs::create_dir_all(&index_dir).map_err(|error| {
-        format!(
-            "failed creating media-match index directory '{}': {error}",
-            index_dir.display()
-        )
-    })?;
-    let index_path = managed_media_match_index_path(root);
-    let backup_path = managed_media_match_index_backup_path(root);
-    remove_file_if_exists(&backup_path)?;
-    if !index_path.exists() {
-        return Ok(false);
-    }
-    fs::copy(&index_path, &backup_path).map_err(|error| {
-        format!(
-            "failed preserving previous media-match index '{}' as '{}': {error}",
-            index_path.display(),
-            backup_path.display()
-        )
-    })?;
-    Ok(true)
+#[derive(Debug)]
+pub(super) struct GuiMediaMatchIndexBuildTransaction {
+    staging_app_root: PathBuf,
+    transaction: Option<MediaIndexBuildTransaction>,
 }
 
-pub(super) fn restore_media_match_index_rebuild_backup(
-    root: &Path,
-    backup_existed: bool,
-) -> Result<(), String> {
-    let index_path = managed_media_match_index_path(root);
-    let backup_path = managed_media_match_index_backup_path(root);
-    remove_sqlite_file_set(&index_path)?;
-    if backup_existed {
-        if !backup_path.exists() {
-            return Err(format!(
-                "previous media-match index backup '{}' is missing",
-                backup_path.display()
-            ));
+impl GuiMediaMatchIndexBuildTransaction {
+    pub(super) fn staging_app_root(&self) -> &Path {
+        &self.staging_app_root
+    }
+
+    pub(super) fn commit(mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
+        let result = self
+            .transaction
+            .take()
+            .expect("media-match build transaction should be present")
+            .commit();
+        let outer_cleanup = if self.staging_app_root.exists() {
+            fs::remove_dir_all(&self.staging_app_root)
+                .err()
+                .map(|error| {
+                    format!(
+                        "failed removing media-match staging directory '{}': {error}",
+                        self.staging_app_root.display()
+                    )
+                })
+        } else {
+            None
+        };
+        match (result, outer_cleanup) {
+            (Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }), outer_cleanup) => {
+                let warnings = [cleanup_warning, outer_cleanup]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                Ok(MediaIndexCommitOutcome::Activated {
+                    cleanup_warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+                })
+            }
+            (Err(MediaIndexCommitError::NotActivated(error)), cleanup) => {
+                Err(MediaIndexCommitError::NotActivated(match cleanup {
+                    Some(cleanup) => format!("{error}; {cleanup}"),
+                    None => error,
+                }))
+            }
+            (Err(MediaIndexCommitError::StaleBase(error)), cleanup) => {
+                Err(MediaIndexCommitError::StaleBase(match cleanup {
+                    Some(cleanup) => format!("{error}; {cleanup}"),
+                    None => error,
+                }))
+            }
         }
-        fs::rename(&backup_path, &index_path).map_err(|error| {
-            format!(
-                "failed restoring previous media-match index '{}' to '{}': {error}",
-                backup_path.display(),
-                index_path.display()
-            )
-        })?;
-    } else {
-        remove_file_if_exists(&backup_path)?;
     }
-    Ok(())
+
+    pub(super) fn abort(mut self) -> Result<(), String> {
+        self.transaction
+            .take()
+            .expect("media-match build transaction should be present")
+            .abort()?;
+        if self.staging_app_root.exists() {
+            fs::remove_dir_all(&self.staging_app_root).map_err(|error| {
+                format!(
+                    "failed removing media-match staging directory '{}': {error}",
+                    self.staging_app_root.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
 }
 
-pub(super) fn discard_media_match_index_rebuild_backup(root: &Path) -> Result<(), String> {
-    remove_file_if_exists(&managed_media_match_index_backup_path(root))
+pub(super) fn prepare_media_match_index_rebuild_backup(
+    root: &Path,
+) -> Result<GuiMediaMatchIndexBuildTransaction, String> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging_app_root = root.join("cache").join(format!(
+        ".media-match-build-{}-{unique}",
+        std::process::id()
+    ));
+    let transaction = MediaIndexBuildTransaction::begin(
+        managed_media_match_index_dir(root),
+        managed_media_match_index_dir(&staging_app_root),
+    )?;
+    Ok(GuiMediaMatchIndexBuildTransaction {
+        staging_app_root,
+        transaction: Some(transaction),
+    })
 }
 
 pub(super) fn clear_persisted_media_match_cache_at_root(root: &Path) -> Result<(), String> {
-    let index_path = managed_media_match_index_path(root);
-    remove_sqlite_file_set(&index_path)
-        .map_err(|error| format!("failed removing media-match SQLite index: {error}"))?;
-    remove_file_if_exists(&managed_media_match_index_backup_path(root))?;
+    let index_dir = managed_media_match_index_dir(root);
+    if index_dir.exists() {
+        fs::remove_dir_all(&index_dir).map_err(|error| {
+            format!(
+                "failed removing media-match SQLite index directory '{}': {error}",
+                index_dir.display()
+            )
+        })?;
+    }
     let metadata_path = managed_media_match_metadata_path(root);
     if metadata_path.exists() {
         fs::remove_file(&metadata_path).map_err(|error| {
@@ -679,6 +706,7 @@ fn media_match_install_success_message() -> String {
     "Installed ffmpeg and ffprobe for Media Matching V3.".to_owned()
 }
 
+#[cfg(test)]
 pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_cancel<F>(
     root: &Path,
     search_roots: &[PathBuf],
@@ -686,11 +714,41 @@ pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_c
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
     cancel_flag: Option<&AtomicBool>,
+    progress: F,
+) -> Result<MediaMatchIndexRebuildResult, String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    rebuild_persisted_media_match_index_with_tool_root_and_cancel(
+        MediaMatchIndexRebuildRequest {
+            root,
+            tool_root: root,
+            search_roots,
+            current_player_path,
+            settings,
+            extraction_settings,
+            cancel_flag,
+        },
+        progress,
+    )
+}
+
+pub(super) fn rebuild_persisted_media_match_index_with_tool_root_and_cancel<F>(
+    request: MediaMatchIndexRebuildRequest<'_>,
     mut progress: F,
 ) -> Result<MediaMatchIndexRebuildResult, String>
 where
     F: FnMut(MediaMatchToolProgress),
 {
+    let MediaMatchIndexRebuildRequest {
+        root,
+        tool_root,
+        search_roots,
+        current_player_path,
+        settings,
+        extraction_settings,
+        cancel_flag,
+    } = request;
     if !settings.fingerprinting_enabled {
         return Err("Enable Media Matching fingerprinting before rebuilding the index.".to_owned());
     }
@@ -699,10 +757,11 @@ where
         Some(format!("{} roots", search_roots.len())),
         0.05,
     ));
-    let candidates = collect_media_match_candidates(search_roots);
+    let discovery = discover_media_match_candidates(search_roots, cancel_flag)?;
+    let candidates = discovery.candidates;
     if current_player_path.is_none() {
-        inventory_media_match_candidates(root, search_roots, &candidates, cancel_flag)?;
-        match media_match_tool_paths_for_settings(root, extraction_settings) {
+        inventory_media_match_candidates(root, &discovery.scanned_roots, &candidates, cancel_flag)?;
+        match media_match_tool_paths_for_settings(tool_root, extraction_settings) {
             Ok(tools) => {
                 return rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                     MediaMatchCandidateRebuildRequest {
@@ -737,7 +796,7 @@ where
             }
         }
     }
-    let tools = media_match_tool_paths_for_settings(root, extraction_settings)?;
+    let tools = media_match_tool_paths_for_settings(tool_root, extraction_settings)?;
     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
         MediaMatchCandidateRebuildRequest {
             root,
@@ -1025,14 +1084,18 @@ where
         Some(format!("{} roots", request.search_roots.len())),
         0.05,
     ));
-    let explicit_candidates = request.candidates.as_ref();
-    let candidates = explicit_candidates
-        .cloned()
-        .unwrap_or_else(|| collect_media_match_candidates(request.search_roots));
-    if explicit_candidates.is_none() {
+    let (candidates, scanned_roots) = match request.candidates.as_ref() {
+        Some(candidates) => (candidates.clone(), None),
+        None => {
+            let discovery =
+                discover_media_match_candidates(request.search_roots, request.cancel_flag)?;
+            (discovery.candidates, Some(discovery.scanned_roots))
+        }
+    };
+    if let Some(scanned_roots) = scanned_roots.as_ref() {
         inventory_media_match_candidates(
             request.root,
-            request.search_roots,
+            scanned_roots,
             &candidates,
             request.cancel_flag,
         )?;
@@ -1395,22 +1458,137 @@ pub(super) fn media_match_tool_paths_for_settings(
     })
 }
 
-fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
+#[derive(Debug, Clone, Copy)]
+struct MediaMatchDiscoveryLimits {
+    max_depth: usize,
+    max_nodes: usize,
+}
+
+fn collect_media_match_candidates(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<Vec<PathBuf>, String> {
+    discover_media_match_candidates(search_roots, cancel_flag).map(|discovery| discovery.candidates)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaMatchCandidateDiscovery {
+    candidates: Vec<PathBuf>,
+    scanned_roots: Vec<PathBuf>,
+}
+
+fn discover_media_match_candidates(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<MediaMatchCandidateDiscovery, String> {
+    discover_media_match_candidates_with_limits(
+        search_roots,
+        cancel_flag,
+        MediaMatchDiscoveryLimits {
+            max_depth: MEDIA_MATCH_DISCOVERY_MAX_DEPTH,
+            max_nodes: MEDIA_MATCH_DISCOVERY_MAX_NODES,
+        },
+    )
+}
+
+#[cfg(test)]
+fn collect_media_match_candidates_with_limits(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+    limits: MediaMatchDiscoveryLimits,
+) -> Result<Vec<PathBuf>, String> {
+    discover_media_match_candidates_with_limits(search_roots, cancel_flag, limits)
+        .map(|discovery| discovery.candidates)
+}
+
+fn discover_media_match_candidates_with_limits(
+    search_roots: &[PathBuf],
+    cancel_flag: Option<&AtomicBool>,
+    limits: MediaMatchDiscoveryLimits,
+) -> Result<MediaMatchCandidateDiscovery, String> {
     let mut files = Vec::new();
+    // Configured roots are explicit trust boundaries. Follow a root link/junction for directory
+    // validation and canonical cycle identity while preserving its configured spelling in
+    // candidate paths. Descendant links remain rejected below.
     let mut stack = search_roots
         .iter()
-        .filter(|root| root.is_dir())
         .cloned()
+        .enumerate()
+        .map(|(root_index, root)| (root, 0usize, true, root_index))
         .collect::<Vec<_>>();
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&path) else {
+    let mut visited_directories = HashSet::new();
+    let mut root_scan_complete = vec![true; search_roots.len()];
+    let mut root_was_traversed = vec![false; search_roots.len()];
+    // Root work items are nodes too. Count them up front so an attacker cannot bypass the global
+    // bound with a huge list of empty, duplicate, or nonexistent roots.
+    let mut visited_nodes = search_roots.len();
+    if visited_nodes > limits.max_nodes {
+        return Err(format!(
+            "Media Matching discovery exceeded its {}-node safety limit.",
+            limits.max_nodes
+        ));
+    }
+    while let Some((path, depth, is_explicit_root, root_index)) = stack.pop() {
+        check_media_match_discovery_canceled(cancel_flag)?;
+        let metadata = if is_explicit_root {
+            fs::metadata(&path)
+        } else {
+            fs::symlink_metadata(&path)
+        };
+        let Ok(metadata) = metadata else {
+            root_scan_complete[root_index] = false;
             continue;
         };
-        for entry in entries.flatten() {
+        if !metadata.is_dir() {
+            root_scan_complete[root_index] = false;
+            continue;
+        }
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            root_scan_complete[root_index] = false;
+            continue;
+        };
+        if !visited_directories.insert(media_match_directory_visit_key(&canonical_path)) {
+            root_scan_complete[root_index] = false;
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&path) else {
+            root_scan_complete[root_index] = false;
+            continue;
+        };
+        if is_explicit_root {
+            root_was_traversed[root_index] = true;
+        }
+        for entry in entries {
+            check_media_match_discovery_canceled(cancel_flag)?;
+            visited_nodes = visited_nodes.saturating_add(1);
+            if visited_nodes > limits.max_nodes {
+                return Err(format!(
+                    "Media Matching discovery exceeded its {}-node safety limit.",
+                    limits.max_nodes
+                ));
+            }
+            let Ok(entry) = entry else {
+                root_scan_complete[root_index] = false;
+                continue;
+            };
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() && media_match_candidate_extension(&path) {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                root_scan_complete[root_index] = false;
+                continue;
+            };
+            if metadata_is_directory_link(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
+                if depth >= limits.max_depth {
+                    return Err(format!(
+                        "Media Matching discovery exceeded its {}-level depth safety limit at {}.",
+                        limits.max_depth,
+                        path.display()
+                    ));
+                }
+                stack.push((path, depth + 1, false, root_index));
+            } else if metadata.is_file() && media_match_candidate_extension(&path) {
                 files.push(path);
             }
         }
@@ -1420,12 +1598,54 @@ fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
             .cmp(&normalize_media_path(right))
             .then_with(|| left.cmp(right))
     });
-    files
+    let scanned_roots = search_roots
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| root_was_traversed[*index] && root_scan_complete[*index])
+        .map(|(_, root)| root.clone())
+        .collect();
+    Ok(MediaMatchCandidateDiscovery {
+        candidates: files,
+        scanned_roots,
+    })
+}
+
+fn check_media_match_discovery_canceled(cancel_flag: Option<&AtomicBool>) -> Result<(), String> {
+    if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        Err("Media Matching discovery was canceled.".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn metadata_is_directory_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn media_match_directory_visit_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        key.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    key
 }
 
 fn inventory_media_match_candidates(
     root: &Path,
-    search_roots: &[PathBuf],
+    scanned_roots: &[PathBuf],
     candidates: &[PathBuf],
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
@@ -1451,7 +1671,7 @@ fn inventory_media_match_candidates(
             size_bytes,
         ));
     }
-    let normalized_roots = search_roots
+    let normalized_roots = scanned_roots
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
@@ -1476,8 +1696,8 @@ pub(super) fn rebuild_persisted_media_match_inventory_for_tests(
     root: &Path,
     search_roots: &[PathBuf],
 ) -> Result<(), String> {
-    let candidates = collect_media_match_candidates(search_roots);
-    inventory_media_match_candidates(root, search_roots, &candidates, None)
+    let discovery = discover_media_match_candidates(search_roots, None)?;
+    inventory_media_match_candidates(root, &discovery.scanned_roots, &discovery.candidates, None)
 }
 
 fn media_match_path_is_under_root(normalized_path: &str, normalized_root: &str) -> bool {
@@ -2310,9 +2530,10 @@ pub(super) fn media_match_cached_probable_candidate_for_remote_signature(
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchRemoteCandidateMatch> {
-    let candidates = candidates
-        .map(<[PathBuf]>::to_vec)
-        .unwrap_or_else(|| collect_media_match_candidates(search_roots));
+    let candidates = match candidates {
+        Some(candidates) => candidates.to_vec(),
+        None => collect_media_match_candidates(search_roots, None).ok()?,
+    };
     let selected = select_remote_media_match_candidates(&candidates, target_file_name);
     let cache = load_media_match_cache_for_settings(root, extraction_settings)?;
     best_remote_candidate_match(
@@ -2983,6 +3204,138 @@ mod tests {
             fingerprinting_enabled: true,
             ..MediaMatchSettings::default()
         }
+    }
+
+    #[test]
+    fn media_match_discovery_honors_cancellation_before_traversal() {
+        let root = unique_media_match_test_root("discovery-cancel");
+        std::fs::write(root.join("episode.mkv"), b"media").unwrap();
+        let canceled = AtomicBool::new(true);
+
+        let error = collect_media_match_candidates(&[root], Some(&canceled))
+            .expect_err("a canceled discovery must stop before scanning");
+
+        assert!(error.contains("discovery was canceled"));
+    }
+
+    #[test]
+    fn media_match_discovery_deduplicates_canonical_directories_and_bounds_nodes() {
+        let root = unique_media_match_test_root("discovery-visited");
+        std::fs::write(root.join("episode.mkv"), b"media").unwrap();
+        let duplicate_root = root.join(".");
+
+        let candidates = collect_media_match_candidates(&[root.clone(), duplicate_root], None)
+            .expect("duplicate roots should remain bounded");
+        assert_eq!(candidates, vec![root.join("episode.mkv")]);
+
+        let error = collect_media_match_candidates_with_limits(
+            &[root],
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 64,
+                max_nodes: 1,
+            },
+        )
+        .expect_err("directory entries after the root must count toward the node bound");
+        assert!(error.contains("node safety limit"));
+
+        let duplicate_roots = [
+            unique_media_match_test_root("discovery-root-bound-a"),
+            unique_media_match_test_root("discovery-root-bound-b"),
+        ];
+        let error = collect_media_match_candidates_with_limits(
+            &duplicate_roots,
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 64,
+                max_nodes: 1,
+            },
+        )
+        .expect_err("root work items themselves must count toward the node bound");
+        assert!(error.contains("node safety limit"));
+    }
+
+    #[test]
+    fn media_match_discovery_enforces_depth_bound() {
+        let root = unique_media_match_test_root("discovery-depth");
+        let nested = root.join("one").join("two");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("episode.mkv"), b"media").unwrap();
+
+        let error = collect_media_match_candidates_with_limits(
+            &[root],
+            None,
+            MediaMatchDiscoveryLimits {
+                max_depth: 1,
+                max_nodes: 100,
+            },
+        )
+        .expect_err("the configured depth bound must stop traversal");
+        assert!(error.contains("depth safety limit"));
+    }
+
+    #[test]
+    fn media_match_discovery_skips_directory_links_and_cycles() {
+        let root = unique_media_match_test_root("discovery-link-cycle");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("episode.mkv"), b"media").unwrap();
+        let link = nested.join("back-to-root");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&root, &link).is_err() {
+            // Windows CI hosts can disable unprivileged symlink creation. The reparse-point
+            // branch is still exercised when Developer Mode or the test privilege is present.
+            return;
+        }
+
+        let candidates = collect_media_match_candidates(&[root], None)
+            .expect("a directory-link cycle must be skipped");
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].ends_with(Path::new("nested").join("episode.mkv")));
+    }
+
+    #[test]
+    fn media_match_discovery_accepts_an_explicit_directory_symlink_root() {
+        let container = unique_media_match_test_root("discovery-explicit-link-root");
+        let target = container.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("episode.mkv"), b"media").unwrap();
+        let link = container.join("configured-root");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&target, &link).is_err() {
+            return;
+        }
+
+        let candidates = collect_media_match_candidates(std::slice::from_ref(&link), None)
+            .expect("an explicitly configured directory link should resolve to its target");
+        assert_eq!(candidates, vec![link.join("episode.mkv")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn media_match_discovery_accepts_an_explicit_windows_junction_root() {
+        let container = unique_media_match_test_root("discovery-explicit-junction-root");
+        let target = container.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("episode.mkv"), b"media").unwrap();
+        let junction = container.join("configured-root");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()
+            .expect("junction command should start");
+        assert!(status.success(), "test junction should be created");
+
+        let candidates = collect_media_match_candidates(std::slice::from_ref(&junction), None)
+            .expect("an explicitly configured junction should resolve to its target");
+        assert_eq!(candidates, vec![junction.join("episode.mkv")]);
     }
 
     fn healthy_tool_probe(name: &str) -> MediaMatchToolProbe {
@@ -3690,27 +4043,26 @@ mod tests {
     }
 
     #[test]
-    fn media_match_index_backup_restore_reinstates_previous_sqlite_index() {
+    fn media_match_index_build_abort_leaves_previous_sqlite_index_untouched() {
         let root = unique_media_match_test_root("restore");
         let mut previous_cache = MediaMatchCache::default();
         previous_cache.insert(fake_media_match_record("previous.mkv"));
         save_media_match_cache(&root, &previous_cache).expect("previous cache should be written");
 
-        let backup_existed =
+        let transaction =
             prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
-        assert!(backup_existed);
-
-        remove_sqlite_file_set(&managed_media_match_index_path(&root))
-            .expect("primary index should be removed for test");
+        let staging_root = transaction.staging_app_root().to_path_buf();
+        clear_persisted_media_match_cache_at_root(&staging_root)
+            .expect("staged index should be replaceable");
         let mut partial_cache = MediaMatchCache::default();
         partial_cache.insert(fake_media_match_record("partial.mkv"));
-        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
+        save_media_match_cache(&staging_root, &partial_cache)
+            .expect("partial staged cache should be written");
 
-        restore_media_match_index_rebuild_backup(&root, backup_existed)
-            .expect("previous index should be restored");
+        transaction.abort().expect("staged rebuild should abort");
         let restored =
             load_media_match_cache_for_settings(&root, &MediaExtractionSettings::default())
-                .expect("restored cache should load");
+                .expect("live cache should remain loadable");
 
         assert!(
             restored
@@ -3726,19 +4078,19 @@ mod tests {
     }
 
     #[test]
-    fn media_match_index_backup_restore_removes_partial_index_without_previous_db() {
+    fn media_match_index_build_abort_leaves_missing_live_index_missing() {
         let root = unique_media_match_test_root("restore-empty");
-        let backup_existed =
+        let transaction =
             prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
-        assert!(!backup_existed);
+        let staging_root = transaction.staging_app_root().to_path_buf();
 
         let mut partial_cache = MediaMatchCache::default();
         partial_cache.insert(fake_media_match_record("partial.mkv"));
-        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
-        assert!(managed_media_match_index_path(&root).exists());
+        save_media_match_cache(&staging_root, &partial_cache)
+            .expect("partial staged cache should be written");
+        assert!(!managed_media_match_index_path(&root).exists());
 
-        restore_media_match_index_rebuild_backup(&root, backup_existed)
-            .expect("partial index should be removed");
+        transaction.abort().expect("staged rebuild should abort");
         assert!(!managed_media_match_index_path(&root).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4090,6 +4442,82 @@ mod tests {
         assert!(
             !cache.records.contains_key(&removed_normalized_path),
             "deleted files under scanned roots should not remain in the media-match cache"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_preserves_records_when_configured_root_is_temporarily_missing() {
+        let root = unique_media_match_test_root("temporarily-missing-inventory-root");
+        let media_dir = root.join("media");
+        let offline_media_dir = root.join("media-offline");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let media_path = media_dir.join("episode.mkv");
+        std::fs::write(&media_path, b"episode").expect("media should be written");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let record = fake_media_match_record_for_file(&media_path, extraction_settings.clone());
+        let normalized_path = record.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(record);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        std::fs::rename(&media_dir, &offline_media_dir)
+            .expect("configured root should become temporarily unavailable");
+        rebuild_persisted_media_match_inventory_for_tests(&root, std::slice::from_ref(&media_dir))
+            .expect("temporarily missing root should not make the inventory rebuild fail");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("cached record should still load");
+        assert!(
+            cache.records.contains_key(&normalized_path),
+            "a temporarily missing configured root must not be treated as a successful empty scan"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_inventory_prunes_healthy_roots_while_retaining_an_offline_root() {
+        let root = unique_media_match_test_root("mixed-online-offline-inventory-roots");
+        let online_dir = root.join("online");
+        let offline_dir = root.join("offline");
+        let moved_offline_dir = root.join("offline-unmounted");
+        std::fs::create_dir_all(&online_dir).expect("online media dir should be created");
+        std::fs::create_dir_all(&offline_dir).expect("offline media dir should be created");
+        let deleted_online_path = online_dir.join("deleted.mkv");
+        let retained_offline_path = offline_dir.join("retained.mkv");
+        std::fs::write(&deleted_online_path, b"online").expect("online media should be written");
+        std::fs::write(&retained_offline_path, b"offline")
+            .expect("offline media should be written");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let deleted_online =
+            fake_media_match_record_for_file(&deleted_online_path, extraction_settings.clone());
+        let retained_offline =
+            fake_media_match_record_for_file(&retained_offline_path, extraction_settings.clone());
+        let deleted_online_key = deleted_online.identity.normalized_path.clone();
+        let retained_offline_key = retained_offline.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(deleted_online);
+        cache.insert(retained_offline);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        std::fs::remove_file(&deleted_online_path).expect("online file should be deleted");
+        std::fs::rename(&offline_dir, &moved_offline_dir)
+            .expect("offline root should become unavailable");
+        rebuild_persisted_media_match_inventory_for_tests(
+            &root,
+            &[online_dir.clone(), offline_dir.clone()],
+        )
+        .expect("mixed-root rebuild should succeed");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("retained cache should load");
+        assert!(
+            !cache.records.contains_key(&deleted_online_key),
+            "a healthy scanned root must continue pruning genuinely deleted files"
+        );
+        assert!(
+            cache.records.contains_key(&retained_offline_key),
+            "an unavailable root must retain its cached records"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

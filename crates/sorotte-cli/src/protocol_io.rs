@@ -2,6 +2,7 @@ use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::Instant;
 
 use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
@@ -41,7 +42,13 @@ where
             break;
         }
 
-        if line.len() + available.len() > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+        let buffered_len = line.len() + available.len();
+        let ends_with_framing_cr = available
+            .last()
+            .or_else(|| line.last())
+            .is_some_and(|byte| *byte == b'\r');
+        let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
+        if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
             return Err(anyhow::anyhow!(
                 "Inbound protocol line too long: exceeded {} bytes",
                 MAX_INBOUND_PROTOCOL_LINE_BYTES
@@ -72,10 +79,11 @@ where
     Ok(())
 }
 
-pub(super) async fn flush_runtime_protocol_lines<P>(
+async fn flush_runtime_protocol_lines_with_deadline<P>(
     runtime: &mut ClientApplication<P>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> anyhow::Result<()>
+    deadline: Option<Instant>,
+) -> anyhow::Result<bool>
 where
     P: PlayerAdapter,
 {
@@ -86,22 +94,60 @@ where
             PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
         ));
         maintenance_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let deadline_elapsed = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(deadline_elapsed);
         let write_result = loop {
             tokio::select! {
-                result = &mut write => break result,
+                result = &mut write => break Some(result),
+                _ = &mut deadline_elapsed => break None,
                 _ = maintenance_tick.tick() => {
                     runtime.with_player_io(PlayerAdapter::maintain_runtime_leases_nonblocking);
                 }
             }
         };
-        if let Err(error) = write_result {
-            let _ = runtime.release_protocol_line(pending.lease());
-            return Err(error);
+        match write_result {
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                let _ = runtime.release_protocol_line(pending.lease());
+                return Err(error);
+            }
+            None => {
+                let _ = runtime.release_protocol_line(pending.lease());
+                return Ok(false);
+            }
         }
         let acknowledged = runtime.acknowledge_protocol_line(pending.lease());
         debug_assert!(acknowledged.is_some());
     }
+    Ok(true)
+}
+
+pub(super) async fn flush_runtime_protocol_lines<P>(
+    runtime: &mut ClientApplication<P>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> anyhow::Result<()>
+where
+    P: PlayerAdapter,
+{
+    let completed = flush_runtime_protocol_lines_with_deadline(runtime, writer, None).await?;
+    debug_assert!(completed, "a flush without a deadline cannot time out");
     Ok(())
+}
+
+pub(super) async fn flush_runtime_protocol_lines_until<P>(
+    runtime: &mut ClientApplication<P>,
+    writer: &mut (impl AsyncWrite + Unpin),
+    deadline: Instant,
+) -> anyhow::Result<bool>
+where
+    P: PlayerAdapter,
+{
+    flush_runtime_protocol_lines_with_deadline(runtime, writer, Some(deadline)).await
 }
 
 #[cfg(test)]
@@ -177,6 +223,21 @@ mod tests {
         assert_eq!(line.as_bytes(), input);
         let items = decode_message_line_items(&line).expect("batched line should decode");
         assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cli_accepts_exact_limit_payload_when_crlf_is_split_between_reads() {
+        let payload = vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES];
+        let mut framed = payload.clone();
+        framed.extend_from_slice(b"\r\n");
+        let mut reader = BufReader::with_capacity(MAX_INBOUND_PROTOCOL_LINE_BYTES + 1, &framed[..]);
+
+        let line = read_inbound_protocol_line(&mut reader)
+            .await
+            .expect("exact-limit split CRLF line should be accepted")
+            .expect("exact-limit line should be present");
+
+        assert_eq!(line.as_bytes(), payload);
     }
 
     #[tokio::test]
@@ -262,6 +323,39 @@ mod tests {
         );
         let received = drain.await.expect("reader task should finish");
         assert!(received.ends_with(b"\r\n"));
+    }
+
+    #[tokio::test]
+    async fn startup_protocol_write_deadline_releases_the_pending_frame_for_reconnect() {
+        let mut control = QueuedRuntimeControl::default();
+        control
+            .emit(ClientEffect::SendChat("x".repeat(512)))
+            .expect("chat effect should be supported");
+        let runtime = ClientRuntime::new(ClientSession::default(), ProtocolIoTestPlayer, control);
+        let mut runtime = ClientApplication::from_runtime(runtime);
+        let (_reader, mut writer) = tokio::io::duplex(1);
+
+        let completed = flush_runtime_protocol_lines_until(
+            &mut runtime,
+            &mut writer,
+            Instant::now() + std::time::Duration::from_millis(25),
+        )
+        .await
+        .expect("deadline should stop a blocked startup write cleanly");
+
+        assert!(!completed);
+        assert_eq!(
+            runtime.pending_protocol_message_count(),
+            1,
+            "the canceled startup frame must remain queued for reconnect"
+        );
+        assert!(
+            runtime
+                .pending_protocol_line()
+                .expect("pending frame should remain leasable")
+                .is_some(),
+            "deadline cancellation must release the frame lease"
+        );
     }
 
     #[test]

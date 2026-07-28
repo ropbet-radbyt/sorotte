@@ -475,6 +475,38 @@ fn network_on_load_reports_success_and_failure_for_the_exact_sampled_path() -> m
 }
 
 #[test]
+fn network_on_load_prefers_http2_when_curl_protocol_selection_is_automatic() -> mlua::Result<()> {
+    let harness = Harness::new()?;
+    harness.configure_as("owner-a", "attachment-a", 7, json!({"cache-secs": "75"}))?;
+    harness.set_path("options/curl-http-version", "auto")?;
+    harness.set_path("path", "https://media.example.test/video")?;
+    harness.set_path("stream-open-filename", "https://media.example.test/video")?;
+
+    harness.invoke_on_load()?;
+
+    let writes = harness.writes()?;
+    assert_eq!(
+        writes[0],
+        (
+            "file-local-options/curl-http-version".to_owned(),
+            "2tls".to_owned(),
+            "https://media.example.test/video".to_owned(),
+        )
+    );
+    assert_eq!(writes[1].0, "file-local-options/cache-secs");
+
+    let explicit = Harness::new()?;
+    explicit.configure_as("owner-a", "attachment-a", 7, json!({"cache-secs": "75"}))?;
+    explicit.set_path("options/curl-http-version", "3only")?;
+    explicit.set_path("path", "https://media.example.test/video")?;
+    explicit.set_path("stream-open-filename", "https://media.example.test/video")?;
+    explicit.invoke_on_load()?;
+    assert_eq!(explicit.writes()?.len(), 1);
+    assert_eq!(explicit.writes()?[0].0, "file-local-options/cache-secs");
+    Ok(())
+}
+
+#[test]
 fn file_loaded_readback_reports_effective_values_after_all_writes() -> mlua::Result<()> {
     let harness = Harness::new()?;
     harness.configure_as(

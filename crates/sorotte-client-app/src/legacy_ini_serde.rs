@@ -6,6 +6,19 @@ pub fn parse_serialized_string_list_legacy_compatible(value: &str) -> Option<Vec
         return None;
     }
     if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let mut index = 0usize;
+        if let Some(values) =
+            parse_serialized_python_string_list_cursor_legacy_compatible(trimmed, &mut index)
+        {
+            skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+            if index == trimmed.len() {
+                return Some(values);
+            }
+        }
+
+        // Preserve historical support for unquoted bracketed lists. The
+        // quote-aware parser above owns formatter output so delimiters inside
+        // quoted values are never mistaken for list separators.
         let inner = inner.trim();
         if inner.is_empty() {
             return Some(Vec::new());
@@ -326,6 +339,22 @@ mod tests {
         assert_eq!(
             format_serialized_string_list_legacy_compatible(&["one".to_owned(), "two".to_owned()]),
             "['one', 'two']"
+        );
+    }
+
+    #[test]
+    fn serialized_string_list_roundtrips_quoted_commas_and_escapes() {
+        let values = vec![
+            r"C:\Media\Shows, HD".to_owned(),
+            "room, east".to_owned(),
+            "friend's \"room\"".to_owned(),
+        ];
+        let rendered = format_serialized_string_list_legacy_compatible(&values);
+
+        assert_eq!(
+            parse_serialized_string_list_legacy_compatible(&rendered),
+            Some(values),
+            "commas and escaped quotes inside quoted entries are list data"
         );
     }
 

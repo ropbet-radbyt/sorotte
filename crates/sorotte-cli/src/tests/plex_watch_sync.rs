@@ -189,6 +189,9 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     config.max_connected_runtime_seconds = 0.4;
     let mut runtime = create_client_runtime(&config);
     runtime.with_player_io(|player| {
+        player
+            .open_file("C:/media/Movie Name.mkv")
+            .expect("simulated player should accept the owned local file");
         player.queue_local_file_update(
             LocalFileUpdate::new("Movie Name.mkv")
                 .with_duration_seconds(95.5)

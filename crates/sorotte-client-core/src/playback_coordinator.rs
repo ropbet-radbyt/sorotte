@@ -804,6 +804,38 @@ impl PlaybackCoordinator {
         requested_intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> MediaLoadPlan {
+        self.prepare_media_with_intent_internal(
+            logical_id,
+            kind,
+            requested_intent,
+            now_seconds,
+            false,
+        )
+    }
+
+    pub fn prepare_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.prepare_media_with_intent_internal(
+            logical_id,
+            kind,
+            MediaLoadIntent::TransportRefresh,
+            now_seconds,
+            true,
+        )
+    }
+
+    fn prepare_media_with_intent_internal(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        requested_intent: MediaLoadIntent,
+        now_seconds: f64,
+        preserve_changed_identity_transport_refresh: bool,
+    ) -> MediaLoadPlan {
         let load_restart_baseline = self
             .observed
             .map_or(0, |observed| observed.playback_restart_sequence);
@@ -816,9 +848,14 @@ impl PlaybackCoordinator {
             (true, MediaLoadIntent::NewPlayback | MediaLoadIntent::Replay) => {
                 MediaLoadIntent::Replay
             }
+            (false, MediaLoadIntent::TransportRefresh)
+                if preserve_changed_identity_transport_refresh =>
+            {
+                MediaLoadIntent::TransportRefresh
+            }
             (false, _) => MediaLoadIntent::NewPlayback,
         };
-        if load_intent == MediaLoadIntent::TransportRefresh {
+        if same_logical_media && load_intent == MediaLoadIntent::TransportRefresh {
             let ready_handoff_to_rearm = self
                 .last_seek_preparation_terminal
                 .as_ref()
@@ -1185,20 +1222,52 @@ impl PlaybackCoordinator {
         &mut self,
         observation: PlayerTransportObservation,
     ) -> Vec<PlaybackCoordinatorAction> {
-        self.observe_with_seek_preparation_evidence(observation, true)
+        self.observe_with_seek_preparation_evidence(observation, true, false)
+    }
+
+    pub(crate) fn rebase_observation(
+        &mut self,
+        observation: PlayerTransportObservation,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.observe_with_seek_preparation_evidence(observation, true, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_transport_for_test(&self) -> Option<PlayerTransportObservation> {
+        let observed = self.observed?;
+        Some(PlayerTransportObservation {
+            media_generation: self.current_media_generation()?,
+            observed_at_seconds: observed.observed_at_seconds,
+            phase: Some(observed.phase),
+            position_seconds: observed.position_seconds,
+            playback_rate: observed.playback_rate,
+            logical_pause: observed.logical_pause,
+            paused_for_cache: Some(observed.paused_for_cache),
+            seeking: Some(observed.seeking),
+            seekable: observed.seekable,
+            timeline_kind: observed.timeline_kind,
+            seekable_ranges: self.cached_seekable_ranges.clone(),
+            known_live_seekable_window: observed.known_live_seekable_window,
+            core_idle: observed.core_idle,
+            playback_restart_sequence: Some(observed.playback_restart_sequence),
+            cache_buffering_percent: observed.cache_buffering_percent,
+            buffered_ahead_seconds: observed.buffered_ahead_seconds,
+            input_rate_bytes_per_second: None,
+        })
     }
 
     pub(crate) fn replay_observation(
         &mut self,
         observation: PlayerTransportObservation,
     ) -> Vec<PlaybackCoordinatorAction> {
-        self.observe_with_seek_preparation_evidence(observation, false)
+        self.observe_with_seek_preparation_evidence(observation, false, false)
     }
 
     fn observe_with_seek_preparation_evidence(
         &mut self,
         observation: PlayerTransportObservation,
         seek_preparation_evidence_is_fresh: bool,
+        replace_previous_state: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
         let Some(media_generation) = self.media.as_ref().map(|media| media.generation) else {
             return Vec::new();
@@ -1231,7 +1300,13 @@ impl PlaybackCoordinator {
         let position_sampled = observation
             .position_seconds
             .is_some_and(|value| value.is_finite() && value >= 0.0);
-        let previous = self.observed;
+        let previous = (!replace_previous_state).then_some(self.observed).flatten();
+        if replace_previous_state {
+            self.cached_seekable_ranges = None;
+            self.last_playback_rate_observation_sequence = None;
+            self.metrics.last_buffered_ahead_seconds = None;
+            self.metrics.last_input_rate_bytes_per_second = None;
+        }
         let mut observed = previous.unwrap_or(ObservedState {
             observed_at_seconds: observation.observed_at_seconds,
             phase: PlayerTransportPhase::Empty,
@@ -2976,8 +3051,10 @@ impl PlaybackCoordinator {
         });
         let stable_interval_elapsed =
             stable.is_some_and(|elapsed| elapsed >= self.config.stability_interval_seconds);
-        let converged =
-            (local_position - room_position).abs() <= self.config.negligible_lag_seconds;
+        // Recovery owns catch-up after buffering and only needs to prove that the player is no
+        // longer behind the room. If it has crossed ahead, hand the stable transport back to the
+        // ordinary bidirectional drift policy instead of retaining recovery ownership forever.
+        let converged = lag <= self.config.negligible_lag_seconds;
         let catchup_timed_out = self.recovery.as_ref().is_some_and(|episode| {
             episode.catchup_active
                 && episode
@@ -3432,6 +3509,31 @@ mod tests {
             .prepare_media(LogicalMediaId::new("episode-1").unwrap(), kind, 0.0)
             .media_generation;
         (coordinator, generation)
+    }
+
+    #[test]
+    fn transport_refresh_preserves_room_participation_intent_for_changed_local_identity() {
+        let mut coordinator = PlaybackCoordinator::default();
+        let initial = coordinator.prepare_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode").unwrap(),
+            MediaTransportKind::LocalFile,
+            1.0,
+        );
+
+        assert!(initial.logical_media_changed);
+        assert!(initial.playback_episode_changed);
+        assert_eq!(initial.load_intent, MediaLoadIntent::TransportRefresh);
+
+        let replacement = coordinator.prepare_media_for_room_participation(
+            LogicalMediaId::new("joined-room-episode-local-match").unwrap(),
+            MediaTransportKind::LocalFile,
+            2.0,
+        );
+
+        assert!(replacement.logical_media_changed);
+        assert!(replacement.playback_episode_changed);
+        assert_eq!(replacement.load_intent, MediaLoadIntent::TransportRefresh);
+        assert_ne!(replacement.media_generation, initial.media_generation);
     }
 
     fn desired(generation: u64, revision: u64, paused: bool, position: f64) -> DesiredRoomPlayback {
@@ -5405,6 +5507,48 @@ mod tests {
         assert!(coordinator.recovery_episode().is_some());
         coordinator.observe(playing(generation, 6.1, 6.1));
         assert!(coordinator.recovery_episode().is_none());
+    }
+
+    #[test]
+    fn ahead_after_recovery_releases_to_ordinary_correction_after_stable_playback() {
+        let config = PlaybackCoordinatorConfig {
+            stability_interval_seconds: 1.0,
+            ..PlaybackCoordinatorConfig::default()
+        };
+        let mut coordinator = PlaybackCoordinator::new(config);
+        let generation = coordinator
+            .prepare_media(
+                LogicalMediaId::new("ahead-after-recovery").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordinator.update_desired_room_state(desired(generation, 1, false, 0.0));
+        coordinator.observe(
+            PlayerTransportObservation::new(generation, 0.0)
+                .with_phase(PlayerTransportPhase::Rebuffering)
+                .with_position(0.0)
+                .with_logical_pause(false)
+                .with_cache_pause(true),
+        );
+
+        coordinator.observe(playing(generation, 1.0, 3.0));
+        coordinator.observe(playing(generation, 2.0, 4.0));
+        let released = coordinator.observe(playing(generation, 3.1, 5.1));
+
+        assert!(!released.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(_)
+                    | CoordinatorPlayerCommand::SetPlaybackRate(_),
+                ..
+            }
+        )));
+        assert!(coordinator.recovery_episode().is_none());
+        assert!(
+            !coordinator.ordinary_correction_blocked(),
+            "stable ahead playback must be handed back to ordinary slowdown correction"
+        );
     }
 
     #[test]

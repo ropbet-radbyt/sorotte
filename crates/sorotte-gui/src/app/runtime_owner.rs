@@ -33,12 +33,14 @@ use sorotte_client_app::app_boundary::{
     },
     state::{
         ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
-        StoredClientSettingsRuntimeSnapshot,
+        StoredClientSettingsRuntimeSnapshot, TlsPolicy,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
-use sorotte_client_core::PlayerCommandCause;
-use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
+use sorotte_client_core::{CoordinatorCommandId, PlayerCommandCause};
+use sorotte_player_api::{
+    LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerEventSequence, PlayerTransportPhase,
+};
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
@@ -54,7 +56,7 @@ use sorotte_plex::{
 
 use self::updates::GuiUpdateRuntime;
 use super::media_match_support::{
-    MediaMatchIndexRebuildResult, MediaMatchToolProgress,
+    GuiMediaMatchIndexBuildTransaction, MediaMatchIndexRebuildResult, MediaMatchToolProgress,
     clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
     probe_media_match_startup_snapshot,
 };
@@ -347,6 +349,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_attachment_epoch: u64,
+    ordered_player_events: player::GuiOrderedPlayerEventConsumer,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) player_apply_state: GuiPlayerApplyState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
@@ -387,6 +390,11 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<GuiPendingAttachedRoomUnpauseObservation>,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) pending_attached_player_pause_command: Option<GuiPendingAttachedPlayerPauseCommand>,
+    pub(super) attached_media_observation_cursor: GuiAttachedMediaObservationCursor,
+    pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
+    pub(super) attached_system_seek_ownership: VecDeque<GuiAttachedSystemSeekOwnership>,
+    pub(super) attached_system_seek_fail_closed: Option<GuiAttachedSystemSeekFailClosedGuard>,
+    pub(super) attached_transport_telemetry_authority: GuiAttachedTransportTelemetryAuthority,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -404,7 +412,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
     pub(super) media_match_background_trigger_key: Option<String>,
-    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexRebuildBackup>,
+    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexBuildTransaction>,
     pub(super) media_match_background_cancel_disposition:
         Option<GuiMediaMatchBackgroundCancelDisposition>,
     pub(super) media_match_remote_lookup_rx:
@@ -439,6 +447,93 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
     pub(super) pending_logical_media_override: Option<GuiPendingLogicalMediaOverride>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GuiAttachedPlayerPositionObservation {
+    pub(super) media_generation: u64,
+    pub(super) observed_at_seconds: f64,
+    pub(super) position_seconds: f64,
+    pub(super) phase: PlayerTransportPhase,
+    pub(super) playback_rate: f64,
+    pub(super) logical_pause: bool,
+    pub(super) paused_for_cache: bool,
+    pub(super) core_idle: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) struct GuiAttachedMediaObservationCursor {
+    pub(super) media_generation: Option<u64>,
+    pub(super) last_observed_at_seconds: Option<f64>,
+    pub(super) last_ordered_event_sequence: Option<PlayerEventSequence>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct GuiAttachedNativeSeekTracker {
+    pub(super) media_generation: Option<u64>,
+    pub(super) last_observed_at_seconds: Option<f64>,
+    pub(super) phase: Option<PlayerTransportPhase>,
+    pub(super) playback_rate: Option<f64>,
+    pub(super) logical_pause: Option<bool>,
+    pub(super) paused_for_cache: Option<bool>,
+    pub(super) seeking: Option<bool>,
+    pub(super) core_idle: Option<bool>,
+    pub(super) position_anchor: Option<GuiAttachedPlayerPositionObservation>,
+    pub(super) interval_disarmed: bool,
+    pub(super) seeking_since_anchor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiAttachedSystemSeekSource {
+    Coordinator(CoordinatorCommandId),
+    RuntimeAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiAttachedSystemSeekOwnershipState {
+    Active,
+    SupersededMayArrive,
+    CompletedAwaitingStablePosition,
+    MayStillArrive,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiAttachedSystemSeekOwnership {
+    pub(super) source: GuiAttachedSystemSeekSource,
+    pub(super) adapter_player_command_id: Option<PlayerCommandId>,
+    pub(super) player_attachment_epoch: u64,
+    pub(super) session_generation: u64,
+    pub(super) room_name: Option<String>,
+    pub(super) media_generation: Option<u64>,
+    pub(super) logical_media_generation: Option<u64>,
+    pub(super) issued_after_observed_at_seconds: Option<f64>,
+    pub(super) requested_target_position_seconds: f64,
+    pub(super) player_target_position_seconds: f64,
+    pub(super) dispatch_offset_seconds: f64,
+    /// Effective room/global target after player-side zero clamping.
+    pub(super) target_position_seconds: f64,
+    pub(super) tolerance_seconds: f64,
+    pub(super) retire_after: Instant,
+    pub(super) state: GuiAttachedSystemSeekOwnershipState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiAttachedSystemSeekFailClosedGuard {
+    pub(super) player_attachment_epoch: u64,
+    pub(super) session_generation: u64,
+    pub(super) room_name: Option<String>,
+    pub(super) media_generation: Option<u64>,
+    pub(super) logical_media_generation: Option<u64>,
+    pub(super) retire_after: Instant,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct GuiAttachedTransportTelemetryAuthority {
+    pub(super) position: bool,
+    pub(super) logical_pause: bool,
+    pub(super) paused_for_cache: bool,
+    pub(super) cache_buffering_percent: bool,
 }
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -984,12 +1079,6 @@ impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
             )
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GuiMediaMatchIndexRebuildBackup {
-    pub(super) root: PathBuf,
-    pub(super) backup_existed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

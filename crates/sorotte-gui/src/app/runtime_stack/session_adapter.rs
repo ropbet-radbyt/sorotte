@@ -23,6 +23,10 @@ pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
     },
     Position(f64),
     PlaybackRate(f64),
+    DesyncPlaybackRate {
+        playback_rate: f64,
+        rollback: DesyncCorrectionDispatchSnapshot,
+    },
     Coordinator {
         command_id: CoordinatorCommandId,
         command: CoordinatorPlayerCommand,
@@ -86,6 +90,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
             "Attached session runtime does not accept inbound protocol transport messages."
                 .to_owned(),
         )
+    }
+
+    fn apply_message_json_at(
+        &mut self,
+        json_line: &str,
+        _received_at_seconds: f64,
+    ) -> Result<(), String> {
+        self.apply_message_json(json_line)
     }
 
     fn set_room(&mut self, _room: String) -> Result<(), String> {
@@ -241,6 +253,13 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn logical_generation_for_adapter_generation(
+        &self,
+        _adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        None
+    }
+
     fn keep_waiting_for_seek_preparation(
         &mut self,
         _now_seconds: f64,
@@ -341,6 +360,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn local_username(&self) -> Option<&str> {
+        None
+    }
+
+    fn current_room_name(&self) -> Option<&str> {
         None
     }
 
@@ -470,6 +493,21 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         Ok(Vec::new())
+    }
+
+    fn rebase_attached_player_transport_telemetry(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        self.sync_attached_player_transport_telemetry(update, now_seconds)
+    }
+
+    fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        _snapshot: DesyncCorrectionDispatchSnapshot,
+    ) -> Result<(), String> {
+        Ok(())
     }
 
     fn publish_local_file_legacy_compatible(

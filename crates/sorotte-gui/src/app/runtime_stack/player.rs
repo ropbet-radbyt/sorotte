@@ -1,10 +1,12 @@
-use std::{collections::VecDeque, path::Path};
+use std::collections::VecDeque;
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerMediaGeneration, PlayerMediaLoadOutcome,
+    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
+    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
+    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
@@ -39,18 +41,41 @@ pub(in super::super) struct GuiTestPlayerAdapter {
     media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
 }
 
-impl GuiTestPlayerAdapter {
-    fn local_file_update_for_path(path: &str) -> LocalFileUpdate {
-        let name = if path.contains("://") {
-            path.to_owned()
-        } else {
-            Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(path)
-                .to_owned()
-        };
-        LocalFileUpdate::new(name).with_path(path.to_owned())
+pub(in crate::app) fn local_file_update_for_player_path(path: &str) -> LocalFileUpdate {
+    let name = if path.contains("://") {
+        path.to_owned()
+    } else {
+        path.rsplit(['/', '\\'])
+            .find(|component| !component.is_empty())
+            .unwrap_or(path)
+            .to_owned()
+    };
+    LocalFileUpdate::new(name).with_path(path.to_owned())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::local_file_update_for_player_path;
+
+    #[test]
+    fn local_file_identity_accepts_both_path_separator_styles() {
+        for path in [
+            "C:\\private\\shows\\episode.mkv",
+            "/private/shows/episode.mkv",
+        ] {
+            let update = local_file_update_for_player_path(path);
+            assert_eq!(update.name, "episode.mkv");
+            assert_eq!(update.path.as_deref(), Some(path));
+        }
+    }
+
+    #[test]
+    fn network_media_identity_preserves_the_full_url() {
+        let path = "https://media.example.test/watch/episode.mkv";
+        let update = local_file_update_for_player_path(path);
+
+        assert_eq!(update.name, path);
+        assert_eq!(update.path.as_deref(), Some(path));
     }
 }
 
@@ -61,12 +86,15 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
         self.local_file_updates
-            .push_back(Self::local_file_update_for_path(path));
+            .push_back(local_file_update_for_player_path(path));
         self.media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
         self.playback_updates.push_back(
             PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
+                // Managed mpv is launched with `--pause`; reporting an
+                // unpaused open here invents a native Play gesture and can
+                // incorrectly promote the local user to Ready.
+                .with_paused(true)
                 .with_position_seconds(0.0),
         );
         Ok(())
@@ -149,6 +177,20 @@ impl GuiOwnedPlayer {
                     player_command_id: None,
                     player_media_generation: None,
                 })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(in super::super) fn set_position_tracked(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<Option<PlayerCommandId>, PlayerError> {
+        match self.execute_tracked(PlayerCommand::SetPosition(position_seconds)) {
+            Ok(player_command_id) => Ok(Some(player_command_id)),
+            Err(PlayerError::Unsupported("execute_tracked")) => {
+                self.set_position(position_seconds)?;
+                Ok(None)
             }
             Err(error) => Err(error),
         }
@@ -257,6 +299,42 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
+    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
+        match self {
+            Self::Test(player) => player.take_local_file_observation(),
+            Self::Mpv(player) => player.take_local_file_observation(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_local_file_observation(),
+        }
+    }
+
+    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
+        match self {
+            Self::Test(player) => player.take_media_load_observation(),
+            Self::Mpv(player) => player.take_media_load_observation(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_media_load_observation(),
+        }
+    }
+
+    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
+        match self {
+            Self::Test(player) => player.take_ordered_event_batch(),
+            Self::Mpv(player) => player.take_ordered_event_batch(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_ordered_event_batch(),
+        }
+    }
+
+    fn request_ordered_event_reacquisition(&mut self) {
+        match self {
+            Self::Test(player) => player.request_ordered_event_reacquisition(),
+            Self::Mpv(player) => player.request_ordered_event_reacquisition(),
+            #[cfg(test)]
+            Self::Custom(player) => player.request_ordered_event_reacquisition(),
+        }
+    }
+
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         match self {
             Self::Test(player) => player.take_playback_telemetry_update(),
@@ -299,6 +377,36 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.take_media_load_outcome(),
             #[cfg(test)]
             Self::Custom(player) => player.take_media_load_outcome(),
+        }
+    }
+
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        match self {
+            Self::Test(player) => player.take_player_event_batch(),
+            Self::Mpv(player) => player.take_player_event_batch(),
+            #[cfg(test)]
+            Self::Custom(player) => player.take_player_event_batch(),
+        }
+    }
+
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        match self {
+            Self::Test(player) => player.player_event_delivery_mode(),
+            Self::Mpv(player) => player.player_event_delivery_mode(),
+            #[cfg(test)]
+            Self::Custom(player) => player.player_event_delivery_mode(),
+        }
+    }
+
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        match self {
+            Self::Test(player) => player.acknowledge_player_event_batch(token),
+            Self::Mpv(player) => player.acknowledge_player_event_batch(token),
+            #[cfg(test)]
+            Self::Custom(player) => player.acknowledge_player_event_batch(token),
         }
     }
 

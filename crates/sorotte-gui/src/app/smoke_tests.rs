@@ -5,7 +5,7 @@ use super::testing::support::{
 };
 use sorotte_client_app::app_boundary::{
     persistence::load_sorotte_ini_stored_client_settings_mvp_from_path,
-    state::{AutoplayThresholdOverride, StoredClientSettingsMvp},
+    state::{AutoplayThresholdOverride, StoredClientSettingsMvp, TlsPolicy},
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 

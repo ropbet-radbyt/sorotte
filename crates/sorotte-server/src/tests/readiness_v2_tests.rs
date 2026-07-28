@@ -2988,6 +2988,8 @@ fn eof_pause_is_system_owned_and_hands_off_to_the_next_readiness_generation() {
         epoch,
         UserReadinessIntent::Ready,
     );
+    runtime.room_playlist_state_mut("room").files =
+        vec!["current.mkv".to_owned(), "next.mkv".to_owned()];
     runtime.room_playlist_state_mut("room").index = Some(0);
     start_barrier(&mut runtime, "alice-client");
     send_technical(
@@ -3122,6 +3124,8 @@ fn excluded_legacy_controller_eof_pause_preserves_system_ownership_and_v2_commit
         epoch,
         UserReadinessIntent::Ready,
     );
+    runtime.room_playlist_state_mut("room").files =
+        vec!["current.mkv".to_owned(), "next.mkv".to_owned()];
     runtime.room_playlist_state_mut("room").index = Some(0);
     start_barrier(&mut runtime, "alice-client");
     send_technical(

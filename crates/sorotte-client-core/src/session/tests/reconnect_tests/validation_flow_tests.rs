@@ -431,6 +431,59 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
 }
 
 #[test]
+fn client_runtime_reconnect_state_restore_validation_at_uses_supplied_clock_for_room_age() {
+    let mut session = ClientSession::default();
+    session.model.room.name = Some("room1".to_owned());
+    session.model.room.playstates.insert(
+        "room1".to_owned(),
+        RoomPlaystateView {
+            position: Some(120.0),
+            paused: Some(false),
+            ..RoomPlaystateView::default()
+        },
+    );
+    session
+        .model
+        .room
+        .playstate_updated_at_seconds
+        .insert("room1".to_owned(), 10.0);
+    session.model.reconnect.state_restore_validation_pending = true;
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(122.0),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    runtime
+        .run_reconnect_state_restore_validation_if_needed_at(12.0)
+        .expect("validation in a monotonic clock domain should not fail");
+
+    assert!(
+        runtime.drain_reconnect_notifications().is_empty(),
+        "a room position aged by two seconds in the supplied clock domain should already match"
+    );
+    assert_eq!(
+        runtime.player().position,
+        None,
+        "a matching position must not trigger a corrective seek"
+    );
+    assert!(
+        !runtime
+            .session()
+            .model
+            .reconnect
+            .state_restore_validation_pending,
+        "a matching validation should complete"
+    );
+}
+
+#[test]
 fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() {
     let mut session = ClientSession::default();
     session.model.room.name = Some("room1".to_owned());

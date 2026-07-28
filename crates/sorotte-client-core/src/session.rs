@@ -13,6 +13,14 @@ pub struct ClientSession {
     playback_barrier: playback_barrier::ClientPlaybackBarrierState,
 }
 
+/// Opaque rollback state for a playback-rate command emitted by desync correction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DesyncCorrectionDispatchSnapshot {
+    speed_changed: bool,
+    speed_correction_rate: Option<f64>,
+    local_playback_rate: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ClientSessionLocalActionSnapshot {
     user_views: BTreeMap<String, ClientUserView>,
@@ -20,6 +28,8 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     local_position: Option<f64>,
     local_paused: Option<bool>,
     local_playback_rate: Option<f64>,
+    speed_changed: bool,
+    speed_correction_rate: Option<f64>,
     local_paused_for_cache: Option<bool>,
     local_cache_buffering_percent: Option<f64>,
     pending_cache_room_playstate_resync: bool,
@@ -32,6 +42,11 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     autoplay_time_left_seconds: f64,
 }
 
+pub(crate) struct StateReconcileContext {
+    pub(crate) local_state_change_global_playstate: Option<RoomPlaystateView>,
+    pub(crate) received_at_seconds: f64,
+}
+
 mod apply;
 mod file_metadata;
 mod helpers;
@@ -42,6 +57,8 @@ mod playlist;
 mod queries;
 mod readiness_v2;
 mod reconnect;
+
+pub use playlist::playback_uri_is_trusted_legacy_compatible;
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

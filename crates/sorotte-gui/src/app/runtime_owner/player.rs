@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -14,13 +14,17 @@ use std::{
 use sorotte_client_app::app_boundary::state::ClientConfig;
 use sorotte_client_app::app_boundary::state::StreamingQualitySuggestionReason;
 use sorotte_client_core::{
-    CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind, PlaybackBarrierTimeoutAction,
-    PlayerCommandCause, logical_media_id_for_local_file_update,
+    CoordinatorCommandId, CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind,
+    PlaybackBarrierTimeoutAction, PlayerCommandCause, logical_media_id_for_local_file_update,
 };
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCommandFailureKind, PlayerCommandId,
-    PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult, PlayerMediaGeneration,
-    PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+    LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
+    PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
+    PlayerCommandProgressState, PlayerCommandResult, PlayerCommandSemanticResult, PlayerEvent,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventDeliveryMode, PlayerEventOrder,
+    PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadOutcome, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta,
+    PlayerTransportSnapshot, SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 use sorotte_player_mpv::LegacySyncplayOsdKind;
 
@@ -33,7 +37,7 @@ use super::super::runtime_bridge::{GuiSharedPlaylistOpenDispatch, GuiSharedPlayl
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
     GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
-    GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer,
+    GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer, local_file_update_for_player_path,
 };
 use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistEntryId,
@@ -75,6 +79,40 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiOrderedLoadBinding {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    owns_transport: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
+    physical_terminal: bool,
+    logical_ownership_revoked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiOrderedLoadInstall {
+    media_generation: PlayerMediaGeneration,
+    command_id: Option<PlayerCommandId>,
+    playlist_entry_id: Option<i64>,
+    owns_transport: bool,
+    semantic_load_result: Option<PlayerLoadAttemptResult>,
+    logical_ownership_revoked: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct GuiOrderedPlayerEventConsumer {
+    attachment_epoch: Option<PlayerAttachmentEpoch>,
+    last_sequence: u64,
+    last_snapshot_boundary: Option<PlayerSequenceBoundary>,
+    transport: PlayerTransportSnapshot,
+    attempts: BTreeMap<LoadAttemptId, GuiOrderedLoadBinding>,
+    transport_owner_attempt: Option<LoadAttemptId>,
+    acknowledged_semantic_sequence: u64,
+    applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
+    applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectedPlaylistMediaSyncOutcome {
     NoChange,
     MatchedCurrentTarget,
@@ -102,6 +140,7 @@ pub(super) struct StartedMediaLoad {
 pub(super) enum PlaylistResolutionAttemptState {
     Resolving,
     Loading,
+    Indeterminate,
     Active,
     Failed,
     Superseded,
@@ -180,6 +219,7 @@ pub(super) struct PlaylistResolutionAttempt {
     pub(super) candidate_plex_operation_context: Option<GuiPlexOperationContext>,
     pub(super) player_command_id: Option<PlayerCommandId>,
     pub(super) player_media_generation: Option<PlayerMediaGeneration>,
+    pub(super) load_attempt_id: Option<LoadAttemptId>,
     pub(super) state: PlaylistResolutionAttemptState,
     pub(super) candidate_failures: Vec<PlaylistResolutionCandidateFailure>,
     pub(super) fallback_pending: bool,
@@ -202,6 +242,7 @@ impl std::fmt::Debug for PlaylistResolutionAttempt {
             )
             .field("player_command_id", &self.player_command_id)
             .field("player_media_generation", &self.player_media_generation)
+            .field("load_attempt_id", &self.load_attempt_id)
             .field("state", &self.state)
             .field("failed_candidate_count", &self.candidate_failures.len())
             .field(
@@ -234,6 +275,7 @@ impl PlaylistResolutionAttempt {
             candidate_plex_operation_context: None,
             player_command_id: None,
             player_media_generation: None,
+            load_attempt_id: None,
             state: PlaylistResolutionAttemptState::Resolving,
             candidate_failures: Vec::new(),
             fallback_pending: false,

@@ -3,7 +3,7 @@ use super::*;
 
 use std::{
     io::{self, BufRead, BufReader, Write},
-    net::TcpListener,
+    net::{Shutdown, TcpListener},
     sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
@@ -13,6 +13,7 @@ use rustls::{
     ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
     pki_types::CertificateDer,
 };
+use sorotte_client_app::app_boundary::state::TlsPolicy;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../../../../fixtures/tls/test_cert.pem");
@@ -66,6 +67,11 @@ fn test_tls_server_config() -> Arc<ServerConfig> {
 fn hello_line() -> String {
     r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
             .to_owned()
+}
+
+fn credential_hello_line() -> String {
+    r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","password":"credential-secret","features":{"chat":true}}}"#
+        .to_owned()
 }
 
 fn valid_chat_line_with_len(line_len: usize) -> String {
@@ -123,9 +129,12 @@ fn read_line_until_timeout(
 }
 
 fn connect_gui_transport_driver(port: u16) -> GuiTcpSessionTransportDriver {
-    GuiTcpSessionTransportDriver::connect_from_host_arg(&format!("localhost:{port}"))
-        .expect("transport test client driver should connect")
-        .with_inbound_idle_timeout(Duration::from_secs(2))
+    GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{port}"),
+        TlsPolicy::PreferTls,
+    )
+    .expect("transport test client driver should connect")
+    .with_inbound_idle_timeout(Duration::from_secs(2))
 }
 
 #[test]
@@ -240,7 +249,9 @@ fn gui_tcp_accepts_line_at_or_under_max_bytes() {
         thread::sleep(Duration::from_millis(10));
     };
 
-    assert_eq!(inbound_lines, vec![expected_line]);
+    assert_eq!(inbound_lines.len(), 1);
+    assert_eq!(inbound_lines[0].line, expected_line);
+    assert!(inbound_lines[0].received_at_seconds > 0.0);
     let _ = line_observed_tx.send(());
 
     server_thread
@@ -299,7 +310,9 @@ fn gui_tcp_accepts_media_match_room_snapshot_above_default_protocol_limit() {
         thread::sleep(Duration::from_millis(10));
     };
 
-    assert_eq!(inbound_lines, vec![expected_line]);
+    assert_eq!(inbound_lines.len(), 1);
+    assert_eq!(inbound_lines[0].line, expected_line);
+    assert!(inbound_lines[0].received_at_seconds > 0.0);
     let _ = line_observed_tx.send(());
 
     server_thread
@@ -338,10 +351,10 @@ fn tcp_session_transport_driver_rejects_invalid_inbound_protocol_lines() {
             .expect("invalid-line transport test server should terminate the invalid line");
     });
 
-    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
-        "localhost:{}",
-        address.port()
-    ))
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
     .expect("invalid-line transport test client driver should connect")
     .with_inbound_idle_timeout(Duration::from_secs(2));
     let transport = GuiQueuedSessionTransportHandle::default();
@@ -414,13 +427,13 @@ fn tcp_session_transport_driver_falls_back_to_plaintext_when_server_declines_sta
             .expect("plaintext TLS-fallback test server should report the plaintext hello");
     });
 
-    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
-        "localhost:{}",
-        address.port()
-    ))
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
     .expect("plaintext TLS-fallback client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([hello_line()]);
+    transport.push_outbound_protocol_lines([credential_hello_line()]);
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let hello = loop {
@@ -447,10 +460,404 @@ fn tcp_session_transport_driver_falls_back_to_plaintext_when_server_declines_sta
     assert!(first_line.contains(r#""startTLS":"send""#));
     assert!(hello.contains(r#""Hello""#));
     assert!(hello.contains(r#""alice""#));
+    let warnings = transport.drain_transport_warnings();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("continuing without encryption"));
+    assert!(warnings[0].contains("tlsPolicy = RequireTls"));
 
     server_thread
         .join()
         .expect("plaintext TLS-fallback server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_require_tls_rejects_refusal_without_sending_hello() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("required TLS refusal test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should expose address");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        let application_line = read_line_until_timeout(
+            &mut reader,
+            Duration::from_millis(250),
+            "required TLS refusal test server",
+        );
+        observed_tx
+            .send((tls_request, application_line))
+            .expect("server should report observations");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::RequireTls,
+    )
+    .expect("required TLS client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "required TLS refusal should fail"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(error.contains("refused required TLS"));
+    let (tls_request, application_line) = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("server should report observations");
+    assert!(tls_request.contains(r#""startTLS":"send""#));
+    assert_eq!(
+        application_line, None,
+        "credentials/Hello must not cross the downgraded socket"
+    );
+    server_thread.join().expect("server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_prefer_tls_preserves_hello_bundled_after_refusal() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("bundled TLS-refusal test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("bundled TLS-refusal test server should expose address");
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        assert!(tls_request.contains(r#""startTLS":"send""#));
+        stream
+            .write_all(
+                br#"{"TLS":{"startTLS":"false"},"Hello":{"username":"server","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("bundled refusal and Hello should write");
+        stream
+            .write_all(b"\n")
+            .expect("bundled refusal and Hello should terminate");
+        stream.flush().expect("bundled response should flush");
+        let _ = stop_rx.recv_timeout(Duration::from_secs(1));
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
+    .expect("PreferTls client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let mut inbound = Vec::new();
+    while Instant::now() < deadline && inbound.is_empty() {
+        driver
+            .pump(&transport)
+            .expect("bundled refusal must keep the plaintext transport usable");
+        inbound = transport.drain_inbound_protocol_lines();
+        thread::sleep(Duration::from_millis(5));
+    }
+    let _ = stop_tx.send(());
+    server_thread.join().expect("server thread should join");
+
+    assert_eq!(
+        inbound.len(),
+        1,
+        "the valid bundled Hello must be re-injected into normal inbound handling"
+    );
+    let message = sorotte_protocol::decode_message_line(&inbound[0].line)
+        .expect("the re-injected application line should decode");
+    assert!(matches!(
+        message,
+        sorotte_protocol::ProtocolMessage::Hello(_)
+    ));
+}
+
+#[test]
+fn tcp_session_transport_require_tls_rejects_substituted_message() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("required TLS substitution test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should expose address");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        stream
+            .write_all(hello_line().as_bytes())
+            .expect("substituted message should write");
+        stream.write_all(b"\n").expect("message should terminate");
+        let application_line = read_line_until_timeout(
+            &mut reader,
+            Duration::from_millis(250),
+            "required TLS substitution test server",
+        );
+        observed_tx
+            .send((tls_request, application_line))
+            .expect("server should report observations");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::RequireTls,
+    )
+    .expect("required TLS client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(Instant::now() < deadline, "TLS substitution should fail");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(error.contains("unexpected Hello message"));
+    assert!(transport.drain_inbound_protocol_lines().is_empty());
+    let (tls_request, application_line) = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("server should report observations");
+    assert!(tls_request.contains(r#""startTLS":"send""#));
+    assert_eq!(
+        application_line, None,
+        "credentials/Hello must not follow a substituted STARTTLS response"
+    );
+    server_thread.join().expect("server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_require_tls_rejects_truncated_response_without_sending_credentials() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("required TLS truncation test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should expose address");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"tru"#)
+            .expect("truncated response should write");
+        stream
+            .shutdown(Shutdown::Write)
+            .expect("server should half-close its truncated response");
+        let application_line = read_line_until_timeout(
+            &mut reader,
+            Duration::from_millis(250),
+            "required TLS truncation test server",
+        );
+        observed_tx
+            .send((tls_request, application_line))
+            .expect("server should report observations");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::RequireTls,
+    )
+    .expect("required TLS client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(Instant::now() < deadline, "TLS truncation should fail");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(error.contains("incomplete inbound line"));
+    let (tls_request, application_line) = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("server should report observations");
+    assert!(tls_request.contains(r#""startTLS":"send""#));
+    assert_eq!(
+        application_line, None,
+        "credentials/Hello must not follow a truncated STARTTLS response"
+    );
+    server_thread.join().expect("server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_require_tls_rejects_invalid_certificate_without_sending_credentials() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("invalid-certificate TLS test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("invalid-certificate listener should expose address");
+    let server_config = test_tls_server_config();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("server should read TLS request");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"true"}}"#)
+            .expect("TLS acceptance should write");
+        stream
+            .write_all(b"\n")
+            .expect("TLS acceptance should terminate");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("TLS server should configure a read timeout");
+
+        let mut tls_stream = StreamOwned::new(
+            ServerConnection::new(server_config).expect("TLS server connection should build"),
+            stream,
+        );
+        let mut hello = String::new();
+        let read_result = BufReader::new(&mut tls_stream)
+            .read_line(&mut hello)
+            .map_err(|error| error.to_string());
+        observed_tx
+            .send((tls_request, hello, read_result))
+            .expect("TLS server should report observations");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::RequireTls,
+    )
+    .expect("required TLS client should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "invalid certificate should fail the TLS handshake"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    let error_lower = error.to_ascii_lowercase();
+    assert!(
+        error_lower.contains("certificate") || error_lower.contains("unknownissuer"),
+        "invalid-certificate failure should identify certificate verification: {error}"
+    );
+    let (tls_request, hello, _server_read_result) = observed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("TLS server should report observations");
+    assert!(tls_request.contains(r#""startTLS":"send""#));
+    assert!(
+        hello.is_empty(),
+        "credentials/Hello must not be released before certificate verification: {hello:?}"
+    );
+    assert!(!hello.contains("credential-secret"));
+    server_thread.join().expect("server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_enforces_starttls_and_initial_hello_deadlines() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("STARTTLS deadline test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should expose address");
+    let server_thread = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("server should accept");
+        thread::sleep(Duration::from_millis(150));
+        drop(stream);
+    });
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::RequireTls,
+    )
+    .expect("deadline client should connect")
+    .with_connection_phase_timeouts(
+        Duration::from_millis(25),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
+    let transport = GuiQueuedSessionTransportHandle::default();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "STARTTLS response should time out"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(error.contains("STARTTLS response timed out"));
+    server_thread.join().expect("server thread should join");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("initial Hello deadline test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should expose address");
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept");
+        let reader_stream = stream.try_clone().expect("socket should clone");
+        let mut reader = BufReader::new(reader_stream);
+        let mut tls_request = String::new();
+        reader
+            .read_line(&mut tls_request)
+            .expect("TLS request should read");
+        write_plaintext_tls_fallback(&mut stream);
+        let mut hello = String::new();
+        reader
+            .read_line(&mut hello)
+            .expect("client Hello should read");
+        thread::sleep(Duration::from_millis(150));
+    });
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
+    .expect("initial Hello deadline client should connect")
+    .with_connection_phase_timeouts(
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        Duration::from_millis(25),
+    );
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([hello_line()]);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let error = loop {
+        if let Err(error) = driver.pump(&transport) {
+            break error;
+        }
+        assert!(Instant::now() < deadline, "initial Hello should time out");
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(error.contains("initial Hello timed out"));
+    server_thread.join().expect("server thread should join");
 }
 
 #[test]
@@ -500,10 +907,10 @@ fn tcp_session_transport_driver_upgrades_to_tls_before_sending_hello() {
             .expect("TLS upgrade test server should report the TLS hello");
     });
 
-    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
-        "localhost:{}",
-        address.port()
-    ))
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
     .expect("TLS upgrade client driver should connect")
     .with_tls_client_config(test_tls_client_config());
     let transport = GuiQueuedSessionTransportHandle::default();
@@ -575,10 +982,10 @@ fn threaded_tcp_session_transport_does_not_send_liveness_before_enabled() {
             .expect("threaded TCP liveness gating test server should report observed lines");
     });
 
-    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&format!(
-        "localhost:{}",
-        address.port()
-    ))
+    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
     .expect("threaded TCP liveness gating client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
     transport.push_outbound_protocol_lines([hello_line()]);
@@ -642,10 +1049,10 @@ fn threaded_tcp_session_transport_sends_liveness_without_gui_pump() {
             .expect("threaded TCP liveness test server should report the liveness line");
     });
 
-    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg(&format!(
-        "localhost:{}",
-        address.port()
-    ))
+    let mut driver = GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
+        &format!("localhost:{}", address.port()),
+        TlsPolicy::PreferTls,
+    )
     .expect("threaded TCP liveness client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
     transport.push_outbound_protocol_lines([hello_line()]);

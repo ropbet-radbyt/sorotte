@@ -41,6 +41,8 @@ struct NetworkOptionsHookScenarioTransport {
     target: HookSupersessionTarget,
     lose_ownership_on_heartbeat: bool,
     acknowledge_heartbeats: bool,
+    expire_ownership_on_second_active_apply: bool,
+    active_apply_count: usize,
 }
 
 impl NetworkOptionsHookScenarioTransport {
@@ -88,6 +90,13 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         .expect("configure command should contain JSON"),
                 )
                 .expect("configure payload should be valid");
+                let current_load_sequence = if self.active_apply_count == 0 {
+                    0
+                } else if matches!(self.target, HookSupersessionTarget::StableNetwork) {
+                    1
+                } else {
+                    2
+                };
                 self.push(Self::client_message(
                     "sorotte-network-options-configured",
                     json!({
@@ -96,7 +105,7 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         "attachmentId": payload["attachmentId"],
                         "configurationGeneration": payload["configurationGeneration"],
                         "hookInstanceId": "scenario-hook-instance",
-                        "currentLoadSequence": 0,
+                        "currentLoadSequence": current_load_sequence,
                         "status": "configured",
                     }),
                 ));
@@ -113,6 +122,22 @@ impl MpvJsonIpcTransport for NetworkOptionsHookScenarioTransport {
                         .expect("apply command should contain JSON"),
                 )
                 .expect("apply payload should be valid");
+                self.active_apply_count += 1;
+                if self.expire_ownership_on_second_active_apply && self.active_apply_count == 2 {
+                    self.push(Self::client_message(
+                        "sorotte-network-options-ownership",
+                        json!({
+                            "protocol": "sorotte-network-options-v3",
+                            "ownerId": payload["ownerId"],
+                            "attachmentId": payload["attachmentId"],
+                            "configurationGeneration": payload["configurationGeneration"],
+                            "hookInstanceId": "scenario-hook-instance",
+                            "status": "lease-expired",
+                        }),
+                    ));
+                    self.push(json!({"request_id": request_id, "error": "success"}));
+                    return Ok(());
+                }
                 let base = json!({
                     "protocol": "sorotte-network-options-v3",
                     "ownerId": payload["ownerId"],
@@ -853,6 +878,45 @@ fn mpv_ipc_nonblocking_command_harvests_selected_events_without_dropping_others(
 }
 
 #[test]
+fn mpv_ipc_events_preserve_ingress_time_across_ordinary_and_control_lanes() {
+    let (transport, _state) = fake_transport_with_reads(&[]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    let ordinary_received_at = Instant::now() - Duration::from_secs(4);
+    let control_received_at = ordinary_received_at + Duration::from_secs(1);
+    client.inject_test_event_received_at(
+        json!({
+            "event": "property-change",
+            "name": "time-pos",
+            "data": 10.0,
+        }),
+        ordinary_received_at,
+    );
+    client.inject_test_event_received_at(
+        json!({
+            "event": "client-message",
+            "args": [SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT, "{}"],
+        }),
+        control_received_at,
+    );
+
+    let control = client.take_nonblocking_runtime_items_matching(|event| {
+        event.get("event").and_then(Value::as_str) == Some("client-message")
+    });
+    assert!(matches!(
+        control.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event)]
+            if event.received_at == control_received_at
+    ));
+    let ordinary = client.take_pending_timed_events();
+    assert_eq!(ordinary.len(), 1);
+    assert_eq!(ordinary[0].received_at, ordinary_received_at);
+    assert_eq!(
+        ordinary[0].value.get("name").and_then(Value::as_str),
+        Some("time-pos")
+    );
+}
+
+#[test]
 fn mpv_ipc_nonblocking_runtime_items_bypass_an_earlier_unselected_event() {
     let property_event = json!({
         "event": "property-change",
@@ -890,7 +954,7 @@ fn mpv_ipc_nonblocking_runtime_items_bypass_an_earlier_unselected_event() {
     assert_eq!(runtime_items.len(), 2);
     assert!(matches!(
         &runtime_items[0],
-        crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) if event == &lease_event
+        crate::ipc::MpvIpcNonblockingRuntimeItem::Event(event) if event.value == lease_event
     ));
     assert!(matches!(
         &runtime_items[1],
@@ -953,6 +1017,77 @@ fn each_nonblocking_command_receives_a_unique_completion_identity() {
             }
         )]
     ));
+}
+
+#[test]
+fn nonblocking_property_read_retains_its_response_for_scoped_consumers() {
+    let response = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                command_id: 1,
+                token: 5,
+                response: observed,
+            }
+        )] if observed == &response
+    ));
+}
+
+#[test]
+fn unavailable_nonblocking_property_read_emits_no_connection_failure() {
+    let response = json!({
+        "request_id": 1,
+        "error": crate::constants::MPV_RESPONSE_PROPERTY_UNAVAILABLE,
+    });
+    let reads = [response.to_string()];
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert!(matches!(
+        client.take_connection_events().as_slice(),
+        [MpvIpcConnectionEvent::Connected { .. }]
+    ));
+
+    assert_eq!(
+        client.try_get_property_nonblocking("paused-for-cache", 5),
+        Ok(Some(1))
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let completions = client.take_nonblocking_runtime_items_matching(|_| true);
+    assert!(matches!(
+        completions.as_slice(),
+        [crate::ipc::MpvIpcNonblockingRuntimeItem::Completion(
+            crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                command_id: 1,
+                token: 5,
+                ..
+            }
+        )]
+    ));
+    assert!(client.take_connection_events().is_empty());
+    assert!(client.is_healthy());
 }
 
 #[test]
@@ -1087,6 +1222,43 @@ fn noisy_incoming_event_cannot_evict_a_full_structural_event_window() {
         ordinary_events
             .iter()
             .all(|event| { event.get("event").and_then(Value::as_str) == Some("start-file") })
+    );
+}
+
+#[test]
+fn queue_pressure_preserves_transient_seek_and_playback_restart_lifecycle_edges() {
+    let (ordinary_capacity, _) = MpvJsonIpcClient::test_runtime_queue_capacities();
+    let seek = json!({"event": "seek"});
+    let playback_restart = json!({"event": "playback-restart"});
+    let mut reads = vec![seek.to_string(), playback_restart.to_string()];
+    for tick in 0..ordinary_capacity {
+        reads.push(
+            json!({"event": "property-change", "name": "time-pos", "data": tick}).to_string(),
+        );
+    }
+    reads.push(json!({"request_id": 1, "error": "success"}).to_string());
+    let read_refs = reads.iter().map(String::as_str).collect::<Vec<_>>();
+    let (transport, _state) = fake_transport_with_reads(&read_refs);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    assert_eq!(
+        client.try_send_command_expect_success_nonblocking(json!(["get_property", "pause"]), 13),
+        Ok(Some(1))
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while client.test_nonblocking_command_is_pending() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!client.test_nonblocking_command_is_pending());
+
+    let ordinary_events = client.take_pending_events();
+    assert!(
+        ordinary_events.contains(&seek),
+        "seek is a one-shot lifecycle edge required to track active seek ownership"
+    );
+    assert!(
+        ordinary_events.contains(&playback_restart),
+        "playback-restart is a one-shot lifecycle edge required to complete StartAfterLoad and StartAfterSeek commands"
     );
 }
 
@@ -2354,6 +2526,8 @@ fn run_core_hook_supersession_scenario(
         target,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -2386,6 +2560,8 @@ fn superseded_network_options_adapter_awaiting_hook_result() -> MpvAdapter {
         target: HookSupersessionTarget::NetworkAwaitingResult,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3403,6 +3579,8 @@ fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
         target: HookSupersessionTarget::StableNetwork,
         lose_ownership_on_heartbeat: true,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3443,6 +3621,48 @@ fn successful_explicit_retry_rearms_independent_hook_degradation_reporting() {
         Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(_))
     ));
     assert!(adapter.is_connected());
+}
+
+#[test]
+fn active_network_options_apply_reacquires_an_expired_hook_lease() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::StableNetwork,
+        lose_ownership_on_heartbeat: false,
+        acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: true,
+        active_apply_count: 0,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial hook ownership should configure"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("an expired lease should be reacquired within the explicit apply"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+
+    let configure_count = writes
+        .lock()
+        .expect("lease recovery writes should not be poisoned")
+        .iter()
+        .filter(|write| write.contains("sorotte_network_options_configure"))
+        .count();
+    assert_eq!(
+        configure_count, 2,
+        "the expired owner should perform exactly one fresh configuration"
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -3777,6 +3997,8 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: true,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3809,6 +4031,55 @@ fn ownership_loss_is_typed_and_keeps_playback_attached() {
 }
 
 #[test]
+fn full_maintenance_reacquires_lost_hook_ownership_without_explicit_retry() {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let transport = NetworkOptionsHookScenarioTransport {
+        writes: Arc::clone(&writes),
+        responses: VecDeque::new(),
+        old_network_succeeds: true,
+        target: HookSupersessionTarget::StableNetwork,
+        lose_ownership_on_heartbeat: true,
+        acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
+    };
+    let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
+    adapter.configure_network_media_options([("cache-secs", "75")]);
+    assert_eq!(
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("initial hook ownership should configure"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
+    );
+    adapter.force_test_network_media_options_hook_heartbeat_due();
+    adapter.maintain_runtime_integrations();
+
+    assert!(matches!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error))
+            if error.to_string().contains("ownership was replaced")
+    ));
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "bounded full maintenance should positively recover the transient ownership loss"
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
+    assert!(adapter.is_connected());
+
+    let configure_count = writes
+        .lock()
+        .expect("lease recovery writes should not be poisoned")
+        .iter()
+        .filter(|write| write.contains("sorotte_network_options_configure"))
+        .count();
+    assert_eq!(
+        configure_count, 2,
+        "maintenance should reacquire exactly once"
+    );
+}
+
+#[test]
 fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let transport = NetworkOptionsHookScenarioTransport {
@@ -3818,6 +4089,8 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3854,7 +4127,7 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
 }
 
 #[test]
-fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
+fn accepted_but_unacknowledged_heartbeat_recovers_without_explicit_retry() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let transport = NetworkOptionsHookScenarioTransport {
         writes,
@@ -3863,6 +4136,8 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: false,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -3880,6 +4155,14 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         "accepted heartbeat should remain pending until a positive acknowledgement"
     );
     adapter.force_test_network_media_options_hook_heartbeat_ack_timeout();
+    adapter.maintain_runtime_integrations();
+    assert_eq!(
+        adapter
+            .network_options_runtime_health_snapshot()
+            .hook_health,
+        crate::MpvNetworkOptionsHookHealth::Ready,
+        "missed heartbeat recovery should finish before the GUI consumes health transitions"
+    );
     let outcome = adapter.take_network_media_options_transition_outcome();
     let Some(MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)) = outcome else {
         panic!(
@@ -3895,6 +4178,12 @@ fn accepted_but_unacknowledged_heartbeat_degrades_after_bounded_deadline() {
         adapter.is_connected(),
         "hook degradation must remain scoped"
     );
+    assert_eq!(
+        adapter.take_network_media_options_transition_outcome(),
+        Some(MpvNetworkMediaOptionsTransitionOutcome::HookRecovered),
+        "full maintenance should reconfigure after a missed heartbeat acknowledgement"
+    );
+    assert!(adapter.test_network_media_options_hook_is_ready());
 }
 
 #[test]
@@ -3907,6 +4196,8 @@ fn graceful_cleanup_releases_the_core_hook_before_optional_bridge_release() {
         target: HookSupersessionTarget::NetworkSuccess,
         lose_ownership_on_heartbeat: false,
         acknowledge_heartbeats: true,
+        expire_ownership_on_second_active_apply: false,
+        active_apply_count: 0,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4097,7 +4388,6 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
 #[test]
 fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_marker() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
-    let polled_external_target = "https://media.example.test/external-b.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"event":"start-file","playlist_entry_id":701}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
@@ -4129,7 +4419,11 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
         None,
         "the mismatched poll must not complete Sorotte's pending A load"
     );
-    assert_eq!(adapter.current_path(), Some(polled_external_target));
+    assert_eq!(
+        adapter.current_path(),
+        None,
+        "an uncorrelated authoritative path must not be mixed into the pending attempt's physical projection"
+    );
     assert_eq!(
         adapter.take_network_media_options_transition_outcome(),
         Some(MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated),
@@ -4638,13 +4932,20 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         .open_file("movie.mkv")
         .expect("attached mpv transport should accept loadfile");
 
-    let outcome = adapter
-        .take_media_load_outcome()
-        .expect("file-loaded should emit a success outcome");
+    let observation = adapter
+        .take_media_load_observation()
+        .expect("file-loaded should emit a sequenced success outcome");
     assert_eq!(
-        outcome,
+        observation.outcome,
         PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
     );
+    assert_eq!(
+        observation
+            .media_generation
+            .map(sorotte_player_api::PlayerMediaGeneration::get),
+        Some(1)
+    );
+    assert!(observation.observed_at.is_some());
     let update = adapter
         .take_local_file_update()
         .expect("file-loaded should emit a local file update");

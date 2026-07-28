@@ -1,5 +1,6 @@
 use std::{
     ffi::OsStr,
+    fmt::Write,
     path::{Component, Path},
 };
 
@@ -56,7 +57,12 @@ pub(crate) fn container_fingerprint_from_metadata(
     if let Some(duration_seconds) = duration_seconds {
         hasher.update(duration_seconds.to_le_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    fingerprint
 }
 
 #[cfg(test)]

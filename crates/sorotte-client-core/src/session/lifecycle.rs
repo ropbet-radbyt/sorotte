@@ -5,6 +5,23 @@ use sorotte_player_api::PlayerCommand;
 const CACHE_RECOVERY_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
 
 impl ClientSession {
+    pub(crate) fn desync_correction_dispatch_snapshot(&self) -> DesyncCorrectionDispatchSnapshot {
+        DesyncCorrectionDispatchSnapshot {
+            speed_changed: self.model.playback.speed_changed,
+            speed_correction_rate: self.model.playback.speed_correction_rate,
+            local_playback_rate: self.model.playback.local_playback_rate,
+        }
+    }
+
+    pub(crate) fn restore_desync_correction_dispatch_snapshot(
+        &mut self,
+        snapshot: DesyncCorrectionDispatchSnapshot,
+    ) {
+        self.model.playback.speed_changed = snapshot.speed_changed;
+        self.model.playback.speed_correction_rate = snapshot.speed_correction_rate;
+        self.model.playback.local_playback_rate = snapshot.local_playback_rate;
+    }
+
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
         ClientSessionLocalActionSnapshot {
             user_views: self.model.room.users.clone(),
@@ -12,6 +29,8 @@ impl ClientSession {
             local_position: self.model.playback.local_position,
             local_paused: self.model.playback.local_paused,
             local_playback_rate: self.model.playback.local_playback_rate,
+            speed_changed: self.model.playback.speed_changed,
+            speed_correction_rate: self.model.playback.speed_correction_rate,
             local_paused_for_cache: self.model.playback.local_paused_for_cache,
             local_cache_buffering_percent: self.model.playback.local_cache_buffering_percent,
             pending_cache_room_playstate_resync: self
@@ -46,6 +65,8 @@ impl ClientSession {
         self.model.playback.local_position = snapshot.local_position;
         self.model.playback.local_paused = snapshot.local_paused;
         self.model.playback.local_playback_rate = snapshot.local_playback_rate;
+        self.model.playback.speed_changed = snapshot.speed_changed;
+        self.model.playback.speed_correction_rate = snapshot.speed_correction_rate;
         self.model.playback.local_paused_for_cache = snapshot.local_paused_for_cache;
         self.model.playback.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
         self.model.playback.pending_cache_room_playstate_resync =
@@ -63,6 +84,56 @@ impl ClientSession {
         self.model.playback.last_rewound_at_seconds = snapshot.last_rewound_at_seconds;
         self.model.readiness.autoplay_timer_running = snapshot.autoplay_timer_running;
         self.model.readiness.autoplay_time_left_seconds = snapshot.autoplay_time_left_seconds;
+    }
+
+    pub(crate) fn replace_player_playback_telemetry_from_authoritative_snapshot(
+        &mut self,
+        snapshot: &PlayerPlaybackTelemetryUpdate,
+    ) -> bool {
+        let local_position = snapshot
+            .position_seconds
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        let local_playback_rate = snapshot
+            .playback_rate
+            .filter(|value| value.is_finite() && *value > 0.0);
+        let local_cache_buffering_percent = snapshot
+            .cache_buffering_percent
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+        let cache_pause_active = snapshot.paused_for_cache == Some(true);
+        let pending_cache_room_playstate_resync = cache_pause_active;
+        let cache_recovery_observation_position =
+            cache_pause_active.then_some(local_position).flatten();
+        let cache_recovery_waiting_for_post_cache_position = false;
+
+        let changed = self.model.playback.local_position != local_position
+            || self.model.playback.local_paused != snapshot.paused
+            || self.model.playback.local_playback_rate != local_playback_rate
+            || self.model.playback.local_paused_for_cache != snapshot.paused_for_cache
+            || self.model.playback.local_cache_buffering_percent != local_cache_buffering_percent
+            || self.model.playback.pending_cache_room_playstate_resync
+                != pending_cache_room_playstate_resync
+            || self.model.playback.cache_recovery_observation_position
+                != cache_recovery_observation_position
+            || self
+                .model
+                .playback
+                .cache_recovery_waiting_for_post_cache_position
+                != cache_recovery_waiting_for_post_cache_position;
+
+        self.model.playback.local_position = local_position;
+        self.model.playback.local_paused = snapshot.paused;
+        self.model.playback.local_playback_rate = local_playback_rate;
+        self.model.playback.local_paused_for_cache = snapshot.paused_for_cache;
+        self.model.playback.local_cache_buffering_percent = local_cache_buffering_percent;
+        self.model.playback.pending_cache_room_playstate_resync =
+            pending_cache_room_playstate_resync;
+        self.model.playback.cache_recovery_observation_position =
+            cache_recovery_observation_position;
+        self.model
+            .playback
+            .cache_recovery_waiting_for_post_cache_position =
+            cache_recovery_waiting_for_post_cache_position;
+        changed
     }
 
     pub fn apply_player_playback_telemetry_update(
@@ -177,6 +248,23 @@ impl ClientSession {
             && self.model.playback.local_playback_rate != Some(playback_rate)
         {
             self.model.playback.local_playback_rate = Some(playback_rate);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Applies an ordered logical-pause classification, which is already
+    /// distinct from mpv's physical cache-induced pause state.
+    pub(crate) fn apply_ordered_player_playback_telemetry_update(
+        &mut self,
+        update: &PlayerPlaybackTelemetryUpdate,
+    ) -> bool {
+        let logical_pause = update.paused;
+        let mut changed = self.apply_player_playback_telemetry_update(update);
+        if let Some(logical_pause) = logical_pause
+            && self.model.playback.local_paused != Some(logical_pause)
+        {
+            self.model.playback.local_paused = Some(logical_pause);
             changed = true;
         }
         changed

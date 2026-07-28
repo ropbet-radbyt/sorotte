@@ -12,8 +12,8 @@ use sorotte_client_core::{
     ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
 };
 use sorotte_player_api::{
-    PlayerAdapter, PlayerCommandId, PlayerError, PlayerPlaybackTelemetryUpdate,
-    PlayerTransportTelemetryUpdate,
+    PlayerAdapter, PlayerCommandId, PlayerError, PlayerMediaGeneration,
+    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
 pub use sorotte_plex::PlexClientConfig;
 use sorotte_plex::{
@@ -1040,6 +1040,29 @@ where
         dont_slow_down_with_me: bool,
         apply_fallback_json: bool,
     ) -> Result<ProtocolLineApplyOutcome, ProtocolError> {
+        self.apply_protocol_line_prefix_at_clocks(
+            line,
+            received_at_seconds,
+            received_at_seconds,
+            reconcile_inbound_state,
+            dont_slow_down_with_me,
+            apply_fallback_json,
+        )
+    }
+
+    /// Applies a line when session scheduling and legacy ping timestamps use
+    /// different clock domains. GUI receipt timestamps are wall-clock values,
+    /// while the CLI intentionally uses a monotonic runtime clock for session
+    /// lifecycle timers and a wall clock for protocol ping echoes.
+    pub fn apply_protocol_line_prefix_at_clocks(
+        &mut self,
+        line: &str,
+        received_at_seconds: f64,
+        ping_received_at_seconds: f64,
+        reconcile_inbound_state: bool,
+        dont_slow_down_with_me: bool,
+        apply_fallback_json: bool,
+    ) -> Result<ProtocolLineApplyOutcome, ProtocolError> {
         let messages = decode_message_line_items(line)?;
         if messages.is_empty() {
             if apply_fallback_json {
@@ -1071,9 +1094,12 @@ where
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
                         .runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
                             state.state,
                             dont_slow_down_with_me,
+                            received_at_seconds,
+                            received_at_seconds,
+                            ping_received_at_seconds,
                         );
                 }
                 other => self
@@ -1473,6 +1499,16 @@ where
             .prepare_playback_media_with_intent(logical_id, kind, intent, now_seconds)
     }
 
+    pub fn prepare_playback_media_for_room_participation(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> MediaLoadPlan {
+        self.runtime
+            .prepare_playback_media_for_room_participation(logical_id, kind, now_seconds)
+    }
+
     pub fn observe_external_player_transport(
         &mut self,
         update: PlayerTransportTelemetryUpdate,
@@ -1490,6 +1526,16 @@ where
     ) -> Vec<PlaybackCoordinatorAction> {
         self.runtime
             .observe_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
+    }
+
+    pub fn rebase_external_player_transport_at_epoch(
+        &mut self,
+        update: PlayerTransportTelemetryUpdate,
+        now_seconds: f64,
+        adapter_epoch: u64,
+    ) -> Vec<PlaybackCoordinatorAction> {
+        self.runtime
+            .rebase_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
     }
 
     pub fn reconcile_external_player_playback(
@@ -1600,6 +1646,14 @@ where
 
     pub fn playback_coordination_snapshot(&self) -> PlaybackCoordinationSnapshot {
         self.runtime.playback_coordination_snapshot()
+    }
+
+    pub fn logical_generation_for_adapter_generation(
+        &self,
+        adapter_generation: PlayerMediaGeneration,
+    ) -> Option<u64> {
+        self.runtime
+            .logical_generation_for_adapter_generation(adapter_generation)
     }
 
     pub fn streaming_quality_downgrade_suggestion(
@@ -1764,6 +1818,14 @@ where
             .run_reconnect_state_restore_validation_if_needed()
     }
 
+    pub fn run_reconnect_state_restore_validation_if_needed_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        self.runtime
+            .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
+    }
+
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
         &mut self,
         state: StatePayload,
@@ -1773,6 +1835,38 @@ where
             .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
                 state,
                 dont_slow_down_with_me,
+            )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        &mut self,
+        state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+    ) -> bool {
+        self.runtime
+            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                state,
+                dont_slow_down_with_me,
+                received_at_seconds,
+            )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        &mut self,
+        state: StatePayload,
+        dont_slow_down_with_me: bool,
+        received_at_seconds: f64,
+        response_at_seconds: f64,
+        ping_received_at_seconds: f64,
+    ) -> bool {
+        self.runtime
+            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                state,
+                dont_slow_down_with_me,
+                received_at_seconds,
+                response_at_seconds,
+                ping_received_at_seconds,
             )
     }
 
@@ -1830,6 +1924,10 @@ where
     pub fn current_room_playstate_legacy_ping_compatible_now(&self) -> Option<RoomPlaystateView> {
         self.runtime
             .current_room_playstate_legacy_ping_compatible_now()
+    }
+
+    pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {
+        self.runtime.projected_local_position_at(now_seconds)
     }
 
     pub fn run_state_sync_heartbeat_legacy_ping_compatible(
@@ -2721,8 +2819,8 @@ mod tests {
         for debug in commands.iter().map(|command| format!("{command:?}")) {
             assert!(!debug.contains(secret));
         }
-        assert!(format!("{:?}", &commands[0]).contains("<redacted>"));
-        assert!(format!("{:?}", &commands[2]).contains("<redacted>"));
+        assert!(format!("{:?}", commands[0]).contains("<redacted>"));
+        assert!(format!("{:?}", commands[2]).contains("<redacted>"));
     }
 
     #[test]

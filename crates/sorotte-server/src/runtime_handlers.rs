@@ -148,7 +148,19 @@ impl ServerRuntime {
                 }
             };
             match self.handle_protocol_message_fanout_for_peer(client_id, message, peer_ip) {
-                Ok(messages) => outbound_messages.extend(messages),
+                Ok(messages) => {
+                    outbound_messages.extend(messages);
+                    // STARTTLS is a hard transport boundary. Once accepted,
+                    // no remaining item from this plaintext line may execute;
+                    // the client must resend application messages after the
+                    // socket has completed its TLS upgrade.
+                    if self.pending_transport_actions.iter().any(|action| {
+                        action.client_id == client_id
+                            && action.action == ServerTransportAction::StartTls
+                    }) {
+                        break;
+                    }
+                }
                 Err(error) => {
                     return Err(Box::new(LineFanoutFailure::new(outbound_messages, error)));
                 }
@@ -426,7 +438,15 @@ impl ServerRuntime {
                 .extend(self.refresh_mixed_readiness_cohort(&previous_session.room)?);
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
-        let username = self.find_free_username(&requested_username, Some(client_id));
+        let username = self
+            .find_free_username(&requested_username, Some(client_id))
+            .ok_or(ServerRuntimeError::InvalidHello)?;
+        if let Some(peer_ip) = peer_ip.filter(|peer_ip| !peer_ip.is_empty()) {
+            self.client_peer_ips
+                .insert(client_id.to_owned(), peer_ip.to_owned());
+        } else {
+            self.client_peer_ips.remove(client_id);
+        }
         let room_had_clients_before_join = !self.clients_in_room(&room_name).is_empty();
         let room_should_seed_joiner_position = room_had_clients_before_join
             || self.room_is_persistent(&room_name)
@@ -978,10 +998,33 @@ impl ServerRuntime {
                         continue;
                     };
                     self.ensure_room_state(&session.room);
+                    let now_seconds = self.current_time_seconds();
+                    let creation_identity = self.persistent_room_creation_identity(client_id);
+                    let creation_required =
+                        self.persistent_room_creation_required(&session.room, &new_files);
                     if self.user_can_control_playlist(&session.username, &session.room)
                         && playlist_is_valid(&new_files)
+                        && self.persistent_room_creation_allowed(
+                            &session.room,
+                            &new_files,
+                            &creation_identity,
+                            now_seconds,
+                        )
                     {
-                        self.room_playlist_state_mut(&session.room).files = new_files.clone();
+                        let normalized_index_changed = {
+                            let room_playlist = self.room_playlist_state_mut(&session.room);
+                            room_playlist.files = new_files.clone();
+                            room_playlist.normalize_index()
+                        };
+                        if creation_required {
+                            self.record_persistent_room_creation(
+                                &session.room,
+                                creation_identity,
+                                now_seconds,
+                            );
+                        } else if new_files.is_empty() {
+                            self.release_persistent_room_ownership(&session.room);
+                        }
                         self.persist_room_if_needed(&session.room)?;
                         for peer_client in self.clients_in_room(&session.room) {
                             let playlist_message = self.playlist_change_message_for_client(
@@ -991,6 +1034,21 @@ impl ServerRuntime {
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(peer_client, playlist_message));
+                        }
+                        if normalized_index_changed {
+                            let normalized_index = self.room_playlist_state(&session.room).index;
+                            let playlist_index =
+                                PlaylistIndexPayload::from_optional(normalized_index)
+                                    .with_user(session.username.clone());
+                            let index_message = ProtocolMessage::set(
+                                SetPayload::new().with_playlist_index(playlist_index),
+                            );
+                            for peer_client in self.clients_in_room(&session.room) {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    index_message.clone(),
+                                ));
+                            }
                         }
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
@@ -1013,7 +1071,11 @@ impl ServerRuntime {
                         continue;
                     };
                     self.ensure_room_state(&session.room);
-                    if self.user_can_control_playlist(&session.username, &session.room) {
+                    let index_is_valid =
+                        self.room_playlist_state(&session.room).accepts_index(index);
+                    if self.user_can_control_playlist(&session.username, &session.room)
+                        && index_is_valid
+                    {
                         let previous_index = self.room_playlist_state(&session.room).index;
                         self.room_playlist_state_mut(&session.room).index = index;
                         self.persist_room_if_needed(&session.room)?;
@@ -1141,6 +1203,7 @@ impl ServerRuntime {
             self.ingest_client_ping_metrics(client_id, ping.latency_calculation, ping.client_rtt);
         }
         self.record_client_state_update_now(client_id);
+        self.persist_occupied_room_activity_if_due_at(&session.room, self.current_time_seconds())?;
         let had_barrier_ack = state
             .playback_barrier
             .as_ref()

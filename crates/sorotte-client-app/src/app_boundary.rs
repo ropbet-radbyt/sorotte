@@ -178,7 +178,7 @@ pub mod state {
         StartSynchronizationConfig, StartSynchronizationPolicy, StartTimeoutAction,
         StreamingBufferConfig, StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
         StreamingQualityPreset, StreamingQualitySuggestionReason, StreamingRecoveryConfig,
-        StreamingRecoveryPolicy, SyncConfig, Username, resolve_client_config,
+        StreamingRecoveryPolicy, SyncConfig, TlsPolicy, Username, resolve_client_config,
     };
 }
 

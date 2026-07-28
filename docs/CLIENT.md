@@ -54,6 +54,26 @@ In the GUI, open `Interface & System` -> `Storage Location`. `Browse` selects a 
 
 When the selected storage root is the install folder itself, install-folder `sorotte.ini` is both the locator and the normal settings file. Sorotte writes `configRoot = .` into its `[settings]` section instead of an absolute path, so the install folder can be moved as a portable bundle while preserving the rest of the settings. If the selected root is inside the install folder, Sorotte writes a relative path such as `configRoot = data` or `configRoot = config\settings`, keeping files like `MainWindow.ini` out of the install root while preserving portability.
 
+## Client TLS Policy And Deadlines
+
+Set the connection policy in `sorotte.ini`:
+
+```ini
+[server_data]
+tlsPolicy = RequireTls
+```
+
+Accepted values are `RequireTls`, `PreferTls`, and `Plaintext`. `RequireTls` rejects a declined, malformed, interrupted, or certificate-invalid STARTTLS upgrade before sending the client Hello or credentials. `PreferTls` allows an explicit plaintext fallback and displays a security warning. `Plaintext` skips STARTTLS. When `tlsPolicy` is absent, saved server or controlled-room credentials default to `RequireTls`; connections without credentials default to `PreferTls`. The CLI environment override is `SOROTTE_CLIENT_TLS_POLICY` with the same values.
+
+The CLI accepts these positive, seconds-based deadline overrides (decimal values are allowed):
+
+- `SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS` (default `8`): TCP connect
+- `SOROTTE_CLIENT_STARTTLS_TIMEOUT_SECONDS` (default `8`): STARTTLS response
+- `SOROTTE_CLIENT_TLS_HANDSHAKE_TIMEOUT_SECONDS` (default `8`): TLS handshake
+- `SOROTTE_CLIENT_INITIAL_HELLO_TIMEOUT_SECONDS` (default `10`): client Hello/startup writes and the server's initial Hello response
+
+Each deadline failure enters the normal reconnect policy; after retries are exhausted, the final phase error is returned.
+
 ## mpv Setup
 
 The GUI and CLI can use a discovered `mpv` binary at version 0.41.0 or newer, a configured player path, or an explicit path supplied by environment/config.
@@ -168,6 +188,8 @@ Quality and buffering values are attached as per-file options to network media t
 Sorotte prevents cache-release seek loops with a generation-aware coordinator that retains room intent, blocks competing drift correction during recovery, and requires observed forward playback before accepting play. A network seek outside the observed cache uses one frozen target and one primary seek while data is fetched; advancing room timestamps do not restart it. The UI and opt-in CLI diagnostics distinguish seeking, fetching, buffer refill, ready, catching up, and explicit degradation without presenting refill percentage as media download progress or claiming an ETA. Local-file seeking remains unchanged.
 
 Configured recovery uses bounded gentle catch-up, hard-seek and retry budgets, and explicit degradation. Sorotte clients also drive the feature-negotiated `sorottePlaybackBarrierV1` start barrier and authenticated controlled-room buffering policies. Quality downgrade remains advisory; Sorotte never changes it automatically. The transport contract for a future user-confirmed YouTube quality retry reloads only the local transport while preserving the logical room identity and frozen target; Plex can offer the equivalent only when backed by an actual transcoder-quality API. Mid-play room-wide seek barriers are future protocol work; current seek preparation is client-only.
+
+For finite network media, an mpv `end-file` event well before the known duration is treated as a transport EOF rather than successful completion. Sorotte retries the same local transport at the last observed position with a bounded immediate-attempt budget while preserving the media generation; observed forward progress rearms that budget. On mpv builds with the curl backend, Sorotte also prefers negotiated HTTP/2 for network files when curl protocol selection is still `auto`, avoiding false EOFs caused by exhausted HTTP/3 connection-drain retries. An explicit user `curl-http-version` choice remains authoritative.
 
 See the [Stream Synchronization Guide](STREAM_SYNCHRONIZATION.md) for every setting, exact `mpv` mapping, source-specific guidance, wire lifecycle, diagnostics, tests, and the implemented-versus-planned boundary.
 

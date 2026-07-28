@@ -274,6 +274,22 @@ impl MpvJsonIpcClient {
             .filter(|value| !value.is_null()))
     }
 
+    /// Queries a property without erasing mpv's response classification.
+    ///
+    /// Callers that need to distinguish an unavailable property from a fatal
+    /// transport or protocol failure should use this method.
+    pub(crate) fn get_property_classified(
+        &mut self,
+        property_name: &str,
+    ) -> Result<Option<Value>, MpvIpcCommandFailure> {
+        let response =
+            self.send_command_classified(json!([MPV_COMMAND_GET_PROPERTY, property_name]), true)?;
+        Ok(response
+            .get("data")
+            .cloned()
+            .filter(|value| !value.is_null()))
+    }
+
     pub(crate) fn get_property_string(
         &mut self,
         property_name: &str,
@@ -294,16 +310,9 @@ impl MpvJsonIpcClient {
         &mut self,
         property_name: &str,
     ) -> Result<Option<String>, MpvIpcCommandFailure> {
-        // The caller receives ordinary server rejections directly and can
-        // classify an expected unavailable property. Do not also enqueue a
-        // misleading connection-failure event for that handled response.
-        // Fatal transport/protocol failures are still recorded regardless of
-        // this suppression flag.
-        let response =
-            self.send_command_classified(json!([MPV_COMMAND_GET_PROPERTY, property_name]), true)?;
-        Ok(response
-            .get("data")
-            .filter(|value| !value.is_null())
+        Ok(self
+            .get_property_classified(property_name)?
+            .as_ref()
             .and_then(Value::as_str)
             .map(ToOwned::to_owned))
     }
@@ -415,6 +424,31 @@ impl MpvJsonIpcClient {
         command: Value,
         token: u64,
     ) -> Result<Option<u64>, String> {
+        self.try_send_command_nonblocking(command, token, false, false)
+    }
+
+    /// Attempts a nonblocking property read whose successful completion retains
+    /// the response and whose ordinary server rejection is nonfatal.
+    pub(crate) fn try_get_property_nonblocking(
+        &mut self,
+        property_name: &str,
+        token: u64,
+    ) -> Result<Option<u64>, String> {
+        self.try_send_command_nonblocking(
+            json!([MPV_COMMAND_GET_PROPERTY, property_name]),
+            token,
+            true,
+            true,
+        )
+    }
+
+    fn try_send_command_nonblocking(
+        &mut self,
+        command: Value,
+        token: u64,
+        include_response: bool,
+        suppress_server_rejection_event: bool,
+    ) -> Result<Option<u64>, String> {
         self.poll_nonblocking_command();
         if self.pending_nonblocking_command.is_some() {
             return Ok(None);
@@ -450,6 +484,8 @@ impl MpvJsonIpcClient {
                 self.pending_nonblocking_command = Some(PendingMpvIpcCommand {
                     command_id,
                     token,
+                    include_response,
+                    suppress_server_rejection_event,
                     response_rx: Mutex::new(response_rx),
                     response_deadline,
                 });
@@ -493,7 +529,13 @@ impl MpvJsonIpcClient {
             .pending_nonblocking_command
             .take()
             .expect("polled nonblocking IPC command should remain present");
-        self.record_nonblocking_completion(pending.command_id, pending.token, completion);
+        self.record_nonblocking_completion(
+            pending.command_id,
+            pending.token,
+            pending.include_response,
+            pending.suppress_server_rejection_event,
+            completion,
+        );
     }
 
     fn finish_nonblocking_command(&mut self) {
@@ -508,23 +550,40 @@ impl MpvJsonIpcClient {
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv_timeout(remaining);
-        self.record_nonblocking_completion(pending.command_id, pending.token, completion);
+        self.record_nonblocking_completion(
+            pending.command_id,
+            pending.token,
+            pending.include_response,
+            pending.suppress_server_rejection_event,
+            completion,
+        );
     }
 
     fn record_nonblocking_completion(
         &mut self,
         command_id: u64,
         token: u64,
+        include_response: bool,
+        suppress_server_rejection_event: bool,
         completion: Result<MpvIpcCommandOutcome, mpsc::RecvTimeoutError>,
     ) {
         match completion {
             Ok(outcome) => match outcome.result {
+                Ok(response) if include_response => self.push_nonblocking_completion(
+                    MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                        command_id,
+                        token,
+                        response,
+                    },
+                ),
                 Ok(_) => self.push_nonblocking_completion(
                     MpvIpcNonblockingCommandCompletion::Succeeded { command_id, token },
                 ),
                 Err(failure) => {
                     let message = failure.message.clone();
-                    self.record_failure(&failure);
+                    if !(suppress_server_rejection_event && failure.is_server_rejection()) {
+                        self.record_failure(&failure);
+                    }
                     self.push_nonblocking_completion(MpvIpcNonblockingCommandCompletion::Failed {
                         command_id,
                         token,
@@ -575,12 +634,20 @@ impl MpvJsonIpcClient {
             });
     }
 
+    #[cfg(test)]
     pub(crate) fn take_pending_events(&mut self) -> Vec<Value> {
+        self.take_pending_timed_events()
+            .into_iter()
+            .map(|event| event.value)
+            .collect()
+    }
+
+    pub(crate) fn take_pending_timed_events(&mut self) -> Vec<MpvIpcEvent> {
         self.poll_nonblocking_command();
         self.runtime_queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_pending_events()
+            .take_pending_timed_events()
     }
 
     #[cfg(test)]
@@ -639,6 +706,11 @@ impl MpvJsonIpcClient {
 
     #[cfg(test)]
     pub(crate) fn inject_test_event(&mut self, event: Value) {
+        self.inject_test_event_received_at(event, Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_event_received_at(&mut self, event: Value, received_at: Instant) {
         let sequence = self.next_runtime_item_sequence();
         self.runtime_queues
             .lock()
@@ -646,6 +718,7 @@ impl MpvJsonIpcClient {
             .push_event(SequencedMpvIpcEvent {
                 sequence,
                 value: event,
+                received_at,
             });
     }
 
@@ -835,11 +908,16 @@ impl MpvIpcWorker {
     }
 
     fn push_pending_event(&self, value: Value) {
+        let received_at = Instant::now();
         let sequence = next_nonzero_sequence(&self.next_runtime_item_sequence);
         self.runtime_queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_event(SequencedMpvIpcEvent { sequence, value });
+            .push_event(SequencedMpvIpcEvent {
+                sequence,
+                value,
+                received_at,
+            });
     }
 
     fn send_command(
@@ -995,13 +1073,21 @@ impl MpvIpcWorker {
 struct PendingMpvIpcCommand {
     command_id: u64,
     token: u64,
+    include_response: bool,
+    suppress_server_rejection_event: bool,
     response_rx: Mutex<mpsc::Receiver<MpvIpcCommandOutcome>>,
     response_deadline: Instant,
+}
+
+pub(crate) struct MpvIpcEvent {
+    pub(crate) value: Value,
+    pub(crate) received_at: Instant,
 }
 
 struct SequencedMpvIpcEvent {
     sequence: u64,
     value: Value,
+    received_at: Instant,
 }
 
 struct SequencedMpvIpcControlItem {
@@ -1010,7 +1096,7 @@ struct SequencedMpvIpcControlItem {
 }
 
 enum MpvIpcControlItem {
-    Event(Value),
+    Event(MpvIpcEvent),
     Completion(MpvIpcNonblockingCommandCompletion),
     ControlQueueOverflow,
     OrdinaryQueueOverflow,
@@ -1027,7 +1113,10 @@ impl MpvIpcRuntimeQueues {
         if is_sorotte_control_event(&event.value) {
             self.push_control_item(SequencedMpvIpcControlItem {
                 sequence: event.sequence,
-                value: MpvIpcControlItem::Event(event.value),
+                value: MpvIpcControlItem::Event(MpvIpcEvent {
+                    value: event.value,
+                    received_at: event.received_at,
+                }),
             });
             return;
         }
@@ -1108,7 +1197,7 @@ impl MpvIpcRuntimeQueues {
         self.control_items.insert(insert_at, item);
     }
 
-    fn take_pending_events(&mut self) -> Vec<Value> {
+    fn take_pending_timed_events(&mut self) -> Vec<MpvIpcEvent> {
         let control_barrier = self.control_items.iter().find_map(|item| {
             matches!(
                 &item.value,
@@ -1128,7 +1217,13 @@ impl MpvIpcRuntimeQueues {
                 .ordinary_events
                 .pop_front()
                 .expect("the ordinary-event front was present");
-            events.push((event.sequence, event.value));
+            events.push((
+                event.sequence,
+                MpvIpcEvent {
+                    value: event.value,
+                    received_at: event.received_at,
+                },
+            ));
         }
         while self
             .control_items
@@ -1166,8 +1261,8 @@ impl MpvIpcRuntimeQueues {
         let mut control_retained = VecDeque::with_capacity(self.control_items.len());
         while let Some(item) = self.control_items.pop_front() {
             match item.value {
-                MpvIpcControlItem::Event(event) if predicate(&event) => {
-                    matching.push((item.sequence, event));
+                MpvIpcControlItem::Event(event) if predicate(&event.value) => {
+                    matching.push((item.sequence, event.value));
                 }
                 value => control_retained.push_back(SequencedMpvIpcControlItem {
                     sequence: item.sequence,
@@ -1186,9 +1281,16 @@ impl MpvIpcRuntimeQueues {
     ) -> Vec<MpvIpcNonblockingRuntimeItem> {
         let mut selected = Vec::new();
         let mut retained = VecDeque::with_capacity(self.control_items.len());
+        let mut causal_event_barrier = None;
         while let Some(item) = self.control_items.pop_front() {
             match item.value {
-                MpvIpcControlItem::Event(event) if predicate(&event) => {
+                MpvIpcControlItem::Event(event) if predicate(&event.value) => {
+                    if is_causally_ordered_sorotte_control_event(&event.value) {
+                        causal_event_barrier = Some(
+                            causal_event_barrier
+                                .map_or(item.sequence, |barrier: u64| barrier.max(item.sequence)),
+                        );
+                    }
                     selected.push((item.sequence, MpvIpcNonblockingRuntimeItem::Event(event)))
                 }
                 MpvIpcControlItem::Completion(completion) => selected.push((
@@ -1210,6 +1312,23 @@ impl MpvIpcRuntimeQueues {
             }
         }
         self.control_items = retained;
+        if let Some(causal_event_barrier) = causal_event_barrier {
+            let mut ordinary_retained = VecDeque::with_capacity(self.ordinary_events.len());
+            while let Some(event) = self.ordinary_events.pop_front() {
+                if event.sequence < causal_event_barrier {
+                    selected.push((
+                        event.sequence,
+                        MpvIpcNonblockingRuntimeItem::CausalEvent(MpvIpcEvent {
+                            value: event.value,
+                            received_at: event.received_at,
+                        }),
+                    ));
+                } else {
+                    ordinary_retained.push_back(event);
+                }
+            }
+            self.ordinary_events = ordinary_retained;
+        }
         selected.sort_unstable_by_key(|(sequence, _)| *sequence);
         selected.into_iter().map(|(_, item)| item).collect()
     }
@@ -1220,6 +1339,11 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
         command_id: u64,
         token: u64,
     },
+    SucceededWithResponse {
+        command_id: u64,
+        token: u64,
+        response: Value,
+    },
     Failed {
         command_id: u64,
         token: u64,
@@ -1228,7 +1352,10 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
 }
 
 pub(crate) enum MpvIpcNonblockingRuntimeItem {
-    Event(Value),
+    /// An ordinary event that causally precedes a generation-bound control
+    /// result selected by the nonblocking lane.
+    CausalEvent(MpvIpcEvent),
+    Event(MpvIpcEvent),
     Completion(MpvIpcNonblockingCommandCompletion),
     ControlQueueOverflow,
     OrdinaryQueueOverflow,
@@ -1267,9 +1394,19 @@ pub(crate) fn is_sorotte_control_event(event: &Value) -> bool {
     )
 }
 
+fn is_causally_ordered_sorotte_control_event(event: &Value) -> bool {
+    event.get("event").and_then(Value::as_str) == Some("client-message")
+        && event
+            .get("args")
+            .and_then(Value::as_array)
+            .and_then(|args| args.first())
+            .and_then(Value::as_str)
+            == Some(SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT)
+}
+
 fn is_structural_mpv_event(event: &Value) -> bool {
     match event.get("event").and_then(Value::as_str) {
-        Some("start-file" | "end-file" | "file-loaded") => true,
+        Some("start-file" | "end-file" | "file-loaded" | "seek" | "playback-restart") => true,
         Some("property-change") => event.get("name").and_then(Value::as_str) == Some("path"),
         _ => false,
     }

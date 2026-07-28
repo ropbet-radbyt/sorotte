@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
 
 #[test]
 fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_attached_player() {
@@ -185,6 +186,15 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(recorded.set_positions, vec![0.0]);
     assert_eq!(recorded.set_paused_values, vec![true]);
+    assert_eq!(owner.attached_system_seek_ownership.len(), 1);
+    assert_eq!(
+        owner.attached_system_seek_ownership[0].source,
+        GuiAttachedSystemSeekSource::RuntimeAction
+    );
+    assert_eq!(
+        owner.attached_system_seek_ownership[0].target_position_seconds,
+        0.0
+    );
     assert_eq!(owner.player_position_seconds, Some(0.0));
     assert_eq!(owner.player_paused, Some(true));
     assert!(

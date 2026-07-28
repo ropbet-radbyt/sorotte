@@ -381,6 +381,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_media_files_through_attached_player_result_impl(
         &mut self,
         paths: &[String],
+        user_initiated: bool,
     ) -> Option<Result<StartedMediaLoad, String>> {
         if paths.is_empty() || self.player.is_none() {
             return None;
@@ -407,7 +408,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     && let Err(error) = session.prepare_attached_playback_media(
                         logical_id,
                         kind,
-                        MediaLoadIntent::NewPlayback,
+                        if user_initiated {
+                            MediaLoadIntent::NewPlayback
+                        } else {
+                            MediaLoadIntent::TransportRefresh
+                        },
                         system_time_seconds(),
                     )
                 {
@@ -558,7 +563,7 @@ impl GuiPersistedConfigRuntimeOwner {
         paths: Vec<String>,
     ) {
         self.supersede_playlist_resolution_attempt();
-        match self.open_media_files_through_attached_player_result_impl(&paths) {
+        match self.open_media_files_through_attached_player_result_impl(&paths, true) {
             Some(Ok(started)) => Self::push_player_success_impl(handle, started.feedback_message),
             Some(Err(message)) => Self::push_player_error_impl(handle, message),
             None => {}

@@ -67,13 +67,10 @@ impl PlatformNativeGuiDriver {
         name: &str,
     ) -> Result<(), String> {
         use windows_sys::Win32::Foundation::POINT;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SendMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         };
-
-        unsafe extern "system" {
-            fn ScreenToClient(hwnd: PlatformWindowHandle, point: *mut POINT) -> i32;
-        }
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
         let rect_context = format!("{name:?}");
         let rect = Self::automation_element_bounding_rect_required(element, &rect_context)?;
@@ -85,30 +82,34 @@ impl PlatformNativeGuiDriver {
 
         let center_x = (rect.left + rect.right) / 2;
         let center_y = (rect.top + rect.bottom) / 2;
-        let mut client_point = POINT {
-            x: center_x,
-            y: center_y,
-        };
         Self::focus_window_element(window, element, &rect_context)?;
-        // SAFETY: `client_point` is a valid mutable POINT and `window` is the HWND under test;
-        // failure is converted into a driver error.
+        let mut original_cursor = POINT { x: 0, y: 0 };
+        // SAFETY: The cursor APIs are process-global Win32 calls used only by the native smoke
+        // driver. Failures are converted into driver errors, and the original position is
+        // restored after the click attempt.
         unsafe {
-            if ScreenToClient(window, &mut client_point) == 0 {
+            if GetCursorPos(&mut original_cursor) == 0 {
+                return Err("failed to read the cursor position before native click".to_owned());
+            }
+            if SetCursorPos(center_x, center_y) == 0 {
                 return Err(format!(
-                    "failed to convert {name:?} center ({center_x}, {center_y}) to client coordinates"
+                    "failed to move cursor to {name:?} center at ({center_x}, {center_y})"
                 ));
             }
         }
         thread::sleep(Duration::from_millis(80));
-        // SAFETY: The lparam encodes client coordinates for the current HWND. Messages are sent
-        // synchronously to the GUI window under test to emulate a click in the smoke driver.
+        let mut inputs = [
+            Self::mouse_input(MOUSEEVENTF_LEFTDOWN, 0),
+            Self::mouse_input(MOUSEEVENTF_LEFTUP, 0),
+        ];
+        let click_result = Self::send_keyboard_inputs(&mut inputs)
+            .map_err(|error| format!("failed to click {name:?}: {error}"));
+        // SAFETY: `original_cursor` was populated by `GetCursorPos`; restoration is best-effort
+        // cleanup after the native smoke interaction.
         unsafe {
-            let lparam =
-                ((client_point.y as u32) << 16 | (client_point.x as u32 & 0xffff)) as isize;
-            SendMessageW(window, WM_MOUSEMOVE, 0, lparam);
-            SendMessageW(window, WM_LBUTTONDOWN, 0x0001, lparam);
-            SendMessageW(window, WM_LBUTTONUP, 0, lparam);
+            let _ = SetCursorPos(original_cursor.x, original_cursor.y);
         }
+        click_result?;
         thread::sleep(Duration::from_millis(120));
         Ok(())
     }

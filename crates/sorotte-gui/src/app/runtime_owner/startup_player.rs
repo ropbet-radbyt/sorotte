@@ -30,6 +30,7 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_stream_helper_probe_rx: None,
             player: None,
             player_attachment_epoch: 0,
+            ordered_player_events: player::GuiOrderedPlayerEventConsumer::default(),
             player_launch_state: GuiPlayerLaunchRuntimeState::None,
             player_apply_state: GuiPlayerApplyState::default(),
             managed_mpv_process: None,
@@ -66,6 +67,11 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_attached_room_unpause_observation: None,
             pending_attached_player_pause_confirmation_pump: None,
             pending_attached_player_pause_command: None,
+            attached_media_observation_cursor: Default::default(),
+            attached_native_seek_tracker: GuiAttachedNativeSeekTracker::default(),
+            attached_system_seek_ownership: VecDeque::new(),
+            attached_system_seek_fail_closed: None,
+            attached_transport_telemetry_authority: Default::default(),
             player_position_seconds: None,
             player_paused: None,
             player_paused_for_cache: None,
@@ -215,6 +221,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
+        self.attached_media_observation_cursor = Default::default();
+        self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
+        self.attached_system_seek_ownership.clear();
+        self.attached_system_seek_fail_closed = None;
+        self.attached_transport_telemetry_authority = Default::default();
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.nearest_match = None;
@@ -272,6 +283,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_room_unpause_observation = None;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.pending_attached_player_pause_command = None;
+        self.attached_media_observation_cursor = Default::default();
+        self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
+        self.attached_system_seek_ownership.clear();
+        self.attached_system_seek_fail_closed = None;
+        self.attached_transport_telemetry_authority = Default::default();
     }
 
     pub(in crate::app) fn clear_media_match_remote_lookup_state(&mut self) {
@@ -288,6 +304,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if attachment_ended {
             self.player_attachment_epoch = self.player_attachment_epoch.wrapping_add(1);
         }
+        self.ordered_player_events = player::GuiOrderedPlayerEventConsumer::default();
         self.network_options_hook_failure_reason = None;
         self.network_options_runtime_health_revision = None;
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;

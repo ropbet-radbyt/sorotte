@@ -68,6 +68,10 @@ impl ClientSession {
         self.model.playlist.rooms.clear();
         self.model.room.playstates.clear();
         self.model.room.playstate_updated_at_seconds.clear();
+        self.model
+            .room
+            .playstate_authority_changed_at_seconds
+            .clear();
         self.model.playlist.pending = None;
         self.model.playlist.pending_remote_revision = 0;
         self.model.playlist.pending_local_change_echoes.clear();
@@ -91,6 +95,7 @@ impl ClientSession {
         self.model.readiness.autoplay_time_left_seconds =
             self.model.readiness.config.autoplay_delay_seconds;
         self.model.playback.speed_changed = false;
+        self.model.playback.speed_correction_rate = None;
         self.model.playback.behind_first_detected_at_seconds = None;
         self.model.playback.last_paused_on_leave_at_seconds = None;
         self.model.playback.last_advanced_at_seconds = None;
@@ -131,13 +136,35 @@ impl ClientSession {
         client_latency_calculation: f64,
         client_rtt: f64,
     ) -> StatePayload {
+        self.reconcile_state_and_build_response_at(
+            inbound_state,
+            local_position,
+            local_paused,
+            client_latency_calculation,
+            client_rtt,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub(crate) fn reconcile_state_and_build_response_at(
+        &mut self,
+        inbound_state: StatePayload,
+        local_position: f64,
+        local_paused: bool,
+        client_latency_calculation: f64,
+        client_rtt: f64,
+        received_at_seconds: f64,
+    ) -> StatePayload {
         self.reconcile_normalized_state_and_build_response_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
             local_position,
             local_paused,
             client_latency_calculation,
             client_rtt,
-            None,
+            StateReconcileContext {
+                local_state_change_global_playstate: None,
+                received_at_seconds,
+            },
         )
     }
 
@@ -146,6 +173,7 @@ impl ClientSession {
         inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
+        received_at_seconds: f64,
     ) -> StatePayload {
         self.apply_inbound_ignore_counters(&inbound_state);
 
@@ -154,7 +182,7 @@ impl ClientSession {
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
         if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
-            self.apply_state_at(inbound_state.clone(), None);
+            self.apply_state_at(inbound_state.clone(), Some(received_at_seconds));
         }
 
         let mut ping = PingPayload::new()
@@ -203,7 +231,10 @@ impl ClientSession {
             local_paused,
             client_latency_calculation,
             client_rtt,
-            local_state_change_global_playstate,
+            StateReconcileContext {
+                local_state_change_global_playstate,
+                received_at_seconds: unix_wall_clock_time_seconds_legacy_compatible(),
+            },
         )
     }
 
@@ -214,8 +245,12 @@ impl ClientSession {
         local_paused: bool,
         client_latency_calculation: f64,
         client_rtt: f64,
-        local_state_change_global_playstate: Option<RoomPlaystateView>,
+        context: StateReconcileContext,
     ) -> StatePayload {
+        let StateReconcileContext {
+            local_state_change_global_playstate,
+            received_at_seconds,
+        } = context;
         self.apply_inbound_ignore_counters(&inbound_state);
 
         let has_playstate_update = inbound_state
@@ -223,7 +258,7 @@ impl ClientSession {
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
         if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
-            self.apply_state_at(inbound_state.clone(), None);
+            self.apply_state_at(inbound_state.clone(), Some(received_at_seconds));
         }
 
         let mut response = StatePayload::new();
@@ -234,10 +269,11 @@ impl ClientSession {
         let mut state_change = false;
         if has_global_playstate && client_ignore_not_set {
             let (pause_change, seeked) = self
-                .determine_local_state_change_with_global_playstate_override(
+                .determine_local_state_change_with_global_playstate_override_at(
                     local_paused,
                     local_position,
                     local_state_change_global_playstate,
+                    received_at_seconds,
                 );
 
             let mut playstate = PlaystatePayload::new()
