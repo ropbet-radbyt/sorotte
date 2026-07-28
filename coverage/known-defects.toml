@@ -1,0 +1,141 @@
+schema_version = 1
+
+[[defect]]
+id = "TC-PLAYER-001"
+title = "predecessor and successor lifecycle graph corruption"
+severity = "high"
+owners = ["player"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_001_external_replacement_breaks_predecessor_links"
+expected_panic = "attempt predecessor points to another successor"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_001_acceptance_overwrites_predecessor_link"
+expected_panic = "attempt predecessor points to another successor"
+
+[[defect]]
+id = "TC-PLAYER-002"
+title = "logical terminal playback retains an active physical attempt"
+severity = "high"
+owners = ["player"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_delayed_acceptance_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_cross_generation_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_superseding_submission_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_repeated_external_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_loaded_external_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_terminal_external_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+test = "lifecycle::property_tests::known_defect_tc_player_002_replaced_attempt_variant_retains_terminal_active_state"
+expected_panic = "logical terminal playback still has an active physical attempt"
+
+[[defect]]
+id = "TC-SEC-001"
+title = "structured credential aliases survive transcript sanitization"
+severity = "high"
+owners = ["player", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-player-mpv"
+source = "crates/sorotte-player-mpv/src/transcript/privacy_tests.rs"
+test = "transcript::privacy_tests::known_defect_tc_sec_001_structured_credential_aliases_leak_from_sanitized_transcript"
+expected_panic = "structured credential aliases leaked from sanitized transcript"
+
+[[defect]]
+id = "TC-SEC-002"
+title = "escaped diagnostic credentials survive PlayerError redaction"
+severity = "high"
+owners = ["player", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-player-api"
+source = "crates/sorotte-player-api/src/lib.rs"
+test = "error_display_redaction_tests::known_defect_tc_sec_002_escaped_diagnostic_credentials_leak_from_player_error"
+expected_panic = "escaped diagnostic credential forms leaked from PlayerError"
+
+[[defect]]
+id = "TC-SEC-003"
+title = "prose-prefixed credential fields survive PlayerError redaction"
+severity = "high"
+owners = ["player", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-player-api"
+source = "crates/sorotte-player-api/src/lib.rs"
+test = "error_display_redaction_tests::known_defect_tc_sec_003_prose_prefixed_credential_fields_leak_from_player_error"
+expected_panic = "prose-prefixed credential fields leaked from PlayerError"
+
+[[defect]]
+id = "TC-SERVER-001"
+title = "playlist JSON migration is not atomic across rows"
+severity = "high"
+owners = ["server", "persistence"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-server"
+source = "crates/sorotte-server/src/tests/persistence_tests.rs"
+test = "tests::persistence_tests::known_defect_playlist_json_migration_commits_rows_before_later_failure"
+expected_panic = "playlist JSON migration must be atomic across rows"
+
+[[defect]]
+id = "TC-SERVER-002"
+title = "concurrent quota-secret creation does not converge"
+severity = "high"
+owners = ["server", "persistence"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-10-31"
+
+[[defect.characterization]]
+package = "sorotte-server"
+source = "crates/sorotte-server/src/tests/persistence_tests.rs"
+test = "tests::persistence_tests::known_defect_concurrent_quota_secret_creation_does_not_converge"
+expected_panic = "concurrent quota secret creation must converge"

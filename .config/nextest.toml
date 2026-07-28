@@ -1,0 +1,18 @@
+[profile.ci]
+# A retry is diagnostic evidence, not permission to merge a nondeterministic
+# result. The command-line policy repeats these values so environment or
+# per-test overrides cannot weaken the required CI gate.
+retries = 1
+flaky-result = "fail"
+fail-fast = false
+leak-timeout = { period = "500ms", result = "fail" }
+status-level = "leak"
+final-status-level = "fail"
+
+[profile.ci.junit]
+path = "junit.xml"
+# Keep both the failing attempt and the later successful attempt that proves a
+# test was flaky. These reports are uploaded even when the required gate fails.
+store-success-output = true
+store-failure-output = true
+flaky-fail-status = "failure"

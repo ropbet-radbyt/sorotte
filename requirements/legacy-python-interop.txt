@@ -1,4 +1,4 @@
-twisted
+twisted==25.5.0
 # Syncplay v1.7.5 still uses pyOpenSSL X509 extension APIs removed in 26.2.0.
-pyopenssl<26.2
-service_identity
+pyopenssl==25.3.0
+service_identity==24.2.0

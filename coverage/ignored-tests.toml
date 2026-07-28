@@ -1,0 +1,296 @@
+schema_version = 1
+
+[policy]
+allowed_tiers = ["manual", "maintenance", "nightly", "pull-request", "quarantined"]
+allowed_owners = ["cli", "compatibility", "gui", "player-mpv", "simulation"]
+allowed_operating_systems = ["linux", "macos", "windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-001"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_borderline.rs"
+test = "connected_client_session_real_mpv_explicit_ipc_smoke_borderline_fastforward_without_server_rtt_does_not_seek_real_player"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Exercises a Windows real-player boundary that is not provisioned on ordinary developer or CI hosts."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-002"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_desync_fastforward.rs"
+test = "connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_fastforward_via_ping_forward_delay_to_real_player"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Exercises Windows fast-forward correction through a real mpv process and an explicitly supplied media fixture."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-003"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_desync_rewind.rs"
+test = "connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_desync_rewind_to_real_player"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Exercises Windows rewind correction through a real mpv process and an explicitly supplied media fixture."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-004"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_local_seek.rs"
+test = "connected_client_session_real_mpv_explicit_ipc_smoke_publishes_local_file_and_applies_local_seek_command"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Crosses the Windows CLI, transport, IPC, and real-player boundary with a locally provisioned media asset."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-005"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_reconnect.rs"
+test = "connected_client_session_real_mpv_explicit_ipc_reconnect_validation_smoke_applies_server_playstate_to_real_player"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Validates reconnect state against a real Windows player and therefore needs an externally provisioned process fixture."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-006"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_startup.rs"
+test = "explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_real_mpv"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Validates explicit Windows mpv startup arguments against a real binary rather than an in-process adapter."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-007"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/managed_unmanaged_launch.rs"
+test = "managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setup"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Checks managed launch and metadata publication using a real player and user-supplied media across supported hosts."
+prerequisites = ["standalone mpv binary", "local media asset"]
+operating_systems = ["linux", "macos", "windows"]
+
+[[ignored_test]]
+id = "IGN-CLI-008"
+source = "crates/sorotte-cli/src/tests/mpv_smoke/managed_unmanaged_launch.rs"
+test = "unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args"
+source_reason = "requires local standalone mpv binary and media asset"
+tier = "manual"
+owner = "cli"
+rationale = "Checks unmanaged Windows process spawning and player arguments against a real locally supplied mpv executable."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows process support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-COMPAT-001"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_legacy_server_state_latency_metrics_trace_fixture"
+source_reason = "requires Twisted and writes fixture files from a live legacy server session"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates committed legacy latency fixtures and must only run during an intentional fixture-review workflow."
+prerequisites = ["trace-capture Cargo feature", "Twisted legacy server", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-002"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_python_state_latency_metrics_trace_fixture"
+source_reason = "writes python fanout trace fixtures from current probe behavior"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates committed Python latency fixtures and must not mutate the oracle during ordinary verification."
+prerequisites = ["trace-capture Cargo feature", "Python probe dependencies", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-003"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_persistent_rooms_lifecycle_trace_fixtures"
+source_reason = "writes persistent-room lifecycle python/legacy trace fixtures"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates persistent-room oracle fixtures and requires explicit review of both Python and legacy outputs."
+prerequisites = ["trace-capture Cargo feature", "Python and legacy dependencies", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-004"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_permanent_rooms_file_trace_fixtures"
+source_reason = "writes permanent-rooms-file python/legacy trace fixtures"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates permanent-room file fixtures and is deliberately separated from tests that consume those fixtures."
+prerequisites = ["trace-capture Cargo feature", "Python and legacy dependencies", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-005"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_legacy_server_controlled_room_trace_fixtures"
+source_reason = "requires Twisted and writes fixture files from a live legacy server session"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates controlled-room legacy fixtures from a live Twisted server and changes committed oracle material."
+prerequisites = ["trace-capture Cargo feature", "Twisted legacy server", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-006"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_persistent_rooms_timeout_list_updates_trace_fixtures"
+source_reason = "writes persistent timeout-list-updates python/legacy trace fixtures"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates timeout-list-update fixtures whose behavioral changes require explicit compatibility review."
+prerequisites = ["trace-capture Cargo feature", "Python and legacy dependencies", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-007"
+source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
+test = "capture_python_fanout_trace_fixtures"
+source_reason = "writes python fanout trace fixtures from current probe behavior"
+tier = "maintenance"
+owner = "compatibility"
+rationale = "Regenerates committed Python fanout fixtures and is not valid as an ordinary nonmutating verification test."
+prerequisites = ["trace-capture Cargo feature", "Python probe dependencies", "fixture diff review"]
+operating_systems = ["linux", "macos", "windows"]
+mutates_fixtures = true
+
+[[ignored_test]]
+id = "IGN-COMPAT-008"
+source = "crates/sorotte-compat/src/tests/rooms_motd_fanout_tests/python_rooms_motd_tests.rs"
+test = "python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario"
+source_reason = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"
+tier = "quarantined"
+owner = "compatibility"
+rationale = "Records a deliberate timeout divergence; it must be reviewed rather than silently treated as permanent compatibility."
+prerequisites = ["live Python reference oracle", "media-match timeout scenario"]
+operating_systems = ["linux", "macos", "windows"]
+tracking = "coverage-gap:python-timeout-divergence"
+review_by = "2026-10-31"
+
+[[ignored_test]]
+id = "IGN-COMPAT-009"
+source = "crates/sorotte-compat/src/tests/state_fanout_tests/python_state_tests.rs"
+test = "python_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario"
+source_reason = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"
+tier = "quarantined"
+owner = "compatibility"
+rationale = "Records a deliberate state-timeout divergence; expiry forces periodic confirmation of the compatibility decision."
+prerequisites = ["live Python reference oracle", "state periodic-timeout scenario"]
+operating_systems = ["linux", "macos", "windows"]
+tracking = "coverage-gap:python-timeout-divergence"
+review_by = "2026-10-31"
+
+[[ignored_test]]
+id = "IGN-GUI-001"
+source = "crates/sorotte-gui/src/app/media_match_support.rs"
+test = "v3_manifest_harness_runs_small_synthetic_case"
+source_reason = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"
+tier = "manual"
+owner = "gui"
+rationale = "Runs a real synthetic media probe and therefore requires explicitly provisioned ffmpeg and ffprobe binaries."
+prerequisites = ["ffmpeg executable", "ffprobe executable"]
+operating_systems = ["linux", "macos", "windows"]
+
+[[ignored_test]]
+id = "IGN-GUI-002"
+source = "crates/sorotte-gui/src/app/smoke_tests/managed_mpv_smoke.rs"
+test = "gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config"
+source_reason = "local smoke test; requires standalone mpv binary"
+tier = "manual"
+owner = "gui"
+rationale = "Crosses persisted GUI configuration and Windows managed-process startup using a real locally installed player."
+prerequisites = ["standalone mpv binary", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-MPV-001"
+source = "crates/sorotte-player-mpv/src/tests/smoke_tests.rs"
+test = "real_mpv_bridge_lifecycle_over_json_ipc"
+source_reason = "opt-in real-mpv bridge test; set SOROTTE_TEST_MPV_BIN"
+tier = "manual"
+owner = "player-mpv"
+rationale = "Exercises the bridge lifecycle over a real mpv JSON IPC endpoint supplied by the operator."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "standalone mpv binary"]
+operating_systems = ["linux", "macos", "windows"]
+
+[[ignored_test]]
+id = "IGN-MPV-002"
+source = "crates/sorotte-player-mpv/src/tests/smoke_tests.rs"
+test = "local_standalone_mpv_smoke_reports_file_metadata"
+source_reason = "local smoke test; requires standalone mpv binary and media file"
+tier = "manual"
+owner = "player-mpv"
+rationale = "Checks Windows standalone player metadata using locally supplied executable and media fixtures."
+prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-SIM-001"
+source = "crates/sorotte-sim/tests/mpv_rebuffer_harness.rs"
+test = "real_mpv_pause_seek_resume_semantics"
+source_reason = "required Linux CI integration test; requires the mpv binary"
+tier = "pull-request"
+owner = "simulation"
+rationale = "Required real-player pause, seek, resume, and bounded-fetch contract executed explicitly in pull-request CI."
+prerequisites = ["supported mpv binary built for CI"]
+operating_systems = ["linux"]
+required_job = "mpv-pr-semantics"
+
+[[ignored_test]]
+id = "IGN-SIM-002"
+source = "crates/sorotte-sim/tests/mpv_rebuffer_harness.rs"
+test = "real_mpv_cache_cap_drains_and_input_resumes"
+source_reason = "required Linux CI integration test; requires the mpv binary"
+tier = "pull-request"
+owner = "simulation"
+rationale = "Required real-player cache-cap drain and input-resume contract executed explicitly in pull-request CI."
+prerequisites = ["supported mpv binary built for CI"]
+operating_systems = ["linux"]
+required_job = "mpv-pr-semantics"
+
+[[ignored_test]]
+id = "IGN-SIM-003"
+source = "crates/sorotte-sim/tests/mpv_rebuffer_harness.rs"
+test = "real_mpv_premature_http_disconnect_recovers_same_media_generation"
+source_reason = "required Linux CI integration test; requires the mpv binary"
+tier = "pull-request"
+owner = "simulation"
+rationale = "Required real-player premature-disconnect recovery contract executed explicitly in pull-request CI."
+prerequisites = ["supported mpv binary built for CI"]
+operating_systems = ["linux"]
+required_job = "mpv-pr-semantics"
+
+[[ignored_test]]
+id = "IGN-SIM-004"
+source = "crates/sorotte-sim/tests/mpv_rebuffer_harness.rs"
+test = "real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall"
+source_reason = "scheduled integration test; requires the mpv binary"
+tier = "pull-request"
+owner = "simulation"
+rationale = "The hardened workflow promotes this formerly scheduled HTTP-stall contract to required pull-request evidence."
+prerequisites = ["supported mpv binary built for CI"]
+operating_systems = ["linux"]
+required_job = "mpv-pr-semantics"
