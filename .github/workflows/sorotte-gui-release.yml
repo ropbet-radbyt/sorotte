@@ -5,7 +5,7 @@ on:
   pull_request:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "v*"
 
@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: sorotte-gui-release-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && 'dev' || github.run_id }}
-  cancel-in-progress: false
+  group: sorotte-gui-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SOROTTE_GUI_DEV_RELEASE_TAG: sorotte-gui-dev
@@ -43,15 +43,15 @@ jobs:
       - name: Run GUI updater tests
         shell: pwsh
         run: |
-          cargo test -p sorotte-gui --lib update_
-          cargo test -p sorotte-gui --bin sorotte-gui-updater
-          cargo test -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
+          cargo test --locked -p sorotte-gui --lib update_
+          cargo test --locked -p sorotte-gui --bin sorotte-gui-updater
+          cargo test --locked -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
 
       - name: Build GUI release binaries
         shell: pwsh
         run: |
-          cargo build --release -p sorotte-gui --bin sorotte-gui
-          cargo build --release -p sorotte-gui --bin sorotte-gui-updater
+          cargo build --locked --release -p sorotte-gui --bin sorotte-gui
+          cargo build --locked --release -p sorotte-gui --bin sorotte-gui-updater
 
       - name: Package GUI release
         shell: pwsh
