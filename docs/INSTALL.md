@@ -145,6 +145,9 @@ GUI validation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
-cargo build -p sorotte-gui --bin sorotte-gui
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
 ```
+
+Native smoke performs its own locked build and writes raw output, invocation
+metadata, binary provenance, and a strict contract summary under
+`target/verification/gui-native-smoke/`.

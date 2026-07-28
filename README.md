@@ -99,9 +99,12 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 Run Windows native GUI smoke coverage:
 
 ```powershell
-cargo build -p sorotte-gui --bin sorotte-gui
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
 ```
+
+The wrapper performs the locked native-smoke build, treats every implemented
+scenario as required by default, and preserves a verification bundle under
+`target/verification/gui-native-smoke/`.
 
 Run the strict server release gate:
 
