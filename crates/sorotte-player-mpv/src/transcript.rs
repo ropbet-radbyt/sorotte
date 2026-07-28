@@ -808,6 +808,9 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
 }
 
 #[cfg(test)]
+mod privacy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::lifecycle::{

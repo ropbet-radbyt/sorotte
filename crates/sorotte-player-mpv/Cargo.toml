@@ -26,6 +26,7 @@ windows-sys.workspace = true
 
 [dev-dependencies]
 mlua.workspace = true
+proptest.workspace = true
 sorotte-client-core = { path = "../sorotte-client-core", features = ["test-support"] }
 
 [[test]]

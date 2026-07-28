@@ -2296,9 +2296,10 @@ pub enum PlayerLifecycleEffect {
     },
 }
 
-pub fn reduce_player_lifecycle(
+fn reduce_player_lifecycle_inner(
     mut state: PlayerLifecycleState,
     input: PlayerLifecycleInput,
+    assert_invariants: bool,
 ) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
     let mut effects = Vec::new();
     match input {
@@ -3464,14 +3465,32 @@ pub fn reduce_player_lifecycle(
             effects.push(PlayerLifecycleEffect::RequestLifecycleReconciliation);
         }
     }
-    if let Err(reason) = state.assert_invariants() {
+    if assert_invariants && let Err(reason) = state.assert_invariants() {
         debug_assert!(false, "player lifecycle invariant violated: {reason}");
     }
     (state, effects)
 }
 
+pub fn reduce_player_lifecycle(
+    state: PlayerLifecycleState,
+    input: PlayerLifecycleInput,
+) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
+    reduce_player_lifecycle_inner(state, input, true)
+}
+
+#[cfg(test)]
+fn reduce_player_lifecycle_without_invariant_assertion(
+    state: PlayerLifecycleState,
+    input: PlayerLifecycleInput,
+) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
+    reduce_player_lifecycle_inner(state, input, false)
+}
+
 #[cfg(test)]
 mod acceptance_tests;
+
+#[cfg(test)]
+mod property_tests;
 
 #[cfg(test)]
 mod tests {

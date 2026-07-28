@@ -1,8 +1,9 @@
 use super::*;
-use crate::RoomPersistenceStore;
+use crate::{RoomPersistenceError, RoomPersistenceStore};
 use rusqlite::params;
 use sorotte_protocol::ListUserEntry;
 use std::collections::BTreeMap;
+use std::sync::Barrier;
 
 fn decode_single_list_rooms(
     lines: Vec<String>,
@@ -456,6 +457,222 @@ fn legacy_multiline_playlist_rows_are_migrated_to_json_on_load() {
         .expect("legacy room expiry should reach SQLite");
     drop(restarted);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn corrupt_quota_secret_lengths_fail_closed_without_overwriting_metadata() {
+    let db_path = temporary_sqlite_path("corrupt-quota-secret-length");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+
+    for length in [0_usize, 1, 31, 33, 1_024] {
+        let corrupt_secret = vec![0xa5; length];
+        let connection = store
+            .connection("seed corrupt quota secret")
+            .expect("room store connection should open");
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO persistence_metadata (key, value) \
+                 VALUES ('quota-secret-v1', ?1)",
+                params![corrupt_secret],
+            )
+            .expect("corrupt metadata fixture should be seedable");
+        drop(connection);
+
+        for attempt in 1..=2 {
+            let error = store.load_or_create_quota_secret().unwrap_err();
+            match error {
+                RoomPersistenceError::Sqlite { action, .. } => assert_eq!(
+                    action, "decode quota secret",
+                    "attempt {attempt} for length {length} reported the wrong boundary"
+                ),
+            }
+        }
+
+        let connection = store
+            .connection("inspect corrupt quota secret")
+            .expect("room store connection should reopen");
+        let persisted: Vec<u8> = connection
+            .query_row(
+                "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("corrupt metadata row should remain observable");
+        assert_eq!(
+            persisted, corrupt_secret,
+            "failed decoding must not silently replace durable identity"
+        );
+    }
+
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+#[should_panic(expected = "concurrent quota secret creation must converge")]
+fn known_defect_concurrent_quota_secret_creation_does_not_converge() {
+    let db_path = temporary_sqlite_path("concurrent-quota-secret-creation");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+    let creation_barrier = Arc::new(Barrier::new(2));
+    let handles = (0..2)
+        .map(|_| {
+            let store = store.clone();
+            let creation_barrier = Arc::clone(&creation_barrier);
+            std::thread::spawn(move || {
+                store.load_or_create_quota_secret_with_before_create(|| {
+                    creation_barrier.wait();
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .expect("quota-secret creation worker should not panic")
+        })
+        .collect::<Vec<_>>();
+
+    let successful_secrets = results
+        .iter()
+        .filter_map(|result| result.as_ref().ok().copied())
+        .collect::<Vec<_>>();
+    let error_actions = results
+        .iter()
+        .filter_map(|result| match result {
+            Err(RoomPersistenceError::Sqlite { action, .. }) => Some(*action),
+            Ok(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        successful_secrets.len(),
+        1,
+        "the known race should currently admit exactly one creator"
+    );
+    assert_eq!(
+        error_actions,
+        vec!["create quota secret"],
+        "the losing creator should expose the uniqueness race"
+    );
+
+    let connection = store
+        .connection("inspect concurrently created quota secret")
+        .expect("room store connection should reopen");
+    let persisted: Vec<u8> = connection
+        .query_row(
+            "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("one winning secret should be durable");
+    assert_eq!(persisted, successful_secrets[0]);
+    drop(connection);
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+
+    assert!(
+        results.len() == 2
+            && results.iter().all(Result::is_ok)
+            && results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .all(|secret| *secret == successful_secrets[0]),
+        "concurrent quota secret creation must converge on one durable value"
+    );
+}
+
+#[test]
+#[should_panic(expected = "playlist JSON migration must be atomic across rows")]
+fn known_defect_playlist_json_migration_commits_rows_before_later_failure() {
+    let db_path = temporary_sqlite_path("playlist-json-migration-atomicity");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+    let connection = store
+        .connection("seed migration atomicity fault")
+        .expect("room store connection should open");
+    for (name, playlist) in [("first", "one.mkv"), ("second", "two.mkv")] {
+        connection
+            .execute(
+                "INSERT INTO persistent_rooms \
+                 (name, playlist, playlistJson, playlistIndex, position, lastSavedUpdate) \
+                 VALUES (?1, ?2, NULL, 0, 0, 0)",
+                params![name, playlist],
+            )
+            .expect("legacy row should be seedable");
+    }
+    connection
+        .execute_batch(
+            "CREATE TABLE migration_fault (attempts INTEGER NOT NULL);
+             INSERT INTO migration_fault (attempts) VALUES (0);
+             CREATE TRIGGER fail_second_playlist_json_migration
+             BEFORE UPDATE OF playlistJson ON persistent_rooms
+             BEGIN
+               UPDATE migration_fault SET attempts = attempts + 1;
+               SELECT CASE
+                 WHEN (SELECT attempts FROM migration_fault) = 2
+                 THEN RAISE(ABORT, 'injected second migration failure')
+               END;
+             END;",
+        )
+        .expect("deterministic migration failpoint should install");
+    drop(connection);
+
+    let error = store
+        .load_rooms()
+        .expect_err("the second playlist migration write should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected second migration failure"),
+        "unexpected migration error: {error}"
+    );
+
+    let connection = store
+        .connection("inspect interrupted migration")
+        .expect("room store connection should reopen");
+    let migrated_before_restart: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM persistent_rooms WHERE playlistJson IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("partial migration count should be readable");
+    connection
+        .execute_batch("DROP TRIGGER fail_second_playlist_json_migration;")
+        .expect("failpoint should be removable before restart");
+    drop(connection);
+
+    let restarted_store =
+        RoomPersistenceStore::open(&db_path).expect("interrupted store should reopen");
+    let rooms = restarted_store
+        .load_rooms()
+        .expect("a retry without the failpoint should finish migration");
+    assert_eq!(rooms["first"].files, vec!["one.mkv".to_owned()]);
+    assert_eq!(rooms["second"].files, vec!["two.mkv".to_owned()]);
+    let connection = restarted_store
+        .connection("inspect recovered migration")
+        .expect("recovered store connection should open");
+    let migrated_after_restart: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM persistent_rooms WHERE playlistJson IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovered migration count should be readable");
+    assert_eq!(migrated_after_restart, 2);
+
+    drop(connection);
+    drop(restarted_store);
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+
+    assert!(
+        matches!(migrated_before_restart, 0 | 2),
+        "playlist JSON migration must be atomic across rows, found {migrated_before_restart} migrated rows"
+    );
 }
 
 #[test]

@@ -72,6 +72,38 @@ fn credential_key_before(value: &str, delimiter_index: usize) -> bool {
 mod error_display_redaction_tests {
     use super::PlayerError;
 
+    fn generated_canary(case: usize) -> String {
+        format!("SOROTTE_PLAYER_ERROR_CANARY_{case:03}_Aa9")
+    }
+
+    fn unicode_escape(value: &str) -> String {
+        value
+            .chars()
+            .map(|character| format!("\\u{:04x}", u32::from(character)))
+            .collect()
+    }
+
+    fn percent_encode(value: &str) -> String {
+        value.bytes().map(|byte| format!("%{byte:02X}")).collect()
+    }
+
+    fn assert_error_outputs_do_not_contain_canary(error: &PlayerError, canary: &str) {
+        let outputs = [format!("{error}"), format!("{error:?}")];
+        let forbidden = [
+            canary.to_owned(),
+            unicode_escape(canary),
+            percent_encode(canary),
+        ];
+        for output in outputs {
+            for representation in &forbidden {
+                assert!(
+                    !output.contains(representation),
+                    "player error output retained credential canary {representation:?}: {output}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn operation_failure_display_redacts_credentials_without_hiding_parser_diagnostics() {
         const MARKER: &str = "player-error-secret-canary-985d7a";
@@ -84,6 +116,104 @@ mod error_display_redaction_tests {
         assert_eq!(
             format!("{ordinary}"),
             "operation failed: unexpected token: EOF"
+        );
+    }
+
+    #[test]
+    fn generated_nested_diagnostic_credentials_are_redacted() {
+        let keys = [
+            "password",
+            "token",
+            "secret",
+            "credential",
+            "access_token",
+            "X-Plex-Token",
+            "clientSecret",
+            "room-password",
+        ];
+        for (case, key) in keys.into_iter().enumerate() {
+            let canary = generated_canary(case);
+            let mut messages = vec![
+                format!("request failed for https://media.invalid/watch?{key}={canary}"),
+                format!("{key}: Bearer {canary}"),
+                format!("{key}%3D{canary}"),
+                format!("'{key}' = '{canary}'"),
+            ];
+            for depth in 0..=6 {
+                messages.push(format!(
+                    "request failed: {}{{\"{key}\":\"{canary}\"}}{}",
+                    "{\"outer\":[".repeat(depth),
+                    "]}".repeat(depth),
+                ));
+            }
+            for message in messages {
+                assert_error_outputs_do_not_contain_canary(
+                    &PlayerError::OperationFailed(message),
+                    &canary,
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "escaped diagnostic credential forms leaked from PlayerError")]
+    fn known_defect_tc_sec_002_escaped_diagnostic_credentials_leak_from_player_error() {
+        let cases = [
+            (
+                "escaped-key",
+                r#"request failed: {"pass\u0077ord":"{canary}"}"#,
+            ),
+            (
+                "escaped-colon",
+                r#"request failed: {"password"\u003a"{canary}"}"#,
+            ),
+            (
+                "escaped-equals",
+                r#"request failed: password\u003d{canary}"#,
+            ),
+            ("encoded-key", "request failed: access%5Ftoken={canary}"),
+        ];
+        let mut leaked_cases = Vec::new();
+        for (case, (label, template)) in cases.into_iter().enumerate() {
+            let canary = generated_canary(1_000 + case);
+            let message = template.replace("{canary}", &canary);
+            let error = PlayerError::OperationFailed(message);
+            if format!("{error}").contains(&canary) {
+                leaked_cases.push(label);
+            }
+        }
+
+        assert!(
+            leaked_cases.is_empty(),
+            "escaped diagnostic credential forms leaked from PlayerError: {leaked_cases:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "prose-prefixed credential fields leaked from PlayerError")]
+    fn known_defect_tc_sec_003_prose_prefixed_credential_fields_leak_from_player_error() {
+        let cases = [
+            (
+                "prose-colon",
+                "request failed with password: Bearer {canary}",
+            ),
+            ("prose-equals", "upstream response includes token={canary}"),
+            ("parenthesized", "request failed (secret={canary})"),
+            ("arrow-colon", "backend -> clientSecret: {canary}"),
+        ];
+        let mut leaked_cases = Vec::new();
+        for (case, (label, template)) in cases.into_iter().enumerate() {
+            let canary = generated_canary(2_000 + case);
+            let message = template.replace("{canary}", &canary);
+            let error = PlayerError::OperationFailed(message);
+            if format!("{error}").contains(&canary) {
+                leaked_cases.push(label);
+            }
+        }
+
+        assert!(
+            leaked_cases.is_empty(),
+            "prose-prefixed credential fields leaked from PlayerError: {leaked_cases:?}"
         );
     }
 }

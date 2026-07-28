@@ -356,6 +356,27 @@ impl RoomPersistenceStore {
     }
 
     pub(crate) fn load_or_create_quota_secret(&self) -> Result<[u8; 32], RoomPersistenceError> {
+        self.load_or_create_quota_secret_inner(|| {})
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_or_create_quota_secret_with_before_create<F>(
+        &self,
+        before_create: F,
+    ) -> Result<[u8; 32], RoomPersistenceError>
+    where
+        F: FnOnce(),
+    {
+        self.load_or_create_quota_secret_inner(before_create)
+    }
+
+    fn load_or_create_quota_secret_inner<F>(
+        &self,
+        before_create: F,
+    ) -> Result<[u8; 32], RoomPersistenceError>
+    where
+        F: FnOnce(),
+    {
         let connection = self.connection("connect quota metadata")?;
         let existing = connection
             .query_row(
@@ -371,6 +392,7 @@ impl RoomPersistenceStore {
             });
         }
 
+        before_create();
         let mut secret = [0_u8; 32];
         getrandom::fill(&mut secret).expect("operating system random source should be available");
         connection
