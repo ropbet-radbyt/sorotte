@@ -63,6 +63,8 @@ STATUS_FILES = {
     "Timeout": "timeout.txt",
     "Unviable": "unviable.txt",
 }
+TOP_LEVEL_FUNCTION = "<top-level>"
+TOP_LEVEL_RETURN_TYPE = "<none>"
 
 
 class MutationCiError(ValueError):
@@ -751,12 +753,17 @@ def require_mutant(
     prefix = f"{source}:{span['start']['line']}:{span['start']['column']}: "
     if not name.startswith(prefix):
         raise MutationCiError(f"{label}.name is not bound to its source span")
-    normalized: dict[str, Any] = {
-        "file": source,
-        "function": require_function(
+    function = (
+        None
+        if mutant["function"] is None
+        else require_function(
             mutant["function"],
             label=f"{label}.function",
-        ),
+        )
+    )
+    normalized: dict[str, Any] = {
+        "file": source,
+        "function": function,
         "genre": require_string(mutant["genre"], label=f"{label}.genre"),
         "name": name,
         "package": package,
@@ -799,11 +806,18 @@ def without_diff(mutant: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def mutant_identity(mutant: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
-    function = require_mapping(mutant["function"], label="mutant.function")
+    function_value = mutant["function"]
+    if function_value is None:
+        function_name = TOP_LEVEL_FUNCTION
+        return_type = TOP_LEVEL_RETURN_TYPE
+    else:
+        function = require_mapping(function_value, label="mutant.function")
+        function_name = str(function["function_name"])
+        return_type = str(function["return_type"])
     return (
         str(mutant["file"]),
-        str(function["function_name"]),
-        str(function["return_type"]),
+        function_name,
+        return_type,
         str(mutant["genre"]),
         str(mutant["replacement"]),
     )

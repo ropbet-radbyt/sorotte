@@ -247,6 +247,42 @@ class MutationEvaluationTests(unittest.TestCase):
             report["inventory"]["pre_run_canonical_sha256"],
         )
 
+    def test_top_level_mutant_with_null_function_metadata_is_supported(self) -> None:
+        self.fixture.mutant["function"] = None
+        self.fixture.outcomes["outcomes"][1]["scenario"]["Mutant"]["function"] = None
+        self.fixture.write()
+
+        normalized = mutation_ci.parse_inventory(
+            self.fixture.inventory,
+            shard=self.shard,
+            label="top-level fixture",
+        )
+        self.assertIsNone(normalized[0]["function"])
+        self.assertEqual(
+            mutation_ci.mutant_identity(normalized[0]),
+            (
+                self.fixture.source,
+                mutation_ci.TOP_LEVEL_FUNCTION,
+                mutation_ci.TOP_LEVEL_RETURN_TYPE,
+                "FnValue",
+                "false",
+            ),
+        )
+        self.assertEqual(self.evaluate()["status"], "passed")
+
+    def test_non_null_function_metadata_remains_strictly_structured(self) -> None:
+        for invalid in [False, "demo", [], {}]:
+            mutant = copy.deepcopy(self.fixture.mutant)
+            mutant["function"] = invalid
+            with self.subTest(function=invalid), self.assertRaises(
+                mutation_ci.MutationCiError
+            ):
+                mutation_ci.parse_inventory(
+                    [mutant],
+                    shard=self.shard,
+                    label="invalid function fixture",
+                )
+
     def test_summary_count_cannot_contradict_detailed_outcomes(self) -> None:
         self.fixture.outcomes["caught"] = 0
         self.rewrite_outcomes()

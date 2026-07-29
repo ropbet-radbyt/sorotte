@@ -106,6 +106,15 @@ pub fn encode_line(value: &Value) -> Result<String, ProtocolError> {
     serde_json::to_string(value).map_err(ProtocolError::from)
 }
 
+fn next_non_whitespace_index(bytes: &[u8], start: usize) -> usize {
+    bytes
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, byte)| (!byte.is_ascii_whitespace()).then_some(index))
+        .unwrap_or(bytes.len())
+}
+
 fn top_level_key_order(json_line: &str) -> Vec<String> {
     let bytes = json_line.as_bytes();
     let mut keys = Vec::new();
@@ -123,11 +132,8 @@ fn top_level_key_order(json_line: &str) -> Vec<String> {
                 escaped = true;
             } else if *byte == b'"' {
                 in_string = false;
-                if depth == 1 && expect_key {
-                    let mut after_string = index + 1;
-                    while bytes.get(after_string).is_some_and(u8::is_ascii_whitespace) {
-                        after_string += 1;
-                    }
+                if let (1, true) = (depth, expect_key) {
+                    let after_string = next_non_whitespace_index(bytes, index + 1);
                     if bytes.get(after_string) == Some(&b':') {
                         let raw_key = &json_line[string_start..index];
                         let quoted_key = format!("\"{raw_key}\"");
@@ -149,15 +155,17 @@ fn top_level_key_order(json_line: &str) -> Vec<String> {
             }
             b'{' | b'[' => {
                 depth = depth.saturating_add(1);
-                if *byte == b'{' && depth == 1 {
+                if let (b'{', 1) = (*byte, depth) {
                     expect_key = true;
                 }
             }
             b'}' | b']' => {
                 depth = depth.saturating_sub(1);
             }
-            b',' if depth == 1 => {
-                expect_key = true;
+            b',' => {
+                if let 1 = depth {
+                    expect_key = true;
+                }
             }
             _ => {}
         }
@@ -222,21 +230,15 @@ fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usi
                 escaped = true;
             } else if *byte == b'"' {
                 in_string = false;
-                if depth == 1 && expect_key {
-                    let mut after_string = index + 1;
-                    while bytes.get(after_string).is_some_and(u8::is_ascii_whitespace) {
-                        after_string += 1;
-                    }
+                if let (1, true) = (depth, expect_key) {
+                    let after_string = next_non_whitespace_index(bytes, index + 1);
                     if bytes.get(after_string) == Some(&b':') {
                         let raw_key = &json_line[string_start..index];
                         let quoted_key = format!("\"{raw_key}\"");
-                        if let Ok(key) = serde_json::from_str::<String>(&quoted_key)
-                            && key == wanted_key
-                        {
-                            let mut value_start = after_string + 1;
-                            while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
-                                value_start += 1;
-                            }
+                        let key_matches = serde_json::from_str::<String>(&quoted_key)
+                            .is_ok_and(|key| key == wanted_key);
+                        if key_matches {
+                            let value_start = next_non_whitespace_index(bytes, after_string + 1);
                             let value_end = matching_object_end(bytes, value_start)?;
                             return Some((value_start, value_end));
                         }
@@ -255,15 +257,17 @@ fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usi
             }
             b'{' | b'[' => {
                 depth = depth.saturating_add(1);
-                if *byte == b'{' && depth == 1 {
+                if let (b'{', 1) = (*byte, depth) {
                     expect_key = true;
                 }
             }
             b'}' | b']' => {
                 depth = depth.saturating_sub(1);
             }
-            b',' if depth == 1 => {
-                expect_key = true;
+            b',' => {
+                if let 1 = depth {
+                    expect_key = true;
+                }
             }
             _ => {}
         }
@@ -382,5 +386,150 @@ pub fn extract_hello_from_message(message: ProtocolMessage) -> Result<HelloPaylo
             expected: "Hello",
             found: other.kind(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::*;
+
+    #[test]
+    fn default_protocol_line_limit_is_exactly_sixty_four_kibibytes() {
+        assert_eq!(DEFAULT_MAX_PROTOCOL_LINE_BYTES, 65_536);
+    }
+
+    #[test]
+    fn protocol_error_debug_and_source_preserve_safe_variant_information() {
+        let invalid_json = decode_line("{").expect_err("truncated object should be invalid");
+        assert!(format!("{invalid_json:?}").starts_with("InvalidJson("));
+        assert!(invalid_json.source().is_some());
+
+        let unexpected = ProtocolError::UnexpectedMessageKind {
+            expected: "Hello",
+            found: "Set",
+        };
+        assert_eq!(
+            format!("{unexpected:?}"),
+            "UnexpectedMessageKind { expected: \"Hello\", found: \"Set\" }"
+        );
+        assert!(unexpected.source().is_none());
+
+        let server = ProtocolError::ServerError {
+            message: "secret".to_owned(),
+        };
+        assert_eq!(format!("{server:?}"), "ServerError { message_bytes: 6 }");
+        assert!(server.source().is_none());
+
+        let tls = ProtocolError::UnexpectedTlsMessage {
+            start_tls: "false".to_owned(),
+        };
+        assert_eq!(
+            format!("{tls:?}"),
+            "UnexpectedTlsMessage { start_tls: \"false\" }"
+        );
+        assert!(tls.source().is_none());
+    }
+
+    #[test]
+    fn whitespace_scanner_returns_the_next_bounded_index() {
+        let bytes = b" \t\r\nx  ";
+        assert_eq!(next_non_whitespace_index(bytes, 0), 4);
+        assert_eq!(next_non_whitespace_index(bytes, 2), 4);
+        assert_eq!(next_non_whitespace_index(bytes, 4), 4);
+        assert_eq!(next_non_whitespace_index(bytes, 5), bytes.len());
+        assert_eq!(
+            next_non_whitespace_index(bytes, bytes.len() + 5),
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn top_level_key_scanner_ignores_nested_and_string_lookalikes() {
+        let line = r#"{
+            "first" : 1,
+            "nested": {"inside": 2, "other": {"deep": 3}},
+            "array": [{"hidden": 4}, {"alsoHidden": 5}],
+            "last": "text, } \"fake\": {"
+        }"#;
+
+        assert_eq!(
+            top_level_key_order(line),
+            ["first", "nested", "array", "last"]
+        );
+        assert!(top_level_key_order(r#"[{"notTopLevel": true}]"#).is_empty());
+        assert!(top_level_key_order("null").is_empty());
+    }
+
+    #[test]
+    fn top_level_key_scanner_decodes_escaped_keys_and_whitespace() {
+        assert_eq!(
+            top_level_key_order(
+                "{ \"\\u0066irst\" \t:\n 1,\r\n \"se\\u0063ond\" : {\"nested\": 2} }"
+            ),
+            ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn matching_object_end_is_exclusive_and_string_aware() {
+        let object = br#"{"text":"} { \" quoted","nested":{"value":1}}"#;
+        let mut bytes = b"xx".to_vec();
+        bytes.extend_from_slice(object);
+        bytes.extend_from_slice(b"tail");
+
+        assert_eq!(matching_object_end(&bytes, 2), Some(2 + object.len()));
+        assert_eq!(matching_object_end(b"xx{}tail", 2), Some(4));
+        assert_eq!(matching_object_end(b"xx[]tail", 2), None);
+        assert_eq!(matching_object_end(b"xx{\"open\":{", 2), None);
+        assert_eq!(matching_object_end(b"{}", 3), None);
+    }
+
+    #[test]
+    fn top_level_object_span_selects_only_the_requested_top_level_object() {
+        let wanted = r#"{"room":{"name":"a,}"},"file":{"name":"movie.mkv"}}"#;
+        let line = format!(
+            r#"{{"before":{{"Set":{{"shadow":true}}}},"\u0053et" :  {wanted},"after":{{}}}}"#
+        );
+        let expected_start = line.find(wanted).expect("fixture contains wanted object");
+        let expected_end = expected_start + wanted.len();
+        let actual_span =
+            top_level_object_value_span(&line, "Set").expect("Set object should have a span");
+
+        assert_eq!(actual_span, (expected_start, expected_end));
+        assert_eq!(&line[actual_span.0..actual_span.1], wanted);
+    }
+
+    #[test]
+    fn top_level_object_span_rejects_nested_non_object_and_missing_values() {
+        assert_eq!(
+            top_level_object_value_span(r#"{"outer":{"Set":{"shadow":true}}}"#, "Set"),
+            None
+        );
+        assert_eq!(
+            top_level_object_value_span(r#"{"before":{},"Set":null}"#, "Set"),
+            None
+        );
+        assert_eq!(
+            top_level_object_value_span(r#"{"before":{},"after":{}}"#, "Set"),
+            None
+        );
+    }
+
+    #[test]
+    fn set_command_scanner_preserves_only_direct_set_member_order() {
+        let line = r#"{
+            "before": {"Set": {"shadow": true}},
+            "Set" : {
+                "room": {"name": "room, }"},
+                "file": {"name": "\"playlistIndex\": {}"},
+                "playlistIndex": {"index": 2}
+            },
+            "after": {}
+        }"#;
+
+        assert_eq!(set_command_order(line), ["room", "file", "playlistIndex"]);
+        assert!(set_command_order(r#"{"before":{"Set":{"shadow":true}}}"#).is_empty());
     }
 }

@@ -225,21 +225,21 @@ Windows coverage or the currently red complete legacy fanout matrix.
 ## Targeted Mutation Testing
 
 Mutation testing is intentionally shard-based. Install the pinned producer
-and run either scheduled shard (`privacy-secret` or `server-auth`) with a fresh
-results root. For example:
+and run a scheduled shard (`privacy-secret`, `server-auth`, or
+`protocol-codec`) with a fresh results root. For example:
 
 ```powershell
 cargo install cargo-mutants --version 27.1.0 --locked
 python scripts/mutation_ci.py validate `
   --repo-root . `
   --policy coverage/mutation-policy.toml `
-  --shard server-auth
+  --shard protocol-codec
 python scripts/mutation_ci.py run `
   --repo-root . `
   --policy coverage/mutation-policy.toml `
-  --shard server-auth `
-  --results-root target/mutation-ci/server-auth `
-  --output target/verification/mutation-server-auth.json
+  --shard protocol-codec `
+  --results-root target/mutation-ci/protocol-codec `
+  --output target/verification/mutation-protocol-codec.json
 ```
 
 Use a fresh results root for every local run. The wrapper rejects an existing

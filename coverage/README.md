@@ -222,8 +222,9 @@ limits are retained in
 ## Targeted mutation evidence
 
 The scheduled mutation matrix covers the pure privacy boundary in
-`sorotte-secret` and controlled-room authorization in `sorotte-server`. It
-deliberately does not mutate the whole workspace.
+`sorotte-secret`, controlled-room authorization in `sorotte-server`, and raw
+command-order/error/redaction behavior in `sorotte-protocol`. It deliberately
+does not mutate the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
 namespace, all-feature locked Cargo execution, two workers, per-command
@@ -231,7 +232,8 @@ timeouts, a 100% viable kill requirement, zero missed mutants, and zero
 timeouts. The privacy shard's one compiler-infeasible const mutation is
 matched by stable structured identity and has an expiring review date; both a
 new exception and a stale exception fail. Server authorization requires no
-exception.
+exception. The protocol shard has eight exact, expiring compiler-infeasible
+default-value substitutions; its 80 viable mutations must all be caught.
 
 Run it locally with:
 
@@ -240,13 +242,13 @@ cargo install cargo-mutants --version 27.1.0 --locked
 python scripts/mutation_ci.py validate \
   --repo-root . \
   --policy coverage/mutation-policy.toml \
-  --shard server-auth
+  --shard protocol-codec
 python scripts/mutation_ci.py run \
   --repo-root . \
   --policy coverage/mutation-policy.toml \
-  --shard server-auth \
-  --results-root target/mutation-ci/server-auth \
-  --output target/verification/mutation-server-auth.json
+  --shard protocol-codec \
+  --results-root target/mutation-ci/protocol-codec \
+  --output target/verification/mutation-protocol-codec.json
 ```
 
 The wrapper disables repository-local cargo-mutants configuration, lists the
@@ -264,13 +266,17 @@ scans and deterministic escape/key/token oracles now catch 121/121 with the
 same one accepted const exception. The authorization experiment rejected a
 package-wide timed-out baseline, then exposed one missed and one timed-out
 mutant at library scope. Deterministic negative grammar and salt-byte oracles
-now catch 19/19 through a focused 7-test namespace in 113.36 seconds.
+now catch 19/19 through a focused 7-test namespace in 113.36 seconds. The
+protocol baseline caught only 70/97 viable mutations; 17 exact scanner,
+error-chain, and redaction oracles plus bounded scanner seams now catch 80/80
+with zero misses or timeouts.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md)
 ,
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
+[`targeted-mutation-server-auth-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-server-auth-20260729.md),
 and
-[`targeted-mutation-server-auth-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-server-auth-20260729.md).
+[`targeted-mutation-protocol-codec-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

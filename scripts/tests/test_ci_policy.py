@@ -1381,6 +1381,7 @@ class CiPolicyTests(unittest.TestCase):
                     "shard": [
                         "privacy-secret",
                         "server-auth",
+                        "protocol-codec",
                     ]
                 },
             },
@@ -1488,6 +1489,24 @@ class CiPolicyTests(unittest.TestCase):
                         "max_timeouts": 0,
                         "require_baseline": True,
                     },
+                    {
+                        "id": "protocol-codec",
+                        "owner": "protocol-safety",
+                        "package": "sorotte-protocol",
+                        "files": [
+                            "crates/sorotte-protocol/src/codec.rs",
+                            "crates/sorotte-protocol/src/redacted_debug.rs",
+                        ],
+                        "test_target": "lib",
+                        "test_filter": "",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
                 ],
                 "accepted_unviable": [
                     {
@@ -1504,7 +1523,152 @@ class CiPolicyTests(unittest.TestCase):
                             "before tests can run"
                         ),
                         "review_by": "2026-10-31",
-                    }
+                    },
+                    {
+                        "id": "protocol-error-source-dyn-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": (
+                            "<impl std::error::Error for "
+                            "ProtocolError>::source"
+                        ),
+                        "return_type": (
+                            "-> Option<&(dyn std::error::Error +'static)>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": (
+                            "Some(Box::leak(Box::new(Default::default())))"
+                        ),
+                        "reason": (
+                            "cargo-mutants cannot construct Default::default "
+                            "for the dynamic Error trait object required by "
+                            "this source return type"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-error-from-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": (
+                            "<impl From<serde_json::Error> for "
+                            "ProtocolError>::from"
+                        ),
+                        "return_type": "-> Self",
+                        "genre": "FnValue",
+                        "replacement": "Default::default()",
+                        "reason": (
+                            "ProtocolError intentionally has no Default "
+                            "implementation, so the generated replacement "
+                            "cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-command-order-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": (
+                            "decode_protocol_message_with_command_order"
+                        ),
+                        "return_type": (
+                            "-> Result<ProtocolMessage, ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(Default::default())",
+                        "reason": (
+                            "ProtocolMessage has no semantically valid "
+                            "Default variant, so the generated successful "
+                            "replacement cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-message-lines-default-element",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": "decode_message_lines",
+                        "return_type": (
+                            "-> Result<Vec<ProtocolMessage>, ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(vec![Default::default()])",
+                        "reason": (
+                            "ProtocolMessage has no semantically valid "
+                            "Default variant, so the generated vector element "
+                            "cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-line-items-default-element",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": "decode_message_line_items",
+                        "return_type": (
+                            "-> Result<Vec<DecodedMessageLineItem>, "
+                            "ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(vec![Default::default()])",
+                        "reason": (
+                            "DecodedMessageLineItem has no meaningful Default "
+                            "value, so the generated vector element cannot "
+                            "type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-message-line-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": "decode_message_line",
+                        "return_type": (
+                            "-> Result<ProtocolMessage, ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(Default::default())",
+                        "reason": (
+                            "ProtocolMessage has no semantically valid "
+                            "Default variant, so the generated successful "
+                            "replacement cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-hello-value-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": "extract_hello",
+                        "return_type": (
+                            "-> Result<HelloPayload, ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(Default::default())",
+                        "reason": (
+                            "HelloPayload requires identity fields and has no "
+                            "Default implementation, so the generated "
+                            "successful replacement cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "protocol-hello-message-default",
+                        "shard": "protocol-codec",
+                        "file": "crates/sorotte-protocol/src/codec.rs",
+                        "function": "extract_hello_from_message",
+                        "return_type": (
+                            "-> Result<HelloPayload, ProtocolError>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(Default::default())",
+                        "reason": (
+                            "HelloPayload requires identity fields and has no "
+                            "Default implementation, so the generated "
+                            "successful replacement cannot type-check"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
                 ],
             },
         )
