@@ -149,8 +149,10 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
                 );
             }
 
-            if step.advance_seconds > 0.0 {
-                thread::sleep(Duration::from_secs_f64(step.advance_seconds));
+            let legacy_advance_seconds =
+                step.legacy_advance_seconds.unwrap_or(step.advance_seconds);
+            if legacy_advance_seconds > 0.0 {
+                thread::sleep(Duration::from_secs_f64(legacy_advance_seconds));
             }
 
             let stream = clients

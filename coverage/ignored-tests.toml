@@ -96,7 +96,7 @@ operating_systems = ["windows"]
 [[ignored_test]]
 id = "IGN-COMPAT-001"
 source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
-test = "capture_legacy_server_state_latency_metrics_trace_fixture"
+test = "capture_live_reference_state_latency_metrics_trace_fixture"
 source_reason = "requires Twisted and writes fixture files from a live legacy server session"
 tier = "maintenance"
 owner = "compatibility"
@@ -144,7 +144,7 @@ mutates_fixtures = true
 [[ignored_test]]
 id = "IGN-COMPAT-005"
 source = "crates/sorotte-compat/src/tests/fixture_tests.rs"
-test = "capture_legacy_server_controlled_room_trace_fixtures"
+test = "capture_live_reference_controlled_room_trace_fixtures"
 source_reason = "requires Twisted and writes fixture files from a live legacy server session"
 tier = "maintenance"
 owner = "compatibility"
@@ -176,32 +176,6 @@ rationale = "Regenerates committed Python fanout fixtures and is not valid as an
 prerequisites = ["trace-capture Cargo feature", "Python probe dependencies", "fixture diff review"]
 operating_systems = ["linux", "macos", "windows"]
 mutates_fixtures = true
-
-[[ignored_test]]
-id = "IGN-COMPAT-008"
-source = "crates/sorotte-compat/src/tests/rooms_motd_fanout_tests/python_rooms_motd_tests.rs"
-test = "python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario"
-source_reason = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"
-tier = "quarantined"
-owner = "compatibility"
-rationale = "Records a deliberate timeout divergence; it must be reviewed rather than silently treated as permanent compatibility."
-prerequisites = ["live Python reference oracle", "media-match timeout scenario"]
-operating_systems = ["linux", "macos", "windows"]
-tracking = "coverage-gap:python-timeout-divergence"
-review_by = "2026-10-31"
-
-[[ignored_test]]
-id = "IGN-COMPAT-009"
-source = "crates/sorotte-compat/src/tests/state_fanout_tests/python_state_tests.rs"
-test = "python_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario"
-source_reason = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"
-tier = "quarantined"
-owner = "compatibility"
-rationale = "Records a deliberate state-timeout divergence; expiry forces periodic confirmation of the compatibility decision."
-prerequisites = ["live Python reference oracle", "state periodic-timeout scenario"]
-operating_systems = ["linux", "macos", "windows"]
-tracking = "coverage-gap:python-timeout-divergence"
-review_by = "2026-10-31"
 
 [[ignored_test]]
 id = "IGN-GUI-001"

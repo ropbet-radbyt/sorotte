@@ -6,6 +6,18 @@
         {
           "client": "client-1",
           "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
             "List": {
               "room1": {
                 "alice": {
@@ -33,6 +45,17 @@
             "Set": {
               "playlistChange": {
                 "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null,
                 "user": null
               }
             }
@@ -99,6 +122,18 @@
         {
           "client": "client-1",
           "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "bob"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
             "List": {
               "room1": {
                 "alice": {
@@ -131,6 +166,18 @@
                   "isReady": null,
                   "position": 0
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "bob"
               }
             }
           }
@@ -188,6 +235,17 @@
         {
           "client": "client-2",
           "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null,
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
             "Hello": {
               "features": {
                 "chat": true,
@@ -216,7 +274,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688787.108917,
+                "latencyCalculation": 1785326986.6298933,
                 "serverRtt": 0
               },
               "playstate": {
@@ -233,7 +291,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688787.1712675,
+                "latencyCalculation": 1785326986.691705,
                 "serverRtt": 0
               },
               "playstate": {
@@ -258,7 +316,13 @@
                 "charlie": {
                   "event": {
                     "features": {
-                      "__syncplay_rs_missing_features__": true
+                      "chat": true,
+                      "featureList": false,
+                      "managedRooms": true,
+                      "persistentRooms": false,
+                      "readiness": true,
+                      "sharedPlaylists": true,
+                      "uiMode": "Unknown"
                     },
                     "joined": true,
                     "version": "9.9.9"
@@ -267,6 +331,18 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "charlie"
               }
             }
           }
@@ -309,7 +385,13 @@
                 "charlie": {
                   "controller": false,
                   "features": {
-                    "__syncplay_rs_missing_features__": true
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
                   },
                   "file": {},
                   "isReady": null,
@@ -327,7 +409,13 @@
                 "charlie": {
                   "event": {
                     "features": {
-                      "__syncplay_rs_missing_features__": true
+                      "chat": true,
+                      "featureList": false,
+                      "managedRooms": true,
+                      "persistentRooms": false,
+                      "readiness": true,
+                      "sharedPlaylists": true,
+                      "uiMode": "Unknown"
                     },
                     "joined": true,
                     "version": "9.9.9"
@@ -336,6 +424,18 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "charlie"
               }
             }
           }
@@ -378,7 +478,79 @@
                 "charlie": {
                   "controller": false,
                   "features": {
-                    "__syncplay_rs_missing_features__": true
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": null,
+                "manuallyInitiated": false,
+                "username": "charlie"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
                   },
                   "file": {},
                   "isReady": null,
@@ -394,6 +566,17 @@
             "Set": {
               "playlistChange": {
                 "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null,
                 "user": null
               }
             }
@@ -435,7 +618,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688788.120716,
+                "latencyCalculation": 1785326987.634421,
                 "serverRtt": 0
               },
               "playstate": {
@@ -452,7 +635,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688789.1172855,
+                "latencyCalculation": 1785326988.6425936,
                 "serverRtt": 0
               },
               "playstate": {
@@ -469,7 +652,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688790.1125562,
+                "latencyCalculation": 1785326989.6430635,
                 "serverRtt": 0
               },
               "playstate": {
@@ -486,7 +669,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688791.109111,
+                "latencyCalculation": 1785326990.644596,
                 "serverRtt": 0
               },
               "playstate": {
@@ -503,7 +686,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688792.1222584,
+                "latencyCalculation": 1785326991.6390617,
                 "serverRtt": 0
               },
               "playstate": {
@@ -520,7 +703,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688793.1213353,
+                "latencyCalculation": 1785326992.6379657,
                 "serverRtt": 0
               },
               "playstate": {
@@ -537,7 +720,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688794.1183157,
+                "latencyCalculation": 1785326993.6327553,
                 "serverRtt": 0
               },
               "playstate": {
@@ -554,7 +737,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688795.1194954,
+                "latencyCalculation": 1785326994.631724,
                 "serverRtt": 0
               },
               "playstate": {
@@ -571,7 +754,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688796.1224506,
+                "latencyCalculation": 1785326995.640587,
                 "serverRtt": 0
               },
               "playstate": {
@@ -588,7 +771,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688797.1202116,
+                "latencyCalculation": 1785326996.64038,
                 "serverRtt": 0
               },
               "playstate": {
@@ -605,7 +788,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688788.1819315,
+                "latencyCalculation": 1785326987.6975873,
                 "serverRtt": 0
               },
               "playstate": {
@@ -622,7 +805,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688789.179777,
+                "latencyCalculation": 1785326988.7055993,
                 "serverRtt": 0
               },
               "playstate": {
@@ -639,7 +822,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688790.1749842,
+                "latencyCalculation": 1785326989.705601,
                 "serverRtt": 0
               },
               "playstate": {
@@ -656,7 +839,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688791.1859553,
+                "latencyCalculation": 1785326990.706593,
                 "serverRtt": 0
               },
               "playstate": {
@@ -673,7 +856,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688792.1846197,
+                "latencyCalculation": 1785326991.7008123,
                 "serverRtt": 0
               },
               "playstate": {
@@ -690,7 +873,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688793.183238,
+                "latencyCalculation": 1785326992.7006395,
                 "serverRtt": 0
               },
               "playstate": {
@@ -707,7 +890,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688794.1833577,
+                "latencyCalculation": 1785326993.6936677,
                 "serverRtt": 0
               },
               "playstate": {
@@ -724,7 +907,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688795.1823685,
+                "latencyCalculation": 1785326994.694572,
                 "serverRtt": 0
               },
               "playstate": {
@@ -741,7 +924,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688796.1849704,
+                "latencyCalculation": 1785326995.7047613,
                 "serverRtt": 0
               },
               "playstate": {
@@ -758,7 +941,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688797.1829145,
+                "latencyCalculation": 1785326996.70339,
                 "serverRtt": 0
               },
               "playstate": {
@@ -775,7 +958,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688787.3437314,
+                "latencyCalculation": 1785326986.8637884,
                 "serverRtt": 0
               },
               "playstate": {
@@ -792,7 +975,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688788.3549678,
+                "latencyCalculation": 1785326987.8708882,
                 "serverRtt": 0
               },
               "playstate": {
@@ -809,7 +992,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688789.3499973,
+                "latencyCalculation": 1785326988.8776293,
                 "serverRtt": 0
               },
               "playstate": {
@@ -826,7 +1009,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688790.3440664,
+                "latencyCalculation": 1785326989.8785915,
                 "serverRtt": 0
               },
               "playstate": {
@@ -843,7 +1026,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688791.3562584,
+                "latencyCalculation": 1785326990.8786054,
                 "serverRtt": 0
               },
               "playstate": {
@@ -860,7 +1043,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688792.3552444,
+                "latencyCalculation": 1785326991.8734236,
                 "serverRtt": 0
               },
               "playstate": {
@@ -877,7 +1060,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688793.3538644,
+                "latencyCalculation": 1785326992.870635,
                 "serverRtt": 0
               },
               "playstate": {
@@ -894,7 +1077,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688794.353881,
+                "latencyCalculation": 1785326993.8654106,
                 "serverRtt": 0
               },
               "playstate": {
@@ -911,7 +1094,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688795.356432,
+                "latencyCalculation": 1785326994.868058,
                 "serverRtt": 0
               },
               "playstate": {
@@ -928,7 +1111,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688796.356199,
+                "latencyCalculation": 1785326995.8782847,
                 "serverRtt": 0
               },
               "playstate": {
@@ -945,7 +1128,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688797.355055,
+                "latencyCalculation": 1785326996.8750465,
                 "serverRtt": 0
               },
               "playstate": {
@@ -971,8 +1154,8 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688798.1200142,
-                "serverRtt": 1770688787.306535
+                "latencyCalculation": 1785326997.6383512,
+                "serverRtt": 1785326908.830155
               },
               "playstate": {
                 "doSeek": false,
@@ -988,8 +1171,8 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688799.116373,
-                "serverRtt": 1770688787.306535
+                "latencyCalculation": 1785326998.6347296,
+                "serverRtt": 1785326908.830155
               },
               "playstate": {
                 "doSeek": false,
@@ -1005,8 +1188,8 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688800.1113942,
-                "serverRtt": 1770688787.306535
+                "latencyCalculation": 1785326999.6336997,
+                "serverRtt": 1785326908.830155
               },
               "playstate": {
                 "doSeek": false,
@@ -1057,7 +1240,13 @@
                 "charlie": {
                   "controller": false,
                   "features": {
-                    "__syncplay_rs_missing_features__": true
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
                   },
                   "file": {},
                   "isReady": null,
@@ -1068,11 +1257,28 @@
           }
         },
         {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1785327000.6446788,
+                "serverRtt": 1785326908.830155
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
           "client": "client-2",
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688798.181004,
+                "latencyCalculation": 1785326997.7011695,
                 "serverRtt": 0
               },
               "playstate": {
@@ -1089,7 +1295,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688799.1784463,
+                "latencyCalculation": 1785326998.6971393,
                 "serverRtt": 0
               },
               "playstate": {
@@ -1106,7 +1312,7 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688800.174326,
+                "latencyCalculation": 1785326999.696661,
                 "serverRtt": 0
               },
               "playstate": {
@@ -1140,8 +1346,8 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688798.3537424,
-                "serverRtt": 1770688787.4233062
+                "latencyCalculation": 1785326997.8724964,
+                "serverRtt": 1785326986.9428546
               },
               "playstate": {
                 "doSeek": false,
@@ -1157,8 +1363,8 @@
           "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688799.3490815,
-                "serverRtt": 1770688787.4233062
+                "latencyCalculation": 1785326998.8696878,
+                "serverRtt": 1785326986.9428546
               },
               "playstate": {
                 "doSeek": false,
@@ -1189,10 +1395,66 @@
         {
           "client": "client-3",
           "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
             "State": {
               "ping": {
-                "latencyCalculation": 1770688800.3476176,
-                "serverRtt": 1770688787.4233062
+                "latencyCalculation": 1785326999.8699677,
+                "serverRtt": 1785326986.9428546
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1785327000.8760755,
+                "serverRtt": 1785326986.9428546
               },
               "playstate": {
                 "doSeek": false,
@@ -1231,7 +1493,13 @@
                 "charlie": {
                   "controller": false,
                   "features": {
-                    "__syncplay_rs_missing_features__": true
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
                   },
                   "file": {},
                   "isReady": null,

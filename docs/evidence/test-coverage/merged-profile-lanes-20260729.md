@@ -20,7 +20,7 @@ native text views:
 
 1. locked, all-feature workspace tests;
 2. the complete 14-scenario GUI semantic suite;
-3. the four exact strict live-TLS compatibility tests.
+3. the complete 20-test strict live-reference compatibility inventory.
 
 `scripts/coverage_profile_lanes.py` owns the commands, producer version,
 pinned reference revision, instrumentation environment, behavioral oracles,
@@ -33,11 +33,11 @@ ignored test, unexpected selector, or filtered-count drift. The coverage
 finalizer hashes and validates this report before it can mark profile
 generation successful.
 
-This does not claim that native Windows GUI execution or the complete strict
-legacy fanout matrix is merged. Native execution remains separate because its
-interactive Windows boundary is not compatible with the hosted Linux lane.
-The complete strict fanout matrix remains red for six findings documented
-below and is not represented as passing coverage.
+Native execution remains separate because its interactive Windows boundary is
+not compatible with the hosted Linux lane. This note preserves the original
+red compatibility discovery and narrower four-test merged attestation below,
+then records the remediation that promoted the complete live-reference
+inventory.
 
 ## Fail-closed experiments
 
@@ -77,7 +77,7 @@ trial's 36 raw profiles and one merged profile before recreating and merging
 exactly 36 current-run profiles. Unrelated target files and compiled artifacts
 were preserved.
 
-### Intermittent player event loss
+### Intermittent player event observation
 
 One complete parallel instrumented workspace run failed:
 
@@ -98,10 +98,13 @@ its stderr SHA-256 was
 Fifty ordinary exact replays, twenty instrumented exact replays, and five
 instrumented full-package replays did not reproduce it. A later complete
 instrumented workspace run passed. The collector has no retry, so the original
-red result is not normalized away. The unresolved ordering observation is
-tracked as `TC-PLAYER-003`.
+red result was not normalized away. Follow-up instrumentation isolated a test
+race: it stopped at heartbeat acknowledgement before the worker had ingressed
+the already ordered property and response. The helper now waits for the
+acknowledgement and command-completion boundary; the regression passes 64
+consecutive schedules without changing production player behavior.
 
-### Complete strict legacy fanout
+### Complete strict legacy fanout discovery
 
 The proposed broad compatibility profile was tested before narrowing it:
 
@@ -132,15 +135,97 @@ The six failures are:
 | `TC-COMPAT-005` | persistent-room timeout list updates | legacy connection aborted with Windows error 10053 |
 | `TC-COMPAT-006` | state periodic timeout | legacy connection aborted with Windows error 10053 |
 
-These are existing executable parity tests, not new expected-failure
-characterizations. The required coverage profile therefore uses the already
-required strict live-TLS selector only. That exact lane proves four passed,
-zero failed, zero ignored, and 140 filtered tests; it does not imply full
-fanout parity.
+These were existing executable parity tests, not new expected-failure
+characterizations. The first required coverage profile therefore used the
+already green strict live-TLS selector only. That historical lane proved four
+passed, zero failed, zero ignored, and 140 filtered tests; it did not imply
+full fanout parity.
 
-## Successful end-to-end attestation
+## Compatibility remediation replay
 
-The final collector run independently validated this report:
+Investigation assigned the failures to their owning boundaries:
+
+- username collision allocation and implicit playlist-index fanout were server
+  parity defects;
+- exact per-recipient comparison subsequently exposed a persistent-room
+  `List` ordering defect;
+- both Windows 10053 failures came from advancing the live Python process by
+  Sorotte's 88-second logical timeout instead of the legacy 10-second timeout;
+- the player observation was a test synchronization race;
+- a synthetic missing-feature sentinel and broad comparator exceptions changed
+  or concealed legacy behavior;
+- two client-core trace assertions treated nullable legacy readiness as false
+  and depended on incidental periodic State traffic.
+
+The server now uses bounded legacy username allocation, treats playlist and
+index commands independently, initializes permanent-room placeholder state
+like Syncplay, and emits persistent-room lists before join/switch snapshots.
+The scenario schema has an explicit legacy clock override. The legacy request
+shim synthesizes the pinned Python server's version-derived defaults rather
+than sending a marker, and the comparator checks each recipient's complete
+ordered sequence. Username remapping, playlist/index equivalence, implicit
+index alignment, and null-index trace exceptions were deleted. Client trace
+tests now retain unknown readiness as `None` and do not synthesize playstate
+without a `State` message.
+
+The promoted selector is mechanically inventoried by
+`scripts/coverage_profile_lanes.py` and CI:
+
+```powershell
+$env:SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
+$env:SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"
+cargo test -p sorotte-compat --all-features legacy_server_ -- --nocapture
+```
+
+The current replay completed in 15.72 seconds:
+
+```text
+20 passed; 0 failed; 0 ignored; 121 filtered out
+```
+
+Those 20 tests comprise 12 strict fanout scenarios, 4 TLS probes, 2 live state
+probes, and 2 request-shim contracts. The deterministic Python fanout lane also
+passes 33/33 with no ignored tests, and all 16 captured Python trace
+comparisons pass exactly. A fail-closed guard limits the dual-clock State
+filter to the two timeout scenarios and rejects explicit playstate requests.
+The ignored-test registry now contains 23 tests and zero quarantines.
+
+## Current broadened end-to-end attestation
+
+The first remediation attempt intentionally remained red when invoked with a
+relative `SYNCPLAY_LEGACY_ROOT`: the semantic lane passed 12/14 and reported
+the doubled reference path for both live-Python scenarios. No source was
+changed. Repeating with the absolute pinned checkout path passed, and the
+resulting report independently validates:
+
+```text
+target/verification/coverage-profile-lanes.json
+17,604 bytes
+SHA-256 f261938807ff35de48a42e1ac958edc4476e38c67b1244d51693723b45781122
+```
+
+| Lane | Result | Duration | Profiles before | Profiles after | Fresh delta |
+|---|---:|---:|---:|---:|---:|
+| workspace all features | pass | 188.002s | 0 | 34 | 34 |
+| GUI semantic | 14/14 | 8.456s | 34 | 35 | 1 |
+| strict live reference | 20/20 | 18.048s | 35 | 36 | 1 |
+| LLVM merge check | pass | 1.554s | 36 | 36 | 0 |
+
+The reset removed 36 prior raw profiles and verified zero raw or merged inputs
+before execution. Every lane reports `profile_removed_count=0`. The
+compatibility oracle records zero failed, zero ignored, 121 filtered, and the
+exact 20-test inventory. Its profile SHA-256 is
+`e865fe084ec25c7aa55ca94acad2a901e0c3cd52aa346f804c8aea2d3a49ec92`;
+its stdout SHA-256 is
+`348f51206273fd4c9dcf23e74e4c7aae57b332ef42c4cc86b03c472fe40daf60`.
+
+The merged diagnostic summary reports 148,594 of 191,287 line instances
+covered (77.68%). This diagnostic aggregate does not replace the source-bound
+changed-line policy.
+
+## Historical first end-to-end attestation
+
+The first collector run independently validated the narrower report:
 
 ```text
 target/verification/coverage-profile-lanes.json
@@ -195,7 +280,9 @@ separately.
 
 The complete Python infrastructure and workflow-policy suite passed all 284
 tests in 11.046 seconds after the schema-2 reset and finalizer binding were
-added.
+added. The remediation grows that suite to 290 tests; its current replay is
+recorded in the final validation section of
+[`TEST_COVERAGE_FINDINGS.md`](../../TEST_COVERAGE_FINDINGS.md).
 
 ## Reproduction
 

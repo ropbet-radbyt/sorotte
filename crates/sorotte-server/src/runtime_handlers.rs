@@ -502,6 +502,12 @@ impl ServerRuntime {
                 ));
             }
         }
+        if self.persistent_rooms_enabled {
+            self.enqueue_list_snapshots_for_clients(
+                &mut outbound,
+                self.clients_receiving_to_gui_only_list_updates(Some(&room_name)),
+            );
+        }
         let room_playlist = self.room_playlist_state(&room_name);
         let playlist_snapshot_message = self.playlist_change_message_for_client(
             client_id,
@@ -569,12 +575,6 @@ impl ServerRuntime {
         outbound.extend(readiness_attach_outbound);
         outbound.extend(self.refresh_mixed_readiness_cohort(&room_name)?);
 
-        if self.persistent_rooms_enabled {
-            self.enqueue_list_snapshots_for_clients(
-                &mut outbound,
-                self.clients_receiving_to_gui_only_list_updates(Some(&room_name)),
-            );
-        }
         outbound.extend(self.refresh_room_buffering_participant(client_id)?);
 
         Ok(outbound)
@@ -809,6 +809,12 @@ impl ServerRuntime {
                             ));
                         }
                     }
+                    if self.persistent_rooms_enabled {
+                        self.enqueue_list_snapshots_for_clients(
+                            &mut outbound_messages,
+                            self.clients_receiving_to_gui_only_list_updates(Some(&session.room)),
+                        );
+                    }
 
                     let room_playlist = self.room_playlist_state(&session.room);
                     let playlist_snapshot_message = self.playlist_change_message_for_client(
@@ -827,13 +833,6 @@ impl ServerRuntime {
                             room_playback.set_by.as_deref(),
                         ),
                     ));
-
-                    if self.persistent_rooms_enabled {
-                        self.enqueue_list_snapshots_for_clients(
-                            &mut outbound_messages,
-                            self.clients_receiving_to_gui_only_list_updates(Some(&session.room)),
-                        );
-                    }
                     outbound_messages.extend(self.refresh_room_buffering_participant(client_id)?);
                 }
                 "file" => {
@@ -1011,11 +1010,11 @@ impl ServerRuntime {
                             now_seconds,
                         )
                     {
-                        let normalized_index_changed = {
-                            let room_playlist = self.room_playlist_state_mut(&session.room);
-                            room_playlist.files = new_files.clone();
-                            room_playlist.normalize_index()
-                        };
+                        // A playlist replacement and a playlist-index update are
+                        // distinct Syncplay protocol operations. Preserve the
+                        // last explicit index here; clients that want another
+                        // item send playlistIndex separately.
+                        self.room_playlist_state_mut(&session.room).files = new_files.clone();
                         if creation_required {
                             self.record_persistent_room_creation(
                                 &session.room,
@@ -1034,21 +1033,6 @@ impl ServerRuntime {
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(peer_client, playlist_message));
-                        }
-                        if normalized_index_changed {
-                            let normalized_index = self.room_playlist_state(&session.room).index;
-                            let playlist_index =
-                                PlaylistIndexPayload::from_optional(normalized_index)
-                                    .with_user(session.username.clone());
-                            let index_message = ProtocolMessage::set(
-                                SetPayload::new().with_playlist_index(playlist_index),
-                            );
-                            for peer_client in self.clients_in_room(&session.room) {
-                                outbound_messages.push(DirectedProtocolMessage::new(
-                                    peer_client,
-                                    index_message.clone(),
-                                ));
-                            }
                         }
                     } else {
                         let room_state = self.room_playlist_state(&session.room);

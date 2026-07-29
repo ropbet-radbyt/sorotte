@@ -8,9 +8,33 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "permanent-room": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
               }
             }
           }
@@ -56,30 +80,6 @@
               },
               "username": "alice",
               "version": "9.9.9"
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "List": {
-              "permanent-room": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
             }
           }
         }
@@ -201,19 +201,9 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice"
-              }
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "Set": {
-              "playlistChange": {
-                "files": []
               }
             }
           }
@@ -235,9 +225,29 @@
                     "uiMode": "CLI"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -279,7 +289,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "gui-user"
               }
@@ -291,9 +301,96 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "gui-user"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "lobby": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                },
+                "gui-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "GUI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "List": {
+              "lobby": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                },
+                "gui-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "GUI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              },
+              "permanent-room": {
+                " ": {
+                  "controller": false,
+                  "features": [],
+                  "file": {},
+                  "isReady": true,
+                  "position": 0.0
+                }
               }
             }
           }
@@ -304,6 +401,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -331,127 +438,6 @@
               "version": "9.9.9"
             }
           }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "List": {
-              "lobby": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                },
-                "gui-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "GUI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "List": {
-              "lobby": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                },
-                "gui-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "GUI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              },
-              "permanent-room": {
-                " ": {
-                  "controller": false,
-                  "features": [],
-                  "file": {},
-                  "isReady": true,
-                  "position": 0.0
-                }
-              }
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
         }
       ],
       "step": 7
@@ -475,7 +461,7 @@
                     "uiMode": "CLI"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 },
                 "gui-user": {
@@ -490,7 +476,7 @@
                     "uiMode": "GUI"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 }
               },
@@ -570,9 +556,177 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "bob"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "lobby": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                },
+                "gui-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "GUI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              },
+              "permanent-room": {
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "List": {
+              "lobby": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                },
+                "gui-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "GUI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              },
+              "permanent-room": {
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "List": {
+              "lobby": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                },
+                "gui-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "GUI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
+              },
+              "permanent-room": {
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
               }
             }
           }
@@ -620,174 +774,6 @@
               },
               "username": "bob",
               "version": "9.9.9"
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "List": {
-              "lobby": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                },
-                "gui-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "GUI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              },
-              "permanent-room": {
-                "bob": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "List": {
-              "lobby": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                },
-                "gui-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "GUI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              },
-              "permanent-room": {
-                "bob": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
-            }
-          }
-        },
-        {
-          "client": "client-3",
-          "message": {
-            "List": {
-              "lobby": {
-                "alice": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                },
-                "gui-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "GUI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              },
-              "permanent-room": {
-                "bob": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "CLI"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
             }
           }
         }

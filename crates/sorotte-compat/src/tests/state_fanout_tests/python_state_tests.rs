@@ -8,18 +8,21 @@ fn python_fanout_roundtrip_matches_runtime_on_state_ping_forward_delay_metrics()
                 request_line: r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#
                     .to_owned(),
                 advance_seconds: 0.0,
+                legacy_advance_seconds: None,
             },
             ServerRuntimeScenarioStep {
                 client_id: "client-2".to_owned(),
                 request_line: r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#
                     .to_owned(),
                 advance_seconds: 0.0,
+                legacy_advance_seconds: None,
             },
             ServerRuntimeScenarioStep {
                 client_id: "client-1".to_owned(),
                 request_line: r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":-10.0,"clientRtt":2.0}}}"#
                     .to_owned(),
                 advance_seconds: 0.0,
+                legacy_advance_seconds: None,
             },
         ];
     let rust_events = replay_server_runtime_scenario_steps(&steps)
@@ -128,6 +131,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_tls_send_available_scenario
         client_id: "client-1".to_owned(),
         request_line: r#"{"TLS":{"startTLS":"send"}}"#.to_owned(),
         advance_seconds: 0.0,
+        legacy_advance_seconds: None,
     }];
 
     let rust_events = {
@@ -227,7 +231,6 @@ fn python_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_s
 }
 
 #[test]
-#[ignore = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"]
 fn python_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario() {
     match assert_python_fanout_matches_server_runtime_for_scenario(
         "server_runtime_state_periodic_timeout.jsonl",

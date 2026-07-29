@@ -3,6 +3,7 @@
 Original review: 2026-07-28
 Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
+Compatibility-remediation update: 2026-07-29
 
 Branch: `codex/test-coverage-design`
 
@@ -16,10 +17,11 @@ solutions, applies the subsequently selected lifecycle and native-GUI
 decisions, and converts every product-defect characterization into a positive
 regression. The executable `should_panic` known-defect registry remains empty.
 The merged-profile work subsequently surfaced one intermittent player
-observation failure and six strict legacy-parity failures. They remain
-unresolved as `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006`;
-none was converted into an expected-success test or fixed by the coverage
-implementation.
+observation failure and six strict legacy-parity failures. The remediation
+slice isolated their ownership, fixed the product and harness defects, added
+one ordering defect found by the strengthened oracle, and converted every case
+into positive regression evidence. No expected failure, compatibility
+exception, retry, or skip is used to make the required lane green.
 
 ## Experimental baseline
 
@@ -90,9 +92,10 @@ After the coverage tranche was integrated:
   newly surfaced failures already have ordinary tests that go red under their
   reproducing schedule or strict environment, so wrapping them in
   `should_panic` would weaken the evidence.
-- The ignored-test registry exactly classified all 25 source attributes:
-  4 required pull-request proofs, 7 fixture-maintenance commands, 12 manual
-  capability tests, and 2 expiring compatibility quarantines.
+- The ignored-test registry exactly classifies all 23 source attributes:
+  4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
+  capability tests. The two compatibility quarantines were retired after their
+  timeout harness defect was fixed.
 - The changed-line utility now passes all 71 LCOV/diff-policy cases; the
   canonical-map consumer passed 9 additional adversarial cases, the native
   converter passed 14, and the six-phase finalizer passed 19. Coverage
@@ -102,7 +105,9 @@ After the coverage tranche was integrated:
   merge-base, provenance, and partial-phase failure contracts. The schema-2
   merged-profile collector, finalizer binding, stale-profile reset,
   lane-oracle, and workflow-policy additions bring the complete
-  infrastructure suite to 284 passing tests in 11.046 seconds.
+  infrastructure suite to 284 passing tests in 11.046 seconds. The
+  compatibility promotion and CI/release policy contracts bring the current
+  suite to 290 passing tests in 12.394 seconds.
 - Deterministic protocol ordering passed 3 new permutation/adversarial tests;
   all 6 production-worker framed IPC tests passed; all 35 server persistence
   tests pass, including positive atomic-migration and concurrent-secret
@@ -170,9 +175,20 @@ After the coverage tranche was integrated:
   (78.936596%).
 - The attempted complete strict compatibility profile remained red in a
   durable replay: 129 passed, 6 failed, and 9 were ignored in 88.98 seconds.
-  The six failures are retained as `TC-COMPAT-001` through
-  `TC-COMPAT-006`; the required merged profile makes the narrower four-test
-  live-TLS boundary explicit.
+  This is retained as historical discovery evidence rather than a current
+  result.
+- The remediation replay makes the strict live-reference boundary required
+  with one mechanically inventoried `legacy_server_` selector. It passes 20/20
+  tests with zero failed, zero ignored, and 121 filtered in 15.72 seconds:
+  12 strict fanout scenarios, 4 TLS probes, 2 live state probes, and 2
+  request-shim contracts. The deterministic Python model passes all 33 fanout
+  cases, and all 16 captured Python trace comparisons pass exactly.
+- An exact-final end-to-end cargo-llvm-cov 0.8.4 replay then removed 36 prior raw
+  profiles and recreated exactly 36 current profiles: 34 from the locked
+  all-feature workspace in 188.002 seconds, 1 from all 14 semantic scenarios
+  in 8.456 seconds, and 1 from the complete 20-test live-reference lane in
+  18.048 seconds. The merge check passed in 1.554 seconds and reported 148,594
+  of 191,287 diagnostic line instances covered (77.68%).
 
 ## TC-PLAYER-001: concurrent external replacement corrupts predecessor linkage (resolved)
 
@@ -320,113 +336,175 @@ live current-epoch identity collisions for every generated setup. The two
 successor-conflict regressions and seven terminal-reactivation variants are
 ordinary merge-contract proofs.
 
-## TC-PLAYER-003: property change can disappear between heartbeat acknowledgement and response
+## TC-PLAYER-003: property change can disappear between heartbeat acknowledgement and response (resolved)
 
-Status: **Unresolved; observed once under parallel workspace instrumentation**
+Status: **Resolved 2026-07-29; test synchronization now waits for the command boundary**
 
-Severity: **High if adapter-reachable; current reproducibility is low**
+Severity: **Harness defect; no product event loss found**
 Detection: complete cargo-llvm-cov workspace run
 
-The existing test
-`property_between_heartbeat_ack_and_response_remains_full_pump_visible`
-observed no event where the full-pump contract required
-`["property-change"]`. The failure occurred during a parallel, all-feature
-instrumented workspace run after 78.809 seconds. The same lane created 22
-fresh profiles before failing, so it was real instrumented execution rather
-than a stale-binary result.
+The original failure was real execution but not a dropped adapter event. The
+mock worker emitted heartbeat acknowledgement, property event, and command
+response in order. The test stopped waiting as soon as it observed the
+acknowledgement, then sampled ordinary events before the worker had ingressed
+the property and response queues. Instrumentation made that legal schedule
+more likely.
 
-Fifty ordinary exact replays, twenty instrumented exact replays, and five
-instrumented full-package replays passed. A later complete instrumented
-workspace run also passed. The evidence therefore establishes an intermittent
-ordering observation, not yet a deterministic causal history. The collector
-does not retry: a recurrence remains red and its logs are retained.
+The test helper now waits for three observable facts: the heartbeat was sent,
+its acknowledgement is cleared, and the nonblocking command is no longer
+pending. It then checks the full-pump result. The exact regression passes 64
+consecutive schedules, and the full `sorotte-player-mpv` suite remains green.
+No production player behavior changed.
 
-No player code or test timing was changed. The next investigation should
-capture the maintenance pump's acknowledged request ID, response queue,
-property queue, heartbeat boundary, and thread schedule at every handoff,
-then reduce a failing trace before choosing a product or harness fix.
+## TC-COMPAT-001: username-conflict fanout has no Rust match (resolved)
 
-## TC-COMPAT-001: username-conflict fanout has no Rust match
-
-Status: **Unresolved; reproduced in the complete strict legacy matrix**
+Status: **Resolved 2026-07-29; bounded legacy conflict allocation**
 
 Severity: **Medium (legacy protocol parity)**
 Detection: strict live legacy fanout comparison
 
-At step 1 of `server_runtime_username_conflict.jsonl`, the legacy server
-emitted a joined-user update for its conflict-resolved username `alice_`; the
-comparator found no matching Rust output. The decision boundary is semantic:
-either Sorotte must reproduce legacy conflict renaming and fanout exactly, or
-the compatibility contract must explicitly document and test an intentional
-departure. The coverage slice makes neither decision.
+Syncplay resolves successive collisions as `alice_`, `alice__`, `alice___`,
+and so on. Sorotte again follows that observable allocation sequence, bounded
+by the configured maximum Unicode-scalar username length so hostile collisions
+cannot cause unbounded work. Direct server and compatibility tests prove the
+sequence, Unicode boundary, and bounded fallback; the live scenario now
+matches exactly.
 
-## TC-COMPAT-002: persistent-room lifecycle emits an extra playlist index
+## TC-COMPAT-002: persistent-room lifecycle emits an extra playlist index (resolved)
 
-Status: **Unresolved; reproduced in the complete strict legacy matrix**
+Status: **Resolved 2026-07-29; playlist and index mutations are independent**
 
 Severity: **Medium (observable playlist fanout divergence)**
 Detection: strict live legacy fanout comparison
 
-At step 1 of the persistent-room lifecycle scenario, both implementations
-emitted `playlistChange`, but Sorotte also emitted `playlistIndex(0)`.
-The comparator observed one legacy output and two Rust outputs. No output was
-filtered or reordered to make the profile lane green.
+A `playlistChange` now updates and broadcasts only the playlist while retaining
+the last explicit index. It no longer synthesizes or broadcasts
+`playlistIndex(0)`. Explicit index commands keep their validation and
+persistence rules. Direct controller/persistence tests and strict live parity
+prove the contract.
 
-## TC-COMPAT-003: controlled-room playlist change doubles fanout
+## TC-COMPAT-003: controlled-room playlist change doubles fanout (resolved)
 
-Status: **Unresolved; reproduced in the complete strict legacy matrix**
+Status: **Resolved 2026-07-29; exact authorized-recipient cardinality**
 
 Severity: **Medium (observable multi-client playlist fanout divergence)**
 Detection: strict live legacy fanout comparison
 
-At step 7 of the controlled-room permissions scenario, legacy sent
-`playlistChange` to two clients. Sorotte sent those two messages plus
-`playlistIndex(0)` to both clients, producing four outputs. This may share a
-root cause with `TC-COMPAT-002`, but it remains a separate multi-recipient
-contract because authorization and fanout cardinality are involved.
+This was the multi-recipient manifestation of `TC-COMPAT-002`. Removing the
+implicit index mutation leaves one `playlistChange` for each authorized
+recipient and no secondary index broadcast. The strict comparator now checks
+each recipient's complete ordered sequence, so both authorization and
+cardinality are positive contracts.
 
-## TC-COMPAT-004: permanent-room file load emits an extra playlist index
+## TC-COMPAT-004: permanent-room file load emits an extra playlist index (resolved)
 
-Status: **Unresolved; reproduced in the complete strict legacy matrix**
+Status: **Resolved 2026-07-29; legacy placeholder state without implicit fanout**
 
 Severity: **Medium (persistent-room startup parity)**
 Detection: strict live legacy fanout comparison
 
-At step 1 of the permanent-rooms-file scenario, legacy emitted only
-`playlistChange` while Sorotte additionally emitted `playlistIndex(0)`.
-This is recorded separately from `TC-COMPAT-002` because the playlist source
-is the permanent-room file rather than a live persistent-room transition.
+Configured permanent rooms initialize the same internal index placeholder
+(`Some(0)`) as Syncplay, while playlist changes still do not emit an implicit
+index message. Persistence sanitation remains intact. Direct permanent-room
+tests and the live reference scenario cover startup and subsequent mutation.
 
-## TC-COMPAT-005: persistent-room timeout parity aborts the legacy connection
+## TC-COMPAT-005: persistent-room timeout parity aborts the legacy connection (resolved)
 
-Status: **Unresolved; reproduced on Windows**
+Status: **Resolved 2026-07-29; dual logical clocks**
 
-Severity: **Medium; product versus legacy-harness ownership is not isolated**
+Severity: **Harness defect**
 Detection: complete strict legacy matrix
 
-The persistent-room timeout/list-update scenario aborted its legacy connection
-with Windows error 10053. This is not accepted as a skip: prerequisites were
-present at the pinned Syncplay revision. The next experiment must preserve the
-legacy process exit status, stdout/stderr, socket transcript, timer milestones,
-and Rust peer state to distinguish a legacy-process lifecycle race from a
-Sorotte protocol action that closes the peer.
+The fixture had been changed from a 10-second legacy advance to an 88-second
+Sorotte advance to exercise Sorotte's extended media-match liveness. The live
+Python harness slept the full 88 seconds, exceeded its 12.5-second socket
+contract, and Windows reported error 10053. Scenarios now carry an optional
+`legacyAdvanceSeconds`; this case advances Sorotte by 88 seconds and the pinned
+legacy server by 10 seconds. Non-timing output remains exact, while periodic
+`State` count is excluded only where the two clocks intentionally differ.
 
-## TC-COMPAT-006: periodic-state timeout parity aborts the legacy connection
+## TC-COMPAT-006: periodic-state timeout parity aborts the legacy connection (resolved)
 
-Status: **Unresolved; reproduced on Windows**
+Status: **Resolved 2026-07-29; dual logical clocks**
 
-Severity: **Medium; product versus legacy-harness ownership is not isolated**
+Severity: **Harness defect**
 Detection: complete strict legacy matrix
 
-The state periodic-timeout scenario independently ended with the same Windows
-10053 connection abort. It remains separate from `TC-COMPAT-005` because it
-uses the state-maintenance timeout path rather than persistent-room list
-updates. Shared root cause is plausible but unproven.
+This shared the same root cause as `TC-COMPAT-005` on the independent
+state-maintenance path. The schema validates the legacy override, the live and
+deterministic Python runners both consume it, and malformed values fail
+fixture loading. Both former quarantines are ordinary required tests.
 
-The durable strict replay passed 129 tests, failed these six, ignored nine
-explicit capability/maintenance tests, and filtered none in 88.98 seconds.
-Commands, hashes, profile deltas, and the successful narrower coverage
-attestation are retained in
+## TC-COMPAT-007: persistent-room list is delivered after join snapshots (resolved)
+
+Status: **Resolved 2026-07-29; list precedes playlist snapshots and Hello**
+
+Severity: **Medium (observable protocol ordering)**
+Detection: strengthened per-recipient strict comparison
+
+After the earlier value differences were removed, exact per-recipient
+comparison exposed a further ordering defect. Syncplay sends the persistent
+room `List` after readiness but before destination playlist/index snapshots and
+before `Hello`; Sorotte delayed the list until after `Hello`. Join and
+room-switch handlers now preserve the legacy order. Two direct server
+regressions cover initial join and room switch, and the strict live matrix
+proves the complete recipient transcript.
+
+## TC-HARNESS-012: missing-feature sentinel changes legacy behavior (resolved)
+
+Status: **Resolved 2026-07-29; version-derived Syncplay defaults**
+
+Severity: **Harness correctness**
+Detection: removal experiment against pinned Syncplay 1.7.5
+
+The legacy request shim used a synthetic
+`__syncplay_rs_missing_features__` feature key to avoid a first-client
+Syncplay crash. That sentinel also changed list/UI capability behavior.
+Removing it naively reproduced the upstream null-feature crash. The shim now
+synthesizes Syncplay's exact version-derived defaults, using `realversion`
+before `version`, while preserving every explicit feature map unchanged.
+Focused request-shim tests and the live matrix enforce both paths; regenerated
+traces contain no sentinel.
+
+## TC-HARNESS-013: compatibility exceptions concealed exact parity (resolved)
+
+Status: **Resolved 2026-07-29; narrow, explicit oracle boundaries**
+
+Severity: **Harness correctness**
+Detection: comparator audit
+
+The compatibility assertions contained username remapping, playlist-index
+equivalence, implicit-index filtering/alignment, and null-index trace
+exceptions. Those transformations could conceal the exact defects above.
+They were deleted. Live outputs are compared as complete ordered sequences per
+recipient, without inventing a total order across independent sockets.
+Only documented background idle `State` timing is excluded, and the
+deterministic model excludes periodic `State` counts only for the two explicit
+dual-clock timeout scenarios. A fail-closed guard rejects any new dual-clock
+scenario, non-Hello/List command, or explicit playstate request until it
+defines a scenario-specific State oracle. All 16 Python traces were recaptured
+from the corrected model and compare exactly.
+
+## TC-HARNESS-014: client trace assertions depend on normalized readiness and idle State (resolved)
+
+Status: **Resolved 2026-07-29; nullable readiness and explicit-State ownership**
+
+Severity: **Harness correctness**
+Detection: full all-feature workspace replay after trace recapture
+
+Two client-core tests assumed an old client with no readiness capability was
+not ready (`Some(false)`) even though the pinned server emits
+`isReady: null`. One also relied on an incidental periodic `State` in an older
+capture even though the scenario contained no state-producing action.
+Regenerating the traces from the corrected model exposed both assumptions.
+The tests now preserve `None` as the meaningful unknown-readiness state and
+prove that replay does not synthesize room playstate without an actual
+`State` message. Focused replay passes all three client trace contracts.
+
+The historical discovery replay passed 129 tests, failed six, and ignored
+nine in 88.98 seconds. The current required live-reference selector passes
+20/20 with no failures or ignores, while the full deterministic Python fanout
+lane passes 33/33. Commands and the preserved before/after evidence are in
 [`merged-profile-lanes-20260729.md`](evidence/test-coverage/merged-profile-lanes-20260729.md).
 
 ## TC-SEC-001: structured credential aliases survive transcript sanitization (resolved)

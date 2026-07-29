@@ -24,16 +24,16 @@ use super::trace_capture::{
     capture_python_trace_fixture_with_full_overrides,
 };
 use super::{
-    DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError,
-    LEGACY_COMPAT_MISSING_FEATURES_MARKER, LegacyClientChatSendContractCase,
+    DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LegacyClientChatSendContractCase,
     LegacyServerClientConnection, ServerRuntimeScenarioEvent, ServerRuntimeScenarioStep,
     all_protocol_fixture_names, connect_legacy_client_stream, decode_fixture, decode_protocol_file,
     default_rust_client_hello_for_interop, default_rust_client_hello_for_legacy_live_tls,
     ensure_legacy_server_is_running, ensure_legacy_syncplay_checkout_available, fixture_decodes,
     fixture_path, legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
-    load_server_runtime_scenario_fixture, prepare_legacy_server_request_line, python_bin_from_env,
-    python_live_peer_probe_script_path, replay_server_runtime_scenario_fixture,
-    replay_server_runtime_scenario_steps, replay_server_runtime_scenario_steps_with_motd_template,
+    load_server_runtime_scenario_fixture, parse_server_runtime_scenario_steps,
+    prepare_legacy_server_request_line, python_bin_from_env, python_live_peer_probe_script_path,
+    replay_server_runtime_scenario_fixture, replay_server_runtime_scenario_steps,
+    replay_server_runtime_scenario_steps_with_motd_template,
     replay_server_runtime_scenario_steps_with_overrides, reserve_ephemeral_tcp_port,
     run_legacy_server_fanout_roundtrip, run_python_fanout_roundtrip,
     run_python_fanout_roundtrip_with_tls_available, run_python_handshake_roundtrip,
@@ -74,11 +74,63 @@ fn compatibility_scenario_debug_does_not_print_raw_protocol_lines() {
         client_id: "client-1".to_owned(),
         request_line: format!(r#"{{\"Hello\":{{\"password\":\"{secret}\"}}}}"#),
         advance_seconds: 0.0,
+        legacy_advance_seconds: None,
     };
 
     let debug = format!("{step:?}");
     assert!(debug.contains("request_line_bytes"));
     assert!(!debug.contains(secret));
+}
+
+#[test]
+fn compatibility_scenario_parses_distinct_runtime_and_legacy_time_advances() {
+    let steps = parse_server_runtime_scenario_steps(
+        r#"{"client":"client-1","advanceSeconds":88.0,"legacyAdvanceSeconds":10.0,"message":{"List":null}}"#,
+    )
+    .expect("dual-clock compatibility step should parse");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].advance_seconds, 88.0);
+    assert_eq!(steps[0].legacy_advance_seconds, Some(10.0));
+
+    let invalid = parse_server_runtime_scenario_steps(
+        r#"{"client":"client-1","advanceSeconds":88.0,"legacyAdvanceSeconds":-1.0,"message":{"List":null}}"#,
+    );
+    assert!(matches!(invalid, Err(InteropError::InvalidScenarioStep(_))));
+}
+
+#[test]
+fn legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features() {
+    let prepared = prepare_legacy_server_request_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","realversion":"1.5.0"}}"#,
+    )
+    .expect("omitted-feature Hello should be prepared");
+    let prepared: Value =
+        serde_json::from_str(&prepared).expect("prepared Hello should remain valid JSON");
+
+    assert_eq!(
+        prepared.pointer("/Hello/features"),
+        Some(&json!({
+            "sharedPlaylists": true,
+            "chat": true,
+            "featureList": false,
+            "readiness": true,
+            "managedRooms": true,
+            "persistentRooms": false,
+            "uiMode": "Unknown",
+        }))
+    );
+}
+
+#[test]
+fn legacy_server_request_shim_preserves_explicit_features() {
+    let request = r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"CLI","chat":false}}}"#;
+    let prepared =
+        prepare_legacy_server_request_line(request).expect("explicit-feature Hello should prepare");
+
+    assert_eq!(
+        serde_json::from_str::<Value>(&prepared).expect("prepared Hello should decode"),
+        serde_json::from_str::<Value>(request).expect("original Hello should decode")
+    );
 }
 
 mod chat_fanout_tests;

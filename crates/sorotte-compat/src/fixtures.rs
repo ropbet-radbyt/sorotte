@@ -116,6 +116,27 @@ pub fn parse_server_runtime_scenario_steps(
                 line_number + 1
             )));
         }
+        let legacy_advance_seconds = match parsed.get("legacyAdvanceSeconds") {
+            Some(Value::Number(number)) => Some(number.as_f64().ok_or_else(|| {
+                InteropError::InvalidScenarioStep(format!(
+                    "line {} has non-finite 'legacyAdvanceSeconds' value",
+                    line_number + 1
+                ))
+            })?),
+            Some(_) => {
+                return Err(InteropError::InvalidScenarioStep(format!(
+                    "line {} has non-numeric 'legacyAdvanceSeconds' field",
+                    line_number + 1
+                )));
+            }
+            None => None,
+        };
+        if legacy_advance_seconds.is_some_and(|seconds| !seconds.is_finite() || seconds < 0.0) {
+            return Err(InteropError::InvalidScenarioStep(format!(
+                "line {} has invalid 'legacyAdvanceSeconds' value",
+                line_number + 1
+            )));
+        }
         let request_line = serde_json::to_string(request_value)?;
 
         // Validate each scripted request decodes as a typed protocol message.
@@ -125,6 +146,7 @@ pub fn parse_server_runtime_scenario_steps(
             client_id: client_id.to_owned(),
             request_line,
             advance_seconds,
+            legacy_advance_seconds,
         });
     }
     Ok(steps)

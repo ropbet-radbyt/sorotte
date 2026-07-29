@@ -3016,13 +3016,25 @@ mod nonblocking_maintenance_tests {
         adapter.legacy_syncplay_ui_settings.chat_input_enabled = false;
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
         let deadline = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < deadline
-            && (network_heartbeats.load(Ordering::Relaxed) == 0
-                || adapter
-                    .network_media_options_hook_pending_heartbeat
-                    .is_some())
-        {
+        loop {
             PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
+            let command_is_pending = adapter
+                .ipc_client
+                .as_mut()
+                .expect("test adapter should remain attached")
+                .test_nonblocking_command_is_pending();
+            if network_heartbeats.load(Ordering::Relaxed) >= 1
+                && adapter
+                    .network_media_options_hook_pending_heartbeat
+                    .is_none()
+                && !command_is_pending
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "heartbeat acknowledgement and command response should complete"
+            );
             std::thread::yield_now();
         }
 
@@ -3071,10 +3083,12 @@ mod nonblocking_maintenance_tests {
 
     #[test]
     fn property_between_heartbeat_ack_and_response_remains_full_pump_visible() {
-        assert_ordinary_event_order_does_not_block_hook_ack(
-            HeartbeatEventOrdering::AckThenProperty,
-            &["property-change"],
-        );
+        for _ in 0..64 {
+            assert_ordinary_event_order_does_not_block_hook_ack(
+                HeartbeatEventOrdering::AckThenProperty,
+                &["property-change"],
+            );
+        }
     }
 
     #[test]

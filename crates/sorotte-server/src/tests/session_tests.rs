@@ -863,7 +863,7 @@ fn first_hello_receives_unknown_readiness_without_join_time_state() {
 }
 
 #[test]
-fn hello_username_conflict_is_resolved_with_numbered_variant() {
+fn hello_username_conflict_is_resolved_with_legacy_underscore_variant() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
@@ -881,7 +881,7 @@ fn hello_username_conflict_is_resolved_with_numbered_variant() {
     let directed_messages = decode_directed_lines(&directed_lines);
 
     assert!(
-        has_user_event(&directed_messages, "client-1", "alice_2", "joined"),
+        has_user_event(&directed_messages, "client-1", "alice_", "joined"),
         "existing user should observe conflict-resolved username"
     );
     let response_message = directed_messages
@@ -894,18 +894,18 @@ fn hello_username_conflict_is_resolved_with_numbered_variant() {
         .clone();
     let response_hello =
         extract_hello_from_message(response_message).expect("hello response should decode");
-    assert_eq!(response_hello.username, "alice_2");
+    assert_eq!(response_hello.username, "alice_");
     assert_eq!(
         runtime
             .session("client-2")
             .expect("session should be registered")
             .username,
-        "alice_2"
+        "alice_"
     );
 }
 
 #[test]
-fn hello_username_conflict_numbers_names_that_already_end_in_underscore() {
+fn hello_username_conflict_extends_names_that_already_end_in_underscore() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
@@ -924,8 +924,8 @@ fn hello_username_conflict_numbers_names_that_already_end_in_underscore() {
             .session("client-2")
             .expect("second session should exist")
             .username,
-        "alice__2",
-        "collision suffixing should preserve the requested base"
+        "alice__",
+        "legacy collision suffixing should restart at the stem and extend underscores"
     );
 
     runtime
@@ -933,14 +933,14 @@ fn hello_username_conflict_numbers_names_that_already_end_in_underscore() {
             "client-3",
             r#"{"Hello":{"username":"alice_","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
-        .expect("third hello should allocate the next numbered suffix");
+        .expect("third hello should allocate the next underscore suffix");
     assert_eq!(
         runtime
             .session("client-3")
             .expect("third session should exist")
             .username,
-        "alice__3",
-        "numeric collision allocation should remain deterministic"
+        "alice___",
+        "underscore collision allocation should remain deterministic"
     );
 }
 
@@ -948,24 +948,18 @@ fn hello_username_conflict_numbers_names_that_already_end_in_underscore() {
 fn username_collision_suffixes_reserve_space_within_the_unicode_scalar_limit() {
     let mut runtime = ServerRuntime::default();
     runtime.set_max_username_length(4);
-    for (client_id, requested) in [
-        ("client-1", "éééé"),
-        ("client-2", "éééé"),
-        ("client-3", "éé_2"),
-    ] {
+    for client_id in ["client-1", "client-2", "client-3"] {
         runtime
             .handle_line(
                 client_id,
-                &format!(
-                    r#"{{"Hello":{{"username":"{requested}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
-                ),
+                r#"{"Hello":{"username":"éééé","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("hello should allocate a bounded username");
     }
 
     assert_eq!(runtime.session("client-1").unwrap().username, "éééé");
-    assert_eq!(runtime.session("client-2").unwrap().username, "éé_2");
-    assert_eq!(runtime.session("client-3").unwrap().username, "éé_3");
+    assert_eq!(runtime.session("client-2").unwrap().username, "ééé_");
+    assert_eq!(runtime.session("client-3").unwrap().username, "éé__");
     assert!(
         runtime
             .sessions
@@ -978,14 +972,19 @@ fn username_collision_suffixes_reserve_space_within_the_unicode_scalar_limit() {
 fn exhausted_tiny_username_namespace_fails_without_an_unbounded_collision_loop() {
     let mut runtime = ServerRuntime::default();
     runtime.set_max_username_length(1);
-    for index in 0..11 {
-        runtime
-            .handle_line(
-                &format!("client-{index}"),
-                r#"{"Hello":{"username":"x","room":{"name":"room1"},"version":"1.7.5"}}"#,
-            )
-            .expect("the one-scalar namespace should allocate x and ten digits");
-    }
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"x","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("the requested one-scalar username should be accepted");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"x","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("the bounded legacy underscore variant should be accepted");
+    assert_eq!(runtime.session("client-2").unwrap().username, "_");
 
     assert!(matches!(
         runtime.handle_line(

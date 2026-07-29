@@ -113,7 +113,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
             }
         elif lane == "compat-live-tls":
             oracle = {
-                "kind": "libtest-exact-live-tls",
+                "kind": "libtest-exact-live-reference",
                 "passed": len(lanes.EXPECTED_COMPAT_TESTS),
                 "failed": 0,
                 "ignored": 0,
@@ -471,15 +471,17 @@ class CoverageProfileLaneTests(unittest.TestCase):
             lanes.semantic_oracle(raw.encode("utf-8"))
 
     def test_compatibility_oracle_requires_complete_live_inventory(self) -> None:
-        output = "running 4 tests\n"
+        expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
+        output = f"running {expected_count} tests\n"
         for test_name in lanes.EXPECTED_COMPAT_TESTS:
             output += f"test tests::legacy_tls_tests::{test_name} ... ok\n"
         output += (
-            "test result: ok. 4 passed; 0 failed; 0 ignored; "
-            "0 measured; 140 filtered out; finished in 1.00s\n"
+            f"test result: ok. {expected_count} passed; 0 failed; 0 ignored; "
+            f"0 measured; {lanes.EXPECTED_COMPAT_FILTERED_OUT} filtered out; "
+            "finished in 1.00s\n"
         )
         oracle = lanes.compatibility_oracle(output.encode("utf-8"), b"")
-        self.assertEqual(oracle["passed"], 4)
+        self.assertEqual(oracle["passed"], expected_count)
         self.assertEqual(oracle["ignored"], 0)
         self.assertEqual(
             oracle["tests"],
@@ -487,14 +489,15 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
 
     def test_compatibility_oracle_rejects_skip_and_count_drift(self) -> None:
-        good_summary = "running 4 tests\n"
+        expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
+        good_summary = f"running {expected_count} tests\n"
         for test_name in lanes.EXPECTED_COMPAT_TESTS:
             good_summary += (
                 f"test tests::legacy_tls_tests::{test_name} ... ok\n"
             )
         good_summary += (
-            "test result: ok. 4 passed; 0 failed; 0 ignored; "
-            "0 measured; 140 filtered out\n"
+            f"test result: ok. {expected_count} passed; 0 failed; 0 ignored; "
+            f"0 measured; {lanes.EXPECTED_COMPAT_FILTERED_OUT} filtered out\n"
         )
         good_summary_bytes = good_summary.encode("utf-8")
         with self.assertRaisesRegex(
@@ -508,7 +511,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "strict live TLS test",
+            "strict live reference test",
         ):
             lanes.compatibility_oracle(
                 good_summary_bytes.replace(

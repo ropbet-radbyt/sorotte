@@ -43,18 +43,19 @@ the non-controversial lean fixes proven by that coverage:
   an explicit manual base, with raw/effective provenance and always-run phase
   JSON;
 - fail-closed merged coverage profiles for the all-feature workspace, complete
-  14-scenario GUI semantic suite, and four exact strict live-TLS tests, with
-  pinned producer/reference identity, fresh raw-profile deltas, lane-specific
-  behavioral oracles, retained logs, and a final LLVM merge check;
+  14-scenario GUI semantic suite, and the complete 20-test strict
+  live-reference compatibility inventory, with pinned producer/reference
+  identity, fresh raw-profile deltas, lane-specific behavioral oracles,
+  retained logs, and a final LLVM merge check;
 - immutable commit pins for every third-party action used by the Rust CI and
   coverage workflows, plus an exact verified mpv source commit;
-- a fail-closed registry for all 25 ignored Rust tests, including explicit CI,
-  manual-capability, fixture-maintenance, and expiring quarantine dispositions;
+- a fail-closed registry for all 23 ignored Rust tests, including explicit CI,
+  manual-capability, and fixture-maintenance dispositions; the two former
+  compatibility quarantines are now required passing tests;
 - an empty, schema-validated expected-failure registry; previously resolved
-  product defects have positive regressions, while newly surfaced
-  `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` remain red
-  through their ordinary reproducing tests rather than being normalized by
-  `should_panic`;
+  product defects and the subsequently surfaced `TC-PLAYER-003` and
+  `TC-COMPAT-001` through `TC-COMPAT-007` all have positive regressions rather
+  than being normalized by `should_panic`;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -95,6 +96,11 @@ detached baseline no longer performs startup network I/O. Mutation,
 deterministic clocks/network scheduling, broader
 crash-consistency injection, coverage-guided fuzzing, sanitizers, interactive
 native CI, and artifact-consumption tests remain proposed follow-on work.
+The later compatibility-remediation experiment isolated four server parity
+defects, one server message-ordering defect, and four harness/oracle defects.
+All are resolved without a skip, retry, expected failure, or parity
+normalization. The required live-reference selector passes 20/20 and the
+deterministic Python fanout inventory passes 33/33.
 Final validation also exposed a PowerShell type-coercion defect in the
 package-path test harness; it now compares timestamp instants and passes under
 both supported shells. The exact-final locked all-feature Windows run completed
@@ -111,9 +117,13 @@ The merged-profile experiment then proved a clean, compatible 36-profile
 workspace, semantic, and strict live-TLS view at 77.98% diagnostic
 line-instance coverage. It also found a rare player event-observation failure
 during one parallel instrumented workspace run and reproduced six failures in
-the complete strict legacy fanout matrix. Those seven findings remain
-unresolved; the coverage gate has no retry and explicitly limits its green
-compatibility claim to the four live-TLS selectors.
+the complete strict legacy fanout matrix. The follow-up investigation resolved
+all seven, found and fixed one additional message-ordering defect after
+strengthening the comparator, retired both timeout quarantines, and expanded
+the required green compatibility claim to the exact 20-test live-reference
+inventory. The resulting trace recapture also removed two stale client-core
+assumptions about nullable readiness and incidental periodic State traffic.
+The coverage gate still has no retry.
 
 ## Contents
 
@@ -655,8 +665,9 @@ as well.
 ### 6.2.2 Merged behavioral profile experiment
 
 `scripts/coverage_profile_lanes.py` now owns four ordered phases: all-feature
-workspace execution, the exact 14-scenario semantic suite, four strict
-live-TLS compatibility tests, and an LLVM merge check. It accepts only
+workspace execution, the exact 14-scenario semantic suite, the complete
+20-test strict live-reference compatibility inventory, and an LLVM merge
+check. It accepts only
 cargo-llvm-cov 0.8.4 and pinned Syncplay commit
 `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`. External Cargo processes receive
 the producer's parsed `show-env` contract and an isolated
@@ -667,32 +678,35 @@ zero, binds profile-count continuity across every lane, detects content changes
 even when size and mtime are unchanged, and forbids removal of an earlier
 lane's evidence.
 
-The final local attestation passed:
+The current broadened local attestation passed:
 
 | Lane | Behavioral result | Duration | Fresh profiles |
 |---|---:|---:|---:|
-| all-feature workspace | pass | 180.969s | 34 |
-| GUI semantic | 14/14 | 8.613s | 1 |
-| strict live TLS | 4/4, 140 filtered | 1.101s | 1 |
-| LLVM merge | `TOTAL` present | 1.598s | merge-only |
+| all-feature workspace | pass | 188.002s | 34 |
+| GUI semantic | 14/14 | 8.456s | 1 |
+| strict live reference | 20/20, 121 filtered | 18.048s | 1 |
+| LLVM merge | `TOTAL` present | 1.554s | merge-only |
 
-The first clean replay removed 229 raw and one merged profile from earlier
-experiments. The exact-final replay reset that 36-profile trial and recreated
-the same lane counts with zero profile removals. Its view covered 148,209 of
-190,067 line instances (77.977240%). Both downstream producer views and the
-canonical converter passed; the source-bound map covered 145,016 of 183,712
-unique physical lines (78.936596%). Neither percentage replaces the
-changed-line policy. All 284 Python infrastructure and workflow-policy tests
-pass with the schema-2 reset and finalizer binding.
+The historical first clean replay removed 229 raw and one merged profile from
+earlier experiments. The exact-final replay removed 36 prior raw profiles, began
+the workspace lane at zero, recreated exactly 36 profiles, and removed none
+during a lane. Its merged diagnostic view covered 148,594 of 191,287 line
+instances (77.68%). The earlier downstream source-bound experiment covered
+145,016 of 183,712 unique physical lines (78.936596%); neither percentage
+replaces the changed-line policy. All 290 Python infrastructure and
+workflow-policy tests pass with the broadened oracle and workflow binding.
 
-Two deliberately failing experiments constrained the claim. A semantic run
+Two deliberately failing experiments constrained the original claim. A semantic run
 that reused `target/debug` passed 14/14 but produced no profile delta and was
 rejected. The complete strict legacy matrix passed 129 tests, failed six, and
 ignored nine in 88.98 seconds, so it was not relabeled as a green coverage
 lane. One parallel instrumented workspace run also exposed the intermittent
-`TC-PLAYER-003` event loss; focused stress did not reproduce it, and the
-collector retains a recurrence as red rather than retrying. Full evidence is
-in
+`TC-PLAYER-003` observation. Investigation proved a test synchronization race,
+not product event loss. The compatibility divergences and two timeout harness
+failures were likewise fixed at their owning boundaries. The promoted
+`legacy_server_` lane now passes exactly 20 tests with zero ignored and 121
+filtered; its inventory and counts are hard-coded in the oracle. Full
+before/after evidence is in
 [`merged-profile-lanes-20260729.md`](evidence/test-coverage/merged-profile-lanes-20260729.md).
 
 ### 6.3 Static risk and tooling inventory
@@ -1457,9 +1471,9 @@ Merge compatible profiles or upload OS/lane flags to a service that presents a
 merged and per-platform view. Keep “not instrumented” distinct from
 “instrumented and not executed.”
 
-Implementation status: items 1 and 3 are fully merged. Item 4 is merged for
-the four strict live-TLS contracts only; the complete fanout matrix remains
-red under `TC-COMPAT-001` through `TC-COMPAT-006`. The collector parses
+Implementation status: items 1, 3, and 4 are fully merged. Live compatibility
+now includes all 12 strict fanout scenarios, 4 TLS probes, 2 live state probes,
+and 2 request-shim contracts. The collector parses
 cargo-llvm-cov's `show-env`, isolates external instrumented builds, requires a
 fresh raw-profile delta and exact behavioral oracle per lane, and performs a
 real merge before export. Items 5 and 6 remain separate evidence unless their
@@ -1652,7 +1666,8 @@ Acceptance:
 2. Configure nextest/JUnit/failure artifacts and fail-on-flaky/leak retry.
 3. Establish all-feature merged coverage on merge base and PR head.
 4. Enable changed-line and critical-module ratchets.
-5. Classify all 25 ignored tests.
+5. Classify every ignored test (25 at the audit baseline; 23 after retiring
+   two fixed compatibility quarantines).
 6. Move fixture capture to explicit maintenance commands.
 
 Acceptance:
@@ -1662,7 +1677,7 @@ Acceptance:
 - no ignored test lacks tier, owner, and reason;
 - reruns cannot silently turn red into green.
 
-Branch progress: items 2, 4, and 5 are implemented. The exact 25-test ignored
+Branch progress: items 2, 4, and 5 are implemented. The exact 23-test ignored
 registry is workflow-bound. Pinned nextest performs one evidence-producing
 retry but fails the required gate on pass-after-fail or pass-after-leak,
 rejects empty JUnit, and retains console/JUnit/policy artifacts. Its 500 ms
@@ -1680,10 +1695,10 @@ merge base, exact nonzero branch or updated-tag `before`, one default-branch
 merge base for new tags only, and an explicit manual base. Raw inputs,
 requested/effective commits, merge bases, policy digest/rule provenance, and
 each failed or passed phase are retained in JSON. The complete semantic
-inventory and exact strict live-TLS compatibility subset are now merged with
-workspace profiles through a separately validated lane report. Interactive
-native Windows, other OS-specific execution, and the currently red full
-legacy fanout matrix are not yet merged. Test-only paths and complete inline
+inventory and exact 20-test strict live-reference compatibility inventory are
+merged with workspace profiles through a separately validated lane report.
+Interactive native Windows and other OS-specific execution remain separate.
+Test-only paths and complete inline
 `#[cfg(test)]` modules are
 reported outside the production denominator; the inline scanner masks Rust
 comments and literals and fails closed on ambiguous or unclosed module bodies.
@@ -1821,16 +1836,17 @@ diagnostic mode: strict native evidence, nextest, PowerShell, ordinary
 workspace, and LCOV replay exposed real red states that permissive or
 retry-only execution would have hidden. Previously fixed product defects have
 positive regressions and TC-PLAYER-001 uses the selected
-exclusive-successor rule. The later merged-profile experiment deliberately
-leaves `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` red and
-unresolved; no defect quarantine turns those failures green.
+exclusive-successor rule. The later remediation resolves `TC-PLAYER-003`,
+`TC-COMPAT-001` through `TC-COMPAT-007`, and the associated harness/oracle
+defects at their owning boundaries. The strict live-reference inventory is
+required, exact, and green; no defect quarantine or equivalence exception
+turns those failures green.
 
 The most valuable remaining next steps are:
 
-1. extend the proven workspace + semantic + strict-TLS merge to compatible
+1. extend the proven workspace + semantic + strict-live-reference merge to compatible
    updater/process and OS-specific profiles; keep interactive native Windows
-   separate until a trustworthy runner exists, and do not merge the full
-   compatibility matrix until its six red cases are resolved;
+   separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
 3. add deterministic clock and schedule control to reconnect, TLS rotation,

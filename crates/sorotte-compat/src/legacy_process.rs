@@ -9,12 +9,55 @@ pub(crate) fn prepare_legacy_server_request_line(
         .and_then(Value::as_object_mut)
         && !hello.contains_key("features")
     {
+        // Syncplay v1.7.5 normally synthesizes these values in
+        // SyncServerProtocol.getFeatures(). Its first-client Hello path instead
+        // reads the still-null feature map before getFeatures() runs and aborts
+        // the connection. Supplying the values that getFeatures() would create
+        // keeps the live reference probe behaviorally faithful without a
+        // capability-changing sentinel field.
+        let version = hello
+            .get("realversion")
+            .or_else(|| hello.get("version"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         hello.insert(
             "features".to_owned(),
-            json!({ LEGACY_COMPAT_MISSING_FEATURES_MARKER: true }),
+            legacy_default_features_for_version(version),
         );
     }
     Ok(serde_json::to_string(&request_value)?)
+}
+
+fn legacy_default_features_for_version(version: &str) -> Value {
+    json!({
+        "sharedPlaylists": numeric_version_meets_minimum(version, "1.4.0"),
+        "chat": numeric_version_meets_minimum(version, "1.5.0"),
+        "featureList": false,
+        "readiness": numeric_version_meets_minimum(version, "1.3.0"),
+        "managedRooms": numeric_version_meets_minimum(version, "1.3.0"),
+        "persistentRooms": false,
+        "uiMode": "Unknown",
+    })
+}
+
+fn numeric_version_meets_minimum(version: &str, minimum: &str) -> bool {
+    fn components(value: &str) -> Option<Vec<u32>> {
+        value
+            .split('.')
+            .map(|part| part.parse::<u32>().ok())
+            .collect()
+    }
+
+    let Some(mut version) = components(version) else {
+        return false;
+    };
+    let Some(mut minimum) = components(minimum) else {
+        return false;
+    };
+    let width = version.len().max(minimum.len());
+    version.resize(width, 0);
+    minimum.resize(width, 0);
+    version >= minimum
 }
 
 pub(crate) fn reserve_ephemeral_tcp_port() -> Result<u16, InteropError> {

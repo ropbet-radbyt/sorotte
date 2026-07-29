@@ -997,6 +997,9 @@ class FanoutBatchProbe:
         ready_message = self._ready_message(username, None, False)
         for peer_id in self._room_client_ids(room_name):
             outputs.append({"client": peer_id, "message": ready_message})
+        if self.persistent_rooms_enabled:
+            for peer_id in self._to_gui_only_list_recipient_ids():
+                outputs.extend(self._list_response(peer_id))
 
         room_playlist = self.room_playlists[room_name]
         playlist_snapshot = self._playlist_snapshot_message(
@@ -1021,9 +1024,6 @@ class FanoutBatchProbe:
                 ),
             }
         )
-        if self.persistent_rooms_enabled:
-            for peer_id in self._to_gui_only_list_recipient_ids():
-                outputs.extend(self._list_response(peer_id))
         return outputs
 
     def _handle_set(self, client_id, settings):
@@ -1069,6 +1069,9 @@ class FanoutBatchProbe:
                     ready_message = self._ready_message(session["username"], session["ready"], False)
                     for peer_id in self._room_client_ids(room_name):
                         outputs.append({"client": peer_id, "message": ready_message})
+                    if self.persistent_rooms_enabled:
+                        for peer_id in self._to_gui_only_list_recipient_ids():
+                            outputs.extend(self._list_response(peer_id))
 
                     room_playlist = self.room_playlists[room_name]
                     playlist_snapshot = self._playlist_snapshot_message(
@@ -1084,10 +1087,6 @@ class FanoutBatchProbe:
                             ),
                         }
                     )
-                    if self.persistent_rooms_enabled:
-                        for peer_id in self._to_gui_only_list_recipient_ids():
-                            outputs.extend(self._list_response(peer_id))
-
         if "playlistChange" in settings and isinstance(settings["playlistChange"], dict):
             files = settings["playlistChange"].get("files")
             if isinstance(files, list):

@@ -441,7 +441,11 @@ impl ServerRuntime {
                 .entry(room_name.clone())
                 .or_insert_with(|| RoomPlaylistState {
                     files: Vec::new(),
-                    index: None,
+                    // Syncplay seeds file-backed permanent room placeholders
+                    // with index zero even while their playlist is empty.
+                    // Preserve that wire-visible join snapshot until a client
+                    // explicitly changes the index.
+                    index: Some(0),
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
             self.room_playback_states
@@ -1427,34 +1431,24 @@ impl ServerRuntime {
             return Some(username.to_owned());
         }
 
-        let mut generated_candidates = BTreeSet::new();
-        for ordinal in 2_u64.. {
-            let suffix = format!("_{ordinal}");
-            let suffix_chars = suffix.chars().count();
-            let chosen_username = if suffix_chars <= self.max_username_length {
-                let prefix_chars = self.max_username_length - suffix_chars;
-                format!(
-                    "{}{}",
-                    username.chars().take(prefix_chars).collect::<String>(),
-                    suffix
-                )
-            } else {
-                // Extremely small configured limits cannot fit the separator.
-                // Keep the least-significant scalar digits, which still gives
-                // a deterministic bounded namespace until it is exhausted.
-                ordinal
-                    .to_string()
-                    .chars()
-                    .rev()
-                    .take(self.max_username_length)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect()
-            };
-            if !generated_candidates.insert(chosen_username.clone()) {
-                return None;
-            }
+        // Legacy Syncplay strips a colliding trailing-underscore run back to
+        // its stem, then appends underscores until the name is free. Keep that
+        // externally visible allocation order, but reserve suffix space inside
+        // the advertised scalar limit so a hostile collision sequence remains
+        // finite and bounded.
+        let trimmed = username.trim_end_matches('_');
+        let collision_stem = if username.ends_with('_') {
+            if trimmed.is_empty() { "_" } else { trimmed }
+        } else {
+            username
+        };
+        for suffix_chars in 1..=self.max_username_length {
+            let prefix_chars = self.max_username_length - suffix_chars;
+            let mut chosen_username = collision_stem
+                .chars()
+                .take(prefix_chars)
+                .collect::<String>();
+            chosen_username.extend(std::iter::repeat_n('_', suffix_chars));
             if !all_names.contains(&chosen_username.to_ascii_lowercase()) {
                 return Some(chosen_username);
             }

@@ -129,6 +129,12 @@ pub struct ServerRuntimeScenarioStep {
     pub client_id: String,
     pub request_line: String,
     pub advance_seconds: f64,
+    /// Optional wall-clock advance for the legacy Python implementation.
+    ///
+    /// Sorotte deliberately uses a longer liveness timeout. Timeout scenarios
+    /// can therefore place both implementations at the same semantic boundary
+    /// without sleeping past Python's shorter connection lifetime.
+    pub legacy_advance_seconds: Option<f64>,
 }
 
 impl std::fmt::Debug for ServerRuntimeScenarioStep {
@@ -138,6 +144,7 @@ impl std::fmt::Debug for ServerRuntimeScenarioStep {
             .field("client_id", &self.client_id)
             .field("request_line_bytes", &self.request_line.len())
             .field("advance_seconds", &self.advance_seconds)
+            .field("legacy_advance_seconds", &self.legacy_advance_seconds)
             .finish()
     }
 }
@@ -166,7 +173,6 @@ const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(6);
 const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
 const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
-const LEGACY_COMPAT_MISSING_FEATURES_MARKER: &str = "__syncplay_rs_missing_features__";
 const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
 const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
 

@@ -867,9 +867,9 @@ class CiPolicyTests(unittest.TestCase):
         compatibility = self.assert_exact_run(
             self.jobs,
             "compat-live-tls",
-            "Strict live legacy TLS parity",
+            "Strict live legacy compatibility",
             "cargo test --locked -p sorotte-compat --all-features "
-            "legacy_server_live_tls_ -- --nocapture",
+            "legacy_server_ -- --nocapture",
         )
         self.assertEqual(
             compatibility.get("env"),

@@ -282,6 +282,13 @@ try {
     Invoke-CargoStep "fmt" @("fmt", "--all", "--", "--check")
     Invoke-CargoStep "sorotte-server tests" @("test", "-p", "sorotte-server")
     Invoke-CargoStep "sorotte-compat tests" @("test", "-p", "sorotte-compat")
+    Invoke-CargoStep `
+        "strict live legacy compatibility" `
+        @("test", "-p", "sorotte-compat", "--all-features", "legacy_server_", "--", "--nocapture") `
+        @{
+            SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
+            SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"
+        }
 
     if (-not $NoWorkspace) {
         Invoke-CargoStep "workspace tests" @("test", "--workspace")

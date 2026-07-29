@@ -115,7 +115,6 @@ fn python_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenar
 }
 
 #[test]
-#[ignore = "Sorotte intentionally extends the protocol timeout beyond the Python reference for media-match liveness"]
 fn python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario()
  {
     match assert_python_fanout_matches_server_runtime_for_scenario_with_overrides(

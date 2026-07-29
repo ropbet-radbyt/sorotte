@@ -776,6 +776,11 @@ fn permanent_rooms_file_works_without_a_rooms_database() {
         runtime.room_playlists.contains_key("permanent-room"),
         "a permanent-rooms file must create its configured empty room even without SQLite"
     );
+    assert_eq!(
+        runtime.room_playlist_state("permanent-room").index,
+        Some(0),
+        "legacy permanent-room placeholders begin with playlist index zero"
+    );
     assert!(
         runtime.room_is_permanent("permanent-room"),
         "permanence must come from configuration rather than database presence"
@@ -846,13 +851,13 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
             client_id == "client-2"
                 && matches!(
                     message,
-                    ProtocolMessage::Set(payload)
-                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
-                            index.index_value().is_none()
+                        ProtocolMessage::Set(payload)
+                            if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(0)
                         })
                 )
         }),
-        "empty permanent-room playlists must restore a null index"
+        "empty permanent-room playlists must preserve their explicit legacy index"
     );
 
     drop(runtime);
@@ -1055,6 +1060,80 @@ fn persistent_list_updates_include_legacy_default_ui_mode_clients() {
     assert!(
         list_recipients.contains("client-2"),
         "legacy clients that omit features should receive Python-synthesized uiMode defaults"
+    );
+
+    let client_2_messages: Vec<_> = directed_messages
+        .iter()
+        .filter(|(recipient, _)| recipient == "client-2")
+        .map(|(_, message)| message)
+        .collect();
+    let list_position = client_2_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::List(_)))
+        .expect("joining client should receive the persistent room list");
+    let playlist_position = client_2_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_change.is_some()
+            )
+        })
+        .expect("joining client should receive its playlist snapshot");
+    let hello_position = client_2_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::Hello(_)))
+        .expect("joining client should receive Hello");
+    assert!(
+        list_position < playlist_position && playlist_position < hello_position,
+        "legacy persistent-room order is list, playlist snapshot, then Hello for the joiner"
+    );
+}
+
+#[test]
+fn persistent_room_switch_list_precedes_playlist_snapshot() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("client hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room switch should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let client_messages: Vec<_> = directed_messages
+        .iter()
+        .filter(|(recipient, _)| recipient == "client-1")
+        .map(|(_, message)| message)
+        .collect();
+    let list_position = client_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::List(_)))
+        .expect("switching client should receive a persistent room list");
+    let playlist_position = client_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_change.is_some()
+            )
+        })
+        .expect("switching client should receive its destination playlist snapshot");
+    let playlist_index_position = client_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
+            )
+        })
+        .expect("switching client should receive its destination playlist index");
+    assert!(
+        list_position < playlist_position && playlist_position < playlist_index_position,
+        "legacy persistent-room switch order is list before playlist and index snapshots"
     );
 }
 

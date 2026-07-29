@@ -67,10 +67,10 @@ Proptest seeds under
 strategy-shape scoped. They improve replay while a strategy remains stable,
 while named deterministic regressions remain the durable behavior contract.
 `known-defects.toml` is retained as an empty, schema-validated registry so a
-future expected-failure characterization cannot become implicit. Unresolved
-`TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` are not entered
-there: they remain red through an existing intermittent test or the ordinary
-strict compatibility tests rather than being wrapped in `should_panic`.
+future expected-failure characterization cannot become implicit.
+`TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-007` are resolved by
+positive regressions at their owning boundaries; none was entered as an
+expected failure.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
@@ -80,9 +80,10 @@ coordinated weakening.
 
 `ignored-tests.toml` must exactly match every Rust `#[ignore = "reason"]`
 attribute under `crates/`. Each entry has an owner, prerequisites, supported
-operating systems, and one of four currently used dispositions: required
+operating systems, and one of four supported dispositions: required
 pull-request CI, manual capability, fixture maintenance, or expiring
-quarantine. Unsupported conditional or reasonless ignore attributes fail.
+quarantine. The schema retains all four dispositions, but the current 23-test
+registry has no quarantines. Unsupported conditional or reasonless ignore attributes fail.
 Pull-request entries are additionally checked against exact
 `--ignored --exact` workflow invocations.
 
@@ -197,8 +198,9 @@ from:
 
 - the locked all-feature workspace;
 - the exact 14-scenario GUI semantic inventory;
-- four strict live-TLS tests against pinned Syncplay commit
-  `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`;
+- the complete 20-test strict live-reference inventory against pinned Syncplay
+  commit `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`: 12 fanout scenarios, 4 TLS
+  probes, 2 live state probes, and 2 request-shim contracts;
 - a final cargo-llvm-cov merge check.
 
 The wrapper accepts only cargo-llvm-cov 0.8.4, applies its `show-env` contract
@@ -212,10 +214,11 @@ and the merge may not mutate them. The wrapper also validates the semantic
 JSON and exact libtest counts, selectors, skip markers, commands, environment,
 logs, producer, and pinned reference revision.
 
-The complete strict legacy fanout matrix is not claimed by this green
-profile. A real replay passed 129 tests and failed six; those divergences are
-tracked as `TC-COMPAT-001` through `TC-COMPAT-006`. Native interactive Windows
-profiles also remain a separate evidence boundary. Exact experiments and
+The broad live-reference selector passes 20/20 with no ignored cases and a
+fail-closed expected inventory. A historical discovery replay passed 129 tests
+and failed six; that red evidence and the subsequent product/harness
+remediation are both retained rather than normalized away. Native interactive
+Windows profiles remain a separate evidence boundary. Exact experiments and
 limits are retained in
 [`merged-profile-lanes-20260729.md`](../docs/evidence/test-coverage/merged-profile-lanes-20260729.md).
 

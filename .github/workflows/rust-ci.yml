@@ -599,13 +599,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements/legacy-python-interop.txt
 
-      - name: Strict live legacy TLS parity
+      - name: Strict live legacy compatibility
         env:
           SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
         run: >-
           cargo test --locked -p sorotte-compat --all-features
-          legacy_server_live_tls_ -- --nocapture
+          legacy_server_ -- --nocapture
 
   mpv-pr-semantics:
     if: github.event_name != 'schedule'
@@ -852,13 +852,13 @@ jobs:
           cargo test --locked -p sorotte-player-mpv --all-features
           --test repro_acknowledged_cache_pause
 
-      - name: Strict live legacy TLS parity
+      - name: Strict live legacy compatibility
         env:
           SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
         run: >-
           cargo test --locked -p sorotte-compat --all-features
-          legacy_server_live_tls_ -- --nocapture
+          legacy_server_ -- --nocapture
 
   server-release-verify:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

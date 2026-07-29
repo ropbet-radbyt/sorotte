@@ -128,7 +128,9 @@ pub(crate) fn run_python_fanout_roundtrip_with_full_overrides(
             .map(|step| json!({
                 "client": step.client_id,
                 "line": step.request_line,
-                "advanceSeconds": step.advance_seconds,
+                "advanceSeconds": step
+                    .legacy_advance_seconds
+                    .unwrap_or(step.advance_seconds),
             }))
             .collect::<Vec<_>>(),
     }))?;

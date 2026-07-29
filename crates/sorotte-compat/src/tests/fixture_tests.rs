@@ -45,7 +45,7 @@ fn decode_protocol_file_works_for_existing_fixture() {
 #[cfg(feature = "trace-capture")]
 #[test]
 #[ignore = "requires Twisted and writes fixture files from a live legacy server session"]
-fn capture_legacy_server_state_latency_metrics_trace_fixture() {
+fn capture_live_reference_state_latency_metrics_trace_fixture() {
     capture_legacy_server_trace_fixture(
         "server_runtime_state_latency_metrics.jsonl",
         "server_runtime_state_latency_metrics.legacy_trace.json",
@@ -128,7 +128,7 @@ fn capture_permanent_rooms_file_trace_fixtures() {
 #[cfg(feature = "trace-capture")]
 #[test]
 #[ignore = "requires Twisted and writes fixture files from a live legacy server session"]
-fn capture_legacy_server_controlled_room_trace_fixtures() {
+fn capture_live_reference_controlled_room_trace_fixtures() {
     capture_legacy_server_trace_fixture(
         "server_runtime_controlled_room_permissions.jsonl",
         "server_runtime_controlled_room_permissions.legacy_trace.json",

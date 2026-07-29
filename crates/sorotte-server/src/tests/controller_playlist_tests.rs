@@ -588,8 +588,8 @@ fn playlist_index_rejects_negative_and_out_of_range_values() {
         .expect("playlist should be accepted");
     assert_eq!(
         runtime.room_playlist_state("room1").index,
-        Some(0),
-        "a nonempty playlist must receive a deterministic valid index immediately"
+        None,
+        "playlistChange must not synthesize the separate playlistIndex operation"
     );
     runtime
         .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
@@ -622,7 +622,7 @@ fn playlist_index_rejects_negative_and_out_of_range_values() {
 }
 
 #[test]
-fn playlist_replacement_atomically_normalizes_index_and_empty_playlist_clears_it() {
+fn playlist_replacement_preserves_explicit_index_without_implicit_index_fanout() {
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line(
@@ -646,29 +646,28 @@ fn playlist_replacement_atomically_normalizes_index_and_empty_playlist_clears_it
             r#"{"Set":{"playlistChange":{"files":["replacement.mkv"]}}}"#,
         )
         .expect("shorter replacement should be accepted");
-    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
-    assert!(has_playlist_index_snapshot(
-        &decode_directed_lines(&shortened),
-        "client-1",
-        0
-    ));
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(2));
+    assert!(
+        decode_directed_lines(&shortened)
+            .iter()
+            .all(|(_, message)| !matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
+            )),
+        "playlist replacement must fan out only playlistChange"
+    );
 
     let cleared = runtime
         .handle_line_fanout("client-1", r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("playlist clear should be accepted");
-    assert_eq!(runtime.room_playlist_state("room1").index, None);
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(2));
     assert!(
         decode_directed_lines(&cleared)
             .iter()
-            .any(|(client_id, message)| {
-                client_id == "client-1"
-                    && matches!(
-                        message,
-                        ProtocolMessage::Set(payload)
-                            if payload.set.playlist_index.as_ref().is_some_and(|index| {
-                                index.index_value().is_none()
-                            })
-                    )
-            })
+            .all(|(_, message)| !matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
+            )),
+        "clearing a playlist must not synthesize playlistIndex(null)"
     );
 }

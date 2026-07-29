@@ -270,7 +270,7 @@ class CoverageFinalizerTests(unittest.TestCase):
             }
         elif lane == "compat-live-tls":
             oracle = {
-                "kind": "libtest-exact-live-tls",
+                "kind": "libtest-exact-live-reference",
                 "passed": len(profile_lanes.EXPECTED_COMPAT_TESTS),
                 "failed": 0,
                 "ignored": 0,

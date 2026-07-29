@@ -78,10 +78,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
         for output in &legacy_event.outbound_lines {
             let include_output = decode_message_line(&output.line)
                 .ok()
-                .is_some_and(|message| {
-                    !is_background_idle_state_message(&message)
-                        && !is_null_playlist_index_protocol_message(&message)
-                });
+                .is_some_and(|message| !is_background_idle_state_message(&message));
             if !include_output {
                 continue;
             }
@@ -102,10 +99,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
         for output in &rust_event.outbound_lines {
             let include_output = decode_message_line(&output.line)
                 .ok()
-                .is_some_and(|message| {
-                    !is_background_idle_state_message(&message)
-                        && !is_null_playlist_index_protocol_message(&message)
-                });
+                .is_some_and(|message| !is_background_idle_state_message(&message));
             if !include_output {
                 continue;
             }
@@ -129,32 +123,23 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
             legacy_event.request_line, rust_event.request_line,
             "request line mismatch at step {index}"
         );
-        if legacy_outputs.len() != rust_outputs.len() {
-            panic!(
-                "outbound count mismatch at step {index}: legacy={} rust={}; legacy_outputs={legacy_outputs:?}; rust_outputs={rust_outputs:?}",
-                legacy_outputs.len(),
-                rust_outputs.len()
-            );
+        let mut legacy_sequences = BTreeMap::<String, Vec<Value>>::new();
+        for (client_id, message) in legacy_outputs {
+            legacy_sequences.entry(client_id).or_default().push(message);
+        }
+        let mut rust_sequences = BTreeMap::<String, Vec<Value>>::new();
+        for (client_id, message) in rust_outputs {
+            rust_sequences.entry(client_id).or_default().push(message);
         }
 
-        let mut unmatched_rust_outputs = rust_outputs.clone();
-        for (output_index, legacy_output) in legacy_outputs.iter().enumerate() {
-            if let Some(rust_index) = unmatched_rust_outputs
-                .iter()
-                .position(|rust_output| rust_output == legacy_output)
-            {
-                unmatched_rust_outputs.remove(rust_index);
-                continue;
-            }
-
-            panic!(
-                "legacy output had no Rust match at step {index} output {output_index}: {legacy_output:?}"
-            );
-        }
-
-        if !unmatched_rust_outputs.is_empty() {
-            panic!("Rust produced unmatched outputs at step {index}: {unmatched_rust_outputs:?}");
-        }
+        // Socket polling can interleave different recipients nondeterministically,
+        // but every recipient observes a defined protocol sequence. Comparing each
+        // recipient's complete sequence catches message-order regressions without
+        // inventing a cross-socket total order.
+        assert_eq!(
+            legacy_sequences, rust_sequences,
+            "per-recipient outbound sequence mismatch at step {index}"
+        );
     }
 
     Ok(())
