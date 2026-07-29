@@ -4,7 +4,6 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::Arc,
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -29,9 +28,10 @@ use super::{
     ServerActorError, ServerActorHandle, ServerApp, ServerInboundCommand, ServerLifecycleError,
     ServerNetworkError, ServerOutboundDelivery, ServerPersistenceEffect, ServerRuntime,
     ServerRuntimeDispatch, ServerRuntimeError, ServerSetCommand, ServerSharedFile,
-    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
-    motd_for_client_context, motd_for_client_version, read_network_line_from_stream,
-    run_server_network_loop_until_shutdown, run_server_network_loops_and_shutdown_actor,
+    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, TlsCertificateBundleMetadataClock,
+    default_motd_for_client_version, motd_for_client_context, motd_for_client_version,
+    read_network_line_from_stream, run_server_network_loop_until_shutdown,
+    run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_modified_time,
 };
 use sorotte_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
@@ -534,6 +534,40 @@ fn write_valid_tls_bundle(path: &Path) {
         .expect("valid chain fixture should write");
 }
 
+fn write_invalid_tls_bundle(path: &Path, label: &str) {
+    for filename in super::TLS_REQUIRED_CERT_FILENAMES {
+        fs::write(path.join(filename), format!("invalid-{label}-{filename}"))
+            .expect("invalid TLS bundle fixture should write");
+    }
+}
+
+fn set_file_modified_time_for_test(path: &Path, modified_time: SystemTime) {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("TLS bundle member should open for timestamp update");
+    file.set_times(fs::FileTimes::new().set_modified(modified_time))
+        .expect("TLS bundle member modification time should be settable");
+    assert_eq!(
+        fs::metadata(path)
+            .expect("timestamped TLS bundle member should remain readable")
+            .modified()
+            .expect("TLS bundle member should expose modification time"),
+        modified_time,
+        "filesystem must preserve the explicit test timestamp"
+    );
+}
+
+fn server_runtime_with_tls_metadata_clock(
+    cert_path: &Path,
+) -> (ServerRuntime, TlsCertificateBundleMetadataClock) {
+    let metadata_clock = TlsCertificateBundleMetadataClock::new();
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_certificate_bundle_metadata_clock_for_test(metadata_clock.clone());
+    runtime.set_tls_cert_path(Some(cert_path.to_path_buf()));
+    (runtime, metadata_clock)
+}
+
 fn tls_client_connector_for_test_fixture() -> TlsConnector {
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
     let certs = rustls_pemfile::certs(&mut cert_reader)
@@ -549,46 +583,6 @@ fn tls_client_connector_for_test_fixture() -> TlsConnector {
         .with_root_certificates(roots)
         .with_no_client_auth();
     TlsConnector::from(Arc::new(client_config))
-}
-
-fn overwrite_file_until_modified_time_changes(path: &Path, contents: &str) {
-    let original_modified_time = fs::metadata(path)
-        .expect("file should be readable before overwrite")
-        .modified()
-        .expect("file should expose modification time");
-    for attempt in 0..8 {
-        fs::write(path, format!("{contents}-{attempt}"))
-            .expect("file overwrite should succeed while testing rotation");
-        let updated_modified_time = fs::metadata(path)
-            .expect("overwritten file should be readable")
-            .modified()
-            .expect("overwritten file should expose modification time");
-        if updated_modified_time != original_modified_time {
-            return;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    panic!("file modification time did not change after repeated overwrite attempts");
-}
-
-fn rewrite_file_until_modified_time_changes(path: &Path, contents: &str) {
-    let original_modified_time = fs::metadata(path)
-        .expect("file should be readable before overwrite")
-        .modified()
-        .expect("file should expose modification time");
-    for _ in 0..8 {
-        fs::write(path, contents)
-            .expect("file rewrite should succeed while testing rotation recovery");
-        let updated_modified_time = fs::metadata(path)
-            .expect("rewritten file should be readable")
-            .modified()
-            .expect("rewritten file should expose modification time");
-        if updated_modified_time != original_modified_time {
-            return;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    panic!("file modification time did not change after repeated rewrite attempts");
 }
 
 fn tls_start_response(lines: &[String]) -> Option<String> {

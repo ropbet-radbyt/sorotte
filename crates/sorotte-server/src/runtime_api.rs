@@ -66,6 +66,8 @@ impl ServerRuntime {
             tls_context_available: false,
             server_accepts_tls: false,
             tls_last_edit_cert_time: None,
+            #[cfg(test)]
+            tls_certificate_bundle_metadata_clock: None,
             tls_rotation_attempts: 0,
             pending_transport_actions: Vec::new(),
             persistent_rooms_enabled: false,
@@ -187,6 +189,14 @@ impl ServerRuntime {
         self.tls_cert_path = path;
         self.tls_rotation_attempts = 0;
         self.refresh_tls_context_from_cert_path();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tls_certificate_bundle_metadata_clock_for_test(
+        &mut self,
+        clock: TlsCertificateBundleMetadataClock,
+    ) {
+        self.tls_certificate_bundle_metadata_clock = Some(clock);
     }
 
     pub fn set_persistent_rooms_enabled(&mut self, enabled: bool) {

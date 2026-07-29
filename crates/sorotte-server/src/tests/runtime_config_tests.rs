@@ -754,8 +754,7 @@ fn tls_send_keeps_loaded_context_when_cert_files_disappear_without_rotation_sign
     fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&cert_path);
 
-    let mut runtime = ServerRuntime::new();
-    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let (mut runtime, _metadata_clock) = server_runtime_with_tls_metadata_clock(&cert_path);
     fs::remove_file(cert_path.join("privkey.pem")).expect("privkey file should be removable");
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
     fs::remove_file(cert_path.join("cert.pem")).expect("cert file should be removable");
@@ -775,8 +774,7 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
     fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&cert_path);
 
-    let mut runtime = ServerRuntime::new();
-    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let (mut runtime, metadata_clock) = server_runtime_with_tls_metadata_clock(&cert_path);
     let initial_outbound = runtime
         .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
         .expect("initial tls request should be handled");
@@ -786,7 +784,9 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
     );
 
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
-    overwrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), "rotated-cert");
+    fs::write(cert_path.join("cert.pem"), "rotated-cert")
+        .expect("rotated certificate fixture should write");
+    metadata_clock.advance();
 
     let rotated_outbound = runtime
         .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
@@ -799,14 +799,190 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
 }
 
+#[test]
+#[should_panic(
+    expected = "rotating a required TLS bundle member must invalidate the cached context"
+)]
+fn known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem() {
+    let cert_path = temporary_directory_path("tls-rotation-max-mtime-collision");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let base_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    set_file_modified_time_for_test(
+        &cert_path.join("privkey.pem"),
+        base_time + Duration::from_secs(60),
+    );
+    set_file_modified_time_for_test(
+        &cert_path.join("chain.pem"),
+        base_time + Duration::from_secs(120),
+    );
+    set_file_modified_time_for_test(
+        &cert_path.join("cert.pem"),
+        base_time + Duration::from_secs(180),
+    );
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let token_before = tls_certificate_bundle_modified_time(&cert_path);
+
+    fs::write(cert_path.join("privkey.pem"), "rotated-invalid-private-key")
+        .expect("rotated private-key fixture should write");
+    set_file_modified_time_for_test(
+        &cert_path.join("privkey.pem"),
+        base_time + Duration::from_secs(90),
+    );
+    let token_after = tls_certificate_bundle_modified_time(&cert_path);
+    assert_eq!(
+        token_after, token_before,
+        "the experiment requires an exact maximum-mtime collision"
+    );
+
+    let characterization = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let outbound_lines = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("TLS request should be handled");
+        assert_eq!(
+            tls_start_response(&outbound_lines).as_deref(),
+            Some("false"),
+            "rotating a required TLS bundle member must invalidate the cached context"
+        );
+    }));
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    if let Err(payload) = characterization {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TlsRotationHistoryStep {
+    CorruptWithoutRevision,
+    RotateInvalid,
+    RotateValid,
+}
+
+impl TlsRotationHistoryStep {
+    fn from_ternary_digit(digit: usize) -> Self {
+        match digit {
+            0 => Self::CorruptWithoutRevision,
+            1 => Self::RotateInvalid,
+            2 => Self::RotateValid,
+            _ => unreachable!("a ternary digit must be in 0..=2"),
+        }
+    }
+
+    fn changed_revision(self) -> bool {
+        !matches!(self, Self::CorruptWithoutRevision)
+    }
+
+    fn bundle_is_valid(self) -> bool {
+        matches!(self, Self::RotateValid)
+    }
+}
+
+#[derive(Debug)]
+struct TlsRotationReferenceState {
+    context_available: bool,
+    accepts_tls: bool,
+    attempts: u32,
+}
+
+impl TlsRotationReferenceState {
+    fn apply(&mut self, step: TlsRotationHistoryStep) -> bool {
+        let accepted_before_step = self.accepts_tls;
+        if step.changed_revision() && accepted_before_step {
+            self.attempts += 1;
+            self.context_available = step.bundle_is_valid();
+            self.accepts_tls =
+                self.context_available || self.attempts < super::TLS_CERT_ROTATION_MAX_RETRIES;
+        }
+        accepted_before_step && self.context_available
+    }
+}
+
+#[test]
+fn tls_rotation_revision_histories_match_reference_model_without_wall_clock_waits() {
+    const HISTORY_LENGTH: usize = 5;
+    const HISTORY_COUNT: usize = 3_usize.pow(HISTORY_LENGTH as u32);
+
+    let cert_path = temporary_directory_path("tls-rotation-reference-model");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+
+    for encoded_history in 0..HISTORY_COUNT {
+        write_valid_tls_bundle(&cert_path);
+        let (mut runtime, metadata_clock) = server_runtime_with_tls_metadata_clock(&cert_path);
+        let mut reference = TlsRotationReferenceState {
+            context_available: true,
+            accepts_tls: true,
+            attempts: 0,
+        };
+        let mut remaining_history = encoded_history;
+
+        for step_index in 0..HISTORY_LENGTH {
+            let step = TlsRotationHistoryStep::from_ternary_digit(remaining_history % 3);
+            remaining_history /= 3;
+            match step {
+                TlsRotationHistoryStep::CorruptWithoutRevision => {
+                    write_invalid_tls_bundle(
+                        &cert_path,
+                        &format!("{encoded_history}-{step_index}-cached"),
+                    );
+                }
+                TlsRotationHistoryStep::RotateInvalid => {
+                    write_invalid_tls_bundle(
+                        &cert_path,
+                        &format!("{encoded_history}-{step_index}-rotated"),
+                    );
+                    metadata_clock.advance();
+                }
+                TlsRotationHistoryStep::RotateValid => {
+                    write_valid_tls_bundle(&cert_path);
+                    metadata_clock.advance();
+                }
+            }
+
+            let expected_start_tls = reference.apply(step);
+            let client_id = format!("history-{encoded_history}-step-{step_index}");
+            let outbound_lines = runtime
+                .handle_line(&client_id, r#"{"TLS":{"startTLS":"send"}}"#)
+                .expect("generated TLS request should be handled");
+            assert_eq!(
+                tls_start_response(&outbound_lines).as_deref(),
+                Some(if expected_start_tls { "true" } else { "false" }),
+                "STARTTLS response diverged for history {encoded_history}, step {step_index}: {step:?}"
+            );
+            assert_eq!(
+                has_start_tls_transport_action(&runtime.drain_transport_actions(), &client_id,),
+                expected_start_tls,
+                "transport action diverged for history {encoded_history}, step {step_index}: {step:?}"
+            );
+            assert_eq!(
+                runtime.tls_context_available, reference.context_available,
+                "context availability diverged for history {encoded_history}, step {step_index}: {step:?}"
+            );
+            assert_eq!(
+                runtime.server_accepts_tls, reference.accepts_tls,
+                "acceptability diverged for history {encoded_history}, step {step_index}: {step:?}"
+            );
+            assert_eq!(
+                runtime.tls_rotation_attempts, reference.attempts,
+                "retry count diverged for history {encoded_history}, step {step_index}: {step:?}"
+            );
+        }
+    }
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
 fn assert_tls_rotation_detects_file_change(filename: &str) {
     let cert_path = temporary_directory_path(&format!("tls-rotation-{filename}"));
     let _ = fs::remove_dir_all(&cert_path);
     fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&cert_path);
 
-    let mut runtime = ServerRuntime::new();
-    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let (mut runtime, metadata_clock) = server_runtime_with_tls_metadata_clock(&cert_path);
     let initial_outbound = runtime
         .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
         .expect("initial tls request should be handled");
@@ -815,10 +991,9 @@ fn assert_tls_rotation_detects_file_change(filename: &str) {
         Some("true")
     );
 
-    overwrite_file_until_modified_time_changes(
-        &cert_path.join(filename),
-        &format!("rotated-{filename}"),
-    );
+    fs::write(cert_path.join(filename), format!("rotated-{filename}"))
+        .expect("rotated TLS bundle member should write");
+    metadata_clock.advance();
 
     let rotated_outbound = runtime
         .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
@@ -854,15 +1029,16 @@ fn tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads()
     fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&cert_path);
 
-    let mut runtime = ServerRuntime::new();
-    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let (mut runtime, metadata_clock) = server_runtime_with_tls_metadata_clock(&cert_path);
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
 
     for attempt in 0..super::TLS_CERT_ROTATION_MAX_RETRIES {
-        overwrite_file_until_modified_time_changes(
-            &cert_path.join("cert.pem"),
-            &format!("rotated-cert-{attempt}"),
-        );
+        fs::write(
+            cert_path.join("cert.pem"),
+            format!("rotated-cert-{attempt}"),
+        )
+        .expect("invalid rotated certificate should write");
+        metadata_clock.advance();
         let outbound_lines = runtime
             .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
             .expect("tls request should be handled");
@@ -878,7 +1054,9 @@ fn tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads()
 
     fs::write(cert_path.join("chain.pem"), "chain-restored")
         .expect("chain file restore should succeed");
-    overwrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), "restored-cert");
+    fs::write(cert_path.join("cert.pem"), "restored-cert")
+        .expect("restored certificate fixture should write");
+    metadata_clock.advance();
     let outbound_after_restore = runtime
         .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
         .expect("tls request after restore should be handled");

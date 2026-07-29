@@ -1,6 +1,14 @@
 use super::*;
 
 impl ServerRuntime {
+    fn tls_certificate_bundle_observed_modified_time(&self, path: &Path) -> Option<SystemTime> {
+        #[cfg(test)]
+        if let Some(clock) = self.tls_certificate_bundle_metadata_clock.as_ref() {
+            return Some(clock.modified_time());
+        }
+        tls_certificate_bundle_modified_time(path)
+    }
+
     pub(crate) fn current_time_seconds(&self) -> f64 {
         self.time_now_override_seconds
             .unwrap_or_else(current_unix_timestamp_seconds)
@@ -42,7 +50,7 @@ impl ServerRuntime {
             self.tls_last_edit_cert_time = None;
             return;
         }
-        self.tls_last_edit_cert_time = tls_certificate_bundle_modified_time(path);
+        self.tls_last_edit_cert_time = self.tls_certificate_bundle_observed_modified_time(path);
         match load_tls_server_config(path) {
             Ok(server_config) => {
                 self.tls_server_config = Some(server_config);
@@ -61,7 +69,8 @@ impl ServerRuntime {
         let Some(path) = self.tls_cert_path.as_ref() else {
             return;
         };
-        let Some(current_edit_time) = tls_certificate_bundle_modified_time(path) else {
+        let Some(current_edit_time) = self.tls_certificate_bundle_observed_modified_time(path)
+        else {
             return;
         };
         if Some(current_edit_time) == self.tls_last_edit_cert_time {

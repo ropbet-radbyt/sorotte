@@ -70,11 +70,11 @@ proving reactivation clears stale logical-terminal state.
 Proptest seeds under each participating crate's `proptest-regressions/`
 directory are source-file and strategy-shape scoped. They improve replay while
 a strategy remains stable, while named deterministic regressions remain the
-durable behavior contract. `known-defects.toml` currently records one
+durable behavior contract. `known-defects.toml` currently records the
 reconnect acknowledgement-fencing defect with two narrow executable
-characterizations. `TC-PLAYER-003` and `TC-COMPAT-001` through
-`TC-COMPAT-007` remain resolved by positive regressions at their owning
-boundaries.
+characterizations and the TLS max-mtime collision with two. `TC-PLAYER-003`
+and `TC-COMPAT-001` through `TC-COMPAT-007` remain resolved by positive
+regressions at their owning boundaries.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
@@ -87,6 +87,17 @@ exercises timeout, reconnect, exhaustion, and the rule that Hello and
 credentials cannot be sent while required STARTTLS is unresolved. Exact time
 is asserted only after a protocol barrier; operating-system loopback delivery
 is not treated as a virtual-clock oracle.
+
+`NET-TLS-001` removes filesystem timestamp waiting from TLS rotation evidence.
+A test-only metadata revision clock drives 243 exhaustive five-step histories
+through cached corruption, invalid rotation, and valid rotation. Each response,
+transport action, context state, acceptability gate, and retry count is checked
+against an independent model. Real-network proofs retain the captured context
+for an already accepted handshake, deny later clients after invalid rotation,
+and recover after a valid pre-cap restoration. Retry exhaustion remains an
+explicit terminal legacy contract. The separate `TC-SERVER-001`
+characterization proves that production's maximum-mtime token can collide; it
+is not counted as positive `NET-TLS-001` evidence.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,

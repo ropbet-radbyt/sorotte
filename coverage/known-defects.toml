@@ -19,3 +19,23 @@ package = "sorotte-client-core"
 source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
 test = "session::tests::reconnect_tests::property_tests::known_defect_authoritative_playlist_does_not_cancel_armed_restore"
 expected_panic = "authoritative playlist update must cancel an armed restore"
+
+[[defect]]
+id = "TC-SERVER-001"
+title = "TLS rotation max-mtime token can miss bundle-member changes"
+severity = "high"
+owners = ["server", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-server"
+source = "crates/sorotte-server/src/tls.rs"
+test = "tls::tests::known_defect_tls_bundle_member_change_below_latest_mtime_is_not_detected"
+expected_panic = "changing any required TLS bundle member must change the rotation token"
+
+[[defect.characterization]]
+package = "sorotte-server"
+source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+test = "tests::runtime_config_tests::known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem"
+expected_panic = "rotating a required TLS bundle member must invalidate the cached context"

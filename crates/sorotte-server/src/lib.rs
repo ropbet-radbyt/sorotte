@@ -215,6 +215,8 @@ pub(crate) use messages::*;
 pub(crate) use network::read_network_line_from_stream;
 pub(crate) use persistence::{PersistedRoomState, RoomPersistenceStore, StatsPersistenceStore};
 pub(crate) use persistence_actor::{RoomPersistenceService, StatsPersistenceService};
+#[cfg(test)]
+pub(crate) use tls::TlsCertificateBundleMetadataClock;
 pub(crate) use tls::{
     load_tls_server_config, tls_certificate_bundle_is_available,
     tls_certificate_bundle_modified_time,
@@ -421,6 +423,8 @@ pub struct ServerRuntime {
     tls_context_available: bool,
     server_accepts_tls: bool,
     tls_last_edit_cert_time: Option<SystemTime>,
+    #[cfg(test)]
+    tls_certificate_bundle_metadata_clock: Option<TlsCertificateBundleMetadataClock>,
     tls_rotation_attempts: u32,
     pending_transport_actions: Vec<DirectedTransportAction>,
     persistent_rooms_enabled: bool,

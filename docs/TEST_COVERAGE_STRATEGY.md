@@ -54,9 +54,9 @@ the non-controversial lean fixes proven by that coverage:
   compatibility quarantines are now required passing tests;
 - a schema-validated expected-failure registry; previously resolved product
   defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
-  through `TC-COMPAT-007` all have positive regressions, while the newly
-  discovered `TC-CLIENT-001` reconnect acknowledgement-fencing gap is
-  represented by two narrow expiring characterizations;
+  through `TC-COMPAT-007` all have positive regressions, while
+  `TC-CLIENT-001` reconnect acknowledgement fencing and `TC-SERVER-001` TLS
+  max-mtime collision remain narrow expiring characterizations;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -82,7 +82,10 @@ the non-controversial lean fixes proven by that coverage:
   backoff/exhaustion, barrier-driven independent STARTTLS response and TLS
   handshake deadlines, an exact post-client-Hello server-Hello deadline, and a
   virtual-time real-loopback retry that forbids Hello or credentials before
-  required TLS resolves.
+  required TLS resolves;
+- deterministic server TLS rotation: an injected metadata revision clock, 243
+  exhaustive five-step reference-model histories, and real-network
+  in-flight-context and recovery proofs with no filesystem timestamp waiting.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
@@ -99,8 +102,8 @@ skipped Open Media contract while emitting repeated outbound DNS failures.
 The completed fix now proves exact UIA/AccessKit identities, detached
 disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Mutation,
-remaining deterministic clocks/network scheduling outside the first CLI
-boundary, broader
+remaining deterministic clocks/network scheduling outside the CLI and TLS
+rotation boundaries, broader
 crash-consistency injection, coverage-guided fuzzing, sanitizers, interactive
 native CI, and artifact-consumption tests remain proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
@@ -159,6 +162,23 @@ changing production behavior. After the barrier repair, each of the four exact
 proofs passed 50 consecutive executions (200/200 total), and the all-feature
 CLI suite passed 335 tests with its eight declared ignores unchanged. No
 additional product defect was exposed by this slice.
+
+The TLS rotation clock slice replaces two retrying file-mtime helpers, each of
+which could sleep for two seconds, with an explicit test-only bundle metadata
+revision. The production reload state machine is exercised through 243
+exhaustive five-step histories of cached invalid contents, invalid revision,
+and valid revision; every context, acceptability, retry, response, and
+transport action is compared with an independent model. Real-network tests use
+the same revision source to prove an accepted handshake keeps its captured
+context and a later valid bundle recovers before the retry cap. The first model
+run completed all 1,215 transitions in 5.85 seconds without a timestamp poll.
+The extraction experiment surfaced `TC-SERVER-001`: taking only the maximum of
+three member mtimes loses member identity and can miss a real rotation. Its
+exact collision is registered as an expected failure; production detection is
+unchanged. Stress validation passed the model 10/10 times (2,430 histories,
+12,150 transitions), both real-network proofs and the retry-cap proof 50/50
+times each, and the real-filesystem collision characterization 25/25 times.
+The complete server library suite passed 332/332.
 
 ## Contents
 
@@ -552,7 +572,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction | hand-written raw JSON scanners have example-only coverage | roundtrip/metamorphic properties, byte fuzzing, differential Python oracle |
-| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests | locked all-feature Linux and Windows suites are required; live matrix remains limited; wall-clock tests | deterministic network simulation, strict live compatibility, load bounds |
+| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation now has a metadata clock, exhaustive model, and real-network proofs | locked all-feature Linux and Windows suites are required; live matrix remains limited; non-TLS wall-clock tests and the open max-mtime collision remain | deterministic network simulation, content-fingerprint rotation, strict live compatibility, load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; deterministic corrupt-secret, concurrent-creation, and row-migration characterizations | known secret-creation and multi-row migration defects remain open; filesystem crash stages are not proven | failpoints, crash/reopen tests, pure arbitration model, schedule exploration |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, a required shrinkable reconnect restore model, and required all-feature execution | reset is a manual field list; transport-level reconnect timing and the open playlist acknowledgement fence remain | extend the stateful reference model through transport delivery/acknowledgement, then add clock-controlled adapter schedules |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
@@ -939,13 +959,15 @@ on polling deadlines.
 and event barriers. Retain a thin real-time smoke layer. A retry is diagnostic;
 pass-after-fail remains a flaky failure.
 
-Branch implementation now covers the first CLI boundary. Reconnect backoff and
-terminal exhaustion have exact paused-clock assertions; STARTTLS response and
-TLS handshake timeouts advance only after their corresponding protocol
-barriers; the server-Hello timeout starts after observed client-Hello delivery;
-and a real-loopback retry runs under virtual time. Broad CLI sleep inventory,
-server TLS-rotation metadata time, persistence, process supervision, and native
-GUI timing remain.
+Branch implementation now covers the first CLI and server TLS rotation
+boundaries. Reconnect backoff and terminal exhaustion have exact paused-clock
+assertions; STARTTLS response and TLS handshake timeouts advance only after
+their corresponding protocol barriers; the server-Hello timeout starts after
+observed client-Hello delivery; and a real-loopback retry runs under virtual
+time. TLS rotation uses an explicit metadata revision across exhaustive model
+and real-network tests. Broad CLI sleep inventory, production content
+fingerprinting, persistence, process supervision, and native GUI timing
+remain.
 
 ### P1 — IPC/parser fault coverage starts too high
 
@@ -1591,7 +1613,8 @@ runner.
 First deterministic repairs:
 
 - replace file-mtime waiting in TLS rotation with explicit content/fingerprint
-  change and injected metadata clock;
+  change and injected metadata clock (test clock and explicit content changes
+  implemented; production fingerprint remains `TC-SERVER-001`);
 - replace CLI reconnect sleeps with paused time and protocol barriers
   (implemented for reconnect backoff, STARTTLS response/handshake, initial
   Hello, and retry);
@@ -1718,21 +1741,23 @@ Acceptance:
 Acceptance:
 
 - high-risk reconnect behavior uses no arbitrary sleep for logical progress;
+- TLS rotation evidence never polls for a filesystem timestamp transition;
 - coverage comments distinguish uninstrumented lanes from uncovered code;
 - no ignored test lacks tier, owner, and reason;
 - reruns cannot silently turn red into green.
 
-Branch progress: item 1 is partially implemented for the CLI reconnect and
-STARTTLS boundary; items 2, 4, and 5 are implemented. TLS-rotation metadata
-time and the broader CLI timer inventory remain. The exact 23-test ignored
-registry is workflow-bound. Pinned nextest performs one evidence-producing
-retry but fails the required gate on pass-after-fail or pass-after-leak,
-rejects empty JUnit, and retains console/JUnit/policy artifacts. Its 500 ms
-leak contract exposed the intermittent `TC-HARNESS-006` updater-test handle
-leak without changing the updater or test. Coverage now has locked all-feature
-head profiles, pinned LLVM JSON and native source-view exports, per-file source
-digests, strict base/head/source binding, independent 80% ordinary and 90%
-critical production-line gates, and hard failure for executable-looking lines
+Branch progress: item 1 is implemented for the CLI reconnect, connection-phase
+deadlines, and server TLS rotation test boundaries; items 2, 4, and 5 are
+implemented. The broader CLI timer inventory and production TLS content
+fingerprint remain. The exact 23-test ignored registry is workflow-bound.
+Pinned nextest performs one evidence-producing retry but fails the required
+gate on pass-after-fail or pass-after-leak, rejects empty JUnit, and retains
+console/JUnit/policy artifacts. Its 500 ms leak contract exposed the
+intermittent `TC-HARNESS-006` updater-test handle leak without changing the
+updater or test. Coverage now has locked all-feature head profiles, pinned LLVM
+JSON and native source-view exports, per-file source digests, strict
+base/head/source binding, independent 80% ordinary and 90% critical
+production-line gates, and hard failure for executable-looking lines
 omitted by the Linux map. LLVM's aggregate line-instance summary remains
 separate from the unique physical-line policy denominator. Critical classification uses
 the validated union of the immutable base and head policy blobs, so the change
@@ -1898,9 +1923,9 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. extend the reconnect model through delivery acknowledgement, then expand
-   deterministic clock and schedule control from the proven CLI boundary to
-   TLS rotation, persistence, and process supervision;
+3. resolve the reconnect acknowledgement fence and TLS content-fingerprint
+   decision, then expand deterministic clock and schedule control from the
+   proven CLI/TLS boundaries to persistence and process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated

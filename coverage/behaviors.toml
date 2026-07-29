@@ -388,6 +388,67 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "NET-TLS-001"
+title = "TLS bundle rotation preserves bounded and atomic connection behavior"
+risk = "high"
+owners = ["server", "security"]
+invariants = [
+    "an explicit metadata revision causes at most one reload evaluation per observed revision",
+    "once a rotation revision is observed, invalid content in any required bundle member invalidates the candidate context",
+    "an already accepted handshake retains its captured valid context while later clients observe invalid rotation",
+    "restoring a valid bundle before retry exhaustion re-enables TLS, while exhaustion remains a terminal gate",
+    "generated revision histories match an independent context, acceptability, retry, response, and transport-action model",
+]
+
+[[behavior.proof]]
+id = "NET-TLS-001.model"
+kind = "rust-test"
+oracle = "exhaustive-reference-model"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::runtime_config_tests::tls_rotation_revision_histories_match_reference_model_without_wall_clock_waits"
+source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.inflight"
+kind = "rust-test"
+oracle = "real-network-captured-context"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::network_tests::server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_rotates_invalid_after_starttls_true"
+source = "crates/sorotte-server/src/tests/network_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.recovery"
+kind = "rust-test"
+oracle = "real-network-rotation-recovery"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::network_tests::server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_is_restored"
+source = "crates/sorotte-server/src/tests/network_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.retry-cap"
+kind = "rust-test"
+oracle = "bounded-retry-state-invariant"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::runtime_config_tests::tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads"
+source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "NET-GUI-001"
 title = "GUI runtime transport state survives reconnect and membership churn"
 risk = "high"

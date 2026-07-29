@@ -4,6 +4,7 @@ Original review: 2026-07-28
 Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
 Compatibility-remediation update: 2026-07-29
+Deterministic clock implementation update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -15,7 +16,9 @@ infrastructure. The original review deliberately left surfaced defects
 unchanged. The 2026-07-29 update implements the non-controversial lean
 solutions, applies the subsequently selected lifecycle and native-GUI
 decisions, and converts every product-defect characterization into a positive
-regression. The executable `should_panic` known-defect registry remains empty.
+regression. Later reconnect and TLS-rotation experiments opened
+`TC-CLIENT-001` and `TC-SERVER-001`; both remain narrow executable
+`should_panic` characterizations and cannot count as positive evidence.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -87,11 +90,15 @@ After the coverage tranche was integrated:
   const-context mutation is explicitly matched and expires for review on
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
-- The behavior catalog validates 13 behavior IDs, 25 exact proofs, and two
-  lanes. The executable known-defect registry still validates as empty: the
-  newly surfaced failures already have ordinary tests that go red under their
-  reproducing schedule or strict environment, so wrapping them in
-  `should_panic` would weaken the evidence.
+- The behavior catalog now validates 16 behavior IDs, 35 exact proofs, and two
+  lanes. The executable known-defect registry contains two open defects and
+  four exact characterizations: two reconnect acknowledgement schedules and
+  two TLS max-mtime collisions. None can count as positive behavior evidence.
+- The deterministic TLS model passed 10 consecutive runs: 2,430 generated
+  histories and 12,150 checked transitions. Its in-flight real-network,
+  restoration, and retry-cap selectors each passed 50/50 replays. The
+  production-filesystem collision characterization passed 25/25 replays, and
+  the complete server library suite passed 332/332 tests.
 - The ignored-test registry exactly classifies all 23 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
   capability tests. The two compatibility quarantines were retired after their
@@ -1499,6 +1506,58 @@ retires it; any newer authoritative non-empty revision supersedes it; and a
 disconnect before either outcome re-arms it. This test-coverage slice records
 the defect without changing production behavior. The two characterizations
 expire on 2026-09-30 and cannot count as positive behavior evidence.
+
+## TC-SERVER-001: TLS rotation max-mtime token can miss bundle-member changes
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **High (stale certificate or private-key material can remain active)**
+Detection: deterministic TLS metadata-clock extraction plus a pure
+bundle-token collision experiment
+
+The server reduces the three required bundle-member modification times to one
+maximum `SystemTime`. That loses member identity. A real edit is invisible
+whenever it changes a member that remains older than a different member:
+
+```text
+before:             privkey=10, cert=30, chain=20 -> token=30
+after privkey edit: privkey=11, cert=30, chain=20 -> token=30
+```
+
+The runtime compares only that token with its last observation, so it retains
+the previously loaded TLS context and performs no validation or reload. The
+same collision class includes content replacement that preserves all observed
+mtimes. This can leave an intentionally rotated certificate or private key
+unused until another bundle member happens to acquire a later timestamp.
+
+The first executable characterization calls the production max-token reducer
+with the exact timestamps above and panics only at:
+
+```text
+changing any required TLS bundle member must change the rotation token
+```
+
+The second writes a valid bundle, assigns explicit member timestamps on the
+real filesystem, loads the production runtime, replaces the older private-key
+member with invalid contents, and restores its timestamp below the unchanged
+certificate maximum. It proves the token collision and then observes the
+runtime still answer `startTLS=true`, panicking only at:
+
+```text
+rotating a required TLS bundle member must invalidate the cached context
+```
+
+This slice does not alter production rotation behavior. Its deterministic
+metadata clock removes filesystem waiting from the state-machine and
+real-network tests, but it deliberately remains a test seam rather than hiding
+the detector defect. The characterization expires on 2026-09-30 and cannot
+count as positive behavior evidence.
+
+A minimal partial fix would retain one `(mtime, length)` tuple per required
+filename instead of taking the maximum. That still misses equal-mtime,
+equal-length replacement. The complete solution is a stable fingerprint of
+all three file contents, ideally loaded and parsed from one captured snapshot;
+only a fully valid new snapshot should replace the cached `ServerConfig`.
 
 ## Local all-feature LCOV proof
 

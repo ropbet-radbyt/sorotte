@@ -60,6 +60,13 @@ fn server_actor_with_tls_cert_path(cert_path: &Path) -> ServerActorHandle {
     ServerActorHandle::spawn(model)
 }
 
+fn server_actor_with_tls_metadata_clock(
+    cert_path: &Path,
+) -> (ServerActorHandle, TlsCertificateBundleMetadataClock) {
+    let (model, metadata_clock) = server_runtime_with_tls_metadata_clock(cert_path);
+    (ServerActorHandle::spawn(model), metadata_clock)
+}
+
 #[tokio::test]
 async fn server_network_rejects_line_over_max_bytes() {
     let (mut client_stream, server_stream) = connected_tcp_pair().await;
@@ -2389,7 +2396,7 @@ async fn server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_ro
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = server_actor_with_tls_cert_path(&cert_path);
+    let (runtime, metadata_clock) = server_actor_with_tls_metadata_clock(&cert_path);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
@@ -2431,10 +2438,9 @@ async fn server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_ro
     assert_eq!(payload.tls.start_tls, "true");
 
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
-    overwrite_file_until_modified_time_changes(
-        &cert_path.join("cert.pem"),
-        "rotated-after-starttls-true",
-    );
+    fs::write(cert_path.join("cert.pem"), "rotated-after-starttls-true")
+        .expect("invalid rotated certificate should write");
+    metadata_clock.advance();
 
     let connector = tls_client_connector_for_test_fixture();
     let server_name = ServerName::try_from("localhost").expect("server name should parse");
@@ -2543,7 +2549,7 @@ async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_
     let address = listener
         .local_addr()
         .expect("listener should have local address");
-    let runtime = server_actor_with_tls_cert_path(&cert_path);
+    let (runtime, metadata_clock) = server_actor_with_tls_metadata_clock(&cert_path);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
@@ -2584,10 +2590,12 @@ async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_
     assert_eq!(first_tls_payload.tls.start_tls, "true");
 
     fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
-    overwrite_file_until_modified_time_changes(
-        &cert_path.join("cert.pem"),
+    fs::write(
+        cert_path.join("cert.pem"),
         "rotated-invalid-before-second-client",
-    );
+    )
+    .expect("invalid rotated certificate should write");
+    metadata_clock.advance();
 
     let mut second_stream = TcpStream::connect(address)
         .await
@@ -2623,7 +2631,7 @@ async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_
     );
 
     write_valid_tls_bundle(&cert_path);
-    rewrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), TEST_TLS_CERT_PEM);
+    metadata_clock.advance();
 
     let mut third_stream = TcpStream::connect(address)
         .await
