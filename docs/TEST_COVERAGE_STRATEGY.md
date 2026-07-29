@@ -20,7 +20,7 @@ Target audience: maintainers, reviewers, and release owners
 This branch implements the highest-leverage part of the proposal, then applies
 the non-controversial lean fixes proven by that coverage:
 
-- a fail-closed behavior catalog with 13 behavior IDs and 25 exact proofs;
+- a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
   14-scenario GUI semantic inventory;
 - Git SHA, repository, workflow-run, attempt, catalog, OS, selector, command,
@@ -55,7 +55,7 @@ the non-controversial lean fixes proven by that coverage:
 - a schema-validated expected-failure registry; previously resolved product
   defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
   through `TC-COMPAT-007` all have positive regressions, while
-  `TC-CLIENT-001` reconnect acknowledgement fencing and `TC-SERVER-001` TLS
+  `TC-CLIENT-001` reconnect acknowledgement fencing and `TC-SERVER-003` TLS
   max-mtime collision remain narrow expiring characterizations;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
@@ -85,7 +85,11 @@ the non-controversial lean fixes proven by that coverage:
   required TLS resolves;
 - deterministic server TLS rotation: an injected metadata revision clock, 243
   exhaustive five-step reference-model histories, and real-network
-  in-flight-context and recovery proofs with no filesystem timestamp waiting.
+  in-flight-context and recovery proofs with no filesystem timestamp waiting;
+- deterministic process-interruption persistence: 15 child-process crash
+  points across schema, row migration, room save/delete, stats snapshots, and
+  quota-secret creation, each followed by integrity-checked and idempotent
+  production reopen.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
@@ -103,9 +107,9 @@ The completed fix now proves exact UIA/AccessKit identities, detached
 disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Mutation,
 remaining deterministic clocks/network scheduling outside the CLI and TLS
-rotation boundaries, broader
-crash-consistency injection, coverage-guided fuzzing, sanitizers, interactive
-native CI, and artifact-consumption tests remain proposed follow-on work.
+rotation boundaries, power-loss and filesystem-syscall persistence faults,
+coverage-guided fuzzing, sanitizers, interactive native CI, and
+artifact-consumption tests remain proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
 defects, one server message-ordering defect, and four harness/oracle defects.
 All are resolved without a skip, retry, expected failure, or parity
@@ -172,13 +176,40 @@ transport action is compared with an independent model. Real-network tests use
 the same revision source to prove an accepted handshake keeps its captured
 context and a later valid bundle recovers before the retry cap. The first model
 run completed all 1,215 transitions in 5.85 seconds without a timestamp poll.
-The extraction experiment surfaced `TC-SERVER-001`: taking only the maximum of
+The extraction experiment surfaced `TC-SERVER-003`: taking only the maximum of
 three member mtimes loses member identity and can miss a real rotation. Its
 exact collision is registered as an expected failure; production detection is
 unchanged. Stress validation passed the model 10/10 times (2,430 histories,
 12,150 transitions), both real-network proofs and the retry-cap proof 50/50
 times each, and the real-filesystem collision characterization 25/25 times.
 The complete server library suite passed 332/332.
+
+The persistence process-interruption slice makes the old-or-new durability
+decision executable at the SQLite boundary. A test-only child role exits with
+code 86 from 15 production stages without running Rust destructors. Five schema
+stages prove every committed legacy-schema prefix can be reopened and completed
+idempotently. Two playlist-migration stages prove the multi-row transaction is
+entirely legacy before commit or entirely canonical after commit. Four actor
+stages cover save and delete immediately after the SQL write and immediately
+after commit. Two stats stages distinguish zero rows from a complete
+three-version snapshot, and two quota-secret stages distinguish no metadata row
+from one stable 32-byte value. The parent requires SQLite integrity before
+normal recovery and checks the second reopen for idempotence. The five
+contracts passed 20 consecutive actor-suite runs: 300/300 crash subprocesses
+and 240/240 complete actor tests. The full server persistence selector passes
+49/49. The final locked all-feature workspace passed in 200.7 seconds,
+including 338/338 server library tests, and full-workspace warning-denied
+Clippy passed in 6.96 seconds. This is process-termination evidence, not a
+claim about power loss, kernel cache durability, disk-full behavior, or an
+actor message not yet written to a transaction.
+
+The accompanying policy audit found that the TLS defect had reused the already
+assigned `TC-SERVER-001` identifier and that multiline Rust
+`should_panic(expected = ...)` attributes escaped the executable inventory.
+The TLS finding is now `TC-SERVER-003`; the known-defect validator parses
+multiline attributes and rejects duplicate finding headings and title drift.
+Both its 21 focused tests and the real two-defect/four-characterization
+registry pass; the complete infrastructure suite passes 295/295.
 
 ## Contents
 
@@ -573,7 +604,7 @@ boundaries rather than adding hundreds more nearby examples.
 |---|---|---|---|
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction | hand-written raw JSON scanners have example-only coverage | roundtrip/metamorphic properties, byte fuzzing, differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation now has a metadata clock, exhaustive model, and real-network proofs | locked all-feature Linux and Windows suites are required; live matrix remains limited; non-TLS wall-clock tests and the open max-mtime collision remain | deterministic network simulation, content-fingerprint rotation, strict live compatibility, load bounds |
-| Server persistence | actor ordering, saturation, stale-version and degradation tests; deterministic corrupt-secret, concurrent-creation, and row-migration characterizations | known secret-creation and multi-row migration defects remain open; filesystem crash stages are not proven | failpoints, crash/reopen tests, pure arbitration model, schedule exploration |
+| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, and atomic row-migration regressions; 15 process-interruption stages with integrity-checked reopen | power-loss, disk-full/permission/syscall faults, and pre-transaction actor-message durability remain unproven | filesystem/storage failpoints, a pure arbitration model, schedule exploration, and platform durability probes |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, a required shrinkable reconnect restore model, and required all-feature execution | reset is a manual field list; transport-level reconnect timing and the open playlist acknowledgement fence remain | extend the stateful reference model through transport delivery/acknowledgement, then add clock-controlled adapter schedules |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, and production-worker framed split/coalesce/truncate/duplicate/reorder/half-close coverage | no bidirectional real-pipe fault injector; ignored real bridge | stateful framed duplex harness, min/latest mpv, real command/response traces |
@@ -983,15 +1014,19 @@ response/event reorder, duplicate/drop/delay, half-close, and reconnect.
 ### P1 — Persistence and atomic storage lack crash protocols
 
 Existing persistence tests are strong at actor semantics. This branch now
-deterministically characterizes corrupt metadata lengths, the concurrent
-quota-secret creation race, and a partial multi-row playlist migration. The
-two latter product defects remain deliberately unfixed. Gaps still include
-filesystem failure stages beyond one pre-replace seam, directory durability,
-and restart after process-level interruption.
+has positive regressions for corrupt metadata, concurrent quota-secret
+creation, and atomic multi-row playlist migration. `SRV-PERSIST-001` also
+terminates a dedicated child process at 15 schema, transaction, actor, stats,
+and secret-creation stages, then proves integrity, complete old-or-new state,
+normal recovery, and a second idempotent reopen. Gaps now begin below that
+process boundary: filesystem and power-loss durability, disk-full and
+permission/syscall failure, plus queued actor intent that has not entered a
+transaction.
 
 **Decision:** define the durability contract—old complete state or new complete
-state, never partial—and exercise every write/flush/sync/permission/rename/
-directory-sync boundary with failpoints and process restart.
+state, never partial. Retain the implemented SQLite process-restart matrix and
+extend the same rule through write/flush/sync/permission/rename/directory-sync
+boundaries where Sorotte owns the filesystem protocol.
 
 ### P1 — Release artifacts are not consumed before publication
 
@@ -1272,6 +1307,16 @@ Each failpoint test should restart from the produced on-disk state and prove:
 
 Keep global failpoints in a separate process/test binary so parallel tests
 cannot affect each other.
+
+Branch implementation now covers 15 SQLite/process boundaries in an exact
+child test process: every legacy schema step, playlist migration before/after
+commit, room save/delete before/after commit, stats snapshot before/after
+commit, and quota-secret generation/insertion. Each parent proof runs integrity
+checking before recovery and a second reopen after it. Existing in-process
+SQL-trigger tests retain degraded/recovered reporting coverage. Database
+begin/busy/disk-full/permission injection, pre-transaction queue loss, OS
+power-loss durability, and Sorotte-owned file/rename/directory-sync protocols
+remain.
 
 Reference: [Rust `fail` crate](https://docs.rs/fail).
 
@@ -1614,7 +1659,7 @@ First deterministic repairs:
 
 - replace file-mtime waiting in TLS rotation with explicit content/fingerprint
   change and injected metadata clock (test clock and explicit content changes
-  implemented; production fingerprint remains `TC-SERVER-001`);
+  implemented; production fingerprint remains `TC-SERVER-003`);
 - replace CLI reconnect sleeps with paused time and protocol barriers
   (implemented for reconnect backoff, STARTTLS response/handshake, initial
   Hello, and retry);
@@ -1781,7 +1826,9 @@ a source-bound canonical map attested to both native producer views. The fresh
 producer, artifact hashes, line-model delta, adversarial inventory, and
 six-phase proof are retained in
 [`llvm-native-line-map-20260728.md`](evidence/test-coverage/llvm-native-line-map-20260728.md).
-Clock seams remain unimplemented.
+Deterministic clock seams now cover the first CLI connection-phase and server
+TLS-rotation boundaries; broader CLI, persistence scheduling, process
+supervision, and native GUI timing remain.
 
 ### Tranche C — property, parser, and persistence faults
 
@@ -1804,15 +1851,18 @@ shrinkable reconnect restore reference model, protocol order permutations,
 split/coalesced/invalid IPC framing through the production command worker,
 response/event interleaving, stale duplicate and future-response rejection,
 truncation/half-close handling, corrupt quota-secret preservation, a
-deterministic concurrent-secret schedule, and a SQLite migration failpoint are
-implemented. Generated transcript and `PlayerError` taint corpora cover
+deterministic concurrent-secret schedule, a SQLite migration failpoint, and 15
+child-process persistence interruption points with integrity-checked
+idempotent reopen are implemented. Generated transcript and `PlayerError`
+taint corpora cover
 hundreds of nested, escaped, encoded, and round-tripped cases; all three
 redaction families they found are now positive regressions backed by one
 shared classification policy. The reconnect model exposed one open
 acknowledgement-fencing defect with two exact schedules. This is not yet
 coverage-guided fuzzing, a transport-level reconnect reference model, a
-bidirectional real-pipe drop/delay harness, or comprehensive crash-consistency
-injection.
+bidirectional real-pipe drop/delay harness, filesystem/power-loss fault
+injection, or a durability contract for actor intent that has not entered a
+transaction.
 
 ### Tranche D — real system and deep analysis
 
@@ -1924,8 +1974,9 @@ The most valuable remaining next steps are:
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
 3. resolve the reconnect acknowledgement fence and TLS content-fingerprint
-   decision, then expand deterministic clock and schedule control from the
-   proven CLI/TLS boundaries to persistence and process supervision;
+   decision, then extend the proven persistence crash boundary into
+   pre-transaction arbitration and filesystem faults while expanding
+   deterministic clock/schedule control into process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated

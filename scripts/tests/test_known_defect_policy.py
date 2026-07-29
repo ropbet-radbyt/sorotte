@@ -162,6 +162,37 @@ class KnownDefectPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(policy.PolicyError, "expected panic drifted"):
             self.validate(self.registry(expected="weakened oracle"))
 
+    def test_multiline_expected_panic_attribute_is_inventoried(self) -> None:
+        self.source.write_text(
+            textwrap.dedent(
+                """\
+                #[test]
+                #[should_panic(
+                    expected = "desired invariant"
+                )]
+                fn known_defect_reproduction() {
+                    assert!(false, "desired invariant");
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.validate(self.registry()), (1, 1))
+
+    def test_unterminated_multiline_attribute_fails_closed(self) -> None:
+        self.source.write_text(
+            textwrap.dedent(
+                """\
+                #[test]
+                #[should_panic(
+                    expected = "desired invariant"
+                """
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(policy.PolicyError, "unterminated Rust attribute"):
+            policy.scan_characterizations(self.root)
+
     def test_expired_defect_fails_closed(self) -> None:
         with self.assertRaisesRegex(policy.PolicyError, "expired on"):
             self.validate(self.registry(expiry="2026-07-27"))
@@ -172,6 +203,27 @@ class KnownDefectPolicyTests(unittest.TestCase):
             encoding="utf-8",
         )
         with self.assertRaisesRegex(policy.PolicyError, "no exact markdown heading"):
+            self.validate(self.registry())
+
+    def test_duplicate_finding_heading_id_fails_closed(self) -> None:
+        (self.root / "docs" / "findings.md").write_text(
+            textwrap.dedent(
+                """\
+                ## TC-DEMO-001: demonstration defect
+                ## TC-DEMO-001: unrelated reused identifier
+                """
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(policy.PolicyError, "duplicate finding heading"):
+            self.validate(self.registry())
+
+    def test_finding_heading_title_drift_fails_closed(self) -> None:
+        (self.root / "docs" / "findings.md").write_text(
+            "## TC-DEMO-001: different defect\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(policy.PolicyError, "finding title drifted"):
             self.validate(self.registry())
 
     def test_wrong_package_fails_closed(self) -> None:

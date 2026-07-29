@@ -95,9 +95,20 @@ transport action, context state, acceptability gate, and retry count is checked
 against an independent model. Real-network proofs retain the captured context
 for an already accepted handshake, deny later clients after invalid rotation,
 and recover after a valid pre-cap restoration. Retry exhaustion remains an
-explicit terminal legacy contract. The separate `TC-SERVER-001`
+explicit terminal legacy contract. The separate `TC-SERVER-003`
 characterization proves that production's maximum-mtime token can collide; it
 is not counted as positive `NET-TLS-001` evidence.
+
+`SRV-PERSIST-001` makes process interruption an executable persistence
+contract. A dedicated child test process terminates without Rust destructors at
+15 production transactional boundaries: five schema steps, two playlist-row
+migration steps, four room save/delete commit steps, two stats snapshot steps,
+and two quota-secret creation steps. The parent process reopens the actual
+SQLite file after every interruption, requires `PRAGMA integrity_check` to
+return `ok`, distinguishes the exact pre-commit and post-commit state, and
+proves a second recovery pass is idempotent. Crash-point environment variables
+are honored only by the exact helper test in the child process, so parallel
+tests cannot arm a global in-process failpoint.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
@@ -119,8 +130,9 @@ behavior intentionally represented by a Rust expected-failure
 characterization. The validator exactly matches every Rust `known_defect_*`
 `should_panic(expected = "...")` characterization to its source, package,
 selector, panic oracle, owner, finding, and expiry. A missing or stale entry,
-bare `should_panic`, expired defect, drifted panic oracle, or selector also
-listed as a positive behavior proof fails CI. Passing because a
+bare `should_panic`, malformed or unterminated multiline attribute, expired
+defect, duplicate finding identifier, drifted heading/title or panic oracle,
+or selector also listed as a positive behavior proof fails CI. Passing because a
 characterization panicked is therefore never presented as proof that the
 application behaves correctly. Once a defect is fixed, its characterizations
 must become positive regressions and the corresponding registry entry must be

@@ -21,7 +21,7 @@ test = "session::tests::reconnect_tests::property_tests::known_defect_authoritat
 expected_panic = "authoritative playlist update must cancel an armed restore"
 
 [[defect]]
-id = "TC-SERVER-001"
+id = "TC-SERVER-003"
 title = "TLS rotation max-mtime token can miss bundle-member changes"
 severity = "high"
 owners = ["server", "security"]

@@ -1,5 +1,36 @@
 use super::*;
 
+#[cfg(test)]
+pub(crate) mod test_crash {
+    pub(crate) const HELPER_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_HELPER";
+    pub(crate) const POINT_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_POINT";
+    pub(crate) const ACTION_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_ACTION";
+    pub(crate) const DB_PATH_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_DB_PATH";
+    pub(crate) const EXIT_CODE: i32 = 86;
+
+    pub(crate) const SCHEMA_AFTER_PLAYLIST_JSON: &str = "schema-after-playlist-json";
+    pub(crate) const SCHEMA_AFTER_PERSISTENCE_VERSION: &str = "schema-after-persistence-version";
+    pub(crate) const SCHEMA_AFTER_OWNER_BUCKET: &str = "schema-after-owner-bucket";
+    pub(crate) const SCHEMA_AFTER_CREATED_AT: &str = "schema-after-created-at";
+    pub(crate) const SCHEMA_AFTER_METADATA: &str = "schema-after-metadata";
+    pub(crate) const ROOM_MIGRATION_AFTER_ROW: &str = "room-migration-after-row";
+    pub(crate) const ROOM_MIGRATION_AFTER_COMMIT: &str = "room-migration-after-commit";
+    pub(crate) const ROOM_EFFECT_AFTER_WRITE: &str = "room-effect-after-write";
+    pub(crate) const ROOM_EFFECT_AFTER_COMMIT: &str = "room-effect-after-commit";
+    pub(crate) const STATS_AFTER_FIRST_ROW: &str = "stats-after-first-row";
+    pub(crate) const STATS_AFTER_COMMIT: &str = "stats-after-commit";
+    pub(crate) const QUOTA_SECRET_AFTER_GENERATE: &str = "quota-secret-after-generate";
+    pub(crate) const QUOTA_SECRET_AFTER_INSERT: &str = "quota-secret-after-insert";
+
+    pub(crate) fn exit_if_armed(point: &str) {
+        if std::env::var_os(HELPER_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+            && std::env::var_os(POINT_ENV).as_deref() == Some(std::ffi::OsStr::new(point))
+        {
+            std::process::exit(EXIT_CODE);
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct PersistedRoomState {
     pub(crate) files: Vec<String>,
@@ -68,6 +99,8 @@ impl StatsPersistenceStore {
                 statement
                     .execute(params![snapshot_time, version])
                     .map_err(|source| self.sqlite_error("insert clients snapshot row", source))?;
+                #[cfg(test)]
+                test_crash::exit_if_armed(test_crash::STATS_AFTER_FIRST_ROW);
             }
         }
         transaction
@@ -225,10 +258,14 @@ impl RoomPersistenceStore {
                     })?;
             }
             rooms.insert(room_name, room_state);
+            #[cfg(test)]
+            test_crash::exit_if_armed(test_crash::ROOM_MIGRATION_AFTER_ROW);
         }
         transaction
             .commit()
             .map_err(|source| self.sqlite_error("commit persisted room migrations", source))?;
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::ROOM_MIGRATION_AFTER_COMMIT);
         Ok(rooms)
     }
 
@@ -336,6 +373,8 @@ impl RoomPersistenceStore {
                     [],
                 )
                 .map_err(|source| self.sqlite_error("migrate schema", source))?;
+            #[cfg(test)]
+            test_crash::exit_if_armed(test_crash::SCHEMA_AFTER_PLAYLIST_JSON);
         }
         for (column, definition) in [
             ("persistenceVersion", "INTEGER NOT NULL DEFAULT 0"),
@@ -349,6 +388,13 @@ impl RoomPersistenceStore {
                         [],
                     )
                     .map_err(|source| self.sqlite_error("migrate schema", source))?;
+                #[cfg(test)]
+                test_crash::exit_if_armed(match column {
+                    "persistenceVersion" => test_crash::SCHEMA_AFTER_PERSISTENCE_VERSION,
+                    "ownerBucket" => test_crash::SCHEMA_AFTER_OWNER_BUCKET,
+                    "createdAt" => test_crash::SCHEMA_AFTER_CREATED_AT,
+                    _ => unreachable!("only known schema migrations are enumerated"),
+                });
             }
         }
         connection
@@ -360,6 +406,8 @@ impl RoomPersistenceStore {
                 [],
             )
             .map_err(|source| self.sqlite_error("initialize metadata schema", source))?;
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::SCHEMA_AFTER_METADATA);
         Ok(())
     }
 
@@ -401,6 +449,8 @@ impl RoomPersistenceStore {
         before_create();
         let mut secret = [0_u8; 32];
         getrandom::fill(&mut secret).expect("operating system random source should be available");
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::QUOTA_SECRET_AFTER_GENERATE);
         connection
             .execute(
                 "INSERT INTO persistence_metadata (key, value) \
@@ -409,6 +459,8 @@ impl RoomPersistenceStore {
                 params![secret.as_slice()],
             )
             .map_err(|source| self.sqlite_error("create quota secret", source))?;
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::QUOTA_SECRET_AFTER_INSERT);
         let stored = connection
             .query_row(
                 "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",

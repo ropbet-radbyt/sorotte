@@ -5,6 +5,7 @@ Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
 Compatibility-remediation update: 2026-07-29
 Deterministic clock implementation update: 2026-07-30
+Process-interruption persistence update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -17,7 +18,7 @@ unchanged. The 2026-07-29 update implements the non-controversial lean
 solutions, applies the subsequently selected lifecycle and native-GUI
 decisions, and converts every product-defect characterization into a positive
 regression. Later reconnect and TLS-rotation experiments opened
-`TC-CLIENT-001` and `TC-SERVER-001`; both remain narrow executable
+`TC-CLIENT-001` and `TC-SERVER-003`; both remain narrow executable
 `should_panic` characterizations and cannot count as positive evidence.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
@@ -90,7 +91,7 @@ After the coverage tranche was integrated:
   const-context mutation is explicitly matched and expires for review on
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
-- The behavior catalog now validates 16 behavior IDs, 35 exact proofs, and two
+- The behavior catalog now validates 17 behavior IDs, 40 exact proofs, and two
   lanes. The executable known-defect registry contains two open defects and
   four exact characterizations: two reconnect acknowledgement schedules and
   two TLS max-mtime collisions. None can count as positive behavior evidence.
@@ -99,6 +100,21 @@ After the coverage tranche was integrated:
   restoration, and retry-cap selectors each passed 50/50 replays. The
   production-filesystem collision characterization passed 25/25 replays, and
   the complete server library suite passed 332/332 tests.
+- The persistence crash matrix terminates a dedicated child process at 15
+  production transactional boundaries and reopens each database in the parent.
+  All five contracts passed 20 consecutive serial stress runs: 300 child
+  process interruptions, 240 complete persistence-actor test executions, and
+  no failed integrity, atomicity, or idempotence assertion. The complete
+  server-library `persistence` selector passes 49/49 tests. Final locked
+  all-feature workspace validation passed on its first run in 200.7 seconds,
+  including 338/338 server library tests; full-workspace Clippy passed with
+  warnings denied in 6.96 seconds.
+- The strengthened known-defect policy corrected the TLS identifier from the
+  already-used `TC-SERVER-001` to `TC-SERVER-003`, rejects duplicate finding
+  headings and title drift, and now inventories multiline Rust
+  `should_panic(expected = ...)` attributes. Its 21 focused policy tests and
+  the real two-defect/four-characterization registry both pass. The complete
+  infrastructure suite now passes 295/295 tests in 12.421 seconds.
 - The ignored-test registry exactly classifies all 23 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
   capability tests. The two compatibility quarantines were retired after their
@@ -116,9 +132,9 @@ After the coverage tranche was integrated:
   compatibility promotion and CI/release policy contracts bring the current
   suite to 290 passing tests in 12.394 seconds.
 - Deterministic protocol ordering passed 3 new permutation/adversarial tests;
-  all 6 production-worker framed IPC tests passed; all 35 server persistence
-  tests pass, including positive atomic-migration and concurrent-secret
-  convergence regressions.
+  all 6 production-worker framed IPC tests passed; the current 49-test server
+  persistence selector includes positive atomic-migration,
+  concurrent-secret-convergence, and process-interruption regressions.
 - actionlint 1.7.12 reported no workflow syntax or expression errors before
   the final nextest workflow wiring. `actionlint` and Go were unavailable for
   the final replay; workflow parsing and adversarial mutation checks remain in
@@ -1459,6 +1475,64 @@ consecutive stressed baselines and both successful complete inventories all
 observed the exact five-event trace and process exit; no shutdown timeout was
 lengthened.
 
+## Persistence process-interruption experiment
+
+Status: **Implemented 2026-07-30; no product defect surfaced**
+
+Risk: **Critical (durable room, statistics, and quota identity state)**
+Detection: exact child-process termination followed by production SQLite
+reopen, integrity checking, and idempotent recovery
+
+The previous persistence suite already proved version arbitration, queue
+saturation, degraded/recovered reporting, database replacement, ordinary
+restart, concurrent quota-secret creation, and transaction rollback after an
+injected SQL error. It did not prove what survives when the process disappears
+between a successful write and the next production step.
+
+`SRV-PERSIST-001` adds a child-process crash matrix. The parent invokes only the
+exact helper test, supplies one test-only crash point, and requires exit code
+86. The helper calls `std::process::exit` from the production persistence path,
+so Rust destructors and SQLite connection cleanup do not run. The parent then
+opens the same database, requires `PRAGMA integrity_check` to return `ok`,
+checks the exact durable state, performs normal recovery, and opens it again to
+prove idempotence.
+
+The 15 interruption points are:
+
+| Boundary | Points | Required reopen state |
+|---|---:|---|
+| legacy schema expansion | 5 | exactly the committed column prefix; the next open completes all columns and metadata without changing the legacy row |
+| playlist JSON/index migration | 2 | all rows retain their legacy values before commit, or all rows contain canonical JSON and normalized indices after commit |
+| room save and delete | 4 | every field of the old room before commit, or every field of the replacement / complete deletion after commit |
+| multi-row stats snapshot | 2 | zero snapshot rows before commit, or all three rows after commit |
+| quota-secret creation | 2 | no metadata row before insertion, or one stable 32-byte secret after insertion |
+
+The crash variables are compiled only under `cfg(test)` and are honored only
+when the exact child helper role is also set. Normal tests cannot arm the seam,
+and no in-process global failpoint can leak into a parallel test. The existing
+production transaction, migration, actor, stats, and quota-secret paths remain
+unchanged outside the conditional observation calls.
+
+The complete persistence selector passes 49/49 tests. Twenty consecutive
+serial actor-suite runs passed 240/240 tests and performed 300/300 child
+process interruptions without an integrity, completeness, or idempotence
+failure. No expected failure was added and no product behavior was changed.
+
+This proves process-termination atomicity at the selected SQLite boundaries;
+it does not claim power-loss durability, kernel/filesystem cache persistence,
+disk-full or permission failure at every SQLite syscall, or durability of an
+actor message that has not reached a transaction. Those remain separate
+fault/filesystem and queue-durability decisions rather than being implied by
+this green contract.
+
+The policy audit around this work also found two ledger defects. The TLS
+finding had reused `TC-SERVER-001`, already assigned to the resolved playlist
+migration defect, so it is now `TC-SERVER-003`. The Rust inventory scanner also
+ignored multiline `should_panic(expected = ...)` attributes. The validator now
+parses multiline attributes, rejects duplicate finding headings and
+case-insensitive title drift, and passes both its 21 focused tests and the
+actual two-defect/four-characterization registry.
+
 ## TC-CLIENT-001: reconnect playlist restore lacks acknowledgement fencing
 
 Status: **Open; executable characterization added 2026-07-30**
@@ -1507,7 +1581,7 @@ disconnect before either outcome re-arms it. This test-coverage slice records
 the defect without changing production behavior. The two characterizations
 expire on 2026-09-30 and cannot count as positive behavior evidence.
 
-## TC-SERVER-001: TLS rotation max-mtime token can miss bundle-member changes
+## TC-SERVER-003: TLS rotation max-mtime token can miss bundle-member changes
 
 Status: **Open; executable characterization added 2026-07-30**
 

@@ -449,6 +449,80 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "SRV-PERSIST-001"
+title = "Persistence interruption recovers only complete and structurally valid state"
+risk = "critical"
+owners = ["server", "security"]
+invariants = [
+    "every committed schema prefix remains readable and a later open finishes migration idempotently",
+    "multi-row playlist migration reopens entirely old or entirely canonical, never partially migrated",
+    "room saves and deletes reopen as the complete old state before commit or the complete new state after commit",
+    "a stats snapshot reopens with zero rows before commit or every row after commit",
+    "quota-secret creation reopens with no row before insertion or one stable 32-byte value after insertion",
+    "every crash-produced database passes SQLite integrity checking before recovery",
+]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.schema"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-schema-matrix"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::room_schema_migration_recovers_after_every_process_interruption"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.row-migration"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-transaction"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::playlist_migration_is_atomic_across_process_interruption"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.room-effect"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-save-delete"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::room_effects_reopen_as_old_or_new_complete_state_across_commit_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.stats"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-snapshot"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::stats_snapshots_reopen_as_empty_or_complete_across_commit_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.quota-secret"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-secret"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::quota_secret_creation_reopens_without_partial_metadata_across_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "NET-GUI-001"
 title = "GUI runtime transport state survives reconnect and membership churn"
 risk = "high"

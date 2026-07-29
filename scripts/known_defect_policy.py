@@ -35,6 +35,9 @@ EXPECTED_PANIC = re.compile(
     r"^#\[should_panic\s*\(\s*expected\s*=\s*"
     r"(?P<literal>\"(?:\\.|[^\"\\])*\")\s*\)\s*\]$"
 )
+FINDING_HEADING = re.compile(
+    r"^## (?P<id>TC-[A-Z][A-Z0-9]*-[0-9]{3}): (?P<title>\S(?:.*\S)?)$"
+)
 ALLOWED_SEVERITIES = {"critical", "high", "medium", "low"}
 
 
@@ -117,14 +120,24 @@ def scan_characterizations(repo_root: pathlib.Path) -> dict[tuple[str, str], Cha
     for source_path in sorted(crates_root.rglob("*.rs")):
         relative = source_path.relative_to(repo_root).as_posix()
         attributes: list[str] = []
+        attribute_parts: list[str] | None = None
         try:
             lines = source_path.read_text(encoding="utf-8").splitlines()
         except OSError as error:
             raise PolicyError(f"cannot read {relative}: {error}") from error
         for line_number, line in enumerate(lines, start=1):
             stripped = line.strip()
-            if stripped.startswith("#[") and stripped.endswith("]"):
-                attributes.append(stripped)
+            if attribute_parts is not None:
+                attribute_parts.append(stripped)
+                if stripped.endswith("]"):
+                    attributes.append(" ".join(attribute_parts))
+                    attribute_parts = None
+                continue
+            if stripped.startswith("#["):
+                if stripped.endswith("]"):
+                    attributes.append(stripped)
+                else:
+                    attribute_parts = [stripped]
                 continue
             match = FUNCTION.match(stripped)
             if match is not None:
@@ -154,6 +167,8 @@ def scan_characterizations(repo_root: pathlib.Path) -> dict[tuple[str, str], Cha
                     )
             if stripped and not stripped.startswith("//"):
                 attributes.clear()
+        if attribute_parts is not None:
+            raise PolicyError(f"{relative} ends with an unterminated Rust attribute")
     return found
 
 
@@ -166,6 +181,27 @@ def load_toml(path: pathlib.Path, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PolicyError(f"{context} root must be a table")
     return value
+
+
+def finding_headings(path: pathlib.Path) -> dict[str, tuple[str, int]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise PolicyError(f"cannot read finding {path}: {error}") from error
+    headings: dict[str, tuple[str, int]] = {}
+    for line_number, line in enumerate(lines, start=1):
+        match = FINDING_HEADING.fullmatch(line)
+        if match is None:
+            continue
+        defect_id = match.group("id")
+        if defect_id in headings:
+            _, first_line = headings[defect_id]
+            raise PolicyError(
+                f"duplicate finding heading {defect_id} at {path}:{line_number} "
+                f"(first at line {first_line})"
+            )
+        headings[defect_id] = (match.group("title"), line_number)
+    return headings
 
 
 def package_name_for_source(repo_root: pathlib.Path, source: str) -> tuple[str, pathlib.Path]:
@@ -228,6 +264,7 @@ def validate_registry(
     registered: dict[tuple[str, str], tuple[str, str]] = {}
     defect_ids: set[str] = set()
     selector_owners: dict[str, str] = {}
+    finding_cache: dict[pathlib.Path, dict[str, tuple[str, int]]] = {}
     effective_today = today or dt.datetime.now(dt.UTC).date()
 
     for defect_index, defect in enumerate(defects):
@@ -262,7 +299,7 @@ def validate_registry(
         if defect_id in defect_ids:
             raise PolicyError(f"duplicate defect id {defect_id}")
         defect_ids.add(defect_id)
-        require_string(defect["title"], f"{context}.title")
+        title = require_string(defect["title"], f"{context}.title")
         severity = require_string(defect["severity"], f"{context}.severity")
         if severity not in ALLOWED_SEVERITIES:
             raise PolicyError(f"{defect_id} has unsupported severity {severity!r}")
@@ -271,9 +308,18 @@ def validate_registry(
             raise PolicyError(f"{defect_id} has an invalid owner")
 
         finding_path = safe_file(repo_root, defect["finding"], f"{context}.finding")
-        finding_text = finding_path.read_text(encoding="utf-8")
-        if f"## {defect_id}:" not in finding_text:
+        if finding_path not in finding_cache:
+            finding_cache[finding_path] = finding_headings(finding_path)
+        headings = finding_cache[finding_path]
+        heading = headings.get(defect_id)
+        if heading is None:
             raise PolicyError(f"{defect_id} finding has no exact markdown heading")
+        heading_title, heading_line = heading
+        if heading_title.casefold() != title.casefold():
+            raise PolicyError(
+                f"{defect_id} finding title drifted at {finding_path}:{heading_line}: "
+                f"registry {title!r}, heading {heading_title!r}"
+            )
 
         expiry_text = require_string(defect["expires"], f"{context}.expires")
         try:
