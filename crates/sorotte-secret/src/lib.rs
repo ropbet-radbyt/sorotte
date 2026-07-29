@@ -128,32 +128,36 @@ fn sensitive_key_words(key: &str) -> impl Iterator<Item = String> + '_ {
 fn diagnostic_ascii_projection(value: &str) -> Vec<u8> {
     let bytes = value.as_bytes();
     let mut projected = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let Some(decoded) = decode_hex_byte(bytes[index + 1], bytes[index + 2])
-            && decoded.is_ascii()
-        {
-            projected.push(decoded.to_ascii_lowercase());
-            index += 3;
-            continue;
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match remaining {
+            [b'%', high, low, tail @ ..] => {
+                if let Some(decoded) = decode_hex_byte(*high, *low).filter(u8::is_ascii) {
+                    projected.push(decoded.to_ascii_lowercase());
+                    remaining = tail;
+                    continue;
+                }
+            }
+            [b'\\', b'u' | b'U', first, second, third, fourth, tail @ ..] => {
+                if let Some(decoded) =
+                    decode_ascii_unicode_escape(&[*first, *second, *third, *fourth])
+                {
+                    projected.push(decoded.to_ascii_lowercase());
+                    remaining = tail;
+                    continue;
+                }
+            }
+            _ => {}
         }
-        if bytes[index] == b'\\'
-            && index + 5 < bytes.len()
-            && matches!(bytes[index + 1], b'u' | b'U')
-            && let Some(decoded) = decode_ascii_unicode_escape(&bytes[index + 2..index + 6])
-        {
-            projected.push(decoded.to_ascii_lowercase());
-            index += 6;
-            continue;
-        }
-        projected.push(if bytes[index].is_ascii() {
-            bytes[index].to_ascii_lowercase()
+        let (byte, tail) = remaining
+            .split_first()
+            .expect("non-empty diagnostic projection input has a first byte");
+        projected.push(if byte.is_ascii() {
+            byte.to_ascii_lowercase()
         } else {
             b' '
         });
-        index += 1;
+        remaining = tail;
     }
     projected
 }
@@ -176,23 +180,22 @@ fn decode_hex_byte(high: u8, low: u8) -> Option<u8> {
 const fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
+        b'a'..=b'f' => Some((byte - b'a') + 10),
+        b'A'..=b'F' => Some((byte - b'A') + 10),
         _ => None,
     }
 }
 
 fn credential_key_before(value: &[u8], delimiter_index: usize) -> Option<(usize, String)> {
-    let mut end = delimiter_index;
-    while end > 0 && matches!(value[end - 1], b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'') {
-        end -= 1;
-    }
-    let mut start = end;
-    while start > 0
-        && (value[start - 1].is_ascii_alphanumeric() || matches!(value[start - 1], b'-' | b'_'))
-    {
-        start -= 1;
-    }
+    let before_delimiter = &value[..delimiter_index];
+    let end = before_delimiter
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\''))
+        .map_or(0, |index| index + 1);
+    let start = before_delimiter[..end]
+        .iter()
+        .rposition(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+        .map_or(0, |index| index + 1);
     (start < end).then(|| {
         (
             start,
@@ -386,8 +389,10 @@ impl From<&str> for SecretValue {
 #[cfg(test)]
 mod tests {
     use super::{
-        REDACTED_SECRET, RedactedCommandArgs, SecretValue, key_is_sensitive,
-        text_may_contain_credentials,
+        REDACTED_SECRET, RedactedCommandArgs, SecretValue, credential_key_before,
+        decode_ascii_unicode_escape, decode_hex_byte, diagnostic_ascii_projection, hex_nibble,
+        key_is_sensitive, sensitive_key_words, text_may_contain_credentials,
+        token_colon_has_credential_shape,
     };
 
     #[test]
@@ -452,6 +457,145 @@ mod tests {
             "mpv request rejected (request_id=1): property not found",
             "hook operation failed (operation_id=7): client not found",
         ] {
+            assert!(
+                !text_may_contain_credentials(diagnostic),
+                "ordinary diagnostic {diagnostic:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_key_word_scanner_preserves_boundaries_without_empty_words() {
+        let cases = [
+            ("clientSecret", vec!["client", "secret"]),
+            ("HTTP-password_value", vec!["http", "password", "value"]),
+            ("token.value", vec!["token", "value"]),
+            ("UPPER", vec!["upper"]),
+            ("--", vec![]),
+            ("", vec![]),
+        ];
+
+        for (key, expected) in cases {
+            assert_eq!(
+                sensitive_key_words(key).collect::<Vec<_>>(),
+                expected,
+                "key {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_ascii_projection_decodes_only_complete_ascii_escapes() {
+        let cases = [
+            ("AbC", b"abc".as_slice()),
+            ("%41%5f%7A", b"a_z"),
+            (r"\u0041\U005f\u007A", b"a_z"),
+            ("%4", b"%4"),
+            ("%GG", b"%gg"),
+            (r"\u00", br"\u00"),
+            (r"\u0080", br"\u0080"),
+            (r"\x0041", br"\x0041"),
+            ("AéZ", b"a  z"),
+        ];
+
+        for (diagnostic, expected) in cases {
+            assert_eq!(
+                diagnostic_ascii_projection(diagnostic),
+                expected,
+                "diagnostic {diagnostic:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hex_decoders_cover_numeric_and_both_alpha_boundaries() {
+        for (encoded, expected) in [
+            (b'0', Some(0)),
+            (b'9', Some(9)),
+            (b'a', Some(10)),
+            (b'f', Some(15)),
+            (b'A', Some(10)),
+            (b'F', Some(15)),
+            (b'/', None),
+            (b'g', None),
+            (b'G', None),
+        ] {
+            assert_eq!(hex_nibble(encoded), expected, "nibble {encoded:?}");
+        }
+
+        assert_eq!(decode_hex_byte(b'0', b'0'), Some(0));
+        assert_eq!(decode_hex_byte(b'4', b'1'), Some(b'A'));
+        assert_eq!(decode_hex_byte(b'f', b'F'), Some(u8::MAX));
+        assert_eq!(decode_hex_byte(b'G', b'1'), None);
+        assert_eq!(decode_hex_byte(b'1', b'G'), None);
+
+        assert_eq!(decode_ascii_unicode_escape(b"0000"), Some(0));
+        assert_eq!(decode_ascii_unicode_escape(b"0041"), Some(b'A'));
+        assert_eq!(decode_ascii_unicode_escape(b"007f"), Some(0x7f));
+        assert_eq!(decode_ascii_unicode_escape(b"0080"), None);
+        assert_eq!(decode_ascii_unicode_escape(b"0G41"), None);
+    }
+
+    #[test]
+    fn credential_key_scanner_handles_empty_quoted_and_prefixed_boundaries() {
+        let cases = [
+            (b"=".as_slice(), 0, None),
+            (b" password \t=".as_slice(), 11, Some((1, "password"))),
+            (br#""token" :"#.as_slice(), 8, Some((1, "token"))),
+            (b"prefix.password=".as_slice(), 15, Some((7, "password"))),
+            (b"prefix.=".as_slice(), 7, None),
+        ];
+
+        for (value, delimiter_index, expected) in cases {
+            assert_eq!(
+                credential_key_before(value, delimiter_index),
+                expected.map(|(start, key)| (start, key.to_owned())),
+                "value {:?}",
+                String::from_utf8_lossy(value)
+            );
+        }
+    }
+
+    #[test]
+    fn token_colon_shape_distinguishes_each_independent_safe_branch() {
+        assert!(token_colon_has_credential_shape(b"x(token: EOF", 2, 9));
+        assert!(token_colon_has_credential_shape(b"token: 'value'", 0, 6));
+        assert!(token_colon_has_credential_shape(
+            b"token: bearer value",
+            0,
+            6
+        ));
+        assert!(token_colon_has_credential_shape(
+            b"token: basic value",
+            0,
+            6
+        ));
+        assert!(token_colon_has_credential_shape(
+            b"token: digest value",
+            0,
+            6
+        ));
+        assert!(!token_colon_has_credential_shape(b"token: EOF", 0, 6));
+        assert!(!token_colon_has_credential_shape(b"xtoken: eof", 1, 7));
+    }
+
+    #[test]
+    fn diagnostic_classifier_covers_token_colon_value_shapes_and_offsets() {
+        for diagnostic in [
+            r#"token: "secret""#,
+            "token: 'secret'",
+            "token: Bearer secret",
+            "token: basic secret",
+            "token: digest secret",
+            r#"{"token":unquoted}"#,
+            "prefix (token: EOF)",
+        ] {
+            assert!(
+                text_may_contain_credentials(diagnostic),
+                "credential diagnostic {diagnostic:?}"
+            );
+        }
+        for diagnostic in ["token: EOF", "token: timeout", "token:", "tokenizer: EOF"] {
             assert!(
                 !text_may_contain_credentials(diagnostic),
                 "ordinary diagnostic {diagnostic:?}"
