@@ -1,4 +1,8 @@
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[tokio::test]
 async fn connected_client_session_switches_and_identifies_on_new_controlled_room() {
@@ -302,7 +306,103 @@ async fn client_network_loop_reconnects_after_transport_close() {
     server_task.await.expect("server task join should succeed");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
+async fn initial_server_hello_timeout_starts_after_client_hello_is_sent() {
+    let env = TestEnvGuard::lock(&CLIENT_CONNECTION_PHASE_ENV_LOCK);
+    env.set_var("SOROTTE_CLIENT_INITIAL_HELLO_TIMEOUT_SECONDS", "0.025");
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("initial Hello timeout listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("initial Hello timeout listener should expose its address");
+    let hello_observed = Arc::new(AtomicBool::new(false));
+    let server_hello_observed = Arc::clone(&hello_observed);
+    let server_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("server should accept");
+        let (reader, _writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let hello = lines
+            .next_line()
+            .await
+            .expect("client Hello read should succeed")
+            .expect("client Hello should be present");
+        assert!(
+            hello.contains("\"Hello\""),
+            "the initial deadline must begin only after the client Hello write"
+        );
+        server_hello_observed.store(true, Ordering::SeqCst);
+        assert!(
+            lines
+                .next_line()
+                .await
+                .expect("timed-out session close should be readable")
+                .is_none(),
+            "the client should close after the initial server Hello deadline"
+        );
+    });
+
+    let config = ClientLoopConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        max_retries: 0,
+        ..test_client_loop_config()
+    };
+    let mut runtime = create_client_runtime(&config);
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("client should connect to the silent server");
+    let mut notification_sink = ignore_autoplay_notification;
+    let mut file_difference_sink = ignore_file_difference_notification;
+    let timeout_started_at = tokio::time::Instant::now();
+    let session = run_connected_client_session(
+        stream,
+        &mut runtime,
+        &config,
+        None,
+        None,
+        &mut notification_sink,
+        &mut file_difference_sink,
+    );
+    tokio::pin!(session);
+
+    let barrier_watchdog_started_at = std::time::Instant::now();
+    while !hello_observed.load(Ordering::SeqCst) {
+        assert!(
+            barrier_watchdog_started_at.elapsed() < Duration::from_secs(5),
+            "real-time harness watchdog expired before the server observed the client Hello"
+        );
+        tokio::select! {
+            result = &mut session => {
+                panic!("session ended before the server observed the client Hello: {result:?}");
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+    }
+    assert_eq!(
+        tokio::time::Instant::now(),
+        timeout_started_at,
+        "client Hello delivery should complete without virtual-time advancement"
+    );
+
+    tokio::time::advance(Duration::from_millis(25)).await;
+    let error = session
+        .await
+        .expect_err("a silent server should hit the initial Hello deadline");
+    assert_eq!(
+        tokio::time::Instant::now().duration_since(timeout_started_at),
+        Duration::from_millis(25),
+        "the initial server Hello phase should consume exactly its configured deadline"
+    );
+    assert!(
+        error.to_string().contains("server initial Hello timed out"),
+        "the phase-specific timeout should be preserved: {error:#}"
+    );
+    server_task.await.expect("server task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
 async fn client_network_loop_retries_starttls_timeout_before_exhaustion() {
     let timeout_key = "SOROTTE_CLIENT_STARTTLS_TIMEOUT_SECONDS";
     let previous_timeout = std::env::var_os(timeout_key);

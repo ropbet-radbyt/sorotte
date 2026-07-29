@@ -328,6 +328,66 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "NET-DEADLINE-001"
+title = "CLI connection-phase and reconnect deadlines are independently bounded"
+risk = "high"
+owners = ["cli", "client-core"]
+invariants = [
+    "STARTTLS response and TLS handshake phases each receive their complete configured deadline",
+    "the initial server Hello deadline begins after the client Hello is sent and expires at its configured duration",
+    "reconnect backoff advances by the declared exponential schedule and terminal exhaustion adds no delay",
+    "required STARTTLS timeout retries never send Hello or credentials before negotiation resolves",
+]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.backoff"
+kind = "rust-test"
+oracle = "virtual-time-state-invariant"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "session_runner::network_loop::deterministic_reconnect_time_tests::reconnect_backoff_uses_exact_exponential_delays_and_no_terminal_sleep"
+source = "crates/sorotte-cli/src/session_runner/network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.phases"
+kind = "rust-test"
+oracle = "protocol-barrier-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "session_runner::connected_session::tests::starttls_response_and_handshake_have_independent_deadlines"
+source = "crates/sorotte-cli/src/session_runner/connected_session.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.hello"
+kind = "rust-test"
+oracle = "protocol-barrier-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::connected_session_reconnect_restore::room_switch_and_network_loop::initial_server_hello_timeout_starts_after_client_hello_is_sent"
+source = "crates/sorotte-cli/src/tests/connected_session_reconnect_restore/room_switch_and_network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.loop"
+kind = "rust-test"
+oracle = "loopback-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::connected_session_reconnect_restore::room_switch_and_network_loop::client_network_loop_retries_starttls_timeout_before_exhaustion"
+source = "crates/sorotte-cli/src/tests/connected_session_reconnect_restore/room_switch_and_network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "NET-GUI-001"
 title = "GUI runtime transport state survives reconnect and membership churn"
 risk = "high"

@@ -147,6 +147,19 @@ class BehaviorEvidenceTests(unittest.TestCase):
         catalog = self.normalized()
         self.assertEqual(catalog["behavior"][0]["id"], "PL-TEST-001")
 
+    def test_async_rust_test_source_is_accepted(self) -> None:
+        (self.repo / "src" / "lib.rs").write_text(
+            "#[tokio::test]\nasync fn exact_contract() {\n    assert!(true);\n}\n",
+            encoding="utf-8",
+        )
+
+        catalog = self.normalized()
+
+        self.assertEqual(
+            catalog["behavior"][0]["proof"][0]["test"],
+            "tests::exact_contract",
+        )
+
     def test_unknown_catalog_key_is_rejected(self) -> None:
         catalog = self.base_catalog()
         catalog["surprise"] = True

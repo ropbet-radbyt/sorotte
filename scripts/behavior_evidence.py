@@ -339,7 +339,12 @@ def validate_catalog(
                     raise CatalogError(f"{proof_context}.test is not an exact Rust test selector")
                 leaf = selector.rsplit("::", 1)[1]
                 source_text = source_path.read_text(encoding="utf-8")
-                matches = list(re.finditer(rf"(?m)^\s*fn\s+{re.escape(leaf)}\s*\(", source_text))
+                matches = list(
+                    re.finditer(
+                        rf"(?m)^\s*(?:async\s+)?fn\s+{re.escape(leaf)}\s*\(",
+                        source_text,
+                    )
+                )
                 if len(matches) != 1:
                     raise CatalogError(
                         f"{proof_context}.source must define {leaf} exactly once; found {len(matches)}"

@@ -76,6 +76,18 @@ characterizations. `TC-PLAYER-003` and `TC-COMPAT-001` through
 `TC-COMPAT-007` remain resolved by positive regressions at their owning
 boundaries.
 
+`NET-DEADLINE-001` makes the first deterministic CLI clock slice required
+evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
+and that exhaustion adds no terminal delay. Explicit loopback protocol
+barriers separately prove that the STARTTLS response and TLS handshake phases
+each receive their full configured deadline. A third barrier proves the
+initial server Hello deadline starts after the client Hello is written and
+expires exactly when configured. A paused-time real-socket proof then
+exercises timeout, reconnect, exhaustion, and the rule that Hello and
+credentials cannot be sent while required STARTTLS is unresolved. Exact time
+is asserted only after a protocol barrier; operating-system loopback delivery
+is not treated as a virtual-clock oracle.
+
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
 Windows, release-build, and evidence commands in the workflow. Repository

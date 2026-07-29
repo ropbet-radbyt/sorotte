@@ -971,9 +971,10 @@ mod tests {
     use sorotte_client_core::ClientSession;
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -990,6 +991,17 @@ mod tests {
 
         fn maintain_runtime_integrations(&mut self) {
             panic!("async connection waits must not invoke blocking player maintenance");
+        }
+    }
+
+    async fn wait_for_protocol_barrier(flag: &AtomicBool, description: &str) {
+        let watchdog_started_at = std::time::Instant::now();
+        while !flag.load(Ordering::SeqCst) {
+            assert!(
+                watchdog_started_at.elapsed() < Duration::from_secs(5),
+                "real-time harness watchdog expired while waiting for {description}"
+            );
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1395,12 +1407,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn starttls_response_and_handshake_have_independent_deadlines() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have address");
+        let request_observed = Arc::new(AtomicBool::new(false));
+        let server_request_observed = Arc::clone(&request_observed);
         let server_task = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("server should accept");
             let (reader, _writer) = socket.into_split();
@@ -1410,21 +1424,44 @@ mod tests {
                 .await
                 .expect("TLS request read should succeed")
                 .expect("TLS request should be present");
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            server_request_observed.store(true, Ordering::SeqCst);
+            assert!(
+                lines
+                    .next_line()
+                    .await
+                    .expect("timeout connection close should be readable")
+                    .is_none(),
+                "the client must close without sending application protocol"
+            );
         });
         let stream = TcpStream::connect(addr)
             .await
             .expect("client should connect");
-        let response_timeout = negotiate_start_tls_with_policy(
+        let response_started_at = tokio::time::Instant::now();
+        let response_task = tokio::spawn(negotiate_start_tls_with_policy(
             stream,
             "127.0.0.1",
             TlsPolicy::RequireTls,
             Duration::from_millis(25),
             Duration::from_secs(1),
-        )
-        .await
-        .err()
-        .expect("silent STARTTLS endpoint should time out");
+        ));
+        wait_for_protocol_barrier(&request_observed, "the server to read STARTTLS").await;
+        assert_eq!(
+            tokio::time::Instant::now(),
+            response_started_at,
+            "protocol progress must not require wall-clock advancement"
+        );
+        tokio::time::advance(Duration::from_millis(25)).await;
+        let response_timeout = response_task
+            .await
+            .expect("response timeout task should not panic")
+            .err()
+            .expect("silent STARTTLS endpoint should time out");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(response_started_at),
+            Duration::from_millis(25),
+            "the STARTTLS response phase must consume exactly its own deadline"
+        );
         assert!(
             response_timeout
                 .to_string()
@@ -1436,35 +1473,70 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have address");
+        let client_hello_observed = Arc::new(AtomicBool::new(false));
+        let server_client_hello_observed = Arc::clone(&client_hello_observed);
         let server_task = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("server should accept");
             let (reader, mut writer) = socket.into_split();
-            let mut lines = BufReader::new(reader).lines();
-            lines
-                .next_line()
-                .await
-                .expect("TLS request read should succeed")
-                .expect("TLS request should be present");
+            let mut reader = BufReader::new(reader);
+            let mut request = String::new();
+            assert_ne!(
+                reader
+                    .read_line(&mut request)
+                    .await
+                    .expect("TLS request read should succeed"),
+                0,
+                "TLS request should be present"
+            );
             writer
                 .write_all(b"{\"TLS\":{\"startTLS\":\"true\"}}\n")
                 .await
                 .expect("TLS acceptance should write");
             writer.flush().await.expect("TLS acceptance should flush");
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            let mut first_client_hello_byte = [0_u8; 1];
+            reader
+                .read_exact(&mut first_client_hello_byte)
+                .await
+                .expect("the TLS handshake should send a ClientHello");
+            server_client_hello_observed.store(true, Ordering::SeqCst);
+            let mut remainder = Vec::new();
+            reader
+                .read_to_end(&mut remainder)
+                .await
+                .expect("timed-out handshake should close the connection");
         });
         let stream = TcpStream::connect(addr)
             .await
             .expect("client should connect");
-        let handshake_timeout = negotiate_start_tls_with_policy(
+        let handshake_started_at = tokio::time::Instant::now();
+        let handshake_task = tokio::spawn(negotiate_start_tls_with_policy(
             stream,
             "127.0.0.1",
             TlsPolicy::RequireTls,
             Duration::from_secs(1),
             Duration::from_millis(25),
+        ));
+        wait_for_protocol_barrier(
+            &client_hello_observed,
+            "the server to receive the TLS ClientHello",
         )
-        .await
-        .err()
-        .expect("silent TLS handshake should time out");
+        .await;
+        assert_eq!(
+            tokio::time::Instant::now(),
+            handshake_started_at,
+            "STARTTLS acceptance and ClientHello delivery must not consume virtual time"
+        );
+        tokio::time::advance(Duration::from_millis(25)).await;
+        let handshake_timeout = handshake_task
+            .await
+            .expect("handshake timeout task should not panic")
+            .err()
+            .expect("silent TLS handshake should time out");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(handshake_started_at),
+            Duration::from_millis(25),
+            "a completed STARTTLS response must not consume the handshake deadline"
+        );
         assert!(
             handshake_timeout
                 .to_string()

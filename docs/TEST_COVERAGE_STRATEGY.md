@@ -77,7 +77,12 @@ the non-controversial lean fixes proven by that coverage:
 - deterministic harness fixes for cross-shell timestamp comparison,
   backward-compatible Python peer response correlation, panic-safe environment
   restoration, causal Plex synchronization, detached native network isolation,
-  and updater stdio ownership.
+  and updater stdio ownership;
+- the first deterministic CLI time slice: exact paused-clock reconnect
+  backoff/exhaustion, barrier-driven independent STARTTLS response and TLS
+  handshake deadlines, an exact post-client-Hello server-Hello deadline, and a
+  virtual-time real-loopback retry that forbids Hello or credentials before
+  required TLS resolves.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
@@ -94,7 +99,8 @@ skipped Open Media contract while emitting repeated outbound DNS failures.
 The completed fix now proves exact UIA/AccessKit identities, detached
 disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Mutation,
-deterministic clocks/network scheduling, broader
+remaining deterministic clocks/network scheduling outside the first CLI
+boundary, broader
 crash-consistency injection, coverage-guided fuzzing, sanitizers, interactive
 native CI, and artifact-consumption tests remain proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
@@ -136,6 +142,23 @@ The model-design experiment also surfaced `TC-CLIENT-001`: playlist restore
 state is consumed before acknowledgement and is not cancelled after a newer
 authoritative update. Two deterministic expected-failure characterizations
 record those schedules without treating either as positive proof.
+
+The subsequent clock experiment converts the CLI reconnect scheduler and
+STARTTLS phase timeout contract to paused Tokio time. It proves the exact
+100/200/400 ms backoff sequence, proves exhaustion consumes no additional
+time, and uses explicit request/ClientHello barriers before manually advancing
+the response and handshake deadlines by 25 ms. The initial server Hello phase
+has the same exact proof after the server observes the client Hello. A real
+loopback retry remains in the proof stack for protocol reachability and
+credential ordering, but its operating-system delivery latency is deliberately
+not asserted as virtual time: the initial naive experiment measured 1.025
+seconds for a 25 ms handshake because Tokio correctly advanced an otherwise
+idle runtime while Windows was delivering socket I/O. Separating protocol
+barriers from the clock oracle removed that scheduler-luck dependency without
+changing production behavior. After the barrier repair, each of the four exact
+proofs passed 50 consecutive executions (200/200 total), and the all-feature
+CLI suite passed 335 tests with its eight declared ignores unchanged. No
+additional product defect was exposed by this slice.
 
 ## Contents
 
@@ -916,6 +939,14 @@ on polling deadlines.
 and event barriers. Retain a thin real-time smoke layer. A retry is diagnostic;
 pass-after-fail remains a flaky failure.
 
+Branch implementation now covers the first CLI boundary. Reconnect backoff and
+terminal exhaustion have exact paused-clock assertions; STARTTLS response and
+TLS handshake timeouts advance only after their corresponding protocol
+barriers; the server-Hello timeout starts after observed client-Hello delivery;
+and a real-loopback retry runs under virtual time. Broad CLI sleep inventory,
+server TLS-rotation metadata time, persistence, process supervision, and native
+GUI timing remain.
+
 ### P1 — IPC/parser fault coverage starts too high
 
 Lifecycle transcript capture starts after JSON decoding. Handwritten protocol
@@ -1561,7 +1592,9 @@ First deterministic repairs:
 
 - replace file-mtime waiting in TLS rotation with explicit content/fingerprint
   change and injected metadata clock;
-- replace CLI reconnect sleeps with paused time and protocol barriers;
+- replace CLI reconnect sleeps with paused time and protocol barriers
+  (implemented for reconnect backoff, STARTTLS response/handshake, initial
+  Hello, and retry);
 - distinguish real-mpv healthy-progress timeout from hard inactivity;
 - use unique loopback ports and isolated config/storage roots;
 - preserve live player evidence before cleanup or restart.
@@ -1689,7 +1722,9 @@ Acceptance:
 - no ignored test lacks tier, owner, and reason;
 - reruns cannot silently turn red into green.
 
-Branch progress: items 2, 4, and 5 are implemented. The exact 23-test ignored
+Branch progress: item 1 is partially implemented for the CLI reconnect and
+STARTTLS boundary; items 2, 4, and 5 are implemented. TLS-rotation metadata
+time and the broader CLI timer inventory remain. The exact 23-test ignored
 registry is workflow-bound. Pinned nextest performs one evidence-producing
 retry but fails the required gate on pass-after-fail or pass-after-leak,
 rejects empty JUnit, and retains console/JUnit/policy artifacts. Its 500 ms
@@ -1863,9 +1898,9 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. extend the reconnect model through delivery acknowledgement, then add
-   deterministic clock and schedule control to reconnect, TLS rotation,
-   persistence, and process supervision;
+3. extend the reconnect model through delivery acknowledgement, then expand
+   deterministic clock and schedule control from the proven CLI boundary to
+   TLS rotation, persistence, and process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated
