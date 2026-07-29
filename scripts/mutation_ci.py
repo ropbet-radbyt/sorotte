@@ -32,7 +32,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPORT_KIND = "sorotte-mutation-evidence"
 DEFAULT_POLICY = "coverage/mutation-policy.toml"
 MUTANTS_DIRECTORY = "mutants.out"
@@ -43,6 +43,9 @@ MAX_SOURCE_BYTES = 16 * 1024 * 1024
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 PACKAGE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+TEST_FILTER = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+::$"
+)
 PERCENT = re.compile(
     r"^(?:100(?:\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\.[0-9]{1,2})?)$"
 )
@@ -94,6 +97,8 @@ class ShardPolicy:
     owner: str
     package: str
     files: tuple[str, ...]
+    test_target: str
+    test_filter: str
     jobs: int
     timeout_seconds: int
     build_timeout_seconds: int
@@ -402,6 +407,8 @@ def load_policy(
                 "owner",
                 "package",
                 "files",
+                "test_target",
+                "test_filter",
                 "jobs",
                 "timeout_seconds",
                 "build_timeout_seconds",
@@ -441,6 +448,28 @@ def load_policy(
                 raise MutationCiError(
                     f"{source} belongs to package {actual_package!r}, not {package!r}"
                 )
+        test_target = require_string(
+            table["test_target"],
+            label=f"{identifier}.test_target",
+        )
+        if test_target not in {"package", "lib"}:
+            raise MutationCiError(
+                f"{identifier}.test_target must be either 'package' or 'lib'"
+            )
+        test_filter = require_string(
+            table["test_filter"],
+            label=f"{identifier}.test_filter",
+            allow_empty=True,
+        )
+        if test_filter and test_target != "lib":
+            raise MutationCiError(
+                f"{identifier}.test_filter requires test_target = 'lib'"
+            )
+        if test_filter and not TEST_FILTER.fullmatch(test_filter):
+            raise MutationCiError(
+                f"{identifier}.test_filter must be a Rust test module namespace "
+                "ending in '::'"
+            )
         require_baseline = require_bool(
             table["require_baseline"],
             label=f"{identifier}.require_baseline",
@@ -455,6 +484,8 @@ def load_policy(
                 owner=owner,
                 package=package,
                 files=files,
+                test_target=test_target,
+                test_filter=test_filter,
                 jobs=require_int(
                     table["jobs"],
                     label=f"{identifier}.jobs",
@@ -822,7 +853,7 @@ def require_phase_results(
     value: Any,
     *,
     label: str,
-    package: str,
+    shard: ShardPolicy,
 ) -> list[dict[str, Any]]:
     raw = require_list(value, label=label)
     if not raw:
@@ -857,9 +888,17 @@ def require_phase_results(
         cargo_name = pathlib.PurePath(argv[0]).name.casefold()
         if cargo_name not in {"cargo", "cargo.exe"} or argv[1] != "test":
             raise MutationCiError(f"{label}[{index}].argv is not cargo test")
-        if f"--package={package}@" not in " ".join(argv[2:]):
+        package_arguments = [
+            argument
+            for argument in argv[2:]
+            if argument.startswith("--package=")
+        ]
+        if (
+            len(package_arguments) != 1
+            or not package_arguments[0].startswith(f"--package={shard.package}@")
+        ):
             raise MutationCiError(
-                f"{label}[{index}].argv is not bound to package {package!r}"
+                f"{label}[{index}].argv is not bound to package {shard.package!r}"
             )
         if "--locked" not in argv:
             raise MutationCiError(f"{label}[{index}].argv does not enforce Cargo.lock")
@@ -871,6 +910,23 @@ def require_phase_results(
             raise MutationCiError(f"{label}[{index}].argv is not a build phase")
         if phase_name == "Test" and "--no-run" in argv:
             raise MutationCiError(f"{label}[{index}].argv is not a test phase")
+        expected_arguments = [
+            "test",
+            "--verbose",
+            "--all-features",
+            "--locked",
+        ]
+        if phase_name == "Build":
+            expected_arguments.append("--no-run")
+        else:
+            expected_arguments.extend(cargo_test_scope_arguments(shard))
+        actual_arguments = list(argv[1:])
+        actual_arguments.remove(package_arguments[0])
+        if sorted(actual_arguments) != sorted(expected_arguments):
+            raise MutationCiError(
+                f"{label}[{index}].argv does not exactly match the configured "
+                f"{shard.test_target!r} test scope"
+            )
         phases.append(
             {
                 "phase": phase_name,
@@ -1048,7 +1104,7 @@ def evaluate_results(
         phases = require_phase_results(
             outcome["phase_results"],
             label=f"outcomes[{index}].phase_results",
-            package=shard.package,
+            shard=shard,
         )
         require_phase_coherence(
             summary,
@@ -1289,6 +1345,15 @@ def evaluate_results(
     }
 
 
+def cargo_test_scope_arguments(shard: ShardPolicy) -> list[str]:
+    arguments: list[str] = []
+    if shard.test_target == "lib":
+        arguments.append("--lib")
+    if shard.test_filter:
+        arguments.append(shard.test_filter)
+    return arguments
+
+
 def cargo_mutants_base_command(shard: ShardPolicy) -> list[str]:
     command = [
         "cargo",
@@ -1307,6 +1372,12 @@ def cargo_mutants_base_command(shard: ShardPolicy) -> list[str]:
             "--no-shuffle",
             "--all-features",
             "--cargo-arg=--locked",
+        ]
+    )
+    for argument in cargo_test_scope_arguments(shard):
+        command.append(f"--cargo-test-arg={argument}")
+    command.extend(
+        [
             "--jobs",
             str(shard.jobs),
             "--timeout",
@@ -1367,6 +1438,7 @@ def report_template(
         "shard": shard_id,
         "owner": None,
         "package": None,
+        "test_scope": None,
         "cargo_mutants_version": None,
         "command": None,
         "producer_exit_code": None,
@@ -1432,6 +1504,10 @@ def run_shard(args: argparse.Namespace) -> int:
             {
                 "owner": shard.owner,
                 "package": shard.package,
+                "test_scope": {
+                    "target": shard.test_target,
+                    "filter": shard.test_filter,
+                },
                 "cargo_mutants_version": policy.cargo_mutants_version,
                 "policy_path": policy_path.relative_to(repo_root).as_posix(),
                 "git": git_binding(repo_root, shard.files),

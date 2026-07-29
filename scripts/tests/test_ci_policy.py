@@ -1370,8 +1370,21 @@ class CiPolicyTests(unittest.TestCase):
             },
         )
         job = jobs["mutation"]
+        self.assertEqual(job["name"], "Mutation (${{ matrix.shard }})")
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], "120")
+        self.assertEqual(
+            job["strategy"],
+            {
+                "fail-fast": "false",
+                "matrix": {
+                    "shard": [
+                        "privacy-secret",
+                        "server-auth",
+                    ]
+                },
+            },
+        )
         self.assertNotIn("continue-on-error", job)
 
         checkout = named_step(jobs, "mutation", "Checkout")
@@ -1403,20 +1416,20 @@ class CiPolicyTests(unittest.TestCase):
             python scripts/mutation_ci.py validate
             --repo-root .
             --policy coverage/mutation-policy.toml
-            --shard privacy-secret
+            --shard ${{ matrix.shard }}
             """,
         )
         self.assert_exact_run(
             jobs,
             "mutation",
-            "Run source-bound privacy mutation shard",
+            "Run source-bound mutation shard",
             """
             python scripts/mutation_ci.py run
             --repo-root .
             --policy coverage/mutation-policy.toml
-            --shard privacy-secret
-            --results-root target/mutation-ci/privacy-secret
-            --output target/verification/mutation-privacy-secret.json
+            --shard ${{ matrix.shard }}
+            --results-root target/mutation-ci/${{ matrix.shard }}
+            --output target/verification/mutation-${{ matrix.shard }}.json
             """,
         )
         upload = named_step(jobs, "mutation", "Upload mutation evidence")
@@ -1428,10 +1441,10 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             upload.get("with"),
             {
-                "name": "sorotte-mutation-privacy-secret",
+                "name": "sorotte-mutation-${{ matrix.shard }}",
                 "path": (
-                    "target/verification/mutation-privacy-secret.json\n"
-                    "target/mutation-ci/privacy-secret\n"
+                    "target/verification/mutation-${{ matrix.shard }}.json\n"
+                    "target/mutation-ci/${{ matrix.shard }}\n"
                 ),
                 "if-no-files-found": "error",
                 "retention-days": "14",
@@ -1442,7 +1455,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             self.mutation_policy,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "cargo_mutants_version": "27.1.0",
                 "shard": [
                     {
@@ -1450,6 +1463,8 @@ class CiPolicyTests(unittest.TestCase):
                         "owner": "secrets",
                         "package": "sorotte-secret",
                         "files": ["crates/sorotte-secret/src/lib.rs"],
+                        "test_target": "package",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -1457,7 +1472,22 @@ class CiPolicyTests(unittest.TestCase):
                         "max_missed": 0,
                         "max_timeouts": 0,
                         "require_baseline": True,
-                    }
+                    },
+                    {
+                        "id": "server-auth",
+                        "owner": "server-security",
+                        "package": "sorotte-server",
+                        "files": ["crates/sorotte-server/src/auth.rs"],
+                        "test_target": "lib",
+                        "test_filter": "auth::tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
                 ],
                 "accepted_unviable": [
                     {

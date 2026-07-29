@@ -224,25 +224,28 @@ Windows coverage or the currently red complete legacy fanout matrix.
 
 ## Targeted Mutation Testing
 
-Mutation testing is intentionally shard-based. Install the pinned producer and
-run the currently required privacy shard with:
+Mutation testing is intentionally shard-based. Install the pinned producer
+and run either scheduled shard (`privacy-secret` or `server-auth`) with a fresh
+results root. For example:
 
 ```powershell
 cargo install cargo-mutants --version 27.1.0 --locked
 python scripts/mutation_ci.py validate `
   --repo-root . `
   --policy coverage/mutation-policy.toml `
-  --shard privacy-secret
+  --shard server-auth
 python scripts/mutation_ci.py run `
   --repo-root . `
   --policy coverage/mutation-policy.toml `
-  --shard privacy-secret `
-  --results-root target/mutation-ci/privacy-secret `
-  --output target/verification/mutation-privacy-secret.json
+  --shard server-auth `
+  --results-root target/mutation-ci/server-auth `
+  --output target/verification/mutation-server-auth.json
 ```
 
 Use a fresh results root for every local run. The wrapper rejects an existing
 `mutants.out` directory so stale artifacts cannot be mistaken for new
-evidence. A survivor or product defect discovered by a coverage-only branch
-should be characterized and recorded; do not change production behavior just
-to make the mutation shard green.
+evidence. Policy schema 2 binds package-wide versus library testing and any
+focused Rust test namespace; the wrapper reconciles that scope against every
+producer phase. A survivor or product defect discovered by a coverage-only
+branch should be characterized and recorded; do not change production
+behavior just to make the mutation shard green.

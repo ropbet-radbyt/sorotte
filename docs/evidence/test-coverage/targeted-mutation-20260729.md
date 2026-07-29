@@ -1,5 +1,10 @@
 # Targeted mutation proof: privacy-secret
 
+> Historical boundary: this document proves the original 44-mutant source.
+> Credential-classifier expansion and the current 122-mutant proof are
+> documented in
+> [`targeted-mutation-privacy-expansion-20260729.md`](targeted-mutation-privacy-expansion-20260729.md).
+
 Date: 2026-07-29 (Australia/Sydney)
 
 Branch: `codex/test-coverage-design`

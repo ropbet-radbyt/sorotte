@@ -1223,16 +1223,26 @@ Targets:
 
 Reference: [cargo-mutants](https://mutants.rs/getting-started.html).
 
-Implementation status (2026-07-29): the first scheduled shard now covers the
-pure `sorotte-secret` privacy boundary with pinned cargo-mutants 27.1.0. A real
-baseline caught 22 of 43 viable mutations. Seven test-only oracle additions
-then caught all 43 against the identical 44-mutant inventory; the only
-unviable replacement attempts a non-const call inside a `const fn` and is
-matched by an exact, expiring policy entry. The strict wrapper binds source
-hashes before/after, pre-run/result inventories, structured outcomes, status
-files, command phases, artifacts, and producer exit. See
-[`targeted-mutation-20260729.md`](evidence/test-coverage/targeted-mutation-20260729.md).
-This establishes the mechanism and one critical shard, not workspace-wide
+Implementation status (2026-07-29): the scheduled matrix covers two critical
+boundaries with pinned cargo-mutants 27.1.0. The original `sorotte-secret`
+privacy shard moved from 22/43 to 43/43 viable mutations caught against an
+identical 44-mutant inventory. Credential-classifier expansion later caused a
+clean required-shard replay to fail with 29 missed and five timed-out mutants;
+bounded scans and deterministic escape, key, hex, and token oracles now catch
+121/121, with the original exact, expiring const exception still the only
+unviable mutation. The `sorotte-server` authorization shard rejected an
+unsuitable package-wide baseline, then used the real 16-caught/1-missed/
+1-timeout library result to add deterministic grammar and salt-byte oracles.
+Its focused namespace catches 19/19 with no exception. Policy schema 2 and the
+strict wrapper bind package/library target and test namespace as well as source
+hashes, inventories, structured outcomes, status files, command phases,
+artifacts, and producer exit. See
+[`targeted-mutation-20260729.md`](evidence/test-coverage/targeted-mutation-20260729.md)
+,
+[`targeted-mutation-privacy-expansion-20260729.md`](evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
+and
+[`targeted-mutation-server-auth-20260729.md`](evidence/test-coverage/targeted-mutation-server-auth-20260729.md).
+This establishes the mechanism and two critical shards, not workspace-wide
 mutation assurance.
 
 ### 9.6 Genuine vertical player system harness
@@ -1715,10 +1725,10 @@ injection.
 5. Add immutable package/container consumer tests.
 6. Add nightly soak and weekly chaos/performance trends.
 
-Item 2 is now partially implemented: one weekly, bounded privacy shard has a
-100% viable kill ratchet and fail-closed evidence. Protocol parsing,
-authorization/persistence, lifecycle, and configuration decision shards
-remain outstanding.
+Item 2 is now partially implemented: weekly bounded privacy and server
+controlled-room authorization shards have 100% viable kill ratchets and
+fail-closed evidence. Protocol parsing, persistence arbitration, lifecycle,
+and configuration decision shards remain outstanding.
 
 Acceptance:
 

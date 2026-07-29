@@ -14,8 +14,15 @@ concurrency:
 
 jobs:
   mutation:
+    name: Mutation (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - privacy-secret
+          - server-auth
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -43,25 +50,25 @@ jobs:
           python scripts/mutation_ci.py validate
           --repo-root .
           --policy coverage/mutation-policy.toml
-          --shard privacy-secret
+          --shard ${{ matrix.shard }}
 
-      - name: Run source-bound privacy mutation shard
+      - name: Run source-bound mutation shard
         run: >-
           python scripts/mutation_ci.py run
           --repo-root .
           --policy coverage/mutation-policy.toml
-          --shard privacy-secret
-          --results-root target/mutation-ci/privacy-secret
-          --output target/verification/mutation-privacy-secret.json
+          --shard ${{ matrix.shard }}
+          --results-root target/mutation-ci/${{ matrix.shard }}
+          --output target/verification/mutation-${{ matrix.shard }}.json
 
       - name: Upload mutation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: sorotte-mutation-privacy-secret
+          name: sorotte-mutation-${{ matrix.shard }}
           path: |
-            target/verification/mutation-privacy-secret.json
-            target/mutation-ci/privacy-secret
+            target/verification/mutation-${{ matrix.shard }}.json
+            target/mutation-ci/${{ matrix.shard }}
           if-no-files-found: error
           retention-days: 14
           overwrite: true

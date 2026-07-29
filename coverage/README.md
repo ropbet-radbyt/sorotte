@@ -221,14 +221,17 @@ limits are retained in
 
 ## Targeted mutation evidence
 
-The first scheduled mutation shard covers the pure privacy boundary in
-`sorotte-secret`. It deliberately does not mutate the whole workspace.
-`coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, the package and
-literal source file, all-feature locked Cargo execution, two workers,
-per-command timeouts, a 100% viable kill requirement, zero missed mutants, and
-zero timeouts. Its one compiler-infeasible const mutation is matched by stable
-structured identity and has an expiring review date; both a new exception and
-a stale exception fail.
+The scheduled mutation matrix covers the pure privacy boundary in
+`sorotte-secret` and controlled-room authorization in `sorotte-server`. It
+deliberately does not mutate the whole workspace.
+`coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
+literal source file, the package/library test target and optional test module
+namespace, all-feature locked Cargo execution, two workers, per-command
+timeouts, a 100% viable kill requirement, zero missed mutants, and zero
+timeouts. The privacy shard's one compiler-infeasible const mutation is
+matched by stable structured identity and has an expiring review date; both a
+new exception and a stale exception fail. Server authorization requires no
+exception.
 
 Run it locally with:
 
@@ -237,27 +240,37 @@ cargo install cargo-mutants --version 27.1.0 --locked
 python scripts/mutation_ci.py validate \
   --repo-root . \
   --policy coverage/mutation-policy.toml \
-  --shard privacy-secret
+  --shard server-auth
 python scripts/mutation_ci.py run \
   --repo-root . \
   --policy coverage/mutation-policy.toml \
-  --shard privacy-secret \
-  --results-root target/mutation-ci/privacy-secret \
-  --output target/verification/mutation-privacy-secret.json
+  --shard server-auth \
+  --results-root target/mutation-ci/server-auth \
+  --output target/verification/mutation-server-auth.json
 ```
 
 The wrapper disables repository-local cargo-mutants configuration, lists the
 inventory before execution, hashes configured sources before and after, and
 reconciles every structured outcome with the inventory, status files,
 build/test phases, logs, diffs, policy, and producer exit. The weekly workflow
-uploads both the compact attestation and raw producer evidence even on
-failure.
+uploads both the compact attestation and raw producer evidence for each matrix
+shard even on failure. Test scope is not trusted from configuration alone:
+every producer phase must exactly retain the configured target and namespace.
 
-The initial experiment caught 22 of 43 viable mutants. Seven test-only oracles
-then caught all 43 while preserving the identical 44-mutant inventory; one
-const-context replacement remained unviable. Commands, timings, hashes,
-survivor classification, and limitations are retained in
-[`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md).
+The original privacy experiment moved from 22/43 to 43/43 viable mutants
+caught while preserving its 44-mutant inventory. After credential-classifier
+expansion, a clean replay exposed 29 missed and five timed-out mutants; bounded
+scans and deterministic escape/key/token oracles now catch 121/121 with the
+same one accepted const exception. The authorization experiment rejected a
+package-wide timed-out baseline, then exposed one missed and one timed-out
+mutant at library scope. Deterministic negative grammar and salt-byte oracles
+now catch 19/19 through a focused 7-test namespace in 113.36 seconds.
+Commands, timings, hashes, classifications, and limitations are retained in
+[`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md)
+,
+[`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
+and
+[`targeted-mutation-server-auth-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-server-auth-20260729.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

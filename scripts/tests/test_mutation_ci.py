@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import hashlib
 import io
 import json
@@ -184,6 +185,8 @@ class MutationEvaluationTests(unittest.TestCase):
             owner="demo-owner",
             package="demo",
             files=(self.fixture.source,),
+            test_target="package",
+            test_filter="",
             jobs=2,
             timeout_seconds=60,
             build_timeout_seconds=120,
@@ -273,6 +276,27 @@ class MutationEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(
             mutation_ci.MutationCiError,
             "all package features",
+        ):
+            self.evaluate()
+
+    def test_mutation_cargo_phases_must_retain_configured_test_scope(self) -> None:
+        self.shard = dataclasses.replace(
+            self.shard,
+            test_target="lib",
+            test_filter="auth::tests::",
+        )
+        for outcome in self.fixture.outcomes["outcomes"]:
+            for phase in outcome["phase_results"]:
+                if phase["phase"] == "Test":
+                    phase["argv"].extend(["--lib", "auth::tests::"])
+        self.fixture.outcomes["outcomes"][1]["phase_results"][1]["argv"].remove(
+            "auth::tests::"
+        )
+        self.rewrite_outcomes()
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "does not exactly match the configured 'lib' test scope",
         ):
             self.evaluate()
 
@@ -427,7 +451,7 @@ class MutationPolicyTests(unittest.TestCase):
 
     def policy_text(self, *, accepted: bool = True) -> str:
         prefix = (
-            'schema_version = 1\n'
+            'schema_version = 2\n'
             'cargo_mutants_version = "27.1.0"\n'
         )
         if not accepted:
@@ -439,6 +463,8 @@ id = "demo"
 owner = "demo-owner"
 package = "demo"
 files = ["crates/demo/src/lib.rs"]
+test_target = "package"
+test_filter = ""
 jobs = 2
 timeout_seconds = 60
 build_timeout_seconds = 120
@@ -480,6 +506,8 @@ review_by = "2099-01-01"
 
         self.assertEqual(policy.cargo_mutants_version, "27.1.0")
         self.assertEqual(policy.shard("demo").files, ("crates/demo/src/lib.rs",))
+        self.assertEqual(policy.shard("demo").test_target, "package")
+        self.assertEqual(policy.shard("demo").test_filter, "")
         self.assertEqual(len(policy.accepted_for("demo")), 1)
 
     def test_unknown_policy_field_is_rejected(self) -> None:
@@ -566,6 +594,33 @@ review_by = "2099-01-01"
         ):
             self.load()
 
+    def test_test_filter_requires_library_target(self) -> None:
+        self.write_policy(
+            self.policy_text().replace(
+                'test_filter = ""',
+                'test_filter = "auth::tests::"',
+            )
+        )
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "test_filter requires test_target = 'lib'",
+        ):
+            self.load()
+
+    def test_test_filter_rejects_cargo_arguments(self) -> None:
+        self.write_policy(
+            self.policy_text()
+            .replace('test_target = "package"', 'test_target = "lib"')
+            .replace('test_filter = ""', 'test_filter = "-- --nocapture"')
+        )
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "Rust test module namespace",
+        ):
+            self.load()
+
     def test_accepted_unviable_must_belong_to_declared_shard_file(self) -> None:
         (self.repo / "crates" / "demo" / "src" / "other.rs").write_text(
             "pub fn other() {}\n",
@@ -610,6 +665,22 @@ review_by = "2099-01-01"
                 "--build-timeout",
                 "120",
             ],
+        )
+
+    def test_focused_library_test_scope_is_owned_by_the_wrapper(self) -> None:
+        self.write_policy(
+            self.policy_text()
+            .replace('test_target = "package"', 'test_target = "lib"')
+            .replace('test_filter = ""', 'test_filter = "auth::tests::"')
+        )
+        shard = self.load().shard("demo")
+
+        command = mutation_ci.cargo_mutants_base_command(shard)
+        self.assertIn("--cargo-test-arg=--lib", command)
+        self.assertIn("--cargo-test-arg=auth::tests::", command)
+        self.assertLess(
+            command.index("--cargo-test-arg=--lib"),
+            command.index("--cargo-test-arg=auth::tests::"),
         )
 
 
@@ -715,6 +786,10 @@ class MutationRunnerTests(unittest.TestCase):
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["git"]["head_sha"], self.git("rev-parse", "HEAD"))
         self.assertFalse(report["git"]["configured_sources_dirty"])
+        self.assertEqual(
+            report["test_scope"],
+            {"target": "package", "filter": ""},
+        )
         self.assertEqual(
             report["source_bindings"]["before"],
             report["source_bindings"]["after"],

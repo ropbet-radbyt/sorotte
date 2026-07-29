@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 cargo_mutants_version = "27.1.0"
 
 [[shard]]
@@ -6,6 +6,23 @@ id = "privacy-secret"
 owner = "secrets"
 package = "sorotte-secret"
 files = ["crates/sorotte-secret/src/lib.rs"]
+test_target = "package"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-auth"
+owner = "server-security"
+package = "sorotte-server"
+files = ["crates/sorotte-server/src/auth.rs"]
+test_target = "lib"
+test_filter = "auth::tests::"
 jobs = 2
 timeout_seconds = 60
 build_timeout_seconds = 120
