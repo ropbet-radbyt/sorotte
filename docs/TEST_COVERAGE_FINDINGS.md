@@ -1452,6 +1452,54 @@ consecutive stressed baselines and both successful complete inventories all
 observed the exact five-event trace and process exit; no shutdown timeout was
 lengthened.
 
+## TC-CLIENT-001: reconnect playlist restore lacks acknowledgement fencing
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **High (playlist intent can be lost or overwrite newer authority)**
+Detection: shrinkable reconnect reference-model design plus deterministic
+event-schedule reproduction
+
+The reconnect playlist handoff has separate snapshot and one-shot intent
+fields but no acknowledgement fence. Two short schedules expose opposite
+failures around the same missing ownership boundary.
+
+First, an empty reconnect snapshot arms restoration and the runtime drain emits
+`Set.playlistChange` plus `Set.playlistIndex`. The drain consumes the only
+restore intent. If the transport disconnects before the server echoes that
+playlist, the next reset has neither a current playlist projection nor a
+durable restore snapshot, so the second reconnect emits nothing:
+
+```text
+capture local playlist
+disconnect -> Hello -> empty server playlist -> emit restore
+disconnect before echo -> Hello -> empty server playlist -> no restore
+```
+
+Second, an empty server snapshot can arm the old local restore while a newer
+non-empty authoritative update is already queued in the same GUI transport
+batch. The non-empty update clears the pre-Hello snapshot but not the armed
+intent, so the subsequent drain overwrites newer server authority with the old
+local playlist:
+
+```text
+disconnect -> Hello -> empty server playlist
+non-empty authoritative playlist -> drain -> stale local restore emitted
+```
+
+Both schedules reproduce in ordinary `sorotte-client-core` tests without
+sleep, sockets, or timing tolerance. The focused experiment ran five tests:
+the 128-case reference model, vocabulary coverage, budget enforcement, and the
+two expected-failure characterizations. All five completed in 0.15 seconds;
+the characterizations panicked only at their exact missing-invariant messages.
+
+The appropriate product fix is one acknowledgement-fenced desired-playlist
+record per reconnect generation: sending must not erase it; a matching echo
+retires it; any newer authoritative non-empty revision supersedes it; and a
+disconnect before either outcome re-arms it. This test-coverage slice records
+the defect without changing production behavior. The two characterizations
+expire on 2026-09-30 and cannot count as positive behavior evidence.
+
 ## Local all-feature LCOV proof
 
 The pinned `1.97.1-x86_64-pc-windows-msvc` toolchain was installed with the

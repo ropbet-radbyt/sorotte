@@ -1,2 +1,21 @@
 schema_version = 1
-defect = []
+
+[[defect]]
+id = "TC-CLIENT-001"
+title = "Reconnect playlist restore lacks acknowledgement fencing"
+severity = "high"
+owners = ["client-core"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-client-core"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+test = "session::tests::reconnect_tests::property_tests::known_defect_unacknowledged_playlist_restore_is_lost_on_second_disconnect"
+expected_panic = "unacknowledged playlist restore must survive a second disconnect"
+
+[[defect.characterization]]
+package = "sorotte-client-core"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+test = "session::tests::reconnect_tests::property_tests::known_defect_authoritative_playlist_does_not_cancel_armed_restore"
+expected_panic = "authoritative playlist update must cancel an armed restore"

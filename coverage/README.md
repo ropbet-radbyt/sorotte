@@ -54,23 +54,27 @@ python scripts/behavior_evidence.py run-lane \
 
 The shrinkable lifecycle suite fuzzes the reducer input contract with 128
 Proptest cases of up to 64 transitions by default; it does not claim that every
-generated ordering is adapter-reachable. Set `PROPTEST_CASES=2048` for the
-nightly-depth budget. Every generated transition now passes through the
-ordinary invariant-checking reducer without a known-defect classifier.
+generated ordering is adapter-reachable. The client-core reconnect suite uses
+the same budget for state-aware schedules of retry, Hello, initial server
+playlist authority, and transition/state/playlist drains. It compares every
+executed step with a small independent model and always completes each history
+through two final drains so liveness and at-most-once behavior are observed.
+Set `PROPTEST_CASES=2048` for the nightly-depth budget. Every generated
+lifecycle transition passes through the ordinary invariant-checking reducer
+without a known-defect classifier.
 `TC-PLAYER-001` is represented by two positive regressions proving exclusive
 successor selection for external-observation and load-acceptance conflicts.
 The former `TC-PLAYER-002` histories are also ordinary positive regressions
 proving reactivation clears stale logical-terminal state.
 
-Proptest seeds under
-`crates/sorotte-player-mpv/proptest-regressions/` are source-file and
-strategy-shape scoped. They improve replay while a strategy remains stable,
-while named deterministic regressions remain the durable behavior contract.
-`known-defects.toml` is retained as an empty, schema-validated registry so a
-future expected-failure characterization cannot become implicit.
-`TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-007` are resolved by
-positive regressions at their owning boundaries; none was entered as an
-expected failure.
+Proptest seeds under each participating crate's `proptest-regressions/`
+directory are source-file and strategy-shape scoped. They improve replay while
+a strategy remains stable, while named deterministic regressions remain the
+durable behavior contract. `known-defects.toml` currently records one
+reconnect acknowledgement-fencing defect with two narrow executable
+characterizations. `TC-PLAYER-003` and `TC-COMPAT-001` through
+`TC-COMPAT-007` remain resolved by positive regressions at their owning
+boundaries.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
@@ -89,8 +93,7 @@ Pull-request entries are additionally checked against exact
 
 `known-defects.toml` is the schema-validated inventory for any undesirable
 behavior intentionally represented by a Rust expected-failure
-characterization and is empty on this branch. If a future entry is added, the
-validator exactly matches every Rust `known_defect_*`
+characterization. The validator exactly matches every Rust `known_defect_*`
 `should_panic(expected = "...")` characterization to its source, package,
 selector, panic oracle, owner, finding, and expiry. A missing or stale entry,
 bare `should_panic`, expired defect, drifted panic oracle, or selector also

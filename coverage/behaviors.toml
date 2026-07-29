@@ -292,6 +292,42 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "NET-RECONNECT-001"
+title = "Reconnect restore schedules preserve state and one-shot delivery semantics"
+risk = "high"
+owners = ["client-core", "cli", "gui"]
+invariants = [
+    "retry resets preserve undrained ready, file, and playlist restoration across reconnect generations",
+    "Hello activation and the first authoritative playlist snapshot arm only capability-supported restoration",
+    "transition, state, and playlist outboxes drain in contract order and at most once",
+    "every generated state-aware schedule matches a small independent reference model",
+]
+
+[[behavior.proof]]
+id = "NET-RECONNECT-001.model"
+kind = "rust-test"
+oracle = "generative-reference-model"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::reconnect_tests::property_tests::generated_reconnect_restore_histories_match_reference_model"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-RECONNECT-001.vocabulary"
+kind = "rust-test"
+oracle = "generator-vocabulary-completeness"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::reconnect_tests::property_tests::declared_reconnect_schedule_vocabulary_exercises_every_transition_kind"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "NET-GUI-001"
 title = "GUI runtime transport state survives reconnect and membership churn"
 risk = "high"

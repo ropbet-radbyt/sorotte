@@ -52,10 +52,11 @@ the non-controversial lean fixes proven by that coverage:
 - a fail-closed registry for all 23 ignored Rust tests, including explicit CI,
   manual-capability, and fixture-maintenance dispositions; the two former
   compatibility quarantines are now required passing tests;
-- an empty, schema-validated expected-failure registry; previously resolved
-  product defects and the subsequently surfaced `TC-PLAYER-003` and
-  `TC-COMPAT-001` through `TC-COMPAT-007` all have positive regressions rather
-  than being normalized by `should_panic`;
+- a schema-validated expected-failure registry; previously resolved product
+  defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
+  through `TC-COMPAT-007` all have positive regressions, while the newly
+  discovered `TC-CLIENT-001` reconnect acknowledgement-fencing gap is
+  represented by two narrow expiring characterizations;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -124,6 +125,17 @@ the required green compatibility claim to the exact 20-test live-reference
 inventory. The resulting trace recapture also removed two stale client-core
 assumptions about nullable readiness and incidental periodic State traffic.
 The coverage gate still has no retry.
+
+The next reconnect slice adds a 128-case, 64-step shrinkable client-core
+reference model with seven state-aware event kinds: retry, Hello, empty and
+non-empty initial server playlists, and transition/state/playlist drains.
+Each executed step is compared with an independent semantic model, every
+history is driven to an active terminal observation, and two final drain passes
+prove one-shot behavior. `PROPTEST_CASES=2048` reuses the nightly depth budget.
+The model-design experiment also surfaced `TC-CLIENT-001`: playlist restore
+state is consumed before acknowledgement and is not cancelled after a newer
+authoritative update. Two deterministic expected-failure characterizations
+record those schedules without treating either as positive proof.
 
 ## Contents
 
@@ -519,7 +531,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction | hand-written raw JSON scanners have example-only coverage | roundtrip/metamorphic properties, byte fuzzing, differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests | locked all-feature Linux and Windows suites are required; live matrix remains limited; wall-clock tests | deterministic network simulation, strict live compatibility, load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; deterministic corrupt-secret, concurrent-creation, and row-migration characterizations | known secret-creation and multi-row migration defects remain open; filesystem crash stages are not proven | failpoints, crash/reopen tests, pure arbitration model, schedule exploration |
-| Client-core lifecycle | broad reducer/projection/reconnect examples and required all-feature execution | reset is a manual field list; deeper reconnect scheduling model remains absent | stateful reference model, reset idempotence/preservation properties |
+| Client-core lifecycle | broad reducer/projection/reconnect examples, a required shrinkable reconnect restore model, and required all-feature execution | reset is a manual field list; transport-level reconnect timing and the open playlist acknowledgement fence remain | extend the stateful reference model through transport delivery/acknowledgement, then add clock-controlled adapter schedules |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, and production-worker framed split/coalesce/truncate/duplicate/reorder/half-close coverage | no bidirectional real-pipe fault injector; ignored real bridge | stateful framed duplex harness, min/latest mpv, real command/response traces |
 | GUI runtime owner | many direct state and projection tests plus bounded shutdown through the actual threaded pump | most behavior still bypasses the pump; delivery-mode/mixed-getter debt remains | poison adapter through real refresh path, deterministic executor/clock |
@@ -1727,16 +1739,18 @@ Acceptance:
 - every durability boundary proves old-or-new complete state;
 - generated secrets never enter diagnostic artifacts.
 
-Branch progress: reducer-input Proptest, exhaustive stale-epoch coverage,
-protocol order permutations, split/coalesced/invalid IPC framing through the
-production command worker, response/event interleaving, stale duplicate and
-future-response rejection, truncation/half-close handling, corrupt
-quota-secret preservation, a deterministic concurrent-secret schedule, and a
-SQLite migration failpoint are implemented. Generated transcript and
-`PlayerError` taint corpora cover hundreds of nested, escaped, encoded, and
-round-tripped cases; all three redaction families they found are now positive
-regressions backed by one shared classification policy. This is not yet
-coverage-guided fuzzing, a complete reconnect reference model, a
+Branch progress: reducer-input Proptest, exhaustive stale-epoch coverage, a
+shrinkable reconnect restore reference model, protocol order permutations,
+split/coalesced/invalid IPC framing through the production command worker,
+response/event interleaving, stale duplicate and future-response rejection,
+truncation/half-close handling, corrupt quota-secret preservation, a
+deterministic concurrent-secret schedule, and a SQLite migration failpoint are
+implemented. Generated transcript and `PlayerError` taint corpora cover
+hundreds of nested, escaped, encoded, and round-tripped cases; all three
+redaction families they found are now positive regressions backed by one
+shared classification policy. The reconnect model exposed one open
+acknowledgement-fencing defect with two exact schedules. This is not yet
+coverage-guided fuzzing, a transport-level reconnect reference model, a
 bidirectional real-pipe drop/delay harness, or comprehensive crash-consistency
 injection.
 
@@ -1849,7 +1863,8 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. add deterministic clock and schedule control to reconnect, TLS rotation,
+3. extend the reconnect model through delivery acknowledgement, then add
+   deterministic clock and schedule control to reconnect, TLS rotation,
    persistence, and process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog;

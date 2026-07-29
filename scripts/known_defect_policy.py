@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Fail-closed registry for executable known-defect characterizations.
 
-A clean tree has an explicit empty defect array. Known product defects are kept
-as narrowly matched ``should_panic`` tests until the product fix converts them
-into positive regressions. This validator makes that temporary state explicit:
-every such test must have an owner, finding, expiry, exact panic oracle, and
-selector, and no known-defect selector may be promoted into the positive
-behavior catalog.
+Known product defects are kept as narrowly matched ``should_panic`` tests until
+the product fix converts them into positive regressions. A defect-free tree has
+an explicit empty defect array. This validator makes any temporary defect state
+explicit: every such test must have an owner, finding, expiry, exact panic
+oracle, and selector, and no known-defect selector may be promoted into the
+positive behavior catalog.
 """
 
 from __future__ import annotations

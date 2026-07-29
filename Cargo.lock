@@ -3684,6 +3684,7 @@ version = "0.2.4"
 dependencies = [
  "getrandom 0.4.3",
  "md-5",
+ "proptest",
  "serde_json",
  "sha2",
  "sorotte-core",
