@@ -4,7 +4,6 @@ use std::path::Path;
 pub(super) enum NativeControlKind {
     Any,
     Button,
-    MenuItem,
 }
 
 impl NativeControlKind {
@@ -12,7 +11,6 @@ impl NativeControlKind {
         match self {
             Self::Any => "control",
             Self::Button => "button",
-            Self::MenuItem => "menu-item",
         }
     }
 }
@@ -39,6 +37,7 @@ pub(super) trait NativeGuiDriver {
         width: i32,
         height: i32,
     ) -> Result<(), String>;
+    fn press_escape(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_named_control_down(
@@ -59,7 +58,6 @@ pub(super) trait NativeGuiDriver {
         &self,
         window: Self::WindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String>;
-    fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String>;
     fn count_named_controls(
         &self,
         window: Self::WindowHandle,
@@ -98,6 +96,17 @@ pub(super) trait NativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String>;
+    fn activate_named_control_by_keyboard(
+        &self,
+        _window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Err(format!(
+            "focused keyboard activation is unavailable for {} named {name:?}",
+            control_kind.label()
+        ))
+    }
     fn capture_window_png(
         &self,
         window: Self::WindowHandle,

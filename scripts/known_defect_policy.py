@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Fail-closed registry for executable known-defect characterizations.
 
-Known product defects are kept as narrowly matched ``should_panic`` tests until
-the product fix converts them into positive regressions. This validator makes
-that temporary state explicit: every such test must have an owner, finding,
-expiry, exact panic oracle, and selector, and no known-defect selector may be
-promoted into the positive behavior catalog.
+A clean tree has an explicit empty defect array. Known product defects are kept
+as narrowly matched ``should_panic`` tests until the product fix converts them
+into positive regressions. This validator makes that temporary state explicit:
+every such test must have an owner, finding, expiry, exact panic oracle, and
+selector, and no known-defect selector may be promoted into the positive
+behavior catalog.
 """
 
 from __future__ import annotations
@@ -219,8 +220,8 @@ def validate_registry(
     if type(registry["schema_version"]) is not int or registry["schema_version"] != SCHEMA_VERSION:
         raise PolicyError(f"unsupported registry schema {registry['schema_version']!r}")
     defects = registry["defect"]
-    if not isinstance(defects, list) or not defects:
-        raise PolicyError("registry.defect must be a non-empty list")
+    if not isinstance(defects, list):
+        raise PolicyError("registry.defect must be a list")
 
     actual = scan_characterizations(repo_root)
     positive_selectors = positive_behavior_selectors(catalog_path)

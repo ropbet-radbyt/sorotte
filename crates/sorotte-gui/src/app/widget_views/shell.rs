@@ -163,27 +163,6 @@ impl SorotteGuiShellAppState {
         )
     }
 
-    pub(crate) fn quick_actions_widget_tree(&self) -> GuiWidgetNode {
-        let can_open_media_file = self
-            .menus
-            .action(MenuActionId::OpenMedia)
-            .is_some_and(|action| action.enabled);
-
-        GuiWidgetNode::branch(
-            "shell:quick-actions",
-            "Quick Actions",
-            GuiWidgetKind::Panel,
-            vec![GuiWidgetNode::leaf(
-                "shell:quick:open-media-file",
-                "Quick Open Media File",
-                GuiWidgetKind::Button,
-                None,
-                can_open_media_file,
-                false,
-            )],
-        )
-    }
-
     pub(crate) fn shell_widget_tree(&self) -> GuiWidgetNode {
         let mut configuration = self.configuration_widget_tree();
         configuration.selected = self.active_view == GuiShellView::Setup;
@@ -324,7 +303,6 @@ impl SorotteGuiShellAppState {
                 ),
                 self.update_indicator_widget_tree(),
                 self.shell_modal_widget_tree(),
-                self.quick_actions_widget_tree(),
                 self.command_status_widget_tree(),
                 self.validation_widget_tree(),
                 notifications,

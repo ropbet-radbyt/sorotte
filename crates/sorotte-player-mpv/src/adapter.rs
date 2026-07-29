@@ -10790,6 +10790,135 @@ mod authoritative_reconciliation_regression_tests {
     use crate::lifecycle::LoadLifecycleReconciliation;
     use std::{collections::VecDeque, io};
 
+    #[test]
+    fn mismatched_authoritative_current_terminalizes_predecessor_before_external_admission() {
+        let mut adapter = MpvAdapter::default();
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch,
+            media_generation: PlayerMediaGeneration::new(1),
+            playlist_entry_id: 100,
+            observed_target: "C:/media/original.mkv".to_owned(),
+            file_loaded: false,
+        });
+        let predecessor = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("initial external predecessor");
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptSubmitted {
+            command_id: Some(PlayerCommandId::new(1)),
+            media_generation: PlayerMediaGeneration::new(2),
+            requested_target: "C:/media/commanded.mkv".to_owned(),
+            baseline_playlist_entry_ids: BTreeSet::from([100]),
+        });
+        let pending = adapter
+            .player_lifecycle
+            .attempt_for_command(PlayerCommandId::new(1))
+            .expect("pending commanded successor");
+        let entries = vec![AuthoritativePlaylistEntry::new(
+            101,
+            Some("C:/media/external.mkv".to_owned()),
+            true,
+        )];
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch,
+            entries: entries.clone(),
+            current_path: Some("C:/media/external.mkv".to_owned()),
+        });
+
+        adapter.observe_external_current_from_authority(&entries, Some("C:/media/external.mkv"));
+
+        adapter
+            .player_lifecycle
+            .assert_invariants()
+            .expect("authoritative external ingress must preserve lifecycle invariants");
+        let selected = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("authoritative external successor");
+        assert_ne!(selected, pending);
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&selected].playlist_entry_id,
+            Some(101)
+        );
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&predecessor].superseded_by, None,
+            "the authoritative snapshot terminalizes a contradicted predecessor before \
+             admitting the external current entry"
+        );
+        assert!(
+            adapter.player_lifecycle.load_attempts[&predecessor]
+                .state
+                .is_terminal()
+        );
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&selected].replaced_attempt, None,
+            "an external current entry admitted after terminalization has no live predecessor"
+        );
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&pending].replaced_attempt,
+            Some(predecessor),
+            "the unselected pending attempt may retain historical provenance once the \
+             predecessor is terminal and has no selected successor"
+        );
+    }
+
+    #[test]
+    fn accepted_load_detaches_a_rejected_successor_claim() {
+        let mut adapter = MpvAdapter::default();
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch,
+            media_generation: PlayerMediaGeneration::new(1),
+            playlist_entry_id: 100,
+            observed_target: "C:/media/original.mkv".to_owned(),
+            file_loaded: true,
+        });
+        let predecessor = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("initial external predecessor");
+        let rejected = adapter.submit_lifecycle_load(
+            Some(PlayerCommandId::new(1)),
+            PlayerMediaGeneration::new(2),
+            "C:/media/rejected.mkv",
+            BTreeSet::from([100]),
+        );
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptRejected {
+            attachment_epoch,
+            attempt_id: rejected,
+            failure: PlayerCommandFailureKind::Unknown,
+        });
+        let selected = adapter.submit_lifecycle_load(
+            Some(PlayerCommandId::new(2)),
+            PlayerMediaGeneration::new(3),
+            "C:/media/selected.mkv",
+            BTreeSet::from([100]),
+        );
+
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id: selected,
+        });
+
+        adapter
+            .player_lifecycle
+            .assert_invariants()
+            .expect("adapter acknowledgement ingress must preserve lifecycle invariants");
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&predecessor].superseded_by,
+            Some(selected)
+        );
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&selected].replaced_attempt,
+            Some(predecessor)
+        );
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&rejected].replaced_attempt, None,
+            "a rejected, unselected load must not keep a backlink to the selected predecessor"
+        );
+    }
+
     #[derive(Debug, Default)]
     struct InterleavedAuthorityTransport {
         pending_lines: VecDeque<String>,

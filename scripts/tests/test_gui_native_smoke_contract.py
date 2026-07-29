@@ -21,17 +21,42 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         steps = list(contract.GLOBAL_REQUIRED_STEPS)
         for scenario in scenarios:
             steps.extend(contract.SCENARIO_REQUIRED_STEPS[scenario])
+        capability_ids = list(contract.GLOBAL_REQUIRED_CAPABILITIES)
+        for scenario in scenarios:
+            capability_ids.extend(
+                contract.SCENARIO_REQUIRED_CAPABILITIES.get(scenario, ())
+            )
+        capability_outcomes = []
+        for capability_id in capability_ids:
+            source, evidence = contract.CAPABILITY_CONTRACTS[capability_id]
+            capability_outcomes.append(
+                {
+                    "capability_id": capability_id,
+                    "outcome": "required-pass",
+                    "source": source,
+                    "evidence": list(evidence),
+                }
+            )
         return {
             "result": "ok",
             "binary": r"C:\test\sorotte-gui.exe",
             "pid": 42,
             "window_title": "Sorotte",
+            "menu_source": "uia-accesskit",
             "menu_labels": ["&File", "Playback", "Advanced", "Window", "Help"],
+            "menu_automation_ids": [
+                "menu.section.file",
+                "menu.section.playback",
+                "menu.section.advanced",
+                "menu.section.window",
+                "menu.section.help",
+            ],
             "menu_contract": "verified",
             "accessible_name_count": 20,
             "accessibility_contract": "verified",
             "interaction_steps": steps,
             "interaction_contract": "verified",
+            "capability_outcomes": capability_outcomes,
             "closed": True,
             "duration_ms": 1200,
         }
@@ -114,6 +139,32 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         ):
             self.validate(report)
 
+    def test_menu_inventory_requires_accesskit_source_and_exact_stable_ids(self) -> None:
+        report = self.complete_report()
+        report["menu_source"] = "win32-hmenu"
+        report["menu_automation_ids"] = []
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "menu source must prove the UIA/AccessKit path",
+        ):
+            self.validate(report)
+
+        report = self.complete_report()
+        report["menu_automation_ids"][0] = "menu.section.files"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "missing required automation IDs",
+        ):
+            self.validate(report)
+
+        report = self.complete_report()
+        report["menu_automation_ids"].append("menu.section.file")
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "duplicate automation IDs",
+        ):
+            self.validate(report)
+
     def test_any_required_skip_step_fails(self) -> None:
         report = self.complete_report()
         report["interaction_steps"].append(
@@ -125,17 +176,91 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         ):
             self.validate(report)
 
-    def test_baseline_detached_runtime_does_not_substitute_for_open_media(self) -> None:
+    def test_baseline_requires_disabled_open_media_evidence(self) -> None:
         report = self.complete_report()
-        report["interaction_steps"].remove("open-media-file")
+        report["interaction_steps"].remove("open-media-file-detached-disabled")
         report["interaction_steps"].append(
             "open-media-file-detached-runtime-unavailable"
         )
         with self.assertRaisesRegex(
             contract.NativeSmokeContractError,
-            "missing completion step 'open-media-file'",
+            "missing completion step 'open-media-file-detached-disabled'",
         ):
             self.validate(report)
+
+    def test_shortcut_only_does_not_substitute_for_menu_open_media(self) -> None:
+        scenarios = ("menu-open-media",)
+        report = self.complete_report(scenarios)
+        report["interaction_steps"].remove(
+            "menu-open-media-invoked-by-automation-id"
+        )
+        report["interaction_steps"].append("menu-open-media-invoked-by-ctrl-o")
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "missing completion step 'menu-open-media-invoked-by-automation-id'",
+        ):
+            self.validate(report, scenarios)
+
+    def test_structured_capabilities_are_required_exact_and_fail_closed(self) -> None:
+        scenarios = ("baseline", "menu-open-media")
+        report = self.complete_report(scenarios)
+        report["capability_outcomes"] = report["capability_outcomes"][1:]
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "missing required capability 'native.menu.inventory'",
+        ):
+            self.validate(report, scenarios)
+
+        report = self.complete_report(scenarios)
+        next(
+            outcome
+            for outcome in report["capability_outcomes"]
+            if outcome["capability_id"] == "native.shutdown.file-exit"
+        )["outcome"] = "skipped"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "must have outcome 'required-pass'",
+        ):
+            self.validate(report, scenarios)
+
+        report = self.complete_report(scenarios)
+        next(
+            outcome
+            for outcome in report["capability_outcomes"]
+            if outcome["capability_id"] == "native.menu.open-media.attached"
+        )["source"] = "keyboard-shortcut"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "must have source 'uia-accesskit\\+deterministic-test-player'",
+        ):
+            self.validate(report, scenarios)
+
+        report = self.complete_report(scenarios)
+        next(
+            outcome
+            for outcome in report["capability_outcomes"]
+            if outcome["capability_id"] == "native.menu.physical-input"
+        )["evidence"][1] = "menu-input-redelivered"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "must have exact evidence",
+        ):
+            self.validate(report, scenarios)
+
+        report = self.complete_report(scenarios)
+        report["capability_outcomes"].append(
+            {
+                "capability_id": "native.menu.unreviewed",
+                "outcome": "required-pass",
+                "source": "uia-accesskit",
+                "evidence": ["invented"],
+            }
+        )
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "unreviewed capability outcomes",
+        ):
+            self.validate(report, scenarios)
 
     def test_missing_scenario_completion_marker_fails(self) -> None:
         scenarios = ("transport",)
@@ -416,6 +541,8 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         self.assertIn("exit_code = if ($timedOut) { 124 }", process_helper)
         self.assertIn("wall_clock_timeout_ms", wrapper)
         self.assertIn("timeout_grace_ms", wrapper)
+        self.assertIn("SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR", wrapper)
+        self.assertIn("$processStart.EnvironmentVariables", process_helper)
         self.assertIn("-FilePath $nativeHarnessPath", wrapper)
         self.assertIn('"--expected-binary-sha256"', wrapper)
         self.assertIn('"--producer-exit-code"', wrapper)
@@ -504,6 +631,43 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
                 "HARNESS_START_FAILURE:",
                 stderr_path.read_text(encoding="utf-8"),
             )
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell process launch is Windows-only")
+    def test_process_wrapper_forwards_explicit_environment_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            stdout_path = root / "stdout.log"
+            stderr_path = root / "stderr.log"
+
+            def quote(value: pathlib.Path | str) -> str:
+                return str(value).replace("'", "''")
+
+            command = (
+                f". '{quote(SCRIPTS / 'gui-native-smoke-process.ps1')}'; "
+                "$result = Invoke-CapturedProcess "
+                "-FilePath (Get-Command powershell).Source "
+                "-Arguments @('-NoProfile','-Command',"
+                "'[Console]::Out.Write($env:SOROTTE_NATIVE_ENV_TEST)') "
+                f"-WorkingDirectory '{quote(root)}' "
+                f"-StdoutPath '{quote(stdout_path)}' "
+                f"-StderrPath '{quote(stderr_path)}' "
+                "-ProcessTimeoutMs 5000 "
+                "-EnvironmentVariables @{ SOROTTE_NATIVE_ENV_TEST = 'forwarded' }; "
+                "$result | ConvertTo-Json -Compress"
+            )
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(stdout_path.read_text(encoding="utf-8"), "forwarded")
+            self.assertEqual(stderr_path.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":

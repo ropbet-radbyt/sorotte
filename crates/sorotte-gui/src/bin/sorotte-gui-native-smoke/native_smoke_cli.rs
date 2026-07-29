@@ -3,16 +3,20 @@ use super::*;
 impl NativeSmokeReport {
     fn render_text(&self) -> String {
         format!(
-            "result=ok\nbinary={}\npid={}\nwindow_title={}\nmenu_labels={}\nmenu_contract={}\naccessible_name_count={}\naccessibility_contract={}\ninteraction_steps={}\ninteraction_contract={}\nclosed={}\nduration_ms={}\n",
+            "result=ok\nbinary={}\npid={}\nwindow_title={}\nmenu_source={}\nmenu_labels={}\nmenu_automation_ids={}\nmenu_contract={}\naccessible_name_count={}\naccessibility_contract={}\ninteraction_steps={}\ninteraction_contract={}\ncapability_outcomes={}\nclosed={}\nduration_ms={}\n",
             self.binary_path,
             self.pid,
             self.window_title,
+            self.menu_source,
             self.menu_labels.join("|"),
+            self.menu_automation_ids.join("|"),
             self.menu_contract,
             self.accessible_name_count,
             self.accessibility_contract,
             self.interaction_steps.join("|"),
             self.interaction_contract,
+            serde_json::to_string(&self.capability_outcomes)
+                .expect("native capability outcomes should serialize"),
             self.closed,
             self.duration_ms
         )
@@ -31,17 +35,28 @@ impl NativeSmokeReport {
             .map(|step| render_json_string(step))
             .collect::<Vec<_>>()
             .join(",");
+        let menu_automation_ids = self
+            .menu_automation_ids
+            .iter()
+            .map(|automation_id| render_json_string(automation_id))
+            .collect::<Vec<_>>()
+            .join(",");
+        let capability_outcomes = serde_json::to_string(&self.capability_outcomes)
+            .expect("native capability outcomes should serialize");
         format!(
-            "{{\"result\":\"ok\",\"binary\":{},\"pid\":{},\"window_title\":{},\"menu_labels\":[{}],\"menu_contract\":{},\"accessible_name_count\":{},\"accessibility_contract\":{},\"interaction_steps\":[{}],\"interaction_contract\":{},\"closed\":{},\"duration_ms\":{}}}\n",
+            "{{\"result\":\"ok\",\"binary\":{},\"pid\":{},\"window_title\":{},\"menu_source\":{},\"menu_labels\":[{}],\"menu_automation_ids\":[{}],\"menu_contract\":{},\"accessible_name_count\":{},\"accessibility_contract\":{},\"interaction_steps\":[{}],\"interaction_contract\":{},\"capability_outcomes\":{},\"closed\":{},\"duration_ms\":{}}}\n",
             render_json_string(&self.binary_path),
             self.pid,
             render_json_string(&self.window_title),
+            render_json_string(&self.menu_source),
             labels,
+            menu_automation_ids,
             render_json_string(&self.menu_contract),
             self.accessible_name_count,
             render_json_string(&self.accessibility_contract),
             interaction_steps,
             render_json_string(&self.interaction_contract),
+            capability_outcomes,
             if self.closed { "true" } else { "false" },
             self.duration_ms
         )

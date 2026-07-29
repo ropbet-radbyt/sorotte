@@ -262,8 +262,7 @@ fn generated_transcript_parse_diagnostics_never_echo_canaries() {
 }
 
 #[test]
-#[should_panic(expected = "structured credential aliases leaked from sanitized transcript")]
-fn known_defect_tc_sec_001_structured_credential_aliases_leak_from_sanitized_transcript() {
+fn structured_credential_aliases_are_redacted_from_sanitized_transcript() {
     let aliases = [
         "credentials",
         "futureCredential",

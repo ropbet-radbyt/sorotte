@@ -7,6 +7,13 @@ use super::super::{
 use super::windows_control_names::{is_local_ready_button_request, matches_control_identity};
 use super::{NativeControlKind, PlatformNativeGuiDriver, PlatformWindowHandle};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NamedControlInteraction {
+    Accessibility,
+    PhysicalClick,
+    FocusedKeyboard,
+}
+
 impl PlatformNativeGuiDriver {
     pub(super) fn invoke_named_control_internal(
         window: PlatformWindowHandle,
@@ -14,6 +21,35 @@ impl PlatformNativeGuiDriver {
         control_kind: NativeControlKind,
         prefer_last: bool,
         physical_click_only: bool,
+    ) -> Result<(), String> {
+        let interaction = if physical_click_only {
+            NamedControlInteraction::PhysicalClick
+        } else {
+            NamedControlInteraction::Accessibility
+        };
+        Self::interact_with_named_control(window, name, control_kind, prefer_last, interaction)
+    }
+
+    pub(super) fn activate_named_control_by_keyboard_internal(
+        window: PlatformWindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Self::interact_with_named_control(
+            window,
+            name,
+            control_kind,
+            false,
+            NamedControlInteraction::FocusedKeyboard,
+        )
+    }
+
+    fn interact_with_named_control(
+        window: PlatformWindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+        prefer_last: bool,
+        interaction: NamedControlInteraction,
     ) -> Result<(), String> {
         Self::with_ui_automation(window, "UI Automation interaction", |automation, root| {
             let elements = Self::collect_subtree_elements(automation, root)?;
@@ -144,12 +180,44 @@ impl PlatformNativeGuiDriver {
             for candidate in candidates {
                 let mut candidate_errors = Vec::new();
 
-                if physical_click_only {
-                    let click_result = Self::click_element_center(window, &candidate, name);
+                if interaction == NamedControlInteraction::PhysicalClick {
+                    let click_result =
+                        Self::click_element_center(window, automation, &candidate, name);
                     if click_result.is_ok() {
                         return Ok(());
                     }
                     candidate_errors.push(click_result.err().unwrap_or_default());
+                    invoke_errors.push(candidate_errors.join("; "));
+                    continue;
+                }
+
+                if interaction == NamedControlInteraction::FocusedKeyboard {
+                    let keyboard_result = (|| -> Result<(), String> {
+                        Self::focus_window_element(
+                            window,
+                            &candidate,
+                            &format!("{name:?} keyboard activation target"),
+                        )?;
+                        thread::sleep(Duration::from_millis(120));
+                        if !Self::automation_element_has_keyboard_focus(&candidate) {
+                            return Err(format!(
+                                "{} named {name:?} did not acknowledge keyboard focus",
+                                control_kind.label()
+                            ));
+                        }
+                        Self::send_enter_key().map_err(|error| {
+                            format!(
+                                "failed to send Enter to focused {} named {name:?}: {error}",
+                                control_kind.label()
+                            )
+                        })?;
+                        thread::sleep(Duration::from_millis(120));
+                        Ok(())
+                    })();
+                    if keyboard_result.is_ok() {
+                        return Ok(());
+                    }
+                    candidate_errors.push(keyboard_result.err().unwrap_or_default());
                     invoke_errors.push(candidate_errors.join("; "));
                     continue;
                 }
@@ -168,7 +236,8 @@ impl PlatformNativeGuiDriver {
 
                 if control_kind == NativeControlKind::Button && is_local_ready_button_request(name)
                 {
-                    let click_result = Self::click_element_center(window, &candidate, name);
+                    let click_result =
+                        Self::click_element_center(window, automation, &candidate, name);
                     if click_result.is_ok() {
                         return Ok(());
                     }

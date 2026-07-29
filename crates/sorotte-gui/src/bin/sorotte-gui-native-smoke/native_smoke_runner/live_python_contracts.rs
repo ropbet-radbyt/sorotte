@@ -1,5 +1,16 @@
 use super::*;
 
+fn remaining_peer_handshake_time(deadline: Instant, phase: &str) -> Result<Duration, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(format!(
+            "live Python peer handshake exhausted its shared deadline during {phase}"
+        ))
+    } else {
+        Ok(remaining)
+    }
+}
+
 fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -71,13 +82,14 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: Some(TcpSessionBootstrap {
-            host: python_harness.host(),
-            port: python_harness.port(),
-            username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-            room: LIVE_PYTHON_INTEROP_ROOM,
-        }),
-        loopback_session: None,
+        network_mode: NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::Environment(TcpSessionBootstrap {
+                host: python_harness.host(),
+                port: python_harness.port(),
+                username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                room: LIVE_PYTHON_INTEROP_ROOM,
+            }),
+        },
         attach_test_player: false,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -138,9 +150,24 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )
         .map_err(|error| format!("live Python interop initial local row: {error}"))?;
+        let peer_handshake_deadline = Instant::now() + step_timeout;
         python_harness
-            .start_peer_connected()
+            .start_peer_connected_with_timeout(remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "Python protocol login",
+            )?)
             .map_err(|error| format!("failed to connect live Python reference peer: {error}"))?;
+        python_harness
+            .wait_for_peer_observed_user_presence(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                remaining_peer_handshake_time(
+                    peer_handshake_deadline,
+                    "Python observation of the GUI roster entry",
+                )?,
+            )
+            .map_err(|error| {
+                format!("live Python reference peer did not observe the GUI roster entry: {error}")
+            })?;
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -148,21 +175,34 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "view: setup",
             "Advanced",
             "Trusted Domains",
-            step_timeout,
+            remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "GUI projection refresh navigation",
+            )?,
         )?;
         navigate_to_view_with_wait(
             driver,
             window,
             ROOM_SURFACE_AUTOMATION_ID,
             "view: room",
-            step_timeout,
+            remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "GUI room projection navigation",
+            )?,
         )?;
-        wait_for_room_browser_visible(driver, window, step_timeout)?;
+        wait_for_room_browser_visible(
+            driver,
+            window,
+            remaining_peer_handshake_time(peer_handshake_deadline, "GUI room-browser projection")?,
+        )?;
         wait_for_accessible_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_USERNAME,
-            step_timeout,
+            remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "GUI observation of the Python roster entry",
+            )?,
         )
         .map_err(|error| format!("live Python interop peer connect row: {error}"))?;
         steps.push("transport-python-peer-connect".to_owned());
@@ -351,14 +391,34 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         .map_err(|error| format!("live Python interop peer disconnect local row: {error}"))?;
         steps.push("transport-python-peer-disconnect".to_owned());
 
+        let reconnect_handshake_deadline = Instant::now() + step_timeout;
         python_harness
-            .start_peer_connected()
+            .start_peer_connected_with_timeout(remaining_peer_handshake_time(
+                reconnect_handshake_deadline,
+                "Python protocol reconnect",
+            )?)
             .map_err(|error| format!("failed to reconnect live Python reference peer: {error}"))?;
+        python_harness
+            .wait_for_peer_observed_user_presence(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                remaining_peer_handshake_time(
+                    reconnect_handshake_deadline,
+                    "Python observation of the GUI roster entry after reconnect",
+                )?,
+            )
+            .map_err(|error| {
+                format!(
+                    "reconnected Python reference peer did not observe the GUI roster entry: {error}"
+                )
+            })?;
         wait_for_accessible_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_USERNAME,
-            step_timeout,
+            remaining_peer_handshake_time(
+                reconnect_handshake_deadline,
+                "GUI observation of the Python roster entry after reconnect",
+            )?,
         )
         .map_err(|error| format!("live Python interop peer reconnect row: {error}"))?;
         steps.push("transport-python-peer-reconnect".to_owned());
@@ -391,7 +451,8 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "live-python", error);
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -439,13 +500,14 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: Some(TcpSessionBootstrap {
-            host: python_harness.host(),
-            port: python_harness.port(),
-            username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-            room: LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
-        }),
-        loopback_session: None,
+        network_mode: NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::Environment(TcpSessionBootstrap {
+                host: python_harness.host(),
+                port: python_harness.port(),
+                username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                room: LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
+            }),
+        },
         attach_test_player: false,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -489,14 +551,36 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
             step_timeout,
         )?;
 
-        python_harness.start_peer_connected().map_err(|error| {
-            format!("failed to connect live Python reference peer in controlled room: {error}")
-        })?;
+        let peer_handshake_deadline = Instant::now() + step_timeout;
+        python_harness
+            .start_peer_connected_with_timeout(remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "controlled-room Python protocol login",
+            )?)
+            .map_err(|error| {
+                format!("failed to connect live Python reference peer in controlled room: {error}")
+            })?;
+        python_harness
+            .wait_for_peer_observed_user_presence(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                remaining_peer_handshake_time(
+                    peer_handshake_deadline,
+                    "controlled-room Python observation of the GUI roster entry",
+                )?,
+            )
+            .map_err(|error| {
+                format!(
+                    "controlled-room Python reference peer did not observe the GUI roster entry: {error}"
+                )
+            })?;
         wait_for_accessible_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_USERNAME,
-            step_timeout,
+            remaining_peer_handshake_time(
+                peer_handshake_deadline,
+                "controlled-room GUI observation of the Python roster entry",
+            )?,
         )?;
         steps.push("transport-python-peer-controlled-room-connect".to_owned());
 
@@ -528,7 +612,8 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "controlled-room", error);
         let _ = child.kill();
         let _ = child.wait();
     }

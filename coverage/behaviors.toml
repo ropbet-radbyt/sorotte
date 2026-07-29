@@ -186,11 +186,12 @@ required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
 id = "PL-PROP-001"
-title = "Shrinkable reducer-input histories preserve unquarantined epoch and ordering contracts"
+title = "Shrinkable reducer-input histories preserve lifecycle graph, epoch, and ordering contracts"
 risk = "high"
 owners = ["player"]
 invariants = [
-    "every transition outside the two tracked known-defect classes preserves reducer invariants",
+    "every generated transition preserves reducer invariants without a known-defect quarantine",
+    "a predecessor has at most one selected successor and all backlinks are reciprocal",
     "event identities are unique and strictly increase within each attachment epoch",
     "terminal-result identities are emitted at most once",
 ]
@@ -201,20 +202,56 @@ kind = "rust-test"
 oracle = "generative-model"
 package = "sorotte-player-mpv"
 target_kind = "lib"
-test = "lifecycle::property_tests::generated_reducer_input_histories_preserve_unquarantined_contracts"
+test = "lifecycle::property_tests::generated_reducer_input_histories_preserve_contracts"
 source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior.proof]]
-id = "PL-PROP-001.quarantine-soundness"
+id = "PL-PROP-001.external-successor-conflict"
 kind = "rust-test"
-oracle = "classifier-negative-controls"
+oracle = "positive-causal-regression"
 package = "sorotte-player-mpv"
 target_kind = "lib"
-test = "lifecycle::property_tests::known_defect_quarantine_is_bound_to_the_exact_causal_state"
+test = "lifecycle::property_tests::tc_player_001_external_replacement_preserves_reciprocal_links"
 source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.rejected-successor-conflict"
+kind = "rust-test"
+oracle = "positive-causal-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::tc_player_001_acceptance_detaches_rejected_successor_backlink"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.adapter-accepted-successor"
+kind = "rust-test"
+oracle = "adapter-ingress-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "adapter::authoritative_reconciliation_regression_tests::accepted_load_detaches_a_rejected_successor_claim"
+source = "crates/sorotte-player-mpv/src/adapter.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.adapter-authoritative-terminalization"
+kind = "rust-test"
+oracle = "adapter-ingress-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "adapter::authoritative_reconciliation_regression_tests::mismatched_authoritative_current_terminalizes_predecessor_before_external_admission"
+source = "crates/sorotte-player-mpv/src/adapter.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]

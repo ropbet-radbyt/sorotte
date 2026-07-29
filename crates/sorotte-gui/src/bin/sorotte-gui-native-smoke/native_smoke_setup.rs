@@ -31,6 +31,7 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     launch: GuiLaunchConfig<'_>,
     test_overrides: GuiLaunchTestOverrides<'_>,
 ) -> Result<Child, String> {
+    prepare_native_network_mode(launch)?;
     let mut command = Command::new(binary_path);
     if let Some(parent) = binary_path.parent() {
         command.current_dir(parent);
@@ -52,6 +53,8 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
         "SOROTTE_GUI_TEST_PLAYER_SETTINGS_DEGRADED",
         "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH",
         "SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT",
+        "SOROTTE_GUI_TEST_PLAYER_OBSERVATION_PATH",
+        "SOROTTE_GUI_TEST_LIFECYCLE_OBSERVATION_PATH",
         "SOROTTE_CLIENT_CONFIG_ROOT",
         "SOROTTE_CLIENT_INSTALL_ROOT",
     ] {
@@ -73,7 +76,18 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     if let Some(path) = test_overrides.config_storage_browse_path {
         command.env("SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH", path);
     }
-    if test_overrides.disable_startup_saved_connect {
+    if let Some(path) = test_overrides.test_player_observation_path {
+        command.env("SOROTTE_GUI_TEST_PLAYER_OBSERVATION_PATH", path);
+    }
+    if let Some(path) = test_overrides.lifecycle_observation_path {
+        command.env("SOROTTE_GUI_TEST_LIFECYCLE_OBSERVATION_PATH", path);
+    }
+    if test_overrides.disable_startup_saved_connect
+        || matches!(
+            launch.network_mode,
+            NativeNetworkMode::Detached | NativeNetworkMode::InProcessLoopback { .. }
+        )
+    {
         command.env("SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT", "true");
     }
     if test_overrides.player_settings_degraded {
@@ -101,16 +115,25 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     if let Some(drop_target) = launch.drop_target {
         command.env("SOROTTE_GUI_TEST_DROP_TARGET", drop_target);
     }
-    if let Some(tcp_session) = launch.tcp_session {
-        command.env("SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_TCP", "true");
-        command.env("SOROTTE_CLIENT_HOST", tcp_session.host);
-        command.env("SOROTTE_CLIENT_PORT", tcp_session.port.to_string());
-        command.env("SOROTTE_CLIENT_USERNAME", tcp_session.username);
-        command.env("SOROTTE_CLIENT_ROOM", tcp_session.room);
-    } else if let Some((username, room)) = launch.loopback_session {
-        command.env("SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK", "true");
-        command.env("SOROTTE_CLIENT_USERNAME", username);
-        command.env("SOROTTE_CLIENT_ROOM", room);
+    match launch.network_mode {
+        NativeNetworkMode::Detached
+        | NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::SavedConfig,
+        } => {}
+        NativeNetworkMode::InProcessLoopback { username, room } => {
+            command.env("SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK", "true");
+            command.env("SOROTTE_CLIENT_USERNAME", username);
+            command.env("SOROTTE_CLIENT_ROOM", room);
+        }
+        NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::Environment(tcp_session),
+        } => {
+            command.env("SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_TCP", "true");
+            command.env("SOROTTE_CLIENT_HOST", tcp_session.host);
+            command.env("SOROTTE_CLIENT_PORT", tcp_session.port.to_string());
+            command.env("SOROTTE_CLIENT_USERNAME", tcp_session.username);
+            command.env("SOROTTE_CLIENT_ROOM", tcp_session.room);
+        }
     }
     if launch.attach_test_player {
         command.env("SOROTTE_GUI_ENABLE_TEST_PLAYER", "true");
@@ -118,6 +141,73 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     command
         .spawn()
         .map_err(|error| format!("failed to launch sorotte-gui at {binary_path:?}: {error}"))
+}
+
+fn validate_native_loopback_host(host: &str) -> Result<(), String> {
+    let trimmed = host.trim();
+    let normalized = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    if normalized.eq_ignore_ascii_case("localhost")
+        || normalized
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "native smoke TCP fixtures must use an explicit loopback host, got {host:?}"
+    ))
+}
+
+fn prepare_native_network_mode(launch: GuiLaunchConfig<'_>) -> Result<(), String> {
+    let loopback_host = match launch.network_mode {
+        NativeNetworkMode::Detached | NativeNetworkMode::InProcessLoopback { .. } => {
+            return Ok(());
+        }
+        NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::Environment(session),
+        } => session.host.to_owned(),
+        NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::SavedConfig,
+        } => {
+            let settings =
+                load_sorotte_ini_stored_client_settings_mvp_from_path(launch.config_path)
+                    .map_err(|error| {
+                        format!(
+                            "failed to validate native saved TCP fixture {}: {error}",
+                            launch.config_path.display()
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        format!(
+                            "native saved TCP fixture {} did not contain settings",
+                            launch.config_path.display()
+                        )
+                    })?;
+            settings.host.ok_or_else(|| {
+                format!(
+                    "native saved TCP fixture {} did not define a host",
+                    launch.config_path.display()
+                )
+            })?
+        }
+    };
+    validate_native_loopback_host(&loopback_host)?;
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+        launch.config_path,
+        &StoredClientSettingsMvp {
+            tls_policy: Some("Plaintext".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to force plaintext for native loopback TCP fixture {}: {error}",
+            launch.config_path.display()
+        )
+    })
 }
 
 pub(super) fn wait_for_main_window<D: NativeGuiDriver>(
@@ -161,6 +251,56 @@ pub(super) fn wait_for_process_exit(child: &mut Child, timeout: Duration) -> Res
             return Err("timed out waiting for sorotte-gui to exit after close request".to_owned());
         }
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+pub(super) fn wait_for_lifecycle_events(
+    path: &Path,
+    expected_events: &[&str],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_events = Vec::new();
+    loop {
+        if let Ok(contents) = fs::read_to_string(path) {
+            let events = contents
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .map_err(|error| {
+                            format!(
+                                "lifecycle observation {} contained invalid JSON line {line:?}: {error}",
+                                path.display()
+                            )
+                        })?
+                        .get("event")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            format!(
+                                "lifecycle observation {} line did not contain an event string: {line:?}",
+                                path.display()
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if events
+                .iter()
+                .map(String::as_str)
+                .eq(expected_events.iter().copied())
+            {
+                return Ok(());
+            }
+            last_events = events;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for exact GUI lifecycle events at {}; expected={expected_events:?}, observed={last_events:?}",
+                path.display()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -527,4 +667,92 @@ pub(super) fn wait_for_saved_configuration(
         last_mismatch,
         last_contents,
     ))
+}
+
+#[cfg(test)]
+mod native_network_mode_tests {
+    use super::*;
+
+    fn saved_tcp_launch<'a>(config_path: &'a Path, media_path: &'a Path) -> GuiLaunchConfig<'a> {
+        GuiLaunchConfig {
+            config_path,
+            media_search_browse_path: media_path,
+            open_media_file_path: media_path,
+            public_servers_spec: "[]",
+            network_mode: NativeNetworkMode::TcpLoopback {
+                bootstrap: NativeTcpBootstrap::SavedConfig,
+            },
+            attach_test_player: false,
+            drop_file_paths_spec: None,
+            drop_target: None,
+        }
+    }
+
+    #[test]
+    fn native_tcp_fixture_host_validation_accepts_only_loopback_targets() {
+        for accepted in ["127.0.0.1", "127.42.0.9", "::1", "[::1]", "localhost"] {
+            assert!(
+                validate_native_loopback_host(accepted).is_ok(),
+                "expected {accepted:?} to be accepted as loopback"
+            );
+        }
+        for rejected in [
+            "syncplay.example",
+            "saved.example",
+            "192.0.2.10",
+            "0.0.0.0",
+            "::",
+            "",
+        ] {
+            assert!(
+                validate_native_loopback_host(rejected).is_err(),
+                "expected {rejected:?} to be rejected as a native TCP fixture"
+            );
+        }
+    }
+
+    #[test]
+    fn saved_tcp_fixture_is_rejected_off_loopback_and_forced_to_plaintext_on_loopback() {
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-native-network-mode-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).expect("network-mode fixture directory should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_path = root.join("media");
+
+        upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &StoredClientSettingsMvp {
+                host: Some("saved.example".to_owned()),
+                port: Some(8999),
+                ..StoredClientSettingsMvp::default()
+            },
+        )
+        .expect("off-loopback saved fixture should be written");
+        assert!(
+            prepare_native_network_mode(saved_tcp_launch(&config_path, &media_path))
+                .unwrap_err()
+                .contains("explicit loopback host")
+        );
+
+        upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &StoredClientSettingsMvp {
+                host: Some("127.0.0.1".to_owned()),
+                port: Some(8999),
+                ..StoredClientSettingsMvp::default()
+            },
+        )
+        .expect("loopback saved fixture should be written");
+        prepare_native_network_mode(saved_tcp_launch(&config_path, &media_path))
+            .expect("loopback saved fixture should be accepted");
+        let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+            .expect("loopback saved fixture should load")
+            .expect("loopback saved fixture settings should exist");
+        assert_eq!(settings.tls_policy.as_deref(), Some("Plaintext"));
+
+        fs::remove_dir_all(root).expect("network-mode fixture directory should be removed");
+    }
 }

@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn live_python_peer_probe_advertises_the_playlist_behavior_it_exercises() {
+    let path = python_live_peer_probe_script_path();
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read live Python peer probe {path:?}: {error}"));
+
+    assert!(
+        source.contains(r#""sharedPlaylists": True"#),
+        "the reference peer must advertise shared-playlist protocol support"
+    );
+    assert!(
+        source.contains(r#""sharedPlaylistEnabled": True"#),
+        "the reference peer must enable the shared-playlist client path"
+    );
+}
+
+#[test]
 fn python_interop_roundtrip_returns_server_hello() {
     let transcript = match run_python_handshake_roundtrip() {
         Ok(transcript) => transcript,

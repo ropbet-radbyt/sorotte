@@ -58,7 +58,8 @@ function Invoke-CapturedProcess {
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath,
-        [Parameter(Mandatory = $true)][int]$ProcessTimeoutMs
+        [Parameter(Mandatory = $true)][int]$ProcessTimeoutMs,
+        [hashtable]$EnvironmentVariables = @{}
     )
 
     $processStart = [System.Diagnostics.ProcessStartInfo]::new()
@@ -71,6 +72,9 @@ function Invoke-CapturedProcess {
     $processStart.RedirectStandardError = $true
     $processStart.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $processStart.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    foreach ($name in $EnvironmentVariables.Keys) {
+        $processStart.EnvironmentVariables[[string]$name] = [string]$EnvironmentVariables[$name]
+    }
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $processStart

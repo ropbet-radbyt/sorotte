@@ -1,8 +1,9 @@
 # Sorotte Test Coverage and Verification Strategy
 
-Status: proposal with first implementation tranche
+Status: proposal with implementation tranche and lean-fix follow-through
 
 Audit date: 2026-07-28
+Lean-fix implementation update: 2026-07-29
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -15,10 +16,10 @@ Target audience: maintainers, reviewers, and release owners
 
 ## Implementation status on this branch
 
-This branch implements the highest-leverage part of the proposal without
-changing production behavior:
+This branch implements the highest-leverage part of the proposal, then applies
+the non-controversial lean fixes proven by that coverage:
 
-- a fail-closed behavior catalog with 13 behavior IDs and 22 exact proofs;
+- a fail-closed behavior catalog with 13 behavior IDs and 25 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
   14-scenario GUI semantic inventory;
 - Git SHA, repository, workflow-run, attempt, catalog, OS, selector, command,
@@ -34,7 +35,8 @@ changing production behavior:
   authorization, persistence, updater, and privacy paths, with a strict
   source-bound LLVM physical-line map, Git-diff binding, immutable base/head
   policy union, test-only path and inline `#[cfg(test)]` module exclusion, and
-  unmapped-line failure; contradictory LCOV remains a fail-closed diagnostic;
+  unmapped-line failure; diagnostic LCOV uses unique `DA` source lines while
+  preserving contradictory `LF`/`LH` summaries as typed audit evidence;
 - event-aware base resolution: PR merge-base, exact branch/updated-tag
   `before`, new-tag default-branch merge-base only for all-zero `before`, and
   an explicit manual base, with raw/effective provenance and always-run phase
@@ -43,9 +45,8 @@ changing production behavior:
   coverage workflows, plus an exact verified mpv source commit;
 - a fail-closed registry for all 25 ignored Rust tests, including explicit CI,
   manual-capability, fixture-maintenance, and expiring quarantine dispositions;
-- a separate expiring registry for seven known product defects and 14 exact
-  `should_panic` characterizations, mechanically barred from positive behavior
-  evidence;
+- an empty, schema-validated known-defect registry; every surfaced product
+  defect now has a positive regression and ordinary behavior evidence;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -54,38 +55,49 @@ changing production behavior:
   persistence-corruption, concurrent-secret, and migration-failpoint tests;
 - generated credential-taint coverage across transcript serialization,
   diagnostic dumps, parser errors, and player error display;
-- a strict nine-scenario native GUI contract with fresh-binary provenance,
-  preserved artifacts, forbidden skips, stderr enforcement, and a bounded
-  process-tree watchdog.
+- a strict ten-scenario native GUI contract with typed AccessKit menu
+  identities, structured capability outcomes, fresh-binary provenance,
+  preserved success and failure artifacts, forbidden skips, stderr
+  enforcement, a bounded process-tree watchdog, acknowledged physical menu
+  input, two-sided live-Python readiness, fail-closed loopback ownership, and
+  observable bounded File -> Exit shutdown;
+- positive regressions and lean production fixes for terminal reactivation,
+  SQLite migration atomicity, concurrent durable-secret initialization, and
+  all three credential-redaction families;
+- deterministic harness fixes for cross-shell timestamp comparison,
+  backward-compatible Python peer response correlation, panic-safe environment
+  restoration, causal Plex synchronization, detached native network isolation,
+  and updater stdio ownership.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
 atomicity failures, and three credential-redaction failures. They are
 documented in
-[TEST_COVERAGE_FINDINGS.md](TEST_COVERAGE_FINDINGS.md), represented by
-executable known-defect characterizations, and explicitly quarantined so
-randomized exploration continues. Production behavior was not changed; the
-reducer and persistence scheduling seams added for this work are compiled
-under `cfg(test)` and expose the real transition or concurrency boundary
-without changing the production wrapper. Native GUI
+[TEST_COVERAGE_FINDINGS.md](TEST_COVERAGE_FINDINGS.md). All seven now have
+positive regressions. The predecessor/successor lifecycle decision uses an
+exclusive-successor graph rule and the randomized reducer property runs
+without a quarantine or unchecked seam. The deterministic scheduling seams
+remain compiled under `cfg(test)` and expose the real transition or
+concurrency boundary. Native GUI
 execution also proved that the old runner accepted missing native menus and a
-skipped Open Media contract while emitting repeated outbound DNS failures; the
-strict harness now rejects and preserves that evidence without changing the
-application. Mutation, deterministic clocks/network scheduling, broader
+skipped Open Media contract while emitting repeated outbound DNS failures.
+The completed fix now proves exact UIA/AccessKit identities, detached
+disablement, attached stable-ID invocation, and exact player receipt; the
+detached baseline no longer performs startup network I/O. Mutation,
+deterministic clocks/network scheduling, broader
 crash-consistency injection, coverage-guided fuzzing, sanitizers, interactive
 native CI, and artifact-consumption tests remain proposed follow-on work.
-Final validation also exposed an
-existing PowerShell type-coercion defect in the package-path test harness; the
-correct manifest and the intentionally unfixed false failure are recorded in
-the findings ledger. A fresh locked all-feature Windows run on the pinned
-toolchain completed in 253.8 seconds and emitted a 15,089,306-byte LCOV
-artifact. LLVM's declared aggregate is 145,926 / 187,537 lines (77.81%),
-while the explicit `DA` inventory is 142,777 / 181,281 (78.76%); 309 of 392
-source records contain an `LF` or `LH` contradiction. Strict replay therefore
-fails before either ratchet is evaluated. Ordinary and instrumented workspace
-runs also exposed the intermittent CLI shared-lock poison cascade, and pinned
-nextest exposed an updater subprocess-handle leak. These harness findings
-remain unfixed and recorded.
+Final validation also exposed a PowerShell type-coercion defect in the
+package-path test harness; it now compares timestamp instants and passes under
+both supported shells. The exact-final locked all-feature Windows run completed
+in 235.1 seconds and emitted a 15,369,296-byte LCOV artifact. Its declared
+aggregate is 148,045 / 190,067 lines, while the explicit `DA` inventory is
+144,853 / 183,712; 310 of 395 source records contain an `LF` or `LH`
+contradiction. The diagnostic consumer now preserves both models and evaluates
+only unique `DA` line records, while missing executable mappings remain hard
+failures. Ordinary and instrumented workspace runs exposed the CLI shared-lock
+poison cascade, and pinned nextest exposed an updater subprocess-handle leak.
+Both have deterministic regressions and lean harness fixes.
 
 ## Contents
 
@@ -482,9 +494,9 @@ boundaries rather than adding hundreds more nearby examples.
 | Client-core lifecycle | broad reducer/projection/reconnect examples and required all-feature execution | reset is a manual field list; deeper reconnect scheduling model remains absent | stateful reference model, reset idempotence/preservation properties |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, and production-worker framed split/coalesce/truncate/duplicate/reorder/half-close coverage | no bidirectional real-pipe fault injector; ignored real bridge | stateful framed duplex harness, min/latest mpv, real command/response traces |
-| GUI runtime owner | many direct state and projection tests | bypasses actual pump; delivery-mode/mixed-getter debt | poison adapter through real refresh path, deterministic executor/clock |
-| GUI semantic model | 14 scenarios and an exact required evidence lane | preview bridge rather than native render; one preserved timing failure | deterministic peer readiness and strict prerequisites |
-| Native GUI | accessibility and screenshot infrastructure exists | strict wrapper rejects skips and unexpected stderr; complete interactive nine-scenario evidence remains unproven | strict capability schema, loopback config, ephemeral interactive runner |
+| GUI runtime owner | many direct state and projection tests plus bounded shutdown through the actual threaded pump | most behavior still bypasses the pump; delivery-mode/mixed-getter debt remains | poison adapter through real refresh path, deterministic executor/clock |
+| GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
+| Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, and pre-termination failure capture | the complete ten-scenario contract is locally green, but still needs an isolated interactive Windows CI lane and uses a deterministic player rather than real mpv | require the strict contract on an ephemeral interactive Windows lane, then add one real-mpv vertical slice |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
 | Media match/stream helper | extensive index and extraction examples | low line coverage, process/error paths, ignored ffmpeg harness | parser properties, generated media, ffmpeg CI lane, failure injection |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
@@ -572,9 +584,9 @@ semantic, updater, live compatibility, native, and Windows jobs create separate
 profiles that the coverage workflow never merges. That distinction is exactly
 why coverage must be collected from the actual required commands.
 
-### 6.2.1 Implementation-branch LCOV experiment
+### 6.2.1 Implementation-branch LCOV experiments
 
-The final implemented locked all-feature command completed locally on Windows
+The original locked all-feature command completed locally on Windows
 with cargo-llvm-cov 0.8.4 on the pinned Rust 1.97.1 toolchain:
 
 ```text
@@ -586,8 +598,8 @@ SHA-256: 24a96fa660daae828293b67f6505c315b593aace64ae8a15a3df27e0195a62a5
 ```
 
 An independent audit found `LF` or `LH` contradictions in 309 of 392 records,
-with no duplicate `DA` lines. Strict replay rejects the artifact before
-computing either the 80% ordinary or 90% critical result. The first
+with no duplicate `DA` lines. At that point strict replay rejected the artifact
+before computing either the 80% ordinary or 90% critical result. The first
 instrumented attempt also exposed an intermittent CLI test failure and 19
 secondary shared-lock poison failures. The same root failure later appeared
 without instrumentation; its isolated selector and CLI suite passed, and the
@@ -595,6 +607,24 @@ full workspace retry including doctests passed in 181.7 seconds. This is
 useful proof of producer feasibility and why the phase report must preserve
 failed first attempts; details and artifact digest are in
 [TEST_COVERAGE_FINDINGS.md](TEST_COVERAGE_FINDINGS.md#tc-harness-004-intermittent-cli-failure-poisons-the-shared-test-lock).
+
+The repaired exact-final-source experiment completed the instrumented
+workspace in 235.1 seconds and produced:
+
+```text
+395 source files
+declared LF/LH summary: 148,045 / 190,067 lines = 77.89%
+positive/unique DA:    144,853 / 183,712 lines = 78.84%
+15,369,296-byte LCOV artifact
+SHA-256: 1998ea2b60336018b796c5e2a6e14cd6cc58ac36377f6914993b86c18bd136bf
+```
+
+The contradiction remains widespread: 310 records mismatch at least one
+summary, 308 mismatch `LF`, and 259 mismatch `LH`. The diagnostic consumer now
+preserves both models, explicitly evaluates `unique-da-source-lines`, and
+still fails missing executable `DA` mappings. A separate PowerShell scanner
+matched every aggregate. The exact experiment is retained in
+[`lcov-dual-model-20260729.md`](evidence/test-coverage/lcov-dual-model-20260729.md).
 
 The named pinned toolchain initially lacked the LLVM tools component.
 `llvm-tools-preview` was explicitly installed on that toolchain in 237.5
@@ -659,20 +689,70 @@ The pre-hardening local native run exited successfully while recording:
 - repeated failed DNS attempts to `syncplay.example:8999` and
   `saved.example:8999`.
 
-The native adapter remains a synchronous legacy test player, not the
-acknowledged lifecycle adapter or real mpv.
+The native adapter remains a deterministic synchronous test player, not the
+acknowledged lifecycle adapter or real mpv. It now has an opt-in observation
+boundary that proves the exact path delivered to `open_file` without changing
+normal test-player behavior.
 
-The baseline permissiveness is visible in the producer implementation:
-`crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/native_smoke_runner.rs:136-141`
-turns an empty menu contract into a skip, and
-`crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/native_smoke_runner/baseline_contract.rs:575-631`
-can reduce failed Open Media discovery through all available methods to a
-successful skip.
+The historical producer converted an empty menu contract and failed Open Media
+discovery into successful skips. That implementation and its raw output are
+preserved in `docs/evidence/test-coverage/native-baseline-20260728.md`; the
+current producer no longer contains either skip path.
 
 The old wrapper selected only `baseline` and `relaunch` by default. The
-hardened wrapper now requires all nine implemented scenarios, rejects
-forbidden skips and unexpected stderr, and preserves the failed baseline
-evidence. A complete interactive pass has not yet been proved.
+hardened wrapper now requires all ten implemented scenarios, rejects forbidden
+skips and unexpected stderr, and preserves failed native screenshots and
+accessibility trees before terminating any primary or secondary live-window
+scenario. The final strengthened detached/attached menu contract passed three
+consecutive interactive runs. Two complete interactive attempts of all ten
+scenarios correctly failed: first in `live-python`, then in `controlled-room`,
+because `interop-py-peer` did not appear. Both also emitted forbidden
+placeholder DNS and TLS diagnostics. Follow-up isolated diagnostics exposed a
+File-popup input flake and a separate 80-second File -> Exit shutdown timeout.
+These were recorded as TC-HARNESS-007 through TC-HARNESS-009 and TC-NATIVE-002.
+
+The follow-up implementation resolves all four without broad retries or stderr
+allowlists. The Python harness and UIA runner perform a two-sided roster
+handshake under one deadline. Native launches use typed detached/in-process/TCP
+loopback modes and reject non-loopback TCP hosts before spawn. Scenario-owned
+servers remain alive until explicit release. Windows clicks require foreground
+acknowledgement, an exact UIA hit test, and atomic absolute-coordinate
+move/down and move/up endpoints; the baseline performs 25 single-delivery menu
+transactions and contains no toggle redelivery path. File -> Exit requires an
+ordered five-event product lifecycle trace and process exit within four
+seconds, backed by a bounded threaded-runtime shutdown.
+
+The final semantic replay also re-exposed the older live-Python playlist timing
+gap. Optimistic shell state could satisfy a playlist assertion after one owner
+pump, after which a blocking peer observation starved the receipt-owned
+multi-frame transport. Peer playlist and index observations now poll snapshots
+while continuing to pump the real owner, and the Python fixture truthfully
+advertises the shared-playlist capability it exercises. This turns transport
+progress into an explicit causal condition instead of depending on host
+scheduling or retries.
+
+Final current-source replay found a related native state-acknowledgement gap.
+An Interface & System tab could be focused while Playback & Search content
+remained active, even though both UIA and physical APIs returned success. Top
+tabs now advance through accessibility, physical, and exact focused-keyboard
+strategies only after the expected content appears. The baseline deliberately
+proves the keyboard modality. That replay also falsified the menu retry model:
+the shared desktop cursor moved between the intended-coordinate hit test and a
+zero-coordinate `SendInput` button event. Physical endpoints are now atomically
+bound to the normalized virtual-desktop target, and toggles are never
+redelivered. The native binary's 25 unit contracts are enrolled in
+`cargo test --workspace --all-features` rather than depending on an explicit
+binary-target command.
+
+Three final consecutive baseline runs covered 75 single-delivery physical menu
+transactions. Complete ten-scenario runs at
+`target/verification/gui-native-smoke/20260729T060756380Z-55276` and
+`target/verification/gui-native-smoke/20260729T061005422Z-54068` then passed
+all behavioral and strict checks in 110,173 and 109,614 ms respectively, both
+with zero native stderr. The causal failures, rejected hypotheses, artifact
+hashes, and final proof are preserved in
+[`docs/evidence/test-coverage/native-input-ownership-20260729.md`](evidence/test-coverage/native-input-ownership-20260729.md).
+The remaining work is CI placement, not an open native-contract defect.
 
 **Decision:** every native/semantic contract must have one of four structured
 states: `required-pass`, `optional-pass`, `optional-skip(reason)`, or
@@ -1196,10 +1276,12 @@ Branch implementation covers hundreds of recognized transcript and
 `PlayerError` cases across nested maps/arrays, JSON escaping, URLs, headers,
 cookies, paths, malformed parser input, fixed-point round trips, `Debug`, and
 diagnostic dumps. The generated oracle surfaced three distinct unredacted
-families, recorded as `TC-SEC-001` through `TC-SEC-003`; they remain
-`should_panic` characterizations and are not counted as positive behavior
-proof. Protocol, GUI projection, process logs, and crash artifacts still need
-the same generated-taint treatment.
+families, formerly recorded as `TC-SEC-001` through `TC-SEC-003`. A shared
+structured-key and diagnostic credential policy now closes those families,
+and their characterizations are positive regressions. Safe parser and mpv
+request diagnostics are explicit false-positive canaries. Protocol, GUI
+projection, process logs, and crash artifacts still need the same
+generated-taint treatment.
 
 For path and update security:
 
@@ -1510,11 +1592,12 @@ each failed or passed phase are retained in JSON. Semantic/native profiles are
 not yet merged. Test-only paths and complete inline `#[cfg(test)]` modules are
 reported outside the production denominator; the inline scanner masks Rust
 comments and literals and fails closed on ambiguous or unclosed module bodies.
-Both preserved LCOV artifacts still fail structural summary validation before
-either threshold; their strict diagnostic path is intentionally unchanged.
-The required gate instead consumes a canonical map attested to both native
-producer views. The fresh producer, artifact hashes, line-model delta,
-adversarial inventory, and six-phase proof are retained in
+Contradictory LCOV summaries are now retained as a typed diagnostic model while
+unique `DA` source lines drive the optional LCOV replay; malformed records and
+missing executable mappings still fail. The required gate continues to consume
+a source-bound canonical map attested to both native producer views. The fresh
+producer, artifact hashes, line-model delta, adversarial inventory, and
+six-phase proof are retained in
 [`llvm-native-line-map-20260728.md`](evidence/test-coverage/llvm-native-line-map-20260728.md).
 Clock seams remain unimplemented.
 
@@ -1541,9 +1624,8 @@ future-response rejection, truncation/half-close handling, corrupt
 quota-secret preservation, a deterministic concurrent-secret schedule, and a
 SQLite migration failpoint are implemented. Generated transcript and
 `PlayerError` taint corpora cover hundreds of nested, escaped, encoded, and
-round-tripped cases; three newly found redaction families remain executable
-known defects, so the absolute no-secret acceptance criterion is not yet met.
-This is not yet
+round-tripped cases; all three redaction families they found are now positive
+regressions backed by one shared classification policy. This is not yet
 coverage-guided fuzzing, a complete reconnect reference model, a
 bidirectional real-pipe drop/delay harness, or comprehensive crash-consistency
 injection.
@@ -1638,18 +1720,19 @@ crossed, and CI does not enforce all the evidence the report records.
 
 This tranche makes current proof materially stricter, adds the shrinkable
 lifecycle model and deterministic boundary faults, and encodes changed-line
-ratchets. It also demonstrates why those gates cannot simply be declared
-required yet: strict native evidence, nextest, PowerShell, ordinary workspace,
-and LCOV replay all exposed real red states that permissive or retry-only
-execution could hide.
+ratchets. It also demonstrates why gates must first run in fail-closed
+diagnostic mode: strict native evidence, nextest, PowerShell, ordinary
+workspace, and LCOV replay exposed real red states that permissive or
+retry-only execution would have hidden. Every surfaced product defect now has
+a positive regression; TC-PLAYER-001 uses the selected exclusive-successor
+rule and no defect quarantine remains.
 
 The most valuable remaining next steps are:
 
 1. merge semantic, native, compatibility, and OS-specific profiles where the
    instrumentation contracts are compatible;
-2. root-cause the updater-handle leak, CLI lock poison, semantic timing,
-   package-path coercion, and strict native failures in separate behavior
-   changes;
+2. promote the locally proven strict native inventory to an ephemeral,
+   interactive Windows required lane and retain its zero-stderr policy;
 3. add deterministic clock and schedule control to reconnect, TLS rotation,
    persistence, and process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical

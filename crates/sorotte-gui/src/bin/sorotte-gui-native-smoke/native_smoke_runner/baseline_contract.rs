@@ -5,7 +5,6 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     window: D::WindowHandle,
     config_path: &Path,
     media_search_browse_path: &Path,
-    open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
     let step_timeout = timeout.min(Duration::from_millis(4_000));
@@ -70,11 +69,11 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         steps.push("player-setup-existing-config-modal".to_owned());
     }
-    invoke_menu_command_with_fallback(
+    invoke_menu_action_by_id_with_wait(
         driver,
         window,
-        "Advanced",
-        "TLS Certificates",
+        ADVANCED_MENU_AUTOMATION_ID,
+        TLS_CERTIFICATES_MENU_AUTOMATION_ID,
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "TLS Certificate Prompt", step_timeout)?;
@@ -564,14 +563,20 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
     wait_for_accessible_name(driver, window, "Rewind On Desync", step_timeout)?;
-    select_top_tab_with_wait(
-        driver,
-        window,
-        CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
-        "Show OSD",
-        step_timeout,
-    )?;
+    driver
+        .activate_named_control_by_keyboard(
+            window,
+            CONFIG_INTERFACE_SYSTEM_TAB_AUTOMATION_ID,
+            NativeControlKind::Button,
+        )
+        .map_err(|error| {
+            format!(
+                "failed the required focused-keyboard activation of the Interface & System tab: {error}"
+            )
+        })?;
+    wait_for_accessible_name(driver, window, "Show OSD", step_timeout)?;
     wait_for_accessible_name(driver, window, "Language", step_timeout)?;
+    steps.push("config-tab-focused-keyboard-activation".to_owned());
     steps.push("config-reload-persisted".to_owned());
     steps.push("trusted-domains-persisted".to_owned());
     steps.push("config-readiness-persisted".to_owned());
@@ -581,107 +586,24 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     steps.push("config-osd-persisted".to_owned());
     steps.push("config-system-persisted".to_owned());
 
-    if select_top_tab_with_wait(
+    select_top_tab_with_wait(
         driver,
         window,
         CONFIG_PLAYBACK_SEARCH_TAB_AUTOMATION_ID,
         "Shared Playlists",
         step_timeout,
-    )
-    .is_err()
-    {
-        let error =
-            wait_for_accessible_name(driver, window, "Shared Playlists", step_timeout).unwrap_err();
-        steps.push(format!(
-            "open-media-prep-shared-playlists-skipped:{}",
-            error.replace('|', "/").replace('\n', " ")
-        ));
-    } else {
-        steps.push("open-media-prep-shared-playlists".to_owned());
-    }
+    )?;
+    steps.push("open-media-prep-shared-playlists".to_owned());
 
-    let open_media_invoked = if let Err(primary_error) = invoke_menu_command_with_wait(
+    verify_menu_action_enabled_state_by_id(
         driver,
         window,
-        "File",
-        "Open Media File",
-        NativeControlKind::MenuItem,
+        FILE_MENU_AUTOMATION_ID,
+        OPEN_MEDIA_MENU_AUTOMATION_ID,
+        false,
         step_timeout,
-    ) {
-        match invoke_menu_command_with_wait(
-            driver,
-            window,
-            "File",
-            "Open Media File",
-            NativeControlKind::Any,
-            step_timeout,
-        ) {
-            Ok(()) => true,
-            Err(fallback_error) => match invoke_named_control_with_wait(
-                driver,
-                window,
-                "Quick Open Media File",
-                NativeControlKind::Button,
-                step_timeout,
-            ) {
-                Ok(()) => true,
-                Err(button_error) => {
-                    steps.push(format!(
-                        "open-media-file-skipped:{}",
-                        format!(
-                            "menu-item-failure={primary_error}; fallback-failure={fallback_error}; button-failure={button_error}"
-                        )
-                        .replace('|', "/")
-                    ));
-                    false
-                }
-            },
-        }
-    } else {
-        true
-    };
-    if open_media_invoked {
-        let open_media_switched_to_main_window =
-            wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
-                .is_ok();
-        if open_media_switched_to_main_window {
-            wait_for_accessible_name(
-                driver,
-                window,
-                &open_media_file_path.display().to_string(),
-                step_timeout,
-            )?;
-            steps.push("open-media-file".to_owned());
-        } else {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                "Quick Open Media File",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
-                .is_ok()
-            {
-                wait_for_accessible_name(
-                    driver,
-                    window,
-                    &open_media_file_path.display().to_string(),
-                    step_timeout,
-                )?;
-                steps.push("open-media-file".to_owned());
-            } else {
-                wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
-                wait_for_accessible_name_fragment(
-                    driver,
-                    window,
-                    "requires a session or playback runtime connection",
-                    step_timeout,
-                )?;
-                steps.push("open-media-file-detached-runtime-unavailable".to_owned());
-            }
-        }
-    }
+    )?;
+    steps.push("open-media-file-detached-disabled".to_owned());
     navigate_to_view_with_fallback(
         driver,
         window,
@@ -694,28 +616,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
     steps.push("persistence-state-prepared".to_owned());
 
-    if let Err(primary_error) = invoke_menu_command_with_wait(
+    invoke_menu_action_by_id_with_wait(
         driver,
         window,
-        "Help",
-        "About",
-        NativeControlKind::MenuItem,
+        HELP_MENU_AUTOMATION_ID,
+        ABOUT_MENU_AUTOMATION_ID,
         step_timeout,
-    ) {
-        invoke_menu_command_with_wait(
-            driver,
-            window,
-            "Help",
-            "About",
-            NativeControlKind::Any,
-            step_timeout,
-        )
-        .map_err(|fallback_error| {
-            format!(
-                "failed to invoke About through menu item ({primary_error}); fallback also failed: {fallback_error}"
-            )
-        })?;
-    }
+    )?;
     wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
     wait_for_accessible_name(driver, window, "modal: about", step_timeout)?;
     wait_for_accessible_name(driver, window, "About Sorotte", step_timeout)?;
@@ -728,6 +635,18 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
     steps.push("about-opens-and-closes-modal".to_owned());
+
+    for _ in 0..25 {
+        verify_menu_action_enabled_state_by_id(
+            driver,
+            window,
+            FILE_MENU_AUTOMATION_ID,
+            EXIT_MENU_AUTOMATION_ID,
+            true,
+            step_timeout,
+        )?;
+    }
+    steps.push("menu-input-stress-25".to_owned());
 
     Ok(steps)
 }

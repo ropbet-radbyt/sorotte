@@ -164,6 +164,14 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["covered_lines"], 1)
         self.assertEqual(report["summary"]["percent"], "100.00")
+        self.assertEqual(
+            report["inputs"]["coverage_line_model"],
+            coverage.LCOV_LINE_MODEL,
+        )
+        self.assertEqual(
+            report["inputs"]["lcov_summary_audit"]["status"],
+            "consistent",
+        )
         self.assertRegex(report["inputs"]["lcov_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(report["inputs"]["diff_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(
@@ -222,7 +230,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertIsNone(report["summary"]["percent"])
         self.assertEqual(
             report["files"][0]["lines"][0]["reason"],
-            "lexical-structure-absent-from-lcov-map",
+            "lexical-structure-absent-from-lcov-unique-da-map",
         )
 
     def test_platform_gated_statement_missing_from_mapped_file_fails_closed(self) -> None:
@@ -260,7 +268,8 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(lines[1]["status"], "non-coverable")
         self.assertEqual(lines[2]["status"], "unmapped")
         self.assertEqual(
-            lines[2]["reason"], "executable-looking-line-absent-from-lcov-map"
+            lines[2]["reason"],
+            "executable-looking-line-absent-from-lcov-unique-da-map",
         )
         self.assertEqual(lines[3]["status"], "non-coverable")
 
@@ -1158,9 +1167,93 @@ class DiffCoverageTests(unittest.TestCase):
         )
         self.assert_input_error(lcov, self.patch(), "duplicates source line")
 
-    def test_lcov_summary_mismatch_fails_closed(self) -> None:
-        malformed = self.lcov().replace("LH:3", "LH:4")
-        self.assert_input_error(malformed, self.patch(), "summary mismatch")
+    def test_lcov_summary_mismatch_preserves_both_models_without_changing_da_policy(self) -> None:
+        contradictory = self.lcov().replace("LF:4", "LF:6").replace("LH:3", "LH:2")
+
+        report = self.build(contradictory, self.patch())
+
+        self.assertEqual(report["status"], "passed")
+        audit = report["inputs"]["lcov_summary_audit"]
+        self.assertEqual(audit["status"], "producer-summary-mismatch")
+        self.assertEqual(
+            audit["records"],
+            {
+                "total": 1,
+                "repository": 1,
+                "ignored_external": 0,
+                "summary_mismatched": 1,
+                "lf_mismatched": 1,
+                "lh_mismatched": 1,
+            },
+        )
+        self.assertEqual(
+            audit["declared_summary"],
+            {"lines_found": 6, "lines_hit": 2},
+        )
+        self.assertEqual(
+            audit["unique_da_summary"],
+            {"lines_found": 4, "lines_hit": 3},
+        )
+        self.assertEqual(
+            audit["mismatches"],
+            [
+                {
+                    "record": 1,
+                    "source": "src/lib.rs",
+                    "fields": ["LF", "LH"],
+                    "declared": {"lines_found": 6, "lines_hit": 2},
+                    "unique_da": {"lines_found": 4, "lines_hit": 3},
+                }
+            ],
+        )
+
+    def test_lcov_summary_mismatch_cannot_invent_an_absent_executable_da_line(self) -> None:
+        contradictory = self.lcov({1: 1, 2: 1, 3: 1}).replace("LF:3", "LF:4")
+        diff = self.patch(
+            old_range="5",
+            new_range="5",
+            body=["-        other", "+        0"],
+        )
+
+        report = self.build(contradictory, diff)
+
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["summary"]["coverable_lines"], 0)
+        self.assertEqual(report["summary"]["unmapped_lines"], 1)
+        self.assertEqual(
+            report["files"][0]["lines"][0]["reason"],
+            "executable-looking-line-absent-from-lcov-unique-da-map",
+        )
+
+    def test_lcov_rejects_an_internally_impossible_declared_summary(self) -> None:
+        malformed = self.lcov().replace("LH:3", "LH:5")
+        self.assert_input_error(malformed, self.patch(), "LH cannot exceed LF")
+
+    def test_lcov_cli_prints_the_preserved_summary_contradiction(self) -> None:
+        contradictory = self.lcov().replace("LF:4", "LF:6")
+        lcov_path, diff_path = self.write_inputs(contradictory, self.patch())
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = coverage.main(
+                [
+                    "--repo-root",
+                    str(self.repo),
+                    "--lcov",
+                    str(lcov_path),
+                    "--diff",
+                    str(diff_path),
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertIn("diff coverage: passed", stdout.getvalue())
+        self.assertIn(
+            "LF/LH summaries contradict unique DA records in 1/1 source record(s)",
+            stderr.getvalue(),
+        )
+        self.assertIn(coverage.LCOV_LINE_MODEL, stderr.getvalue())
 
     def test_lcov_requires_final_record_terminator(self) -> None:
         malformed = self.lcov().replace("end_of_record\n", "")

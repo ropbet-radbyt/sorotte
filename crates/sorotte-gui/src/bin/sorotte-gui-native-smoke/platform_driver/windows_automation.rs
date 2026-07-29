@@ -267,16 +267,97 @@ impl PlatformNativeGuiDriver {
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
         context: &str,
     ) -> Result<(), String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
-        // SAFETY: `window` is the GUI process window under test and `element` comes from the
-        // active UI Automation traversal. Focus failures are converted into driver errors.
+        Self::ensure_window_foreground(window, context)?;
+        // SAFETY: `element` comes from the active UI Automation traversal. Focus failures are
+        // converted into driver errors after the owning window is acknowledged as foreground.
         unsafe {
-            SetForegroundWindow(window);
             element
                 .SetFocus()
                 .map_err(|error| format!("failed to focus {context}: {error}"))
         }
+    }
+
+    pub(super) fn ensure_window_foreground(
+        window: PlatformWindowHandle,
+        context: &str,
+    ) -> Result<(), String> {
+        use std::{
+            thread,
+            time::{Duration, Instant},
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            BringWindowToTop, GetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow,
+            ShowWindow,
+        };
+
+        // SAFETY: `window` is the top-level GUI HWND discovered for the child process. Restoring
+        // and foregrounding it are bounded test-driver operations; invalid handles simply fail
+        // the acknowledgement check below.
+        unsafe {
+            if IsIconic(window) != 0 {
+                ShowWindow(window, SW_RESTORE);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut set_foreground_succeeded = false;
+        loop {
+            // SAFETY: Both calls operate on the validated top-level smoke-test HWND.
+            unsafe {
+                let _ = BringWindowToTop(window);
+                set_foreground_succeeded |= SetForegroundWindow(window) != 0;
+                if GetForegroundWindow() == window {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                // SAFETY: Diagnostic read of the current foreground HWND.
+                let observed = unsafe { GetForegroundWindow() };
+                return Err(format!(
+                    "failed to foreground {context} within 1s; SetForegroundWindow accepted={set_foreground_succeeded}, expected_hwnd={window:?}, foreground_hwnd={observed:?}"
+                ));
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    pub(super) fn verify_automation_hit_target(
+        automation: &windows::Win32::UI::Accessibility::IUIAutomation,
+        x: i32,
+        y: i32,
+        expected_identity: &str,
+    ) -> Result<(), String> {
+        use windows::Win32::Foundation::POINT;
+
+        // SAFETY: UI Automation is initialized for the active interaction scope and the point is
+        // a screen coordinate inside the target element's current bounding rectangle.
+        let mut element =
+            unsafe { automation.ElementFromPoint(POINT { x, y }) }.map_err(|error| {
+                format!(
+                    "UI Automation hit-test failed at ({x}, {y}) for {expected_identity:?}: {error}"
+                )
+            })?;
+        // SAFETY: The control-view walker belongs to the active UI Automation instance.
+        let walker = unsafe { automation.ControlViewWalker() }
+            .map_err(|error| format!("failed to obtain UI Automation control walker: {error}"))?;
+        let mut observed = Vec::new();
+        for _ in 0..12 {
+            let name = Self::automation_element_name(&element).unwrap_or_default();
+            let automation_id = Self::automation_element_automation_id(&element);
+            observed.push(format!("name={name:?}, automation_id={automation_id:?}"));
+            if name == expected_identity || automation_id == expected_identity {
+                return Ok(());
+            }
+            // SAFETY: `element` belongs to the current UI Automation traversal; reaching the
+            // root or a transiently unavailable parent ends the bounded ancestor walk.
+            let Ok(parent) = (unsafe { walker.GetParentElement(&element) }) else {
+                break;
+            };
+            element = parent;
+        }
+        Err(format!(
+            "UI Automation hit-test at ({x}, {y}) did not resolve to {expected_identity:?}; ancestor chain: {}",
+            observed.join(" -> ")
+        ))
     }
 
     pub(super) fn invoke_automation_element(

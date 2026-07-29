@@ -1,19 +1,17 @@
 use super::*;
 use sorotte_player_api::LocalFileUpdate;
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
 use std::sync::mpsc;
 use std::thread;
+use tokio::sync::oneshot;
 
-fn restore_env_key(env: &TestEnvGuard<'_>, key: &str, prior: Option<OsString>) {
-    match prior {
-        Some(value) => env.set_var(key, value),
-        None => env.remove_var(key),
-    }
-}
-
-fn spawn_test_plex_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+fn spawn_test_plex_server() -> (
+    String,
+    mpsc::Receiver<String>,
+    oneshot::Receiver<()>,
+    thread::JoinHandle<()>,
+) {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("Plex test listener should bind");
     listener
         .set_nonblocking(true)
@@ -22,9 +20,11 @@ fn spawn_test_plex_server() -> (String, mpsc::Receiver<String>, thread::JoinHand
         .local_addr()
         .expect("Plex test listener should have local addr");
     let (request_tx, request_rx) = mpsc::channel();
+    let (timeline_served_tx, timeline_served_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut accepted = 0_usize;
+        let mut timeline_served_tx = Some(timeline_served_tx);
         while accepted < 3 && std::time::Instant::now() < deadline {
             let Ok((mut stream, _)) = listener.accept() else {
                 thread::sleep(Duration::from_millis(10));
@@ -65,9 +65,19 @@ fn spawn_test_plex_server() -> (String, mpsc::Receiver<String>, thread::JoinHand
             );
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
+            if request_line.starts_with("GET /:/timeline?")
+                && let Some(timeline_served_tx) = timeline_served_tx.take()
+            {
+                let _ = timeline_served_tx.send(());
+            }
         }
     });
-    (format!("http://{addr}"), request_rx, handle)
+    (
+        format!("http://{addr}"),
+        request_rx,
+        timeline_served_rx,
+        handle,
+    )
 }
 
 #[test]
@@ -81,10 +91,6 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
         "SOROTTE_CLIENT_PLEX_SERVER_URL",
         "SOROTTE_CLIENT_PLEX_SERVER_TOKEN",
     ];
-    let prior = keys
-        .iter()
-        .map(|key| (*key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
     for key in keys {
         env.remove_var(key);
     }
@@ -121,10 +127,6 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
             .map(|token| token.expose_secret()),
         Some("stored-server-token")
     );
-
-    for (key, value) in prior {
-        restore_env_key(&env, key, value);
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -137,10 +139,6 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         "SOROTTE_CLIENT_PLEX_SERVER_URL",
         "SOROTTE_CLIENT_PLEX_SERVER_TOKEN",
     ];
-    let prior = keys
-        .iter()
-        .map(|key| (*key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
     for key in keys {
         env.remove_var(key);
     }
@@ -153,7 +151,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
             .as_nanos()
     ));
     let config_path = cache_root.join("sorotte.ini");
-    let (plex_url, plex_requests, plex_thread) = spawn_test_plex_server();
+    let (plex_url, plex_requests, plex_timeline_served, plex_thread) = spawn_test_plex_server();
     env.set_var("SOROTTE_CLIENT_CONFIG_PATH", config_path.as_os_str());
     env.set_var("SOROTTE_CLIENT_PLEX_SYNC", "1");
     env.set_var("SOROTTE_CLIENT_PLEX_TOKEN", "user-token");
@@ -182,11 +180,14 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
             .expect("file line read should succeed")
             .expect("file line should be present");
         assert!(file_line.contains("\"Set\""));
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::timeout(Duration::from_secs(5), plex_timeline_served)
+            .await
+            .expect("Plex timeline should be served before the fixture deadline")
+            .expect("Plex fixture must signal timeline completion");
     });
 
     let mut config = test_client_loop_config_with_addr(addr);
-    config.max_connected_runtime_seconds = 0.4;
+    config.max_connected_runtime_seconds = 8.0;
     let mut runtime = create_client_runtime(&config);
     runtime.with_player_io(|player| {
         player
@@ -222,10 +223,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     )
     .await
     .expect("connected session should run");
-    assert!(matches!(
-        exit,
-        ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
-    ));
+    assert_eq!(exit, ConnectedSessionExit::TransportClosed);
     server_task.await.expect("server task should join");
 
     let sections_request = plex_requests
@@ -278,7 +276,4 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         "Plex watch cache should not be written next to sorotte.ini"
     );
     let _ = std::fs::remove_dir_all(cache_root);
-    for (key, value) in prior {
-        restore_env_key(&env, key, value);
-    }
 }

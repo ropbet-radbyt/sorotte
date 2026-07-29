@@ -401,6 +401,20 @@ impl PlayerLifecycleState {
         LoadAttemptId::new(value)
     }
 
+    fn retain_only_selected_successor_claim(
+        &mut self,
+        predecessor_id: LoadAttemptId,
+        selected_successor_id: LoadAttemptId,
+    ) {
+        for attempt in self.load_attempts.values_mut() {
+            if attempt.id != selected_successor_id
+                && attempt.replaced_attempt == Some(predecessor_id)
+            {
+                attempt.replaced_attempt = None;
+            }
+        }
+    }
+
     pub fn attempt_for_command(&self, command_id: PlayerCommandId) -> Option<LoadAttemptId> {
         match self.commands.get(&command_id).map(|command| command.kind) {
             Some(LifecycleCommandKind::Load(attempt_id)) => Some(attempt_id),
@@ -1722,6 +1736,8 @@ impl PlayerLifecycleState {
             LoadAttemptState::Starting | LoadAttemptState::Active
         ) {
             self.active_load_attempt = Some(attempt_id);
+            self.logical_terminal = None;
+            self.provisional_eof = None;
             return;
         }
         if let Some(previous_id) = self.active_load_attempt
@@ -1748,6 +1764,7 @@ impl PlayerLifecycleState {
         let command_id = attempt.command_id;
         if !quiescent {
             self.active_load_attempt = Some(attempt_id);
+            self.logical_terminal = None;
             self.provisional_eof = None;
         }
         if first_start_observation {
@@ -2299,7 +2316,6 @@ pub enum PlayerLifecycleEffect {
 fn reduce_player_lifecycle_inner(
     mut state: PlayerLifecycleState,
     input: PlayerLifecycleInput,
-    assert_invariants: bool,
 ) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
     let mut effects = Vec::new();
     match input {
@@ -2419,9 +2435,16 @@ fn reduce_player_lifecycle_inner(
                 },
             );
             if let Some(predecessor_id) = predecessor_id
-                && let Some(predecessor) = state.load_attempts.get_mut(&predecessor_id)
-                && !predecessor.state.is_terminal()
+                && state
+                    .load_attempts
+                    .get(&predecessor_id)
+                    .is_some_and(|predecessor| !predecessor.state.is_terminal())
             {
+                state.retain_only_selected_successor_claim(predecessor_id, attempt_id);
+                let predecessor = state
+                    .load_attempts
+                    .get_mut(&predecessor_id)
+                    .expect("selected external predecessor remains present");
                 let predecessor_generation = predecessor.media_generation;
                 let predecessor_command = predecessor.command_id;
                 predecessor.superseded_by = Some(attempt_id);
@@ -2539,9 +2562,16 @@ fn reduce_player_lifecycle_inner(
                     .get(&predecessor_id)
                     .and_then(|attempt| attempt.command_id);
                 let mut revoked_predecessor_generation = None;
-                if let Some(predecessor) = state.load_attempts.get_mut(&predecessor_id)
-                    && !predecessor.state.is_terminal()
+                if state
+                    .load_attempts
+                    .get(&predecessor_id)
+                    .is_some_and(|predecessor| !predecessor.state.is_terminal())
                 {
+                    state.retain_only_selected_successor_claim(predecessor_id, attempt_id);
+                    let predecessor = state
+                        .load_attempts
+                        .get_mut(&predecessor_id)
+                        .expect("selected accepted predecessor remains present");
                     predecessor.superseded_by = Some(attempt_id);
                     predecessor.logical_ownership_revoked = true;
                     predecessor.state = LoadAttemptState::SupersededMayStillEmit {
@@ -3465,7 +3495,7 @@ fn reduce_player_lifecycle_inner(
             effects.push(PlayerLifecycleEffect::RequestLifecycleReconciliation);
         }
     }
-    if assert_invariants && let Err(reason) = state.assert_invariants() {
+    if let Err(reason) = state.assert_invariants() {
         debug_assert!(false, "player lifecycle invariant violated: {reason}");
     }
     (state, effects)
@@ -3475,15 +3505,7 @@ pub fn reduce_player_lifecycle(
     state: PlayerLifecycleState,
     input: PlayerLifecycleInput,
 ) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
-    reduce_player_lifecycle_inner(state, input, true)
-}
-
-#[cfg(test)]
-fn reduce_player_lifecycle_without_invariant_assertion(
-    state: PlayerLifecycleState,
-    input: PlayerLifecycleInput,
-) -> (PlayerLifecycleState, Vec<PlayerLifecycleEffect>) {
-    reduce_player_lifecycle_inner(state, input, false)
+    reduce_player_lifecycle_inner(state, input)
 }
 
 #[cfg(test)]

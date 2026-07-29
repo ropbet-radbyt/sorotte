@@ -9,9 +9,11 @@ every other missing line is unmapped and fails. This applies both to represented
 source files and to wholly missing files, preventing cfg-gated code and omitted
 crates from disappearing from the denominator.
 
-Strict LCOV ingestion remains available as a diagnostic compatibility mode. It
-continues to reject contradictory LF/LH summaries and is not used by the
-required changed-line gate.
+LCOV ingestion remains available as a diagnostic compatibility mode. It uses
+only unique ``DA`` source-line records for changed-line decisions, preserves
+the producer's ``LF``/``LH`` summaries as a separate audit model, and reports
+every disagreement without allowing either summary to invent or erase a
+physical line. It is not used by the required changed-line gate.
 
 Obvious test-only Rust paths are reported but excluded from the production
 percentage. The classification is path-based (tests/src/tests, tests.rs,
@@ -71,6 +73,7 @@ LLVM_LINE_MODEL = "unique-physical-source-lines"
 LLVM_EXPORT_TYPE = "llvm.coverage.json.export"
 LLVM_EXPORT_VERSION = "3.1.0"
 CARGO_LLVM_COV_VERSION = "0.8.4"
+LCOV_LINE_MODEL = "unique-da-source-lines"
 MAX_DIFF_BYTES = 64 * 1024 * 1024
 MAX_CRITICAL_POLICY_BYTES = 256 * 1024
 DEFAULT_CRITICAL_POLICY_PATH = "coverage/diff-coverage-policy.toml"
@@ -143,6 +146,29 @@ class ChangedFile:
 class SourceCoverage:
     path: str
     lines: Mapping[int, int]
+
+
+@dataclasses.dataclass(frozen=True)
+class LcovRecordAudit:
+    source: str | None
+    declared_lines_found: int
+    declared_lines_hit: int
+    unique_da_lines_found: int
+    unique_da_lines_hit: int
+
+    @property
+    def lf_mismatch(self) -> bool:
+        return self.declared_lines_found != self.unique_da_lines_found
+
+    @property
+    def lh_mismatch(self) -> bool:
+        return self.declared_lines_hit != self.unique_da_lines_hit
+
+
+@dataclasses.dataclass(frozen=True)
+class ParsedLcov:
+    sources: Mapping[str, SourceCoverage]
+    summary_audit: Mapping[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1360,7 +1386,7 @@ def parse_lcov_record(
     directives: Sequence[tuple[str, str, int]],
     *,
     repo_root: pathlib.Path,
-) -> SourceCoverage | None:
+) -> tuple[SourceCoverage | None, LcovRecordAudit]:
     source_values = [
         (value, line_number)
         for key, value, line_number in directives
@@ -1432,15 +1458,21 @@ def parse_lcov_record(
 
     if lf is None or lh is None:
         raise DiffCoverageError("each LCOV record must contain LF and LH summaries")
+    if lh > lf:
+        raise DiffCoverageError(
+            f"LCOV LH cannot exceed LF: declared {lf}/{lh}"
+        )
     expected_lf = len(data)
     expected_lh = sum(hits > 0 for hits in data.values())
-    if lf != expected_lf or lh != expected_lh:
-        raise DiffCoverageError(
-            f"LCOV LF/LH summary mismatch: declared {lf}/{lh}, "
-            f"computed {expected_lf}/{expected_lh}"
-        )
+    audit = LcovRecordAudit(
+        source=source,
+        declared_lines_found=lf,
+        declared_lines_hit=lh,
+        unique_da_lines_found=expected_lf,
+        unique_da_lines_hit=expected_lh,
+    )
     if source is None:
-        return None
+        return None, audit
     source_path = repo_root.joinpath(*pathlib.PurePosixPath(source).parts)
     try:
         source_line_count = len(source_path.read_text(encoding="utf-8").splitlines())
@@ -1452,10 +1484,74 @@ def parse_lcov_record(
             f"LCOV source {source!r} maps line(s) beyond its current "
             f"{source_line_count}-line file: {out_of_range[:5]}"
         )
-    return SourceCoverage(source, data)
+    return SourceCoverage(source, data), audit
 
 
-def parse_lcov(text: str, *, repo_root: pathlib.Path) -> dict[str, SourceCoverage]:
+def summarize_lcov_records(records: Sequence[LcovRecordAudit]) -> dict[str, Any]:
+    mismatch_reports: list[dict[str, Any]] = []
+    lf_mismatches = 0
+    lh_mismatches = 0
+    repository_records = 0
+    declared_found = 0
+    declared_hit = 0
+    unique_da_found = 0
+    unique_da_hit = 0
+    for index, record in enumerate(records, start=1):
+        if record.source is not None:
+            repository_records += 1
+        declared_found += record.declared_lines_found
+        declared_hit += record.declared_lines_hit
+        unique_da_found += record.unique_da_lines_found
+        unique_da_hit += record.unique_da_lines_hit
+        if record.lf_mismatch:
+            lf_mismatches += 1
+        if record.lh_mismatch:
+            lh_mismatches += 1
+        fields: list[str] = []
+        if record.lf_mismatch:
+            fields.append("LF")
+        if record.lh_mismatch:
+            fields.append("LH")
+        if fields:
+            mismatch_reports.append(
+                {
+                    "record": index,
+                    "source": record.source,
+                    "fields": fields,
+                    "declared": {
+                        "lines_found": record.declared_lines_found,
+                        "lines_hit": record.declared_lines_hit,
+                    },
+                    "unique_da": {
+                        "lines_found": record.unique_da_lines_found,
+                        "lines_hit": record.unique_da_lines_hit,
+                    },
+                }
+            )
+    return {
+        "status": "consistent" if not mismatch_reports else "producer-summary-mismatch",
+        "policy_line_model": LCOV_LINE_MODEL,
+        "records": {
+            "total": len(records),
+            "repository": repository_records,
+            "ignored_external": len(records) - repository_records,
+            "summary_mismatched": len(mismatch_reports),
+            "lf_mismatched": lf_mismatches,
+            "lh_mismatched": lh_mismatches,
+        },
+        "declared_summary": {
+            "lines_found": declared_found,
+            "lines_hit": declared_hit,
+        },
+        "unique_da_summary": {
+            "lines_found": unique_da_found,
+            "lines_hit": unique_da_hit,
+        },
+        "mismatches": mismatch_reports,
+    }
+
+
+def parse_lcov(text: str, *, repo_root: pathlib.Path) -> ParsedLcov:
     if "\x00" in text:
         raise DiffCoverageError("LCOV contains a NUL byte")
     records: list[list[tuple[str, str, int]]] = []
@@ -1490,8 +1586,10 @@ def parse_lcov(text: str, *, repo_root: pathlib.Path) -> dict[str, SourceCoverag
 
     sources: dict[str, SourceCoverage] = {}
     identity: dict[str, str] = {}
+    audits: list[LcovRecordAudit] = []
     for directives in records:
-        coverage = parse_lcov_record(directives, repo_root=repo_root)
+        coverage, audit = parse_lcov_record(directives, repo_root=repo_root)
+        audits.append(audit)
         if coverage is None:
             continue
         key = coverage.path.casefold() if os.name == "nt" else coverage.path
@@ -1501,7 +1599,10 @@ def parse_lcov(text: str, *, repo_root: pathlib.Path) -> dict[str, SourceCoverag
             )
         identity[key] = coverage.path
         sources[coverage.path] = coverage
-    return sources
+    return ParsedLcov(
+        sources=sources,
+        summary_audit=summarize_lcov_records(audits),
+    )
 
 
 def require_exact_json_keys(
@@ -2754,12 +2855,15 @@ def build_report(
             description="LCOV",
         )
         lcov_text = decode_utf8(coverage_bytes, description="LCOV")
-        sources = parse_lcov(lcov_text, repo_root=root)
-        coverage_map_label = "lcov"
+        parsed_lcov = parse_lcov(lcov_text, repo_root=root)
+        sources = parsed_lcov.sources
+        coverage_map_label = "lcov-unique-da"
         coverage_inputs = {
-            "coverage_kind": "legacy-lcov-diagnostic",
+            "coverage_kind": "legacy-lcov-da-diagnostic",
+            "coverage_line_model": LCOV_LINE_MODEL,
             "lcov": str(lcov_path),
             "lcov_sha256": sha256_bytes(coverage_bytes),
+            "lcov_summary_audit": parsed_lcov.summary_audit,
         }
     diff_input = load_diff_input(
         repo_root=root,
@@ -2860,7 +2964,10 @@ def argument_parser() -> argparse.ArgumentParser:
     coverage.add_argument(
         "--lcov",
         type=pathlib.Path,
-        help="strict legacy LCOV diagnostic input",
+        help=(
+            "legacy LCOV diagnostic input; changed-line decisions use unique "
+            "DA source lines and retain LF/LH contradictions as audit evidence"
+        ),
     )
     parser.add_argument("--diff", type=pathlib.Path)
     parser.add_argument("--base")
@@ -2920,6 +3027,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"ordinary={report['coverage_classes']['ordinary']['status']}, "
             f"critical={report['coverage_classes']['critical']['status']})"
         )
+        lcov_audit = report["inputs"].get("lcov_summary_audit")
+        if (
+            isinstance(lcov_audit, dict)
+            and lcov_audit.get("status") == "producer-summary-mismatch"
+        ):
+            records = lcov_audit["records"]
+            print(
+                "warning: LCOV producer LF/LH summaries contradict unique DA "
+                f"records in {records['summary_mismatched']}/"
+                f"{records['total']} source record(s); changed-line policy used "
+                f"{lcov_audit['policy_line_model']}",
+                file=sys.stderr,
+            )
         for error in report["errors"]:
             print(f"error: {error}", file=sys.stderr)
         return 0 if report["status"] == "passed" else 1

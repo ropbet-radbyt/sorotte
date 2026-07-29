@@ -11,6 +11,7 @@ impl LegacyServerPythonPeerHarness {
             Some("connected")
             | Some("ready-command-sent")
             | Some("local-ready")
+            | Some("user-present")
             | Some("user-ready")
             | Some("chat-command-sent")
             | Some("chat-message")
@@ -21,19 +22,8 @@ impl LegacyServerPythonPeerHarness {
             | Some("playlist-index")
             | Some("local-controller")
             | Some("user-controller")
-            | Some("snapshot") => Ok(parsed),
-            Some("error") => Err(InteropError::InvalidPythonBatchResponse(
-                parsed
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| {
-                        format!(
-                            "python live peer reported an unspecified error line: {status_line:?}"
-                        )
-                    }),
-            )),
+            | Some("snapshot")
+            | Some("error") => Ok(parsed),
             Some(other) => Err(InteropError::InvalidPythonBatchResponse(format!(
                 "python live peer reported unexpected status {other:?}: {status_line:?}"
             ))),

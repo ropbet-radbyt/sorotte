@@ -19,6 +19,7 @@ CATALOG_PATH = REPO_ROOT / "coverage" / "behaviors.toml"
 IGNORED_TESTS_PATH = REPO_ROOT / "coverage" / "ignored-tests.toml"
 KNOWN_DEFECTS_PATH = REPO_ROOT / "coverage" / "known-defects.toml"
 MUTATION_POLICY_PATH = REPO_ROOT / "coverage" / "mutation-policy.toml"
+PACKAGE_PATH_BOUNDARY_TEST_PATH = REPO_ROOT / "scripts" / "package-path-boundary-tests.ps1"
 CI_REQUIREMENTS = REPO_ROOT / "requirements" / "ci-policy.txt"
 LEGACY_REQUIREMENTS = REPO_ROOT / "requirements" / "legacy-python-interop.txt"
 LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
@@ -320,6 +321,17 @@ class CiPolicyTests(unittest.TestCase):
                     self.assertRegex(revision, r"^[0-9a-f]{40}$")
                     self.assertEqual(comment, expected_comment)
                     self.assertIn(f"{action}@{revision}", parsed_uses)
+
+    def test_package_freshness_compares_timestamp_instants(self) -> None:
+        script = PACKAGE_PATH_BOUNDARY_TEST_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("--format=%ct", script)
+        self.assertIn("$manifestCreatedAt.ToUnixTimeSeconds()", script)
+        self.assertNotIn("--format=%cI", script)
+        self.assertNotIn(
+            "$guiManifest.created_at_utc -ne $expectedCreatedAt",
+            script,
+        )
 
     def test_required_jobs_have_structurally_bound_commands(self) -> None:
         expected_jobs = {

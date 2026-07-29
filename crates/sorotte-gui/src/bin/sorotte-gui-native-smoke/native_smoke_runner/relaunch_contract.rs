@@ -21,8 +21,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: None,
-        loopback_session: None,
+        network_mode: NativeNetworkMode::Detached,
         attach_test_player: false,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -249,8 +248,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             media_search_browse_path,
             open_media_file_path,
             public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-            tcp_session: None,
-            loopback_session: None,
+            network_mode: NativeNetworkMode::Detached,
             attach_test_player: false,
             drop_file_paths_spec: None,
             drop_target: None,
@@ -325,7 +323,8 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             )?;
             Ok(())
         })();
-        if first_run_outcome.is_err() {
+        if let Err(error) = &first_run_outcome {
+            capture_native_failure_artifacts(driver, first_run_window, "relaunch-first-run", error);
             let _ = first_run_child.kill();
             let _ = first_run_child.wait();
         }
@@ -370,8 +369,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             media_search_browse_path,
             open_media_file_path,
             public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-            tcp_session: None,
-            loopback_session: None,
+            network_mode: NativeNetworkMode::Detached,
             attach_test_player: false,
             drop_file_paths_spec: None,
             drop_target: None,
@@ -455,7 +453,8 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             )?;
             Ok(())
         })();
-        if migration_outcome.is_err() {
+        if let Err(error) = &migration_outcome {
+            capture_native_failure_artifacts(driver, migration_window, "relaunch-migration", error);
             let _ = migration_child.kill();
             let _ = migration_child.wait();
         }
@@ -467,7 +466,8 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "relaunch", error);
         let _ = child.kill();
         let _ = child.wait();
     }

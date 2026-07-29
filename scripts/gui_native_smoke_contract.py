@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed validation for the Windows GUI native-smoke report.
 
-The native runner predates structured capability outcomes.  Until it emits
-those outcomes itself, this boundary treats every selected scenario as
-required, rejects every skip marker, and requires an observable completion
-marker for each scenario.
+Every selected scenario is required. The boundary validates both observable
+completion markers and structured native capability outcomes, rejects every
+skip marker, and refuses schema drift or contradictory evidence.
 """
 
 from __future__ import annotations
@@ -25,16 +24,27 @@ REQUIRED_REPORT_KEYS = {
     "binary",
     "pid",
     "window_title",
+    "menu_source",
     "menu_labels",
+    "menu_automation_ids",
     "menu_contract",
     "accessible_name_count",
     "accessibility_contract",
     "interaction_steps",
     "interaction_contract",
+    "capability_outcomes",
     "closed",
     "duration_ms",
 }
 REQUIRED_MENU_LABELS = {"File", "Playback", "Advanced", "Window", "Help"}
+REQUIRED_MENU_AUTOMATION_IDS = {
+    "menu.section.file",
+    "menu.section.playback",
+    "menu.section.advanced",
+    "menu.section.window",
+    "menu.section.help",
+}
+REQUIRED_MENU_SOURCE = "uia-accesskit"
 
 # Completion markers are deliberately behavior-facing rather than an assertion
 # count.  A runner refactor that removes a scenario or turns it into a no-op
@@ -52,8 +62,9 @@ SCENARIO_REQUIRED_STEPS: dict[str, tuple[str, ...]] = {
         "surface-configuration",
         "config-reload-persisted",
         "open-media-prep-shared-playlists",
-        "open-media-file",
+        "open-media-file-detached-disabled",
         "about-opens-and-closes-modal",
+        "menu-input-stress-25",
     ),
     "relaunch": (
         "gui-state-restored",
@@ -66,6 +77,11 @@ SCENARIO_REQUIRED_STEPS: dict[str, tuple[str, ...]] = {
         "drag-drop-playlist-import",
     ),
     "loopback": ("loopback-chat-send",),
+    "menu-open-media": (
+        "menu-open-media-enabled",
+        "menu-open-media-invoked-by-automation-id",
+        "menu-open-media-runtime-observed",
+    ),
     "live-python": (
         "transport-python-peer-connect",
         "transport-python-peer-readiness",
@@ -86,8 +102,63 @@ SCENARIO_REQUIRED_STEPS: dict[str, tuple[str, ...]] = {
     "transport": ("transport-saved-config-startup",),
 }
 DEFAULT_REQUIRED_SCENARIOS = tuple(SCENARIO_REQUIRED_STEPS)
-GLOBAL_REQUIRED_STEPS = ("file-exit",)
+GLOBAL_REQUIRED_STEPS = ("file-exit", "file-exit-lifecycle-observed")
 FORBIDDEN_STEP_PATTERN = re.compile(r"(?:^|[-_])skipped(?::|[-_]|$)", re.IGNORECASE)
+CAPABILITY_CONTRACTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "native.menu.inventory": (
+        "uia-accesskit",
+        (
+            "menu.section.file",
+            "menu.section.playback",
+            "menu.section.advanced",
+            "menu.section.window",
+            "menu.section.help",
+        ),
+    ),
+    "native.menu.open-media.detached": (
+        "uia-accesskit",
+        (
+            "menu.open_media=disabled",
+            "open-media-file-detached-disabled",
+        ),
+    ),
+    "native.menu.open-media.attached": (
+        "uia-accesskit+deterministic-test-player",
+        (
+            "menu.open_media=enabled",
+            "menu-open-media-invoked-by-automation-id",
+            "player.open_file=observed",
+        ),
+    ),
+    "native.menu.physical-input": (
+        "uia-hit-test+win32-sendinput",
+        (
+            "menu-input-stress-25",
+            "menu-input-single-delivery",
+        ),
+    ),
+    "native.shutdown.file-exit": (
+        "accesskit+eframe+lifecycle-jsonl",
+        (
+            "exit-action-applied",
+            "viewport-close-requested",
+            "runtime-stop-requested",
+            "runtime-worker-stopped",
+            "app-drop-complete",
+        ),
+    ),
+}
+GLOBAL_REQUIRED_CAPABILITIES = (
+    "native.menu.inventory",
+    "native.shutdown.file-exit",
+)
+SCENARIO_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "baseline": (
+        "native.menu.open-media.detached",
+        "native.menu.physical-input",
+    ),
+    "menu-open-media": ("native.menu.open-media.attached",),
+}
 
 
 class NativeSmokeContractError(ValueError):
@@ -223,6 +294,12 @@ def validate_native_smoke(
     if not isinstance(window_title, str) or "Sorotte" not in window_title:
         errors.append("native report window_title must identify Sorotte")
 
+    if report.get("menu_source") != REQUIRED_MENU_SOURCE:
+        errors.append(
+            "native menu source must prove the UIA/AccessKit path "
+            f"({REQUIRED_MENU_SOURCE!r}), got {report.get('menu_source')!r}"
+        )
+
     menu_labels = report.get("menu_labels")
     normalized_menu_labels: set[str] = set()
     if not isinstance(menu_labels, list) or not all(
@@ -237,6 +314,40 @@ def validate_native_smoke(
         if missing_labels:
             errors.append(
                 f"native menu is missing required labels: {', '.join(missing_labels)}"
+            )
+
+    menu_automation_ids = report.get("menu_automation_ids")
+    if not isinstance(menu_automation_ids, list) or not all(
+        isinstance(automation_id, str) for automation_id in menu_automation_ids
+    ):
+        errors.append("native report menu_automation_ids must be an array of strings")
+    else:
+        observed_menu_automation_ids = set(menu_automation_ids)
+        missing_menu_ids = sorted(
+            REQUIRED_MENU_AUTOMATION_IDS - observed_menu_automation_ids
+        )
+        extra_menu_ids = sorted(
+            observed_menu_automation_ids - REQUIRED_MENU_AUTOMATION_IDS
+        )
+        duplicate_menu_ids = sorted(
+            automation_id
+            for automation_id in observed_menu_automation_ids
+            if menu_automation_ids.count(automation_id) > 1
+        )
+        if missing_menu_ids:
+            errors.append(
+                "native menu is missing required automation IDs: "
+                + ", ".join(missing_menu_ids)
+            )
+        if extra_menu_ids:
+            errors.append(
+                "native menu contains unreviewed automation IDs: "
+                + ", ".join(extra_menu_ids)
+            )
+        if duplicate_menu_ids:
+            errors.append(
+                "native menu contains duplicate automation IDs: "
+                + ", ".join(duplicate_menu_ids)
             )
 
     if report.get("menu_contract") != "verified":
@@ -288,6 +399,77 @@ def validate_native_smoke(
             "interaction contract must be required-pass ('verified'), "
             f"got {report.get('interaction_contract')!r}"
         )
+
+    required_capability_ids = list(GLOBAL_REQUIRED_CAPABILITIES)
+    for scenario in required_scenarios:
+        required_capability_ids.extend(
+            SCENARIO_REQUIRED_CAPABILITIES.get(scenario, ())
+        )
+    capability_outcomes = report.get("capability_outcomes")
+    observed_capabilities: dict[str, Mapping[str, Any]] = {}
+    if not isinstance(capability_outcomes, list):
+        errors.append("capability_outcomes must be an array")
+    else:
+        for index, capability in enumerate(capability_outcomes):
+            if not isinstance(capability, Mapping):
+                errors.append(
+                    f"capability_outcomes[{index}] must be a structured object"
+                )
+                continue
+            expected_keys = {"capability_id", "outcome", "source", "evidence"}
+            actual_capability_keys = set(capability)
+            if actual_capability_keys != expected_keys:
+                errors.append(
+                    f"capability_outcomes[{index}] has unreviewed schema: "
+                    f"expected={sorted(expected_keys)!r}, "
+                    f"observed={sorted(actual_capability_keys)!r}"
+                )
+                continue
+            capability_id = capability.get("capability_id")
+            if not isinstance(capability_id, str) or not capability_id:
+                errors.append(
+                    f"capability_outcomes[{index}].capability_id must be non-empty"
+                )
+                continue
+            if capability_id in observed_capabilities:
+                errors.append(f"duplicate native capability outcome: {capability_id}")
+                continue
+            observed_capabilities[capability_id] = capability
+
+        required_capability_set = set(required_capability_ids)
+        for capability_id in required_capability_ids:
+            if capability_id not in observed_capabilities:
+                errors.append(f"missing required capability {capability_id!r}")
+        extra_capability_ids = sorted(
+            set(observed_capabilities) - required_capability_set
+        )
+        if extra_capability_ids:
+            errors.append(
+                "native report has unreviewed capability outcomes: "
+                + ", ".join(extra_capability_ids)
+            )
+
+        for capability_id in sorted(
+            required_capability_set & set(observed_capabilities)
+        ):
+            capability = observed_capabilities[capability_id]
+            expected_source, expected_evidence = CAPABILITY_CONTRACTS[capability_id]
+            if capability.get("outcome") != "required-pass":
+                errors.append(
+                    f"native capability {capability_id!r} must have outcome "
+                    f"'required-pass', got {capability.get('outcome')!r}"
+                )
+            if capability.get("source") != expected_source:
+                errors.append(
+                    f"native capability {capability_id!r} must have source "
+                    f"{expected_source!r}, got {capability.get('source')!r}"
+                )
+            evidence = capability.get("evidence")
+            if evidence != list(expected_evidence):
+                errors.append(
+                    f"native capability {capability_id!r} must have exact evidence "
+                    f"{list(expected_evidence)!r}, got {evidence!r}"
+                )
 
     if report.get("closed") is not True:
         errors.append("native GUI must be closed at the end of a strict run")

@@ -88,10 +88,9 @@ impl SorotteGuiShellAppState {
             .menus
             .sections
             .iter()
-            .enumerate()
-            .map(|(section_index, section)| {
+            .map(|section| {
                 GuiWidgetNode::branch(
-                    format!("menus:section:{section_index}"),
+                    section.id.automation_id(),
                     section.title,
                     GuiWidgetKind::Panel,
                     section

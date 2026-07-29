@@ -25,6 +25,10 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Ok(())
     }
 
+    fn press_escape(&self, _window: Self::WindowHandle) -> Result<(), String> {
+        Ok(())
+    }
+
     fn scroll_active_view_page_down(&self, _window: Self::WindowHandle) -> Result<(), String> {
         Ok(())
     }
@@ -64,10 +68,6 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         _window: Self::WindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String> {
         Err("native accessibility snapshots are currently implemented only on Windows".to_owned())
-    }
-
-    fn top_level_menu_labels(&self, _window: Self::WindowHandle) -> Result<Vec<String>, String> {
-        Err("native smoke is currently implemented only on Windows".to_owned())
     }
 
     fn count_named_controls(

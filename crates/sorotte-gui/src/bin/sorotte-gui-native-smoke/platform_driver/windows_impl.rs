@@ -127,14 +127,17 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Self::prepare_visible_window_bounds(window, SMOKE_WINDOW_X, SMOKE_WINDOW_Y, width, height)
     }
 
-    fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+    fn press_escape(&self, window: Self::WindowHandle) -> Result<(), String> {
+        Self::ensure_window_foreground(window, "native smoke window before Escape")?;
+        thread::sleep(Duration::from_millis(80));
+        Self::send_escape_key()
+            .map_err(|error| format!("failed to send Escape to native smoke window: {error}"))?;
+        thread::sleep(Duration::from_millis(120));
+        Ok(())
+    }
 
-        // SAFETY: `window` is the GUI HWND under test; focusing is a best-effort prelude to
-        // sending keyboard input.
-        unsafe {
-            SetForegroundWindow(window);
-        }
+    fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
+        Self::ensure_window_foreground(window, "native smoke window before PageDown")?;
         thread::sleep(Duration::from_millis(80));
         Self::send_page_down_key()
             .map_err(|error| format!("failed to send PageDown to native smoke window: {error}"))?;
@@ -143,13 +146,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     }
 
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
-        // SAFETY: `window` is the GUI HWND under test; focusing is a best-effort prelude to
-        // sending keyboard input.
-        unsafe {
-            SetForegroundWindow(window);
-        }
+        Self::ensure_window_foreground(window, "native smoke window before PageUp")?;
         thread::sleep(Duration::from_millis(80));
         Self::send_page_up_key()
             .map_err(|error| format!("failed to send PageUp to native smoke window: {error}"))?;
@@ -188,44 +185,6 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         window: Self::WindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String> {
         Self::retry_transient_automation_read(|| Self::collect_accessibility_nodes(window))
-    }
-
-    fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetMenu, GetMenuItemCount, GetMenuStringW, MF_BYPOSITION,
-        };
-
-        // SAFETY: `window` is the GUI HWND under test. A null menu is handled as "no native menu".
-        let menu = unsafe { GetMenu(window) };
-        if menu.is_null() {
-            return Ok(Vec::new());
-        }
-        // SAFETY: `menu` was returned by GetMenu for this HWND; negative results are reported.
-        let count = unsafe { GetMenuItemCount(menu) };
-        if count < 0 {
-            return Err("could not inspect top-level menu item count".to_owned());
-        }
-
-        let mut labels = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let mut buffer = vec![0u16; 256];
-            // SAFETY: `buffer` is valid writable UTF-16 storage and `menu` remains owned by the
-            // GUI window while this synchronous inspection runs.
-            let copied = unsafe {
-                GetMenuStringW(
-                    menu,
-                    index as u32,
-                    buffer.as_mut_ptr(),
-                    buffer.len() as i32,
-                    MF_BYPOSITION,
-                )
-            };
-            if copied <= 0 {
-                continue;
-            }
-            labels.push(String::from_utf16_lossy(&buffer[..copied as usize]));
-        }
-        Ok(labels)
     }
 
     fn count_named_controls(
@@ -285,6 +244,15 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
         Self::invoke_named_control_internal(window, name, control_kind, false, true)
+    }
+
+    fn activate_named_control_by_keyboard(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Self::activate_named_control_by_keyboard_internal(window, name, control_kind)
     }
 
     fn capture_window_png(

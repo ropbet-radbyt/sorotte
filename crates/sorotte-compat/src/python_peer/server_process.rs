@@ -61,6 +61,7 @@ impl LegacyServerPythonPeerHarness {
             peer_status_rx: None,
             peer_stdout_lines: Arc::new(Mutex::new(Vec::new())),
             peer_stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            next_peer_request_id: 1,
         })
     }
 }

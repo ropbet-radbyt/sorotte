@@ -516,12 +516,6 @@ impl IndependentLedger {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CanonicalKnownDefect {
-    TcPlayer001,
-    TcPlayer002,
-}
-
 fn tc_player_001_history() -> Vec<PlayerLifecycleInput> {
     let epoch = PlayerAttachmentEpoch::new(1);
     vec![
@@ -582,7 +576,7 @@ fn tc_player_001_acceptance_overwrite_history() -> Vec<PlayerLifecycleInput> {
     ]
 }
 
-fn tc_player_002_history() -> Vec<PlayerLifecycleInput> {
+fn logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
     let epoch = PlayerAttachmentEpoch::new(1);
     vec![
         PlayerLifecycleInput::LoadAttemptSubmitted {
@@ -614,20 +608,20 @@ fn tc_player_002_history() -> Vec<PlayerLifecycleInput> {
     ]
 }
 
-fn tc_player_002_cross_generation_history() -> Vec<PlayerLifecycleInput> {
-    let mut history = tc_player_002_history();
+fn cross_generation_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
+    let mut history = logical_terminal_reactivation_history();
     let PlayerLifecycleInput::LoadAttemptSubmitted {
         media_generation, ..
     } = &mut history[0]
     else {
-        panic!("TC-PLAYER-002 cross-generation variant must start with a load submission");
+        panic!("cross-generation variant must start with a load submission");
     };
     *media_generation = PlayerMediaGeneration::new(2);
     history
 }
 
-fn tc_player_002_superseding_submission_history() -> Vec<PlayerLifecycleInput> {
-    let mut history = tc_player_002_history();
+fn superseding_submission_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
+    let mut history = logical_terminal_reactivation_history();
     history.insert(
         3,
         PlayerLifecycleInput::LoadAttemptSubmitted {
@@ -640,8 +634,8 @@ fn tc_player_002_superseding_submission_history() -> Vec<PlayerLifecycleInput> {
     history
 }
 
-fn tc_player_002_repeated_external_history() -> Vec<PlayerLifecycleInput> {
-    let mut history = tc_player_002_history();
+fn repeated_external_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
+    let mut history = logical_terminal_reactivation_history();
     history.insert(
         3,
         PlayerLifecycleInput::ExternalLoadObserved {
@@ -653,14 +647,14 @@ fn tc_player_002_repeated_external_history() -> Vec<PlayerLifecycleInput> {
         },
     );
     let PlayerLifecycleInput::PlaylistSnapshot { entries, .. } = &mut history[4] else {
-        panic!("TC-PLAYER-002 repeated-external variant must end with a playlist snapshot");
+        panic!("repeated-external variant must end with a playlist snapshot");
     };
     entries[0].id = 102;
     history
 }
 
-fn tc_player_002_loaded_external_history() -> Vec<PlayerLifecycleInput> {
-    let mut history = tc_player_002_history();
+fn loaded_external_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
+    let mut history = logical_terminal_reactivation_history();
     history.swap(1, 2);
     history.insert(
         3,
@@ -673,8 +667,8 @@ fn tc_player_002_loaded_external_history() -> Vec<PlayerLifecycleInput> {
     history
 }
 
-fn tc_player_002_terminal_external_history() -> Vec<PlayerLifecycleInput> {
-    let mut history = tc_player_002_history();
+fn terminal_external_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
+    let mut history = logical_terminal_reactivation_history();
     history.swap(1, 2);
     history.insert(
         3,
@@ -687,7 +681,7 @@ fn tc_player_002_terminal_external_history() -> Vec<PlayerLifecycleInput> {
     history
 }
 
-fn tc_player_002_replaced_attempt_history() -> Vec<PlayerLifecycleInput> {
+fn replaced_attempt_logical_terminal_reactivation_history() -> Vec<PlayerLifecycleInput> {
     let epoch = PlayerAttachmentEpoch::new(1);
     vec![
         PlayerLifecycleInput::ExternalLoadObserved {
@@ -729,116 +723,6 @@ fn tc_player_002_replaced_attempt_history() -> Vec<PlayerLifecycleInput> {
             current_path: Some("property-target-0".to_owned()),
         },
     ]
-}
-
-const TC_PLAYER_001_INVARIANT: &str = "attempt predecessor points to another successor";
-
-/// Matches the exact valid-state graph delta that exposes TC-PLAYER-001.
-///
-/// One or more existing attempts already name a predecessor. A later
-/// transition points that predecessor at a different successor without
-/// updating the older successor's backlink. This classifier is deliberately
-/// independent of the triggering input kind and successor lifecycle state: it
-/// requires a valid pre-state, the exact post-state invariant failure, a newly
-/// selected reciprocal successor, and at least one preserved stale backlink.
-fn canonical_tc_player_001_defect(
-    state: &PlayerLifecycleState,
-    input: &PlayerLifecycleInput,
-) -> bool {
-    if state.assert_invariants().is_err() {
-        return false;
-    }
-    let (resulting_state, _) =
-        reduce_player_lifecycle_without_invariant_assertion(state.clone(), input.clone());
-    if resulting_state.assert_invariants() != Err(TC_PLAYER_001_INVARIANT.to_owned()) {
-        return false;
-    }
-
-    resulting_state.load_attempts.values().any(|predecessor| {
-        let Some(selected_successor_id) = predecessor.superseded_by else {
-            return false;
-        };
-        let Some(previous_predecessor) = state.load_attempts.get(&predecessor.id) else {
-            return false;
-        };
-        let reciprocal_successor_exists = resulting_state
-            .load_attempts
-            .get(&selected_successor_id)
-            .is_some_and(|successor| {
-                successor.id != predecessor.id && successor.replaced_attempt == Some(predecessor.id)
-            });
-        let stale_backlink_exists = state.load_attempts.values().any(|successor| {
-            successor.id != selected_successor_id
-                && successor.replaced_attempt == Some(predecessor.id)
-                && resulting_state
-                    .load_attempts
-                    .get(&successor.id)
-                    .is_some_and(|preserved| preserved.replaced_attempt == Some(predecessor.id))
-        });
-        previous_predecessor.superseded_by != Some(selected_successor_id)
-            && reciprocal_successor_exists
-            && stale_backlink_exists
-    })
-}
-
-/// Matches the exact valid-state graph delta that exposes TC-PLAYER-002.
-///
-/// The defect is not identified by panic text or by a particular generated
-/// history. It requires a valid pre-state and a post-state that simultaneously
-/// retains a concrete terminal physical owner and selects a different,
-/// current-epoch live physical owner while the same logical terminal outcome
-/// remains installed. Triggering input kind, candidate count, target text, and
-/// prior replacement linkage are deliberately not part of the classification.
-const TC_PLAYER_002_INVARIANT: &str =
-    "logical terminal playback still has an active physical attempt";
-
-fn canonical_tc_player_002_defect(
-    state: &PlayerLifecycleState,
-    input: &PlayerLifecycleInput,
-) -> bool {
-    if state.assert_invariants().is_err() {
-        return false;
-    }
-    let (resulting_state, _) =
-        reduce_player_lifecycle_without_invariant_assertion(state.clone(), input.clone());
-    if resulting_state.assert_invariants() != Err(TC_PLAYER_002_INVARIANT.to_owned()) {
-        return false;
-    }
-    let Some(active_id) = resulting_state.active_load_attempt else {
-        return false;
-    };
-    let Some(active) = resulting_state.load_attempts.get(&active_id) else {
-        return false;
-    };
-    let Some((terminal_generation, terminal_outcome)) = resulting_state.logical_terminal else {
-        return false;
-    };
-    let terminal_binding_exists = resulting_state.load_attempts.values().any(|attempt| {
-        attempt.id != active_id
-            && attempt.attachment_epoch == resulting_state.attachment_epoch
-            && attempt.media_generation == terminal_generation
-            && attempt.state == LoadAttemptState::Terminal(terminal_outcome)
-            && attempt.physical_terminal_sequence.is_some()
-    });
-    active.attachment_epoch == resulting_state.attachment_epoch
-        && active.state.may_receive_lifecycle()
-        && !active.state.is_terminal()
-        && !active.logical_ownership_revoked
-        && terminal_binding_exists
-}
-
-fn canonical_known_defect(
-    state: &PlayerLifecycleState,
-    input: &PlayerLifecycleInput,
-    _history: &[PlayerLifecycleInput],
-) -> Option<CanonicalKnownDefect> {
-    if canonical_tc_player_001_defect(state, input) {
-        Some(CanonicalKnownDefect::TcPlayer001)
-    } else if canonical_tc_player_002_defect(state, input) {
-        Some(CanonicalKnownDefect::TcPlayer002)
-    } else {
-        None
-    }
 }
 
 const DEFAULT_PROPTEST_CASES: u32 = 128;
@@ -889,23 +773,18 @@ proptest! {
     #![proptest_config(configured_proptest())]
 
     #[test]
-    fn generated_reducer_input_histories_preserve_unquarantined_contracts(
+    fn generated_reducer_input_histories_preserve_contracts(
         steps in prop::collection::vec(generated_step(), 1..=64),
     ) {
         let mut state = PlayerLifecycleState::default();
         let mut expected_epoch = state.attachment_epoch.get();
         let mut cursor = GeneratorCursor::default();
         let mut ledger = IndependentLedger::default();
-        let mut action_history = Vec::new();
 
         for (index, step) in steps.iter().enumerate() {
             let input = materialize(step, &state, &mut cursor);
             let actual_kind = input_kind(&input);
             let previous_epoch = state.attachment_epoch;
-            action_history.push(input.clone());
-            if canonical_known_defect(&state, &input, &action_history).is_some() {
-                continue;
-            }
             let (next_state, effects) = reduce_player_lifecycle(state.clone(), input);
             if let Err(reason) = next_state.assert_invariants() {
                 prop_assert!(
@@ -1048,323 +927,126 @@ proptest! {
     }
 }
 
-fn state_before_final_transition(
-    history: &[PlayerLifecycleInput],
-) -> (PlayerLifecycleState, PlayerLifecycleInput) {
-    let (final_input, prefix) = history
-        .split_last()
-        .expect("known-defect history must include a final transition");
+fn assert_tc_player_001_history_preserves_exclusive_successor_link(
+    history: Vec<PlayerLifecycleInput>,
+    selected_successor: LoadAttemptId,
+    detached_claimant: LoadAttemptId,
+) -> PlayerLifecycleState {
     let mut state = PlayerLifecycleState::default();
-    for input in prefix {
-        let (next_state, _) = reduce_player_lifecycle(state, input.clone());
-        state = next_state;
-        assert!(
-            state.assert_invariants().is_ok(),
-            "known-defect prefix must remain valid before its final transition"
-        );
-    }
-    (state, final_input.clone())
-}
-
-fn classify_history(history: &[PlayerLifecycleInput]) -> Option<CanonicalKnownDefect> {
-    let (state, final_input) = state_before_final_transition(history);
-    canonical_known_defect(&state, &final_input, history)
-}
-
-#[test]
-fn known_defect_quarantine_is_bound_to_the_exact_causal_state() {
-    let tc_player_001 = tc_player_001_history();
-    let tc_player_001_acceptance_overwrite = tc_player_001_acceptance_overwrite_history();
-    let tc_player_002 = tc_player_002_history();
-    let tc_player_002_cross_generation = tc_player_002_cross_generation_history();
-    let tc_player_002_superseding = tc_player_002_superseding_submission_history();
-    let tc_player_002_repeated_external = tc_player_002_repeated_external_history();
-    let tc_player_002_loaded_external = tc_player_002_loaded_external_history();
-    let tc_player_002_terminal_external = tc_player_002_terminal_external_history();
-    let tc_player_002_replaced_attempt = tc_player_002_replaced_attempt_history();
-    assert_eq!(
-        classify_history(&tc_player_001),
-        Some(CanonicalKnownDefect::TcPlayer001)
-    );
-    assert_eq!(
-        classify_history(&tc_player_001_acceptance_overwrite),
-        Some(CanonicalKnownDefect::TcPlayer001)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_cross_generation),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_superseding),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_repeated_external),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_loaded_external),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_terminal_external),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-    assert_eq!(
-        classify_history(&tc_player_002_replaced_attempt),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-
-    let mut semantically_equivalent_prefix =
-        vec![PlayerLifecycleInput::TimerAdvanced { now_tick: 0 }];
-    semantically_equivalent_prefix.extend(tc_player_002.clone());
-    assert_eq!(
-        classify_history(&semantically_equivalent_prefix),
-        Some(CanonicalKnownDefect::TcPlayer002),
-        "TC-PLAYER-002 classification must depend on causal state, not full-history syntax"
-    );
-
-    let mut safe_noncurrent_snapshot = tc_player_002;
-    let PlayerLifecycleInput::PlaylistSnapshot {
-        entries,
-        current_path,
-        ..
-    } = safe_noncurrent_snapshot
-        .last_mut()
-        .expect("TC-PLAYER-002 has a final action")
-    else {
-        panic!("TC-PLAYER-002 must end in a playlist snapshot");
-    };
-    entries[0].current = false;
-    *current_path = None;
-    assert_eq!(
-        classify_history(&safe_noncurrent_snapshot),
-        None,
-        "a valid noncurrent snapshot must not match TC-PLAYER-002"
-    );
-
-    let mut target_variant = tc_player_002_history();
-    let PlayerLifecycleInput::LoadAttemptSubmitted {
-        requested_target, ..
-    } = &mut target_variant[0]
-    else {
-        panic!("TC-PLAYER-002 must start with a load submission");
-    };
-    *requested_target = "target-variant".to_owned();
-    let PlayerLifecycleInput::PlaylistSnapshot {
-        entries,
-        current_path,
-        ..
-    } = target_variant
-        .last_mut()
-        .expect("TC-PLAYER-002 has a final action")
-    else {
-        panic!("TC-PLAYER-002 must end in a playlist snapshot");
-    };
-    entries[0].original_filename = Some("target-variant".to_owned());
-    *current_path = Some("target-variant".to_owned());
-    assert_eq!(
-        classify_history(&target_variant),
-        Some(CanonicalKnownDefect::TcPlayer002)
-    );
-
-    let (causal_state, final_snapshot) = state_before_final_transition(&tc_player_002_history());
-    let mut wrong_identity = final_snapshot.clone();
-    let PlayerLifecycleInput::PlaylistSnapshot {
-        entries: wrong_entries,
-        ..
-    } = &mut wrong_identity
-    else {
-        unreachable!();
-    };
-    wrong_entries[0].id = causal_state
-        .active_attempt()
-        .and_then(|attempt| attempt.playlist_entry_id)
-        .expect("TC-PLAYER-002 must have a bound active attempt");
-    assert_eq!(
-        canonical_known_defect(&causal_state, &wrong_identity, &tc_player_002_history()),
-        None,
-        "a snapshot that does not contradict the active identity must not be quarantined"
-    );
-
-    let mut not_current = final_snapshot.clone();
-    let PlayerLifecycleInput::PlaylistSnapshot {
-        entries: not_current_entries,
-        ..
-    } = &mut not_current
-    else {
-        unreachable!();
-    };
-    not_current_entries[0].current = false;
-    assert_eq!(
-        canonical_known_defect(&causal_state, &not_current, &tc_player_002_history()),
-        None,
-        "a non-current snapshot cannot establish TC-PLAYER-002"
-    );
-
-    let mut merely_submitted = tc_player_002_history();
-    merely_submitted.remove(2);
-    assert_eq!(
-        classify_history(&merely_submitted),
-        None,
-        "a submitted attempt whose snapshot remains valid must not be quarantined"
-    );
-
-    let mut same_message_different_state = causal_state.clone();
-    let active_generation = same_message_different_state
-        .active_media_generation()
-        .expect("TC-PLAYER-002 must have an active media generation");
-    same_message_different_state.logical_terminal =
-        Some((active_generation, PlayerPhysicalLoadOutcome::Ended));
-    assert_eq!(
-        same_message_different_state.assert_invariants(),
-        Err("logical terminal playback still has an active physical attempt".to_owned())
-    );
-    assert_eq!(
-        canonical_known_defect(
-            &same_message_different_state,
-            &final_snapshot,
-            &tc_player_002_history()
-        ),
-        None,
-        "panic text alone must not quarantine a different pre-transition state"
-    );
-
-    let no_pending_successor = vec![tc_player_001[0].clone(), tc_player_001[2].clone()];
-    assert_eq!(
-        classify_history(&no_pending_successor),
-        None,
-        "an ordinary external replacement without a pending successor is not TC-PLAYER-001"
-    );
-
-    let mut prefixed_tc_player_001 = vec![PlayerLifecycleInput::TimerAdvanced { now_tick: 0 }];
-    prefixed_tc_player_001.extend(tc_player_001);
-    assert_eq!(
-        classify_history(&prefixed_tc_player_001),
-        Some(CanonicalKnownDefect::TcPlayer001),
-        "TC-PLAYER-001 classification must depend on causal state, not full-history syntax"
-    );
-}
-
-#[test]
-#[should_panic(expected = "attempt predecessor points to another successor")]
-fn known_defect_tc_player_001_external_replacement_breaks_predecessor_links() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_001_history() {
+    for input in history {
         let (next_state, _) = reduce_player_lifecycle(state, input);
         state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
+        state
+            .assert_invariants()
+            .expect("every successor-conflict transition must preserve lifecycle invariants");
     }
+    let predecessor = state
+        .load_attempts
+        .get(&LoadAttemptId::new(1))
+        .expect("original physical predecessor");
+    assert_eq!(predecessor.superseded_by, Some(selected_successor));
+    assert_eq!(
+        state.load_attempts[&selected_successor].replaced_attempt,
+        Some(predecessor.id)
+    );
+    assert_eq!(
+        state.load_attempts[&detached_claimant].replaced_attempt, None,
+        "an unselected successor must not retain a backlink to the selected predecessor"
+    );
+    state
 }
 
 #[test]
-#[should_panic(expected = "attempt predecessor points to another successor")]
-fn known_defect_tc_player_001_acceptance_overwrites_predecessor_link() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_001_acceptance_overwrite_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn tc_player_001_external_replacement_preserves_reciprocal_links() {
+    let state = assert_tc_player_001_history_preserves_exclusive_successor_link(
+        tc_player_001_history(),
+        LoadAttemptId::new(3),
+        LoadAttemptId::new(2),
+    );
+    assert_eq!(
+        state.load_attempts[&LoadAttemptId::new(2)].state,
+        LoadAttemptState::Submitting,
+        "detaching an unselected backlink must not speculatively fail the pending attempt"
+    );
+    assert_eq!(
+        state.load_attempts[&LoadAttemptId::new(2)].semantic_load_result,
+        None
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_delayed_acceptance_retains_terminal_active_state() {
+fn tc_player_001_acceptance_detaches_rejected_successor_backlink() {
+    assert_tc_player_001_history_preserves_exclusive_successor_link(
+        tc_player_001_acceptance_overwrite_history(),
+        LoadAttemptId::new(3),
+        LoadAttemptId::new(2),
+    );
+}
+
+fn assert_reactivation_clears_logical_terminal(history: Vec<PlayerLifecycleInput>) {
     let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_history() {
+    for input in history {
         let (next_state, _) = reduce_player_lifecycle(state, input);
         state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
+        state
+            .assert_invariants()
+            .expect("every reactivation transition must preserve lifecycle invariants");
     }
+    assert!(
+        state.active_load_attempt.is_some(),
+        "the authoritative current playlist entry must establish an active attempt"
+    );
+    assert_eq!(
+        state.logical_terminal, None,
+        "reactivation must clear the terminal state of the contradicted prior owner"
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_cross_generation_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_cross_generation_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn delayed_acceptance_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(logical_terminal_reactivation_history());
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_superseding_submission_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_superseding_submission_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn cross_generation_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        cross_generation_logical_terminal_reactivation_history(),
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_repeated_external_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_repeated_external_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn superseding_submission_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        superseding_submission_logical_terminal_reactivation_history(),
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_loaded_external_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_loaded_external_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn repeated_external_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        repeated_external_logical_terminal_reactivation_history(),
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_terminal_external_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_terminal_external_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn loaded_external_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        loaded_external_logical_terminal_reactivation_history(),
+    );
 }
 
 #[test]
-#[should_panic(expected = "logical terminal playback still has an active physical attempt")]
-fn known_defect_tc_player_002_replaced_attempt_variant_retains_terminal_active_state() {
-    let mut state = PlayerLifecycleState::default();
-    for input in tc_player_002_replaced_attempt_history() {
-        let (next_state, _) = reduce_player_lifecycle(state, input);
-        state = next_state;
-        if let Err(reason) = state.assert_invariants() {
-            panic!("{reason}");
-        }
-    }
+fn terminal_external_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        terminal_external_logical_terminal_reactivation_history(),
+    );
+}
+
+#[test]
+fn replaced_attempt_reactivation_clears_logical_terminal() {
+    assert_reactivation_clears_logical_terminal(
+        replaced_attempt_logical_terminal_reactivation_history(),
+    );
 }
 
 #[derive(Debug, Clone, Copy)]

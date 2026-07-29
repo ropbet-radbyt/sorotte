@@ -29,7 +29,7 @@ impl std::fmt::Display for PlayerError {
             }
             Self::NotConnected => formatter.write_str("player is not connected"),
             Self::OperationFailed(message) => {
-                let message = if text_may_contain_credentials(message) {
+                let message = if sorotte_secret::text_may_contain_credentials(message) {
                     sorotte_secret::REDACTED_SECRET
                 } else {
                     message
@@ -41,32 +41,6 @@ impl std::fmt::Display for PlayerError {
 }
 
 impl std::error::Error for PlayerError {}
-
-fn text_may_contain_credentials(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    lower
-        .match_indices(['=', ':'])
-        .any(|(delimiter_index, _)| credential_key_before(&lower, delimiter_index))
-        || lower
-            .match_indices("%3d")
-            .any(|(delimiter_index, _)| credential_key_before(&lower, delimiter_index))
-}
-
-fn credential_key_before(value: &str, delimiter_index: usize) -> bool {
-    let key = value[..delimiter_index]
-        .rsplit(['?', '&', ',', '{', '[', '\n', '\r', ':'])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .trim_matches(|character| matches!(character, '\\' | '"' | '\''));
-    !key.is_empty()
-        && key
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-        && ["password", "token", "secret", "credential"]
-            .into_iter()
-            .any(|sensitive_word| key.contains(sensitive_word))
-}
 
 #[cfg(test)]
 mod error_display_redaction_tests {
@@ -156,8 +130,7 @@ mod error_display_redaction_tests {
     }
 
     #[test]
-    #[should_panic(expected = "escaped diagnostic credential forms leaked from PlayerError")]
-    fn known_defect_tc_sec_002_escaped_diagnostic_credentials_leak_from_player_error() {
+    fn escaped_diagnostic_credentials_are_redacted_from_player_error() {
         let cases = [
             (
                 "escaped-key",
@@ -190,8 +163,7 @@ mod error_display_redaction_tests {
     }
 
     #[test]
-    #[should_panic(expected = "prose-prefixed credential fields leaked from PlayerError")]
-    fn known_defect_tc_sec_003_prose_prefixed_credential_fields_leak_from_player_error() {
+    fn prose_prefixed_credential_fields_are_redacted_from_player_error() {
         let cases = [
             (
                 "prose-colon",

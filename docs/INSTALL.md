@@ -150,4 +150,6 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 
 Native smoke performs its own locked build and writes raw output, invocation
 metadata, binary provenance, and a strict contract summary under
-`target/verification/gui-native-smoke/`.
+`target/verification/gui-native-smoke/`. When a live-window assertion fails,
+the same bundle also retains a screenshot and credential-redacted UIA/AccessKit
+tree before terminating the GUI.

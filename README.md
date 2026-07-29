@@ -104,7 +104,9 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 
 The wrapper performs the locked native-smoke build, treats every implemented
 scenario as required by default, and preserves a verification bundle under
-`target/verification/gui-native-smoke/`.
+`target/verification/gui-native-smoke/`. Menu coverage is bound to stable
+UIA/AccessKit identities and exact structured outcomes; live failures also
+retain a screenshot and credential-redacted accessibility tree.
 
 Run the strict server release gate:
 

@@ -510,8 +510,7 @@ fn corrupt_quota_secret_lengths_fail_closed_without_overwriting_metadata() {
 }
 
 #[test]
-#[should_panic(expected = "concurrent quota secret creation must converge")]
-fn known_defect_concurrent_quota_secret_creation_does_not_converge() {
+fn concurrent_quota_secret_creation_converges_on_one_durable_value() {
     let db_path = temporary_sqlite_path("concurrent-quota-secret-creation");
     let _ = fs::remove_file(&db_path);
     let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
@@ -537,25 +536,17 @@ fn known_defect_concurrent_quota_secret_creation_does_not_converge() {
         .collect::<Vec<_>>();
 
     let successful_secrets = results
-        .iter()
-        .filter_map(|result| result.as_ref().ok().copied())
-        .collect::<Vec<_>>();
-    let error_actions = results
-        .iter()
-        .filter_map(|result| match result {
-            Err(RoomPersistenceError::Sqlite { action, .. }) => Some(*action),
-            Ok(_) => None,
-        })
+        .into_iter()
+        .map(|result| result.expect("both concurrent creators should load the durable secret"))
         .collect::<Vec<_>>();
     assert_eq!(
         successful_secrets.len(),
-        1,
-        "the known race should currently admit exactly one creator"
+        2,
+        "both concurrent callers should receive the durable secret"
     );
     assert_eq!(
-        error_actions,
-        vec!["create quota secret"],
-        "the losing creator should expose the uniqueness race"
+        successful_secrets[0], successful_secrets[1],
+        "concurrent creators must converge on the same durable value"
     );
 
     let connection = store
@@ -567,26 +558,15 @@ fn known_defect_concurrent_quota_secret_creation_does_not_converge() {
             [],
             |row| row.get(0),
         )
-        .expect("one winning secret should be durable");
+        .expect("the converged secret should be durable");
     assert_eq!(persisted, successful_secrets[0]);
     drop(connection);
     drop(store);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
-
-    assert!(
-        results.len() == 2
-            && results.iter().all(Result::is_ok)
-            && results
-                .iter()
-                .filter_map(|result| result.as_ref().ok())
-                .all(|secret| *secret == successful_secrets[0]),
-        "concurrent quota secret creation must converge on one durable value"
-    );
 }
 
 #[test]
-#[should_panic(expected = "playlist JSON migration must be atomic across rows")]
-fn known_defect_playlist_json_migration_commits_rows_before_later_failure() {
+fn playlist_json_migration_rolls_back_all_rows_after_later_failure() {
     let db_path = temporary_sqlite_path("playlist-json-migration-atomicity");
     let _ = fs::remove_file(&db_path);
     let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
@@ -640,6 +620,10 @@ fn known_defect_playlist_json_migration_commits_rows_before_later_failure() {
             |row| row.get(0),
         )
         .expect("partial migration count should be readable");
+    assert_eq!(
+        migrated_before_restart, 0,
+        "a failed playlist migration must roll back every row"
+    );
     connection
         .execute_batch("DROP TRIGGER fail_second_playlist_json_migration;")
         .expect("failpoint should be removable before restart");
@@ -668,11 +652,6 @@ fn known_defect_playlist_json_migration_commits_rows_before_later_failure() {
     drop(restarted_store);
     drop(store);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
-
-    assert!(
-        matches!(migrated_before_restart, 0 | 2),
-        "playlist JSON migration must be atomic across rows, found {migrated_before_restart} migrated rows"
-    );
 }
 
 #[test]

@@ -120,44 +120,9 @@ impl fmt::Debug for RedactedSecret {
 }
 
 fn json_key_is_sensitive(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
-    [
-        "password",
-        "token",
-        "secret",
-        "credential",
-        "logicalmediaid",
-        "requestid",
-        "operationid",
-    ]
-    .into_iter()
-    .any(|marker| normalized.contains(marker))
+    sorotte_secret::key_is_sensitive(key)
 }
 
 pub(crate) fn text_may_contain_credentials(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    [
-        "password=",
-        "password:",
-        "password\":",
-        "password%3d",
-        "token=",
-        "token:",
-        "token\":",
-        "token%3d",
-        "secret=",
-        "secret:",
-        "secret\":",
-        "secret%3d",
-        "credential=",
-        "credential:",
-        "credential\":",
-        "credential%3d",
-    ]
-    .into_iter()
-    .any(|marker| lower.contains(marker))
+    sorotte_secret::text_may_contain_credentials(value)
 }

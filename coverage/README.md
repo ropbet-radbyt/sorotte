@@ -55,20 +55,19 @@ python scripts/behavior_evidence.py run-lane \
 The shrinkable lifecycle suite fuzzes the reducer input contract with 128
 Proptest cases of up to 64 transitions by default; it does not claim that every
 generated ordering is adapter-reachable. Set `PROPTEST_CASES=2048` for the
-nightly-depth budget. The two invariant classes tracked as `TC-PLAYER-001` and
-`TC-PLAYER-002` are classified inside the broad property from their
-post-transition graph contradictions so later cases still run. The
-classifiers require valid pre-states and exact causal graph deltas; they do not
-match panic text, one event kind, one history, or one candidate count.
-Multiple executable `should_panic` characterizations prove distinct minimized
-variants of each known defect remain reproducible.
+nightly-depth budget. Every generated transition now passes through the
+ordinary invariant-checking reducer without a known-defect classifier.
+`TC-PLAYER-001` is represented by two positive regressions proving exclusive
+successor selection for external-observation and load-acceptance conflicts.
+The former `TC-PLAYER-002` histories are also ordinary positive regressions
+proving reactivation clears stale logical-terminal state.
 
 Proptest seeds under
 `crates/sorotte-player-mpv/proptest-regressions/` are source-file and
 strategy-shape scoped. They improve replay while a strategy remains stable,
-but named deterministic characterizations are the durable record of a known
-defect. Known-defect characterizations are intentionally not merge-contract
-proofs in `behaviors.toml`.
+while named deterministic regressions remain the durable behavior contract.
+`known-defects.toml` is retained as an empty, schema-validated registry so a
+future defect cannot become implicit.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
@@ -84,8 +83,9 @@ quarantine. Unsupported conditional or reasonless ignore attributes fail.
 Pull-request entries are additionally checked against exact
 `--ignored --exact` workflow invocations.
 
-`known-defects.toml` is a separate, expiring inventory of undesirable current
-behavior. The validator exactly matches every Rust `known_defect_*`
+`known-defects.toml` is the schema-validated inventory for any undesirable
+current behavior and is empty on this branch. If a future entry is added, the
+validator exactly matches every Rust `known_defect_*`
 `should_panic(expected = "...")` characterization to its source, package,
 selector, panic oracle, owner, finding, and expiry. A missing or stale entry,
 bare `should_panic`, expired defect, drifted panic oracle, or selector also
@@ -170,16 +170,20 @@ module bodies. Other `cfg(test)` items remain production scope. Comments,
 attributes, imports, signatures, and structural punctuation are non-coverable.
 Executable-looking changed lines missing from the canonical physical-line map
 are unmapped and fail, so a Linux report cannot silently excuse a new
-platform-gated body. `scripts/diff_coverage.py --lcov` remains a strict
-diagnostic compatibility mode. The preserved LCOV artifact exposes
-contradictory `LF`/`LH` versus `DA` totals and is still rejected before either
-ratchet runs; `TC-HARNESS-005` is closed only for Sorotte's changed-physical-line
-policy through the dual native contract, not by rewriting the contradictory
-LCOV.
+platform-gated body. `scripts/diff_coverage.py --lcov` remains a diagnostic
+compatibility mode. It now declares `unique-da-source-lines` as the only
+changed-line model and retains contradictory `LF`/`LH` summaries as a separate
+structured audit. Malformed or duplicate `DA`, impossible summaries, stale
+records, and missing executable mappings still fail closed. `TC-HARNESS-005`
+is therefore resolved for Sorotte's consumer without rewriting the
+contradictory producer artifact or choosing a favorable aggregate. The
+required gate continues to use the stronger source-bound dual-native contract.
 
 The fresh local producer experiment, exact artifact hashes, adversarial cases,
 and six-phase result are retained in
 [`llvm-native-line-map-20260728.md`](../docs/evidence/test-coverage/llvm-native-line-map-20260728.md).
+The LCOV consumer resolution and current-source cross-audit are retained in
+[`lcov-dual-model-20260729.md`](../docs/evidence/test-coverage/lcov-dual-model-20260729.md).
 
 ## Targeted mutation evidence
 

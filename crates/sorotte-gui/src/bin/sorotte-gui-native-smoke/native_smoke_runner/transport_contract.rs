@@ -75,8 +75,9 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: &public_servers_spec,
-        tcp_session: None,
-        loopback_session: None,
+        network_mode: NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::SavedConfig,
+        },
         attach_test_player: false,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -154,7 +155,8 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "transport", error);
         let _ = child.kill();
         let _ = child.wait();
     }

@@ -512,7 +512,9 @@ That historical pass predates the strict native contract. Replaying its raw
 report through the current validator fails because required native menus and
 Open Media completion were absent and the run performed repeated placeholder
 DNS lookups. See `docs/TEST_COVERAGE_FINDINGS.md`; do not treat the historical
-green result as current native-contract evidence.
+green result as current native-contract evidence. Current menu/Open Media
+evidence is the separate strict, identity-bound run documented in
+`docs/evidence/test-coverage/native-menu-open-media-20260729.md`.
 
 The finite verification stop conditions are satisfied: the reducer, adapter,
 client-core, and GUI projections agree after every scripted step; every required

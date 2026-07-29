@@ -1,5 +1,11 @@
 # LLVM native physical-line coverage experiment — 2026-07-28
 
+> Follow-up, 2026-07-29: this document preserves the original native-map
+> experiment. The required source-bound contract remains unchanged. The
+> diagnostic LCOV consumer now uses explicit unique-`DA` line semantics while
+> retaining `LF`/`LH` contradictions as audit evidence; see
+> [`lcov-dual-model-20260729.md`](lcov-dual-model-20260729.md).
+
 ## Question
 
 Can Sorotte enforce coverage of physical lines added by a Git diff without

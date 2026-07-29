@@ -134,8 +134,13 @@ impl RoomPersistenceStore {
     pub(crate) fn load_rooms(
         &self,
     ) -> Result<BTreeMap<String, PersistedRoomState>, RoomPersistenceError> {
-        let connection = self.connection("connect")?;
-        let mut statement = connection
+        let mut connection = self.connection("connect")?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|source| {
+                self.sqlite_error("begin persisted room migration transaction", source)
+            })?;
+        let mut statement = transaction
             .prepare(
                 "SELECT name, playlist, playlistJson, playlistIndex, position, lastSavedUpdate \
                         , persistenceVersion, ownerBucket, createdAt \
@@ -200,7 +205,7 @@ impl RoomPersistenceStore {
             if needs_json_migration {
                 let playlist_json = serde_json::to_string(&room_state.files)
                     .expect("serializing a string playlist cannot fail");
-                connection
+                transaction
                     .execute(
                         "UPDATE persistent_rooms SET playlistJson = ?1 WHERE name = ?2",
                         params![playlist_json, room_name],
@@ -210,7 +215,7 @@ impl RoomPersistenceStore {
                     })?;
             }
             if needs_index_migration {
-                connection
+                transaction
                     .execute(
                         "UPDATE persistent_rooms SET playlistIndex = ?1 WHERE name = ?2",
                         params![room_state.index, room_name],
@@ -221,6 +226,9 @@ impl RoomPersistenceStore {
             }
             rooms.insert(room_name, room_state);
         }
+        transaction
+            .commit()
+            .map_err(|source| self.sqlite_error("commit persisted room migrations", source))?;
         Ok(rooms)
     }
 
@@ -387,9 +395,7 @@ impl RoomPersistenceStore {
             .optional()
             .map_err(|source| self.sqlite_error("load quota secret", source))?;
         if let Some(existing) = existing {
-            return existing.try_into().map_err(|_| {
-                self.sqlite_error("decode quota secret", rusqlite::Error::InvalidQuery)
-            });
+            return self.decode_quota_secret(existing);
         }
 
         before_create();
@@ -397,11 +403,26 @@ impl RoomPersistenceStore {
         getrandom::fill(&mut secret).expect("operating system random source should be available");
         connection
             .execute(
-                "INSERT INTO persistence_metadata (key, value) VALUES ('quota-secret-v1', ?1)",
+                "INSERT INTO persistence_metadata (key, value) \
+                 VALUES ('quota-secret-v1', ?1) \
+                 ON CONFLICT(key) DO NOTHING",
                 params![secret.as_slice()],
             )
             .map_err(|source| self.sqlite_error("create quota secret", source))?;
-        Ok(secret)
+        let stored = connection
+            .query_row(
+                "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .map_err(|source| self.sqlite_error("reload quota secret", source))?;
+        self.decode_quota_secret(stored)
+    }
+
+    fn decode_quota_secret(&self, value: Vec<u8>) -> Result<[u8; 32], RoomPersistenceError> {
+        value
+            .try_into()
+            .map_err(|_| self.sqlite_error("decode quota secret", rusqlite::Error::InvalidQuery))
     }
 
     pub(crate) fn connection(

@@ -126,6 +126,10 @@ impl eframe::App for GuiNativeApp {
             }
         }
         for action in dispatch_plan.shell_actions {
+            let exit_action = matches!(
+                &action,
+                GuiShellAction::InvokeMenuAction(MenuActionId::Exit)
+            );
             let native_effect = Self::native_effect_for_applied_action(&action, true);
             let action_applied = self.state.apply(action);
             state_changed |= action_applied;
@@ -136,7 +140,14 @@ impl eframe::App for GuiNativeApp {
                 Some(GuiNativeShellEffect::PickMediaFiles) => {
                     selected_media_files = GuiWidgetEguiRenderer::pick_media_files(&self.state);
                 }
-                Some(GuiNativeShellEffect::CloseWindow) => close_requested = true,
+                Some(GuiNativeShellEffect::CloseWindow) => {
+                    if exit_action {
+                        super::super::test_lifecycle::record(
+                            super::super::test_lifecycle::EXIT_ACTION_APPLIED,
+                        );
+                    }
+                    close_requested = true;
+                }
                 Some(GuiNativeShellEffect::OpenPlaybackPrompt(prompt)) => {
                     requested_playback_prompt = Some(prompt);
                 }
@@ -363,6 +374,9 @@ impl eframe::App for GuiNativeApp {
             state_changed |= self.state.apply(action);
         }
         if close_requested {
+            super::super::test_lifecycle::record(
+                super::super::test_lifecycle::VIEWPORT_CLOSE_REQUESTED,
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if state_changed
@@ -382,12 +396,13 @@ impl Drop for GuiNativeApp {
         if let Some(handle) = self.runtime_repaint_handle.as_ref() {
             handle.clear_repaint_notifier();
         }
-        let Some(root) = self.gui_state_root.as_deref() else {
-            return;
-        };
-        let persisted_state = GuiPersistedUiState::from_shell_state(&self.state);
-        if let Err(error) = persist_gui_ui_state_at_root(root, &persisted_state) {
-            eprintln!("sorotte-gui failed to persist legacy GUI state: {error}");
+        self.runtime_pump.shutdown();
+        if let Some(root) = self.gui_state_root.as_deref() {
+            let persisted_state = GuiPersistedUiState::from_shell_state(&self.state);
+            if let Err(error) = persist_gui_ui_state_at_root(root, &persisted_state) {
+                eprintln!("sorotte-gui failed to persist legacy GUI state: {error}");
+            }
         }
+        super::super::test_lifecycle::record(super::super::test_lifecycle::APP_DROP_COMPLETE);
     }
 }

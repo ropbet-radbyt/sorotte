@@ -68,7 +68,7 @@ required-features = ["gui-semantic-smoke", "live-python-interop"]
 [[bin]]
 name = "sorotte-gui-native-smoke"
 path = "src/bin/sorotte-gui-native-smoke.rs"
-test = false
+test = true
 required-features = ["gui-native-smoke"]
 
 [[bin]]

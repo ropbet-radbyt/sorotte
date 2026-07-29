@@ -3,7 +3,7 @@ use std::{thread, time::Duration};
 use super::{PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
-    fn send_keyboard_inputs(
+    fn send_inputs(
         inputs: &mut [windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT],
     ) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput;
@@ -20,14 +20,16 @@ impl PlatformNativeGuiDriver {
         };
         if sent != inputs.len() as u32 {
             return Err(format!(
-                "SendInput sent {sent} keyboard events out of {}",
+                "SendInput sent {sent} input events out of {}",
                 inputs.len()
             ));
         }
         Ok(())
     }
 
-    fn mouse_input(
+    fn mouse_input_at(
+        dx: i32,
+        dy: i32,
         flags: windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
         data: u32,
     ) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
@@ -39,8 +41,8 @@ impl PlatformNativeGuiDriver {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
                 mi: MOUSEINPUT {
-                    dx: 0,
-                    dy: 0,
+                    dx,
+                    dy,
                     mouseData: data,
                     dwFlags: flags,
                     time: 0,
@@ -48,6 +50,68 @@ impl PlatformNativeGuiDriver {
                 },
             },
         }
+    }
+
+    fn mouse_input(
+        flags: windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
+        data: u32,
+    ) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+        Self::mouse_input_at(0, 0, flags, data)
+    }
+
+    fn normalize_absolute_mouse_coordinate(
+        coordinate: i32,
+        virtual_origin: i32,
+        virtual_span: i32,
+    ) -> Result<i32, String> {
+        if virtual_span <= 1 {
+            return Err(format!(
+                "virtual desktop span must be greater than one pixel, got {virtual_span}"
+            ));
+        }
+        let coordinate = i64::from(coordinate);
+        let virtual_origin = i64::from(virtual_origin);
+        let virtual_span = i64::from(virtual_span);
+        let virtual_end = virtual_origin + virtual_span - 1;
+        if coordinate < virtual_origin || coordinate > virtual_end {
+            return Err(format!(
+                "coordinate {coordinate} is outside virtual desktop range {virtual_origin}..={virtual_end}"
+            ));
+        }
+        Ok(((coordinate - virtual_origin) * 65_535 / (virtual_span - 1)) as i32)
+    }
+
+    fn absolute_mouse_move_input(
+        x: i32,
+        y: i32,
+    ) -> Result<windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT, String> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+            SM_YVIRTUALSCREEN,
+        };
+
+        // SAFETY: GetSystemMetrics is a process-global read with no pointer arguments.
+        let (virtual_left, virtual_top, virtual_width, virtual_height) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let normalized_x =
+            Self::normalize_absolute_mouse_coordinate(x, virtual_left, virtual_width)?;
+        let normalized_y =
+            Self::normalize_absolute_mouse_coordinate(y, virtual_top, virtual_height)?;
+        Ok(Self::mouse_input_at(
+            normalized_x,
+            normalized_y,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+            0,
+        ))
     }
 
     fn mouse_input_for_wheel(delta: i32) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
@@ -58,19 +122,18 @@ impl PlatformNativeGuiDriver {
 
     pub(super) fn send_mouse_wheel(delta: i32) -> Result<(), String> {
         let mut inputs = [Self::mouse_input_for_wheel(delta)];
-        Self::send_keyboard_inputs(&mut inputs)
+        Self::send_inputs(&mut inputs)
     }
 
     pub(super) fn click_element_center(
         window: PlatformWindowHandle,
+        automation: &windows::Win32::UI::Accessibility::IUIAutomation,
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
         name: &str,
     ) -> Result<(), String> {
-        use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
         let rect_context = format!("{name:?}");
         let rect = Self::automation_element_bounding_rect_required(element, &rect_context)?;
@@ -82,35 +145,44 @@ impl PlatformNativeGuiDriver {
 
         let center_x = (rect.left + rect.right) / 2;
         let center_y = (rect.top + rect.bottom) / 2;
-        Self::focus_window_element(window, element, &rect_context)?;
-        let mut original_cursor = POINT { x: 0, y: 0 };
-        // SAFETY: The cursor APIs are process-global Win32 calls used only by the native smoke
-        // driver. Failures are converted into driver errors, and the original position is
-        // restored after the click attempt.
-        unsafe {
-            if GetCursorPos(&mut original_cursor) == 0 {
-                return Err("failed to read the cursor position before native click".to_owned());
-            }
-            if SetCursorPos(center_x, center_y) == 0 {
-                return Err(format!(
-                    "failed to move cursor to {name:?} center at ({center_x}, {center_y})"
-                ));
-            }
-        }
+        // Keep physical input physically owned. UIA SetFocus is asynchronous in
+        // AccessKit/egui and can race the following pointer transaction, leaving a
+        // button focused without delivering its click. Foreground acknowledgement,
+        // exact ElementFromPoint validation, and the mouse down/up pair are sufficient.
+        Self::ensure_window_foreground(window, &rect_context)?;
+        let priming_y = if rect.top >= 4 {
+            rect.top - 4
+        } else {
+            rect.bottom.saturating_add(4)
+        };
+        let mut prime = [Self::absolute_mouse_move_input(center_x, priming_y)?];
+        Self::send_inputs(&mut prime)
+            .map_err(|error| format!("failed to prime the pointer outside {name:?}: {error}"))?;
         thread::sleep(Duration::from_millis(80));
-        let mut inputs = [
-            Self::mouse_input(MOUSEEVENTF_LEFTDOWN, 0),
-            Self::mouse_input(MOUSEEVENTF_LEFTUP, 0),
-        ];
-        let click_result = Self::send_keyboard_inputs(&mut inputs)
-            .map_err(|error| format!("failed to click {name:?}: {error}"));
-        // SAFETY: `original_cursor` was populated by `GetCursorPos`; restoration is best-effort
-        // cleanup after the native smoke interaction.
-        unsafe {
-            let _ = SetCursorPos(original_cursor.x, original_cursor.y);
-        }
-        click_result?;
+        let click_result = (|| -> Result<(), String> {
+            Self::verify_automation_hit_target(automation, center_x, center_y, name)?;
+            let mut down = [
+                Self::absolute_mouse_move_input(center_x, center_y)?,
+                Self::mouse_input(MOUSEEVENTF_LEFTDOWN, 0),
+            ];
+            Self::send_inputs(&mut down)
+                .map_err(|error| format!("failed to press {name:?}: {error}"))?;
+            // Deliver down and up in separate frames, but atomically bind each endpoint to the
+            // intended absolute coordinate. Unrelated desktop pointer movement cannot redirect
+            // either half of the click between the move and button event in one SendInput call.
+            thread::sleep(Duration::from_millis(40));
+            let mut up = [
+                Self::absolute_mouse_move_input(center_x, center_y)?,
+                Self::mouse_input(MOUSEEVENTF_LEFTUP, 0),
+            ];
+            Self::send_inputs(&mut up)
+                .map_err(|error| format!("failed to release {name:?}: {error}"))
+        })();
+        // Keep pointer ownership on the target until the next explicit interaction. A timed
+        // restore is inherently racy: under a slow frame the restore move can be coalesced with
+        // the down/up pair and make egui observe the release outside the widget.
         thread::sleep(Duration::from_millis(120));
+        click_result?;
         Ok(())
     }
 
@@ -171,7 +243,7 @@ impl PlatformNativeGuiDriver {
             Self::keyboard_input_for_vk(VK_BACK, 0),
             Self::keyboard_input_for_vk(VK_BACK, KEYEVENTF_KEYUP),
         ];
-        Self::send_keyboard_inputs(&mut controls)?;
+        Self::send_inputs(&mut controls)?;
 
         if value.is_empty() {
             return Ok(());
@@ -184,7 +256,7 @@ impl PlatformNativeGuiDriver {
             }
             if ch == '\n' {
                 if !text_inputs.is_empty() {
-                    Self::send_keyboard_inputs(&mut text_inputs)?;
+                    Self::send_inputs(&mut text_inputs)?;
                     text_inputs.clear();
                 }
                 Self::send_enter_key()?;
@@ -202,7 +274,7 @@ impl PlatformNativeGuiDriver {
         if text_inputs.is_empty() {
             Ok(())
         } else {
-            Self::send_keyboard_inputs(&mut text_inputs)
+            Self::send_inputs(&mut text_inputs)
         }
     }
 
@@ -213,7 +285,17 @@ impl PlatformNativeGuiDriver {
             Self::keyboard_input_for_vk(VK_RETURN, 0),
             Self::keyboard_input_for_vk(VK_RETURN, KEYEVENTF_KEYUP),
         ];
-        Self::send_keyboard_inputs(&mut enter_inputs)
+        Self::send_inputs(&mut enter_inputs)
+    }
+
+    pub(super) fn send_escape_key() -> Result<(), String> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_ESCAPE};
+
+        let mut escape_inputs = [
+            Self::keyboard_input_for_vk(VK_ESCAPE, 0),
+            Self::keyboard_input_for_vk(VK_ESCAPE, KEYEVENTF_KEYUP),
+        ];
+        Self::send_inputs(&mut escape_inputs)
     }
 
     pub(super) fn send_page_down_key() -> Result<(), String> {
@@ -223,7 +305,7 @@ impl PlatformNativeGuiDriver {
             Self::keyboard_input_for_vk(VK_NEXT, 0),
             Self::keyboard_input_for_vk(VK_NEXT, KEYEVENTF_KEYUP),
         ];
-        Self::send_keyboard_inputs(&mut page_down_inputs)
+        Self::send_inputs(&mut page_down_inputs)
     }
 
     pub(super) fn send_page_up_key() -> Result<(), String> {
@@ -233,6 +315,47 @@ impl PlatformNativeGuiDriver {
             Self::keyboard_input_for_vk(VK_PRIOR, 0),
             Self::keyboard_input_for_vk(VK_PRIOR, KEYEVENTF_KEYUP),
         ];
-        Self::send_keyboard_inputs(&mut page_up_inputs)
+        Self::send_inputs(&mut page_up_inputs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlatformNativeGuiDriver;
+
+    #[test]
+    fn absolute_mouse_coordinates_cover_virtual_desktop_endpoints() {
+        assert_eq!(
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(-1_920, -1_920, 3_840)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(1_919, -1_920, 3_840)
+                .unwrap(),
+            65_535
+        );
+        let center =
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(0, -1_920, 3_840).unwrap();
+        assert!((32_767..=32_785).contains(&center));
+    }
+
+    #[test]
+    fn absolute_mouse_coordinates_reject_invalid_span_and_out_of_bounds_points() {
+        assert!(
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(0, 0, 1)
+                .unwrap_err()
+                .contains("greater than one")
+        );
+        assert!(
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(-1, 0, 1_920)
+                .unwrap_err()
+                .contains("outside virtual desktop")
+        );
+        assert!(
+            PlatformNativeGuiDriver::normalize_absolute_mouse_coordinate(1_920, 0, 1_920)
+                .unwrap_err()
+                .contains("outside virtual desktop")
+        );
     }
 }

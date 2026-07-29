@@ -96,7 +96,9 @@ use sorotte_protocol::{
     IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
     StatePayload, decode_message_line, encode_message_line,
 };
-use std::ffi::OsStr;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -110,15 +112,18 @@ static SOROTTE_GUI_STATE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
 static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
+static PANIC_SAFE_ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
 struct TestEnvGuard<'a> {
     _guard: MutexGuard<'a, ()>,
+    prior_values: RefCell<BTreeMap<OsString, Option<OsString>>>,
 }
 
 impl<'a> TestEnvGuard<'a> {
     fn lock(lock: &'a Mutex<()>) -> Self {
         Self {
-            _guard: lock.lock().expect("lock poisoned"),
+            _guard: lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            prior_values: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -127,9 +132,10 @@ impl<'a> TestEnvGuard<'a> {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        let key = key.as_ref();
+        self.remember(key);
         // SAFETY: Environment mutation is process-global in Rust 2024. CLI tests use
-        // TestEnvGuard to hold the relevant domain mutex while mutating and restoring
-        // env state, so test-owned env changes do not race each other.
+        // TestEnvGuard to hold the relevant domain mutex while mutating env state.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -139,11 +145,55 @@ impl<'a> TestEnvGuard<'a> {
     where
         K: AsRef<OsStr>,
     {
+        let key = key.as_ref();
+        self.remember(key);
         // SAFETY: See set_var; the same guard serializes test-owned removals.
         unsafe {
             std::env::remove_var(key);
         }
     }
+
+    fn remember(&self, key: &OsStr) {
+        let mut prior_values = self.prior_values.borrow_mut();
+        prior_values
+            .entry(key.to_os_string())
+            .or_insert_with(|| std::env::var_os(key));
+    }
+}
+
+impl Drop for TestEnvGuard<'_> {
+    fn drop(&mut self) {
+        for (key, prior_value) in self.prior_values.get_mut().iter() {
+            // SAFETY: The domain mutex is still held while Drop restores every
+            // test-owned key, including when the test body is unwinding.
+            unsafe {
+                match prior_value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_env_guard_restores_mutations_and_recovers_after_a_panic() {
+    const KEY: &str = "SOROTTE_TEST_PANIC_SAFE_ENV_GUARD";
+    let original = std::env::var_os(KEY);
+    let panic = std::panic::catch_unwind(|| {
+        let env = TestEnvGuard::lock(&PANIC_SAFE_ENV_GUARD_LOCK);
+        env.set_var(KEY, "temporary-test-value");
+        panic!("intentional panic exercises TestEnvGuard unwinding");
+    });
+    assert!(panic.is_err());
+
+    let env = TestEnvGuard::lock(&PANIC_SAFE_ENV_GUARD_LOCK);
+    assert_eq!(
+        std::env::var_os(KEY),
+        original,
+        "Drop must restore the original value before releasing a poisoned lock"
+    );
+    drop(env);
 }
 
 fn ignore_autoplay_notification(

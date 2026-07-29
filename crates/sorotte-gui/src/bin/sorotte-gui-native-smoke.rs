@@ -38,14 +38,25 @@ struct NativeSmokeReport {
     binary_path: String,
     pid: u32,
     window_title: String,
+    menu_source: String,
     menu_labels: Vec<String>,
+    menu_automation_ids: Vec<String>,
     menu_contract: String,
     accessible_name_count: usize,
     accessibility_contract: String,
     interaction_steps: Vec<String>,
     interaction_contract: String,
+    capability_outcomes: Vec<NativeCapabilityOutcome>,
     duration_ms: u128,
     closed: bool,
+}
+
+#[derive(serde::Serialize)]
+struct NativeCapabilityOutcome {
+    capability_id: String,
+    outcome: String,
+    source: String,
+    evidence: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -57,13 +68,25 @@ struct TcpSessionBootstrap<'a> {
 }
 
 #[derive(Clone, Copy)]
+enum NativeTcpBootstrap<'a> {
+    Environment(TcpSessionBootstrap<'a>),
+    SavedConfig,
+}
+
+#[derive(Clone, Copy)]
+enum NativeNetworkMode<'a> {
+    Detached,
+    InProcessLoopback { username: &'a str, room: &'a str },
+    TcpLoopback { bootstrap: NativeTcpBootstrap<'a> },
+}
+
+#[derive(Clone, Copy)]
 struct GuiLaunchConfig<'a> {
     config_path: &'a Path,
     media_search_browse_path: &'a Path,
     open_media_file_path: &'a Path,
     public_servers_spec: &'a str,
-    tcp_session: Option<TcpSessionBootstrap<'a>>,
-    loopback_session: Option<(&'a str, &'a str)>,
+    network_mode: NativeNetworkMode<'a>,
     attach_test_player: bool,
     drop_file_paths_spec: Option<&'a str>,
     drop_target: Option<&'a str>,
@@ -74,6 +97,8 @@ struct GuiLaunchTestOverrides<'a> {
     theme: Option<&'a str>,
     appdata_root: Option<&'a Path>,
     config_storage_browse_path: Option<&'a Path>,
+    test_player_observation_path: Option<&'a Path>,
+    lifecycle_observation_path: Option<&'a Path>,
     disable_startup_saved_connect: bool,
     player_settings_degraded: bool,
 }
@@ -181,7 +206,9 @@ const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 #[path = "sorotte-gui-native-smoke/platform_driver.rs"]
 mod platform_driver;
 use native_smoke_runner::run_native_smoke;
-use platform_driver::{NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver};
+use platform_driver::{
+    NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver,
+};
 
 #[path = "sorotte-gui-native-smoke/native_smoke_accessibility.rs"]
 mod native_smoke_accessibility;

@@ -13,8 +13,10 @@ pub(super) fn verify_loopback_chat_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: None,
-        loopback_session: Some((TRANSPORT_SESSION_USERNAME, TRANSPORT_SESSION_ROOM)),
+        network_mode: NativeNetworkMode::InProcessLoopback {
+            username: TRANSPORT_SESSION_USERNAME,
+            room: TRANSPORT_SESSION_ROOM,
+        },
         attach_test_player: false,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -42,7 +44,8 @@ pub(super) fn verify_loopback_chat_contract<D: NativeGuiDriver>(
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "loopback", error);
         let _ = child.kill();
         let _ = child.wait();
     }

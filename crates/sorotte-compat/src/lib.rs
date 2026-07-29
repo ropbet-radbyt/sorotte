@@ -274,6 +274,7 @@ pub struct LegacyServerPythonPeerHarness {
     peer_status_rx: Option<mpsc::Receiver<String>>,
     peer_stdout_lines: Arc<Mutex<Vec<String>>>,
     peer_stderr_lines: Arc<Mutex<Vec<String>>>,
+    next_peer_request_id: u64,
 }
 
 mod fixtures;

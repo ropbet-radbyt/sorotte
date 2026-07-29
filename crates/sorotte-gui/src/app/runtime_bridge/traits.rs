@@ -190,6 +190,8 @@ pub(in crate::app) trait GuiNativeRuntimeBridge {
 
 pub(in crate::app) trait GuiNativeRuntimePump {
     fn pump(&mut self, state: &SorotteGuiShellAppState);
+
+    fn shutdown(&mut self) {}
 }
 
 pub(in crate::app) trait GuiQueuedRuntimeOwner {

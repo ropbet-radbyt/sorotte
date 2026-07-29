@@ -354,6 +354,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 username: Some("semantic-user".to_owned()),
                 room: Some("semantic-room".to_owned()),
                 public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
+                tls_policy: Some("Plaintext".to_owned()),
                 shared_playlist_enabled: Some(true),
                 ..StoredClientSettingsMvp::default()
             });

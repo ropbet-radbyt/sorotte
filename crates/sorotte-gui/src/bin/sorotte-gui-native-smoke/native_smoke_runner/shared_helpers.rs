@@ -1,5 +1,111 @@
 use super::*;
 
+const NATIVE_SMOKE_ARTIFACT_DIR_ENV: &str = "SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR";
+
+pub(super) fn capture_native_failure_artifacts<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    scope: &str,
+    failure: &str,
+) {
+    let Some(artifact_directory) = std::env::var_os(NATIVE_SMOKE_ARTIFACT_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return;
+    };
+    let mut capture_errors = Vec::new();
+    if let Err(error) = fs::create_dir_all(&artifact_directory) {
+        eprintln!(
+            "failed to create native-smoke failure artifact directory {}: {error}",
+            artifact_directory.display()
+        );
+        return;
+    }
+
+    let screenshot_path = artifact_directory.join(format!("failure-{scope}.png"));
+    if let Err(error) = driver.capture_window_png(window, &screenshot_path) {
+        capture_errors.push(format!("screenshot: {error}"));
+    }
+
+    let accessibility_path = artifact_directory.join(format!("failure-{scope}-accessibility.json"));
+    match driver.accessibility_nodes(window) {
+        Ok(nodes) => {
+            let serialized_nodes = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| {
+                    let (name, automation_id) = redacted_native_failure_node_identity(node);
+                    serde_json::json!({
+                        "index": index,
+                        "name": name,
+                        "automation_id": automation_id,
+                        "control_type": node.control_type,
+                        "enabled": node.enabled,
+                        "focused": node.focused,
+                        "offscreen": node.offscreen,
+                        "bounds": node.bounds,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let safe_failure = redact_native_failure_text(failure);
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "kind": "sorotte-gui-native-smoke-failure-accessibility",
+                "scope": scope,
+                "source": "Windows UI Automation / AccessKit",
+                "failure": safe_failure,
+                "nodes": serialized_nodes,
+            });
+            match serde_json::to_vec_pretty(&payload) {
+                Ok(mut json) => {
+                    json.push(b'\n');
+                    if let Err(error) = fs::write(&accessibility_path, json) {
+                        capture_errors.push(format!("accessibility write: {error}"));
+                    }
+                }
+                Err(error) => capture_errors.push(format!("accessibility serialization: {error}")),
+            }
+        }
+        Err(error) => capture_errors.push(format!("accessibility snapshot: {error}")),
+    }
+
+    if !capture_errors.is_empty() {
+        let capture_error_path =
+            artifact_directory.join(format!("failure-{scope}-capture-errors.txt"));
+        let mut payload = capture_errors.join("\n");
+        payload.push('\n');
+        if let Err(error) = fs::write(&capture_error_path, payload) {
+            eprintln!(
+                "failed to write native-smoke capture errors {}: {error}",
+                capture_error_path.display()
+            );
+        }
+    }
+}
+
+fn redact_native_failure_text(value: &str) -> String {
+    if sorotte_secret::text_may_contain_credentials(value) {
+        sorotte_secret::REDACTED_SECRET.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn redacted_native_failure_node_identity(node: &NativeAccessibilityNode) -> (String, String) {
+    let automation_id_lower = node.automation_id.to_ascii_lowercase();
+    let identity_is_secret = ["password", "secret", "credential", "authorization", "token"]
+        .iter()
+        .any(|marker| automation_id_lower.contains(marker));
+    let name = if identity_is_secret || sorotte_secret::text_may_contain_credentials(&node.name) {
+        sorotte_secret::REDACTED_SECRET.to_owned()
+    } else {
+        node.name.clone()
+    };
+    let automation_id = redact_native_failure_text(&node.automation_id);
+    (name, automation_id)
+}
+
 fn user_row_wait_error<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -517,11 +623,11 @@ pub(super) fn start_mock_session_server(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
-    start_mock_session_server_with_hold_timeout(
+    start_mock_session_server_with_release_policy(
         initial_lines,
         first_chat_followup_lines,
         second_chat_followup_lines,
-        Duration::from_secs(10),
+        None,
     )
 }
 
@@ -530,6 +636,20 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
     hold_timeout: Duration,
+) -> Result<MockSessionServer, String> {
+    start_mock_session_server_with_release_policy(
+        initial_lines,
+        first_chat_followup_lines,
+        second_chat_followup_lines,
+        Some(hold_timeout),
+    )
+}
+
+fn start_mock_session_server_with_release_policy(
+    initial_lines: &'static [&'static str],
+    first_chat_followup_lines: &'static [&'static str],
+    second_chat_followup_lines: &'static [&'static str],
+    hold_timeout: Option<Duration>,
 ) -> Result<MockSessionServer, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
@@ -648,7 +768,18 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
         process_followup("first", first_chat_followup_lines)?;
         process_followup("second", second_chat_followup_lines)?;
 
-        let _ = release_rx.recv_timeout(hold_timeout);
+        match hold_timeout {
+            Some(hold_timeout) => {
+                let _ = release_rx.recv_timeout(hold_timeout);
+            }
+            None => {
+                // Scenario-owned fixtures stay connected until the scenario
+                // has closed and joined the GUI process. This prevents slow
+                // native interaction from turning a test fixture's timeout
+                // into a product reconnect failure.
+                let _ = release_rx.recv();
+            }
+        }
         Ok(())
     });
 
@@ -730,7 +861,12 @@ pub(super) fn start_phased_mock_session_server(
 
         write_lines("initial", initial_lines)?;
 
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // This fixture owns a live transport, so its lifetime must be tied to
+        // the scenario rather than an arbitrary wall-clock delay. A slow UIA
+        // pass can legitimately take longer than ten seconds; closing the
+        // socket here used to manufacture a connection reset and reconnect
+        // attempt while the GUI was still under test.
+        let _ = release_rx.recv();
         Ok(())
     });
 
@@ -892,4 +1028,45 @@ pub(super) fn wait_for_accessible_name_with_named_control_scroll_up<D: NativeGui
     Err(format!(
         "timed out waiting for accessible name {name:?} after {max_scrolls} upward scrolls on {scroll_control_name:?}"
     ))
+}
+
+#[cfg(test)]
+mod failure_artifact_tests {
+    use super::*;
+
+    #[test]
+    fn failure_artifact_identity_redacts_password_values_but_preserves_stable_ids() {
+        let node = NativeAccessibilityNode {
+            name: "native-failure-secret-canary".to_owned(),
+            automation_id: "main-window:controller-auth:password".to_owned(),
+            control_type: 0,
+            enabled: true,
+            focused: false,
+            offscreen: false,
+            bounds: None,
+        };
+
+        let (name, automation_id) = redacted_native_failure_node_identity(&node);
+
+        assert_eq!(name, sorotte_secret::REDACTED_SECRET);
+        assert_eq!(automation_id, node.automation_id);
+    }
+
+    #[test]
+    fn failure_artifact_identity_preserves_non_secret_menu_evidence() {
+        let node = NativeAccessibilityNode {
+            name: "File".to_owned(),
+            automation_id: FILE_MENU_AUTOMATION_ID.to_owned(),
+            control_type: 0,
+            enabled: true,
+            focused: false,
+            offscreen: false,
+            bounds: Some([10, 10, 50, 30]),
+        };
+
+        let (name, automation_id) = redacted_native_failure_node_identity(&node);
+
+        assert_eq!(name, "File");
+        assert_eq!(automation_id, FILE_MENU_AUTOMATION_ID);
+    }
 }

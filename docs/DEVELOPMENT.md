@@ -52,8 +52,28 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 ```
 
 `scripts/gui-native-smoke.ps1` performs a locked build before the watchdog
-starts, requires all nine implemented scenarios by default, and preserves
-structured evidence under `target/verification/gui-native-smoke/`. Pass
+starts, requires all ten implemented scenarios by default, and preserves
+structured evidence under `target/verification/gui-native-smoke/`. Its native
+menu contract requires exact UIA/AccessKit IDs and structured outcomes for
+detached and attached Open Media behavior. The baseline also requires 25
+single-delivery physical File-menu transactions. Each physical endpoint is
+bound to the target's absolute virtual-desktop coordinate in the same
+`SendInput` call; menu toggles are never blindly redelivered. The baseline also
+requires an exact File -> Exit lifecycle trace and process exit within four
+seconds. Connectivity
+scenarios must declare a typed detached or loopback mode; non-loopback TCP
+targets are rejected before process launch, and scenario-owned servers remain
+live until explicit teardown. Live-Python scenarios use a two-sided roster
+handshake rather than UI polling alone. Any semantic wait for a peer to observe
+GUI-originated compound protocol work must continue pumping the runtime owner;
+an optimistic shell projection is not proof that every receipt-owned transport
+frame was delivered. Live-Python fixtures must advertise the protocol features
+their assertions exercise. Top-tab actions are not complete when UIA reports
+success or focus alone: the expected tab content must appear. The baseline
+deliberately proves exact focused-keyboard activation of Interface & System.
+The native-smoke binary's unit contracts are included automatically by
+`cargo test --workspace --all-features`. Failures preserve a screenshot and
+credential-redacted accessibility tree when a live window remains. Pass
 `-BinaryPath` only when deliberately validating a caller-supplied executable;
 the wrapper records and binds that executable's path and digest.
 

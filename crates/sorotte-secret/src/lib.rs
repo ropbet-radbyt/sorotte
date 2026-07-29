@@ -2,6 +2,225 @@ use std::fmt;
 
 pub const REDACTED_SECRET: &str = "<redacted>";
 
+/// Returns whether a structured field name is expected to carry credentials
+/// or another value that must not cross a diagnostic formatting boundary.
+///
+/// Wire formats use several naming conventions, so classification ignores
+/// ASCII punctuation and case. Suffix matching is intentionally limited to
+/// names whose suffix itself denotes a sensitive value; generic `key` fields
+/// are not classified.
+pub fn key_is_sensitive(key: &str) -> bool {
+    let canonical = canonical_sensitive_key(key.as_bytes());
+    ["logicalmediaid", "operationid", "requestid"]
+        .into_iter()
+        .any(|privacy_id| canonical.contains(privacy_id))
+        || credential_key_is_sensitive(key)
+}
+
+fn credential_key_is_sensitive(key: &str) -> bool {
+    let canonical = canonical_sensitive_key(key.as_bytes());
+    matches!(
+        canonical.as_str(),
+        "authorization"
+            | "cookie"
+            | "cookies"
+            | "credentials"
+            | "headers"
+            | "httpheaders"
+            | "httpheaderfields"
+            | "proxyauthorization"
+    ) || [
+        "password",
+        "passwd",
+        "passphrase",
+        "token",
+        "secret",
+        "credential",
+        "credentials",
+        "apikey",
+        "authorization",
+        "cookie",
+        "cookies",
+        "headers",
+    ]
+    .into_iter()
+    .any(|suffix| canonical.ends_with(suffix))
+        || sensitive_key_words(key).any(|word| {
+            matches!(
+                word.as_str(),
+                "password"
+                    | "passwd"
+                    | "passphrase"
+                    | "token"
+                    | "secret"
+                    | "credential"
+                    | "credentials"
+                    | "authorization"
+                    | "cookie"
+                    | "cookies"
+                    | "headers"
+            )
+        })
+}
+
+/// Detects credential-bearing field syntax in an untrusted diagnostic.
+///
+/// Detection recognizes the small ASCII escape vocabulary used by JSON and
+/// URL diagnostics, then examines the identifier immediately before `=` or
+/// `:`. It does not decode or return the diagnostic itself. The exact prose
+/// phrase `token: EOF` remains an ordinary parser diagnostic unless the value
+/// is quoted or uses an authentication scheme.
+pub fn text_may_contain_credentials(value: &str) -> bool {
+    let projected = diagnostic_ascii_projection(value);
+    projected
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| matches!(byte, b'=' | b':'))
+        .any(|(delimiter_index, delimiter)| {
+            let Some((key_start, key)) = credential_key_before(&projected, delimiter_index) else {
+                return false;
+            };
+            if !credential_key_is_sensitive(&key) {
+                return false;
+            }
+            if *delimiter == b'=' || canonical_sensitive_key(key.as_bytes()) != "token" {
+                return true;
+            }
+            token_colon_has_credential_shape(&projected, key_start, delimiter_index + 1)
+        })
+}
+
+fn canonical_sensitive_key(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .copied()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect()
+}
+
+fn sensitive_key_words(key: &str) -> impl Iterator<Item = String> + '_ {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_was_lowercase_or_digit = false;
+    for character in key.chars() {
+        if !character.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            previous_was_lowercase_or_digit = false;
+            continue;
+        }
+        if character.is_ascii_uppercase() && previous_was_lowercase_or_digit && !current.is_empty()
+        {
+            words.push(std::mem::take(&mut current));
+        }
+        current.push(character.to_ascii_lowercase());
+        previous_was_lowercase_or_digit =
+            character.is_ascii_lowercase() || character.is_ascii_digit();
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words.into_iter()
+}
+
+fn diagnostic_ascii_projection(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut projected = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Some(decoded) = decode_hex_byte(bytes[index + 1], bytes[index + 2])
+            && decoded.is_ascii()
+        {
+            projected.push(decoded.to_ascii_lowercase());
+            index += 3;
+            continue;
+        }
+        if bytes[index] == b'\\'
+            && index + 5 < bytes.len()
+            && matches!(bytes[index + 1], b'u' | b'U')
+            && let Some(decoded) = decode_ascii_unicode_escape(&bytes[index + 2..index + 6])
+        {
+            projected.push(decoded.to_ascii_lowercase());
+            index += 6;
+            continue;
+        }
+        projected.push(if bytes[index].is_ascii() {
+            bytes[index].to_ascii_lowercase()
+        } else {
+            b' '
+        });
+        index += 1;
+    }
+    projected
+}
+
+fn decode_ascii_unicode_escape(hex: &[u8]) -> Option<u8> {
+    let mut value = 0_u16;
+    for byte in hex {
+        value = value.checked_mul(16)?;
+        value = value.checked_add(u16::from(hex_nibble(*byte)?))?;
+    }
+    u8::try_from(value).ok().filter(u8::is_ascii)
+}
+
+fn decode_hex_byte(high: u8, low: u8) -> Option<u8> {
+    hex_nibble(high)?
+        .checked_mul(16)?
+        .checked_add(hex_nibble(low)?)
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn credential_key_before(value: &[u8], delimiter_index: usize) -> Option<(usize, String)> {
+    let mut end = delimiter_index;
+    while end > 0 && matches!(value[end - 1], b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'') {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0
+        && (value[start - 1].is_ascii_alphanumeric() || matches!(value[start - 1], b'-' | b'_'))
+    {
+        start -= 1;
+    }
+    (start < end).then(|| {
+        (
+            start,
+            String::from_utf8_lossy(&value[start..end]).into_owned(),
+        )
+    })
+}
+
+fn token_colon_has_credential_shape(value: &[u8], key_start: usize, value_start: usize) -> bool {
+    let structured_key = key_start > 0
+        && matches!(
+            value[key_start - 1],
+            b'"' | b'\'' | b'{' | b'[' | b'(' | b',' | b'&' | b'?'
+        );
+    let remainder = value[value_start..]
+        .iter()
+        .copied()
+        .skip_while(u8::is_ascii_whitespace)
+        .collect::<Vec<_>>();
+    structured_key
+        || remainder
+            .first()
+            .is_some_and(|byte| matches!(byte, b'"' | b'\''))
+        || [b"bearer ".as_slice(), b"basic ", b"digest "]
+            .into_iter()
+            .any(|prefix| remainder.starts_with(prefix))
+}
+
 /// A value-free summary for command-line arguments at formatting boundaries.
 ///
 /// The summary stores only an argument count and the presence of a deliberately
@@ -166,7 +385,79 @@ impl From<&str> for SecretValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{REDACTED_SECRET, RedactedCommandArgs, SecretValue};
+    use super::{
+        REDACTED_SECRET, RedactedCommandArgs, SecretValue, key_is_sensitive,
+        text_may_contain_credentials,
+    };
+
+    #[test]
+    fn structured_sensitive_key_aliases_share_one_canonical_policy() {
+        for key in [
+            "password",
+            "access_token",
+            "X-Plex-Token",
+            "authTokenValue",
+            "clientSecret",
+            "room-password",
+            "credentials",
+            "futureCredential",
+            "set-cookie",
+            "x-api-key",
+            "httpHeaders",
+            "logicalMediaId",
+            "request_id",
+            "acceptedOperationId",
+        ] {
+            assert!(key_is_sensitive(key), "sensitive key {key:?}");
+        }
+        for key in [
+            "",
+            "monkey",
+            "secretary",
+            "tokenizer",
+            "headerStyles",
+            "request",
+        ] {
+            assert!(!key_is_sensitive(key), "ordinary key {key:?}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_classifier_recognizes_escaped_and_prose_credential_fields() {
+        for diagnostic in [
+            r#"request failed: {"pass\u0077ord":"canary"}"#,
+            r#"request failed: {"password"\u003a"canary"}"#,
+            r#"request failed: password\u003dcanary"#,
+            "request failed: access%5Ftoken=canary",
+            "request failed with password: Bearer canary",
+            "upstream response includes token=canary",
+            "request failed (secret=canary)",
+            "backend -> clientSecret: canary",
+        ] {
+            assert!(
+                text_may_contain_credentials(diagnostic),
+                "credential diagnostic {diagnostic:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_classifier_preserves_ordinary_parser_messages() {
+        for diagnostic in [
+            "unexpected token: EOF",
+            "request failed: timeout",
+            "parser: invalid syntax",
+            "credential provider unavailable",
+            "unexpected EOF while waiting for mpv IPC response (request_id=1)",
+            "mpv request rejected (request_id=1): property not found",
+            "hook operation failed (operation_id=7): client not found",
+        ] {
+            assert!(
+                !text_may_contain_credentials(diagnostic),
+                "ordinary diagnostic {diagnostic:?}"
+            );
+        }
+    }
 
     #[test]
     fn debug_and_display_are_always_redacted() {

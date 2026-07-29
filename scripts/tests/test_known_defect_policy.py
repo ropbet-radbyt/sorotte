@@ -109,6 +109,20 @@ class KnownDefectPolicyTests(unittest.TestCase):
     def test_valid_registry_matches_exact_executable_inventory(self) -> None:
         self.assertEqual(self.validate(self.registry()), (1, 1))
 
+    def test_explicit_empty_registry_matches_an_empty_executable_inventory(self) -> None:
+        self.source.write_text(
+            "#[test]\nfn positive_contract() { assert!(true); }\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.validate({"schema_version": 1, "defect": []}),
+            (0, 0),
+        )
+
+    def test_empty_registry_rejects_an_unregistered_characterization(self) -> None:
+        with self.assertRaisesRegex(policy.PolicyError, "unregistered known-defect"):
+            self.validate({"schema_version": 1, "defect": []})
+
     def test_positive_known_defect_named_test_without_should_panic_is_not_inventory(self) -> None:
         found = policy.scan_characterizations(self.root)
         self.assertEqual(

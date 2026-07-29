@@ -151,7 +151,6 @@ impl PlatformNativeGuiDriver {
         value: &str,
         submit: bool,
     ) -> Result<(), String> {
-        let _ = Self::click_element_center(window, element, "edit field for keyboard entry");
         Self::focus_window_element(window, element, "edit field for keyboard entry")?;
         thread::sleep(Duration::from_millis(120));
         Self::send_select_all_backspace_and_type(value)

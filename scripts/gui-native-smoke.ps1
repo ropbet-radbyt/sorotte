@@ -118,6 +118,7 @@ $buildWallClockTimeoutMs = 600000
     started_at_utc = $startedAtUtc
     timeout_ms = $TimeoutMs
     required_scenarios = @($requestedScenarios)
+    failure_artifact_directory = $artifactDirectory
     binary_path = $effectiveBinaryPath
     binary_provenance = $binaryProvenance
     runner_timeout_ms = $TimeoutMs
@@ -223,7 +224,10 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
         -WorkingDirectory $repoRoot `
         -StdoutPath $reportPath `
         -StderrPath $stderrPath `
-        -ProcessTimeoutMs $nativeWallClockTimeoutMs
+        -ProcessTimeoutMs $nativeWallClockTimeoutMs `
+        -EnvironmentVariables @{
+            SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR = $artifactDirectory
+        }
     $nativeExitCode = $nativeResult.exit_code
 }
 else {
@@ -277,6 +281,7 @@ if ($binarySha256Before) {
     finished_at_utc = [DateTime]::UtcNow.ToString("o")
     timeout_ms = $TimeoutMs
     required_scenarios = @($requestedScenarios)
+    failure_artifact_directory = $artifactDirectory
     binary_path = $effectiveBinaryPath
     binary_sha256_before = $binarySha256Before
     binary_sha256_after = $binarySha256After

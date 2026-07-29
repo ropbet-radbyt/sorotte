@@ -5,7 +5,7 @@ use std::{
     env, fs,
     io::{Cursor, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -305,8 +305,7 @@ where
                 &args.log_path,
                 "restarting Sorotte GUI after update recovery",
             )?;
-            Command::new(&target_exe_path)
-                .spawn()
+            spawn_background_without_inherited_stdio(&mut Command::new(&target_exe_path))
                 .map_err(|error| format!("failed to restart Sorotte GUI: {error}"))?;
         }
         append_log(&args.log_path, "interrupted update recovery completed")?;
@@ -353,8 +352,7 @@ fn apply_validated_source_update(args: &UpdaterArgs, source_dir: &Path) -> Resul
     apply_replacement_plan(&plan)?;
     if plan.restart {
         append_log(&plan.log_path, "restarting Sorotte GUI")?;
-        Command::new(&plan.target_exe_path)
-            .spawn()
+        spawn_background_without_inherited_stdio(&mut Command::new(&plan.target_exe_path))
             .map_err(|error| format!("failed to restart Sorotte GUI: {error}"))?;
     }
     append_log(&plan.log_path, "update completed")?;
@@ -649,7 +647,7 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
     )?;
     let mut command = Command::new(&detached_path);
     command.args(detached_update_helper_args(args, &expected_sha256));
-    command.spawn().map_err(|error| {
+    spawn_background_without_inherited_stdio(&mut command).map_err(|error| {
         let _ = remove_directory_if_exists(&bootstrap_dir);
         format!(
             "failed launching detached update helper {}: {error}",
@@ -657,6 +655,15 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
         )
     })?;
     Ok(())
+}
+
+fn spawn_background_without_inherited_stdio(command: &mut Command) -> std::io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 fn detached_update_helper_args(args: &UpdaterArgs, expected_sha256: &str) -> Vec<String> {

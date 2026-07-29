@@ -3,9 +3,12 @@ mod tests;
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{
+        Arc, Condvar, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use sorotte_client_app::app_boundary::commands::LocalOffsetCommand;
@@ -76,6 +79,15 @@ impl GuiQueuedRuntimeBridgeHandle {
             shared_state.runtime_wake_revision = shared_state.runtime_wake_revision.wrapping_add(1);
         }
         shared.wake.notify_one();
+    }
+
+    pub(super) fn threaded_runtime_shutdown_requested(&self) -> bool {
+        self.threaded_runtime_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|shared| shared.stop_requested.load(Ordering::Acquire))
     }
 
     fn notify_repaint(&self) {
@@ -575,23 +587,25 @@ struct GuiThreadedRuntimeOwnerSharedState {
     latest_input: Option<Arc<GuiRuntimeInput>>,
     latest_input_revision: u64,
     runtime_wake_revision: u64,
-    stop_requested: bool,
 }
 
 #[derive(Default)]
 struct GuiThreadedRuntimeOwnerShared {
     state: Mutex<GuiThreadedRuntimeOwnerSharedState>,
     wake: Condvar,
+    stop_requested: AtomicBool,
 }
 
 pub(super) struct GuiThreadedRuntimeOwnerPump {
     last_submitted_input: Option<Arc<GuiRuntimeInput>>,
     shared: Arc<GuiThreadedRuntimeOwnerShared>,
     worker: Option<JoinHandle<()>>,
+    shutdown_timeout: Duration,
 }
 
 impl GuiThreadedRuntimeOwnerPump {
     const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+    const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
     pub(super) fn new<TOwner>(
         handle: GuiQueuedRuntimeBridgeHandle,
@@ -611,13 +625,31 @@ impl GuiThreadedRuntimeOwnerPump {
     where
         TOwner: GuiQueuedRuntimeOwner + Send + 'static,
     {
+        Self::new_with_poll_interval_and_shutdown_timeout(
+            handle,
+            owner,
+            poll_interval,
+            Self::DEFAULT_SHUTDOWN_TIMEOUT,
+        )
+    }
+
+    fn new_with_poll_interval_and_shutdown_timeout<TOwner>(
+        handle: GuiQueuedRuntimeBridgeHandle,
+        owner: TOwner,
+        poll_interval: Duration,
+        shutdown_timeout: Duration,
+    ) -> Result<Self, String>
+    where
+        TOwner: GuiQueuedRuntimeOwner + Send + 'static,
+    {
         let shared = Arc::new(GuiThreadedRuntimeOwnerShared::default());
         let worker_shared = shared.clone();
         let worker_handle = handle.clone();
         let worker = thread::Builder::new()
             .name("sorotte-gui-runtime".to_owned())
             .spawn(move || {
-                Self::run_worker_loop(worker_handle, owner, worker_shared, poll_interval);
+                Self::run_worker_loop(worker_handle, owner, worker_shared.clone(), poll_interval);
+                worker_shared.wake.notify_all();
             })
             .map_err(|error| format!("failed to spawn syncplay GUI runtime thread: {error}"))?;
         handle.set_threaded_runtime_owner(&shared);
@@ -625,6 +657,7 @@ impl GuiThreadedRuntimeOwnerPump {
             last_submitted_input: None,
             shared,
             worker: Some(worker),
+            shutdown_timeout,
         })
     }
 
@@ -649,7 +682,7 @@ impl GuiThreadedRuntimeOwnerPump {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             loop {
-                if shared_state.stop_requested {
+                if shared.stop_requested.load(Ordering::Acquire) {
                     return;
                 }
                 if shared_state.latest_input_revision != latest_revision {
@@ -688,6 +721,54 @@ impl GuiThreadedRuntimeOwnerPump {
                 owner.poll(&handle);
             }
         }
+    }
+
+    fn request_shutdown(&self) {
+        self.shared.stop_requested.store(true, Ordering::Release);
+        self.shared.wake.notify_all();
+    }
+
+    fn shutdown_worker(&mut self) {
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        super::test_lifecycle::record(super::test_lifecycle::RUNTIME_STOP_REQUESTED);
+        self.request_shutdown();
+        let deadline = Instant::now() + self.shutdown_timeout;
+        while !worker.is_finished() && Instant::now() < deadline {
+            let shared_state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait_for = remaining.min(Duration::from_millis(25));
+            let _ = self
+                .shared
+                .wake
+                .wait_timeout(shared_state, wait_for)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        if !worker.is_finished() {
+            super::test_lifecycle::record(
+                super::test_lifecycle::RUNTIME_SHUTDOWN_DEADLINE_EXCEEDED,
+            );
+            eprintln!(
+                "sorotte-gui runtime shutdown exceeded {} ms; detaching the blocked worker so process exit can continue",
+                self.shutdown_timeout.as_millis()
+            );
+            drop(worker);
+            return;
+        }
+        if worker.join().is_err() {
+            eprintln!("sorotte-gui runtime thread panicked during shutdown");
+            return;
+        }
+        super::test_lifecycle::record(super::test_lifecycle::RUNTIME_WORKER_STOPPED);
     }
 }
 
@@ -771,23 +852,14 @@ impl GuiNativeRuntimePump for GuiThreadedRuntimeOwnerPump {
         drop(shared_state);
         self.shared.wake.notify_one();
     }
+
+    fn shutdown(&mut self) {
+        self.shutdown_worker();
+    }
 }
 
 impl Drop for GuiThreadedRuntimeOwnerPump {
     fn drop(&mut self) {
-        {
-            let mut shared_state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            shared_state.stop_requested = true;
-        }
-        self.shared.wake.notify_all();
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            eprintln!("sorotte-gui runtime thread panicked during shutdown");
-        }
+        self.shutdown_worker();
     }
 }
