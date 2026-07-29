@@ -4,6 +4,7 @@ Status: proposal with implementation tranche and lean-fix follow-through
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
+Merged-profile implementation update: 2026-07-29
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -41,12 +42,19 @@ the non-controversial lean fixes proven by that coverage:
   `before`, new-tag default-branch merge-base only for all-zero `before`, and
   an explicit manual base, with raw/effective provenance and always-run phase
   JSON;
+- fail-closed merged coverage profiles for the all-feature workspace, complete
+  14-scenario GUI semantic suite, and four exact strict live-TLS tests, with
+  pinned producer/reference identity, fresh raw-profile deltas, lane-specific
+  behavioral oracles, retained logs, and a final LLVM merge check;
 - immutable commit pins for every third-party action used by the Rust CI and
   coverage workflows, plus an exact verified mpv source commit;
 - a fail-closed registry for all 25 ignored Rust tests, including explicit CI,
   manual-capability, fixture-maintenance, and expiring quarantine dispositions;
-- an empty, schema-validated known-defect registry; every surfaced product
-  defect now has a positive regression and ordinary behavior evidence;
+- an empty, schema-validated expected-failure registry; previously resolved
+  product defects have positive regressions, while newly surfaced
+  `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` remain red
+  through their ordinary reproducing tests rather than being normalized by
+  `should_panic`;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -99,6 +107,14 @@ failures. Ordinary and instrumented workspace runs exposed the CLI shared-lock
 poison cascade, and pinned nextest exposed an updater subprocess-handle leak.
 Both have deterministic regressions and lean harness fixes.
 
+The merged-profile experiment then proved a clean, compatible 36-profile
+workspace, semantic, and strict live-TLS view at 77.98% diagnostic
+line-instance coverage. It also found a rare player event-observation failure
+during one parallel instrumented workspace run and reproduced six failures in
+the complete strict legacy fanout matrix. Those seven findings remain
+unresolved; the coverage gate has no retry and explicitly limits its green
+compatibility claim to the four live-TLS selectors.
+
 ## Contents
 
 - [Implementation status on this branch](#implementation-status-on-this-branch)
@@ -138,9 +154,11 @@ The principal problem is no longer a shortage of example tests. It is that:
    independent reference model, shrinking, or persistent failure cases;
 4. important test harnesses can skip required behavior and still report
    success;
-5. coverage is generated only on a scheduled default-feature Linux run, is not
-   compared with the pull-request diff, and does not merge semantic, native,
-   compatibility, or Windows execution;
+5. at audit time, coverage was generated only on a scheduled default-feature
+   Linux run and was not compared with the pull-request diff; this branch now
+   gates changed lines and merges all-feature workspace, semantic, and strict
+   live-TLS execution, while native Windows and the red full-compatibility
+   matrix remain separate;
 6. Windows-specific, process, timing, persistence-crash, packaging, and
    publication paths remain materially under-protected.
 
@@ -579,10 +597,13 @@ The aggregate hides major blind spots. Examples include:
 - media-match diagnostics at 0%;
 - server `main` at roughly 39%.
 
-Some of these values are instrumentation gaps rather than absent testing:
-semantic, updater, live compatibility, native, and Windows jobs create separate
-profiles that the coverage workflow never merges. That distinction is exactly
-why coverage must be collected from the actual required commands.
+Some of these values were instrumentation gaps rather than absent testing.
+The implementation now merges the complete semantic inventory and strict
+live-TLS compatibility selector with the workspace profiles. Updater process
+variants, native interactive Windows, other OS-specific execution, and the
+currently red complete legacy fanout matrix remain separate. That distinction
+is exactly why every merged lane must attest both fresh instrumentation and
+its own behavioral oracle.
 
 ### 6.2.1 Implementation-branch LCOV experiments
 
@@ -630,6 +651,49 @@ The named pinned toolchain initially lacked the LLVM tools component.
 `llvm-tools-preview` was explicitly installed on that toolchain in 237.5
 seconds before the fresh experiment. CI provisions the component explicitly
 as well.
+
+### 6.2.2 Merged behavioral profile experiment
+
+`scripts/coverage_profile_lanes.py` now owns four ordered phases: all-feature
+workspace execution, the exact 14-scenario semantic suite, four strict
+live-TLS compatibility tests, and an LLVM merge check. It accepts only
+cargo-llvm-cov 0.8.4 and pinned Syncplay commit
+`d1c5f85af377c960c5a940707c4d01bc84fd9c3f`. External Cargo processes receive
+the producer's parsed `show-env` contract and an isolated
+`target/llvm-cov-target`; every execution lane must create or change at least
+one recursively inventoried raw profile. Schema version 2 first removes and
+attests stale generated raw/merged inputs, requires the workspace to start at
+zero, binds profile-count continuity across every lane, detects content changes
+even when size and mtime are unchanged, and forbids removal of an earlier
+lane's evidence.
+
+The final local attestation passed:
+
+| Lane | Behavioral result | Duration | Fresh profiles |
+|---|---:|---:|---:|
+| all-feature workspace | pass | 180.969s | 34 |
+| GUI semantic | 14/14 | 8.613s | 1 |
+| strict live TLS | 4/4, 140 filtered | 1.101s | 1 |
+| LLVM merge | `TOTAL` present | 1.598s | merge-only |
+
+The first clean replay removed 229 raw and one merged profile from earlier
+experiments. The exact-final replay reset that 36-profile trial and recreated
+the same lane counts with zero profile removals. Its view covered 148,209 of
+190,067 line instances (77.977240%). Both downstream producer views and the
+canonical converter passed; the source-bound map covered 145,016 of 183,712
+unique physical lines (78.936596%). Neither percentage replaces the
+changed-line policy. All 284 Python infrastructure and workflow-policy tests
+pass with the schema-2 reset and finalizer binding.
+
+Two deliberately failing experiments constrained the claim. A semantic run
+that reused `target/debug` passed 14/14 but produced no profile delta and was
+rejected. The complete strict legacy matrix passed 129 tests, failed six, and
+ignored nine in 88.98 seconds, so it was not relabeled as a green coverage
+lane. One parallel instrumented workspace run also exposed the intermittent
+`TC-PLAYER-003` event loss; focused stress did not reproduce it, and the
+collector retains a recurrence as red rather than retrying. Full evidence is
+in
+[`merged-profile-lanes-20260729.md`](evidence/test-coverage/merged-profile-lanes-20260729.md).
 
 ### 6.3 Static risk and tooling inventory
 
@@ -1374,6 +1438,14 @@ Merge compatible profiles or upload OS/lane flags to a service that presents a
 merged and per-platform view. Keep “not instrumented” distinct from
 “instrumented and not executed.”
 
+Implementation status: items 1 and 3 are fully merged. Item 4 is merged for
+the four strict live-TLS contracts only; the complete fanout matrix remains
+red under `TC-COMPAT-001` through `TC-COMPAT-006`. The collector parses
+cargo-llvm-cov's `show-env`, isolates external instrumented builds, requires a
+fresh raw-profile delta and exact behavioral oracle per lane, and performs a
+real merge before export. Items 5 and 6 remain separate evidence unless their
+platform and instrumentation contracts are demonstrably compatible.
+
 ### 10.2 Gates
 
 Do not hard-code 78.99% as the first threshold: it is a default-feature main
@@ -1588,8 +1660,12 @@ are retained. Base choice is mechanically event-aware: one PR
 merge base, exact nonzero branch or updated-tag `before`, one default-branch
 merge base for new tags only, and an explicit manual base. Raw inputs,
 requested/effective commits, merge bases, policy digest/rule provenance, and
-each failed or passed phase are retained in JSON. Semantic/native profiles are
-not yet merged. Test-only paths and complete inline `#[cfg(test)]` modules are
+each failed or passed phase are retained in JSON. The complete semantic
+inventory and exact strict live-TLS compatibility subset are now merged with
+workspace profiles through a separately validated lane report. Interactive
+native Windows, other OS-specific execution, and the currently red full
+legacy fanout matrix are not yet merged. Test-only paths and complete inline
+`#[cfg(test)]` modules are
 reported outside the production denominator; the inline scanner masks Rust
 comments and literals and fails closed on ambiguous or unclosed module bodies.
 Contradictory LCOV summaries are now retained as a typed diagnostic model while
@@ -1723,14 +1799,18 @@ lifecycle model and deterministic boundary faults, and encodes changed-line
 ratchets. It also demonstrates why gates must first run in fail-closed
 diagnostic mode: strict native evidence, nextest, PowerShell, ordinary
 workspace, and LCOV replay exposed real red states that permissive or
-retry-only execution would have hidden. Every surfaced product defect now has
-a positive regression; TC-PLAYER-001 uses the selected exclusive-successor
-rule and no defect quarantine remains.
+retry-only execution would have hidden. Previously fixed product defects have
+positive regressions and TC-PLAYER-001 uses the selected
+exclusive-successor rule. The later merged-profile experiment deliberately
+leaves `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` red and
+unresolved; no defect quarantine turns those failures green.
 
 The most valuable remaining next steps are:
 
-1. merge semantic, native, compatibility, and OS-specific profiles where the
-   instrumentation contracts are compatible;
+1. extend the proven workspace + semantic + strict-TLS merge to compatible
+   updater/process and OS-specific profiles; keep interactive native Windows
+   separate until a trustworthy runner exists, and do not merge the full
+   compatibility matrix until its six red cases are resolved;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
 3. add deterministic clock and schedule control to reconnect, TLS rotation,

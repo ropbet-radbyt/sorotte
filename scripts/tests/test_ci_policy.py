@@ -479,6 +479,40 @@ class CiPolicyTests(unittest.TestCase):
             },
         )
 
+        coverage_job = self.jobs["coverage_diff"]
+        self.assertEqual(
+            coverage_job.get("env"),
+            {
+                "SYNCPLAY_LEGACY_ROOT": (
+                    "${{ github.workspace }}/.interop-cache/syncplay-legacy"
+                )
+            },
+        )
+        coverage_legacy = named_step(
+            self.jobs,
+            "coverage_diff",
+            "Checkout pinned legacy reference for merged coverage",
+        )
+        self.assertEqual(
+            coverage_legacy.get("uses"),
+            PINNED_USES["actions/checkout"],
+        )
+        self.assertEqual(
+            coverage_legacy.get("with"),
+            {
+                "repository": "Syncplay/syncplay",
+                "ref": LEGACY_SYNCPLAY_SHA,
+                "path": ".interop-cache/syncplay-legacy",
+                "persist-credentials": "false",
+            },
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "coverage_diff",
+            "Install merged coverage prerequisites",
+            "python -m pip install --disable-pip-version-check "
+            "-r requirements/legacy-python-interop.txt",
+        )
         coverage_installer = named_step(
             self.jobs,
             "coverage_diff",
@@ -530,8 +564,12 @@ class CiPolicyTests(unittest.TestCase):
         profiles = self.assert_exact_run(
             self.jobs,
             "coverage_diff",
-            "Generate locked all-feature coverage profiles",
-            "cargo llvm-cov --locked --workspace --all-features --no-report",
+            "Generate merged behavioral coverage profiles",
+            """
+            python scripts/coverage_profile_lanes.py run
+            --repo-root .
+            --output target/verification/coverage-profile-lanes.json
+            """,
             continue_on_error="true",
             allowed_if="steps.coverage_base.outcome == 'success'",
         )
@@ -612,6 +650,7 @@ class CiPolicyTests(unittest.TestCase):
             --llvm-text target/diff-coverage.txt
             --line-map target/verification/coverage-line-map.json
             --policy-report target/verification/diff-coverage.json
+            --profile-lanes target/verification/coverage-profile-lanes.json
             --output target/verification/coverage-ci-phases.json
             """,
             allowed_if="always()",
@@ -1143,6 +1182,8 @@ class CiPolicyTests(unittest.TestCase):
                     [
                         "target/verification/coverage-ci-phases.json",
                         "target/verification/coverage-base.json",
+                        "target/verification/coverage-profile-lanes.json",
+                        "target/verification/coverage-profile-logs/",
                         "target/verification/coverage-line-map.json",
                         "target/verification/diff-coverage.json",
                         "target/diff-coverage.json",
@@ -1171,7 +1212,7 @@ class CiPolicyTests(unittest.TestCase):
             if step.get("uses") == PINNED_USES["actions/checkout"]
             and step.get("with", {}).get("repository") == "Syncplay/syncplay"
         ]
-        self.assertEqual(len(syncplay_checkouts), 4)
+        self.assertEqual(len(syncplay_checkouts), 5)
         self.assertTrue(
             all(
                 checkout["with"]["ref"] == LEGACY_SYNCPLAY_SHA
@@ -1191,6 +1232,14 @@ class CiPolicyTests(unittest.TestCase):
     def test_scheduled_coverage_is_locked_all_feature_and_reproducible(self) -> None:
         coverage_jobs = self.coverage_workflow["jobs"]
         self.assertEqual(self.coverage_workflow["permissions"], {"contents": "read"})
+        self.assertEqual(
+            coverage_jobs["coverage"].get("env"),
+            {
+                "SYNCPLAY_LEGACY_ROOT": (
+                    "${{ github.workspace }}/.interop-cache/syncplay-legacy"
+                )
+            },
+        )
         checkout = named_step(coverage_jobs, "coverage", "Checkout")
         self.assertEqual(
             checkout.get("uses"),
@@ -1199,6 +1248,24 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             checkout.get("with"),
             {"persist-credentials": "false"},
+        )
+        legacy_checkout = named_step(
+            coverage_jobs,
+            "coverage",
+            "Checkout pinned legacy reference for merged coverage",
+        )
+        self.assertEqual(
+            legacy_checkout.get("uses"),
+            PINNED_USES["actions/checkout"],
+        )
+        self.assertEqual(
+            legacy_checkout.get("with"),
+            {
+                "repository": "Syncplay/syncplay",
+                "ref": LEGACY_SYNCPLAY_SHA,
+                "path": ".interop-cache/syncplay-legacy",
+                "persist-credentials": "false",
+            },
         )
         python_setup = named_step(
             coverage_jobs,
@@ -1210,6 +1277,13 @@ class CiPolicyTests(unittest.TestCase):
             PINNED_USES["actions/setup-python"],
         )
         self.assertEqual(python_setup.get("with"), {"python-version": "3.11"})
+        self.assert_exact_run(
+            coverage_jobs,
+            "coverage",
+            "Install merged coverage prerequisites",
+            "python -m pip install --disable-pip-version-check "
+            "-r requirements/legacy-python-interop.txt",
+        )
         installer = named_step(
             coverage_jobs,
             "coverage",
@@ -1223,8 +1297,12 @@ class CiPolicyTests(unittest.TestCase):
         self.assert_exact_run(
             coverage_jobs,
             "coverage",
-            "Generate locked all-feature coverage profiles",
-            "cargo llvm-cov --locked --workspace --all-features --no-report",
+            "Generate merged behavioral coverage profiles",
+            """
+            python scripts/coverage_profile_lanes.py run
+            --repo-root .
+            --output target/verification/coverage-profile-lanes.json
+            """,
         )
         self.assert_exact_run(
             coverage_jobs,
@@ -1264,6 +1342,8 @@ class CiPolicyTests(unittest.TestCase):
                     "target/coverage.json\n"
                     "target/coverage.txt\n"
                     "target/coverage-line-map.json\n"
+                    "target/verification/coverage-profile-lanes.json\n"
+                    "target/verification/coverage-profile-logs/\n"
                 ),
                 "if-no-files-found": "error",
                 "retention-days": "14",

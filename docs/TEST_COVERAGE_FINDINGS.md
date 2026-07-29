@@ -2,6 +2,7 @@
 
 Original review: 2026-07-28
 Lean-fix implementation update: 2026-07-29
+Merged-profile implementation update: 2026-07-29
 
 Branch: `codex/test-coverage-design`
 
@@ -13,7 +14,12 @@ infrastructure. The original review deliberately left surfaced defects
 unchanged. The 2026-07-29 update implements the non-controversial lean
 solutions, applies the subsequently selected lifecycle and native-GUI
 decisions, and converts every product-defect characterization into a positive
-regression. The known-defect registry is now empty.
+regression. The executable `should_panic` known-defect registry remains empty.
+The merged-profile work subsequently surfaced one intermittent player
+observation failure and six strict legacy-parity failures. They remain
+unresolved as `TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006`;
+none was converted into an expected-success test or fixed by the coverage
+implementation.
 
 ## Experimental baseline
 
@@ -80,17 +86,23 @@ After the coverage tranche was integrated:
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
 - The behavior catalog validates 13 behavior IDs, 25 exact proofs, and two
-  lanes. The known-defect registry now validates as empty.
+  lanes. The executable known-defect registry still validates as empty: the
+  newly surfaced failures already have ordinary tests that go red under their
+  reproducing schedule or strict environment, so wrapping them in
+  `should_panic` would weaken the evidence.
 - The ignored-test registry exactly classified all 25 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, 12 manual
   capability tests, and 2 expiring compatibility quarantines.
 - The changed-line utility now passes all 71 LCOV/diff-policy cases; the
   canonical-map consumer passed 9 additional adversarial cases, the native
-  converter passed 14, and the six-phase finalizer passed 19. Coverage includes immutable
-  base/head critical-policy union, policy-deletion downgrade prevention,
-  inline `#[cfg(test)]` denominator dilution, adversarial Rust lexical tokens,
-  new-tag, updated-tag, missing-base, merge-base, provenance, and
-  partial-phase failure contracts.
+  converter passed 14, and the six-phase finalizer passed 19. Coverage
+  includes immutable base/head critical-policy union, policy-deletion
+  downgrade prevention, inline `#[cfg(test)]` denominator dilution,
+  adversarial Rust lexical tokens, new-tag, updated-tag, missing-base,
+  merge-base, provenance, and partial-phase failure contracts. The schema-2
+  merged-profile collector, finalizer binding, stale-profile reset,
+  lane-oracle, and workflow-policy additions bring the complete
+  infrastructure suite to 284 passing tests in 11.046 seconds.
 - Deterministic protocol ordering passed 3 new permutation/adversarial tests;
   all 6 production-worker framed IPC tests passed; all 35 server persistence
   tests pass, including positive atomic-migration and concurrent-secret
@@ -144,6 +156,23 @@ After the coverage tranche was integrated:
   `20260729T072511543Z-38900` has zero-byte stderr, native-report SHA-256
   `0c3524e9903ea05b52f4f2d350a76b7ca7bc62812b081305c9f6c7578b2225df`,
   and every capability outcome is `required-pass`.
+- The merged-profile collector passed a complete local run using
+  cargo-llvm-cov 0.8.4 and pinned Syncplay
+  `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`. Schema 2 first proved it
+  could remove 229 stale raw profiles and one stale merged profile. The
+  exact-final replay then reset the preceding 36-profile trial, created 34
+  workspace profiles in 180.969 seconds, created one profile from all 14
+  semantic scenarios in 8.613 seconds, and created one from all four strict
+  live-TLS cases in 1.101 seconds. Every lane removed zero prior profiles and
+  LLVM merged exactly those 36 current-run profiles. The diagnostic summary
+  reported 148,209 of 190,067 line instances covered (77.98%); the downstream
+  source-bound map reported 145,016 of 183,712 unique physical lines
+  (78.936596%).
+- The attempted complete strict compatibility profile remained red in a
+  durable replay: 129 passed, 6 failed, and 9 were ignored in 88.98 seconds.
+  The six failures are retained as `TC-COMPAT-001` through
+  `TC-COMPAT-006`; the required merged profile makes the narrower four-test
+  live-TLS boundary explicit.
 
 ## TC-PLAYER-001: concurrent external replacement corrupts predecessor linkage (resolved)
 
@@ -290,6 +319,115 @@ The stale-epoch property still exercises all epoch-bearing input kinds against
 live current-epoch identity collisions for every generated setup. The two
 successor-conflict regressions and seven terminal-reactivation variants are
 ordinary merge-contract proofs.
+
+## TC-PLAYER-003: property change can disappear between heartbeat acknowledgement and response
+
+Status: **Unresolved; observed once under parallel workspace instrumentation**
+
+Severity: **High if adapter-reachable; current reproducibility is low**
+Detection: complete cargo-llvm-cov workspace run
+
+The existing test
+`property_between_heartbeat_ack_and_response_remains_full_pump_visible`
+observed no event where the full-pump contract required
+`["property-change"]`. The failure occurred during a parallel, all-feature
+instrumented workspace run after 78.809 seconds. The same lane created 22
+fresh profiles before failing, so it was real instrumented execution rather
+than a stale-binary result.
+
+Fifty ordinary exact replays, twenty instrumented exact replays, and five
+instrumented full-package replays passed. A later complete instrumented
+workspace run also passed. The evidence therefore establishes an intermittent
+ordering observation, not yet a deterministic causal history. The collector
+does not retry: a recurrence remains red and its logs are retained.
+
+No player code or test timing was changed. The next investigation should
+capture the maintenance pump's acknowledged request ID, response queue,
+property queue, heartbeat boundary, and thread schedule at every handoff,
+then reduce a failing trace before choosing a product or harness fix.
+
+## TC-COMPAT-001: username-conflict fanout has no Rust match
+
+Status: **Unresolved; reproduced in the complete strict legacy matrix**
+
+Severity: **Medium (legacy protocol parity)**
+Detection: strict live legacy fanout comparison
+
+At step 1 of `server_runtime_username_conflict.jsonl`, the legacy server
+emitted a joined-user update for its conflict-resolved username `alice_`; the
+comparator found no matching Rust output. The decision boundary is semantic:
+either Sorotte must reproduce legacy conflict renaming and fanout exactly, or
+the compatibility contract must explicitly document and test an intentional
+departure. The coverage slice makes neither decision.
+
+## TC-COMPAT-002: persistent-room lifecycle emits an extra playlist index
+
+Status: **Unresolved; reproduced in the complete strict legacy matrix**
+
+Severity: **Medium (observable playlist fanout divergence)**
+Detection: strict live legacy fanout comparison
+
+At step 1 of the persistent-room lifecycle scenario, both implementations
+emitted `playlistChange`, but Sorotte also emitted `playlistIndex(0)`.
+The comparator observed one legacy output and two Rust outputs. No output was
+filtered or reordered to make the profile lane green.
+
+## TC-COMPAT-003: controlled-room playlist change doubles fanout
+
+Status: **Unresolved; reproduced in the complete strict legacy matrix**
+
+Severity: **Medium (observable multi-client playlist fanout divergence)**
+Detection: strict live legacy fanout comparison
+
+At step 7 of the controlled-room permissions scenario, legacy sent
+`playlistChange` to two clients. Sorotte sent those two messages plus
+`playlistIndex(0)` to both clients, producing four outputs. This may share a
+root cause with `TC-COMPAT-002`, but it remains a separate multi-recipient
+contract because authorization and fanout cardinality are involved.
+
+## TC-COMPAT-004: permanent-room file load emits an extra playlist index
+
+Status: **Unresolved; reproduced in the complete strict legacy matrix**
+
+Severity: **Medium (persistent-room startup parity)**
+Detection: strict live legacy fanout comparison
+
+At step 1 of the permanent-rooms-file scenario, legacy emitted only
+`playlistChange` while Sorotte additionally emitted `playlistIndex(0)`.
+This is recorded separately from `TC-COMPAT-002` because the playlist source
+is the permanent-room file rather than a live persistent-room transition.
+
+## TC-COMPAT-005: persistent-room timeout parity aborts the legacy connection
+
+Status: **Unresolved; reproduced on Windows**
+
+Severity: **Medium; product versus legacy-harness ownership is not isolated**
+Detection: complete strict legacy matrix
+
+The persistent-room timeout/list-update scenario aborted its legacy connection
+with Windows error 10053. This is not accepted as a skip: prerequisites were
+present at the pinned Syncplay revision. The next experiment must preserve the
+legacy process exit status, stdout/stderr, socket transcript, timer milestones,
+and Rust peer state to distinguish a legacy-process lifecycle race from a
+Sorotte protocol action that closes the peer.
+
+## TC-COMPAT-006: periodic-state timeout parity aborts the legacy connection
+
+Status: **Unresolved; reproduced on Windows**
+
+Severity: **Medium; product versus legacy-harness ownership is not isolated**
+Detection: complete strict legacy matrix
+
+The state periodic-timeout scenario independently ended with the same Windows
+10053 connection abort. It remains separate from `TC-COMPAT-005` because it
+uses the state-maintenance timeout path rather than persistent-room list
+updates. Shared root cause is plausible but unproven.
+
+The durable strict replay passed 129 tests, failed these six, ignored nine
+explicit capability/maintenance tests, and filtered none in 88.98 seconds.
+Commands, hashes, profile deltas, and the successful narrower coverage
+attestation are retained in
+[`merged-profile-lanes-20260729.md`](evidence/test-coverage/merged-profile-lanes-20260729.md).
 
 ## TC-SEC-001: structured credential aliases survive transcript sanitization (resolved)
 

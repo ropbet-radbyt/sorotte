@@ -67,7 +67,10 @@ Proptest seeds under
 strategy-shape scoped. They improve replay while a strategy remains stable,
 while named deterministic regressions remain the durable behavior contract.
 `known-defects.toml` is retained as an empty, schema-validated registry so a
-future defect cannot become implicit.
+future expected-failure characterization cannot become implicit. Unresolved
+`TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-006` are not entered
+there: they remain red through an existing intermittent test or the ordinary
+strict compatibility tests rather than being wrapped in `should_panic`.
 
 `scripts/tests/test_ci_policy.py` mechanically binds the aggregate's required
 job names to the locked all-feature, semantic, compatibility, real-mpv,
@@ -84,7 +87,8 @@ Pull-request entries are additionally checked against exact
 `--ignored --exact` workflow invocations.
 
 `known-defects.toml` is the schema-validated inventory for any undesirable
-current behavior and is empty on this branch. If a future entry is added, the
+behavior intentionally represented by a Rust expected-failure
+characterization and is empty on this branch. If a future entry is added, the
 validator exactly matches every Rust `known_defect_*`
 `should_panic(expected = "...")` characterization to its source, package,
 selector, panic oracle, owner, finding, and expiry. A missing or stale entry,
@@ -185,6 +189,36 @@ and six-phase result are retained in
 The LCOV consumer resolution and current-source cross-audit are retained in
 [`lcov-dual-model-20260729.md`](../docs/evidence/test-coverage/lcov-dual-model-20260729.md).
 
+## Merged behavioral coverage profiles
+
+The coverage producer does not stop at workspace unit and integration tests.
+`scripts/coverage_profile_lanes.py` collects and attests compatible profiles
+from:
+
+- the locked all-feature workspace;
+- the exact 14-scenario GUI semantic inventory;
+- four strict live-TLS tests against pinned Syncplay commit
+  `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`;
+- a final cargo-llvm-cov merge check.
+
+The wrapper accepts only cargo-llvm-cov 0.8.4, applies its `show-env` contract
+to external Cargo processes, isolates those builds in
+`target/llvm-cov-target`, removes and attests stale generated raw/merged
+profiles before execution, recursively hashes current profiles, requires the
+workspace lane to start at zero, and requires a fresh profile delta plus
+continuous inventory from every execution lane. Content hashes detect changes
+even when size and mtime are unchanged; a lane may not remove prior profiles,
+and the merge may not mutate them. The wrapper also validates the semantic
+JSON and exact libtest counts, selectors, skip markers, commands, environment,
+logs, producer, and pinned reference revision.
+
+The complete strict legacy fanout matrix is not claimed by this green
+profile. A real replay passed 129 tests and failed six; those divergences are
+tracked as `TC-COMPAT-001` through `TC-COMPAT-006`. Native interactive Windows
+profiles also remain a separate evidence boundary. Exact experiments and
+limits are retained in
+[`merged-profile-lanes-20260729.md`](../docs/evidence/test-coverage/merged-profile-lanes-20260729.md).
+
 ## Targeted mutation evidence
 
 The first scheduled mutation shard covers the pure privacy boundary in
@@ -226,12 +260,21 @@ survivor classification, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
-tools component:
+tools component, the legacy Python requirements, and the pinned Syncplay
+checkout:
 
 ```text
 rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --version 0.8.4 --locked
-cargo llvm-cov --locked --workspace --all-features --no-report
+python -m pip install -r requirements/legacy-python-interop.txt
+git clone https://github.com/Syncplay/syncplay.git \
+  .interop-cache/syncplay-legacy
+git -C .interop-cache/syncplay-legacy checkout \
+  d1c5f85af377c960c5a940707c4d01bc84fd9c3f
+SYNCPLAY_LEGACY_ROOT=.interop-cache/syncplay-legacy \
+python scripts/coverage_profile_lanes.py run \
+  --repo-root . \
+  --output target/verification/coverage-profile-lanes.json
 cargo llvm-cov report --json --skip-functions \
   --output-path target/diff-coverage.json
 cargo llvm-cov report --text \
@@ -247,7 +290,7 @@ python scripts/llvm_cov_line_map.py \
 captured or headless runs can therefore appear hung unless the component is
 provisioned first. CI installs it explicitly.
 
-`scripts/gui-native-smoke.ps1` now treats all nine native scenarios as required
+`scripts/gui-native-smoke.ps1` now treats the complete native inventory as required
 by default, prebuilds the GUI and native harness, binds the report to the GUI
 path and SHA-256, preserves raw output and producer exit state, rejects skips,
 duplicate JSON keys, unexpected stderr, and binary mutation, and kills a hung
@@ -255,11 +298,12 @@ process tree on a derived wall-clock deadline. This remains a trusted
 interactive-Windows lane: a hosted noninteractive runner must not be counted
 as equivalent evidence.
 
-The current native bundle does not yet retain screenshots, full UI Automation
-trees, isolated configuration, or a process/socket snapshot. Stderr rejection
-detects the observed placeholder DNS failures but is not proof that silent
-outbound networking was impossible; add OS-level network isolation before
-promoting the lane to release evidence.
+The native bundle retains screenshots, redacted UI Automation trees, isolated
+configuration, structured capability outcomes, invocation identity, process
+exit, and scenario logs. Loopback-only fixture policy plus stderr rejection
+catches the networking failures observed in this work; OS-level network
+isolation is still required before claiming that silent outbound traffic is
+impossible.
 
 Known product findings deliberately left unfixed by this coverage branch are
 tracked in [`docs/TEST_COVERAGE_FINDINGS.md`](../docs/TEST_COVERAGE_FINDINGS.md).

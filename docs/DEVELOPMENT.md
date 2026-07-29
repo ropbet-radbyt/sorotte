@@ -176,12 +176,25 @@ Install once:
 ```powershell
 rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --version 0.8.4 --locked
+python -m pip install -r requirements/legacy-python-interop.txt
+git clone https://github.com/Syncplay/syncplay.git `
+  .interop-cache/syncplay-legacy
+git -C .interop-cache/syncplay-legacy checkout --detach `
+  d1c5f85af377c960c5a940707c4d01bc84fd9c3f
 ```
 
-Generate the pinned native producer views and source-bound physical-line map:
+Generate the merged workspace, GUI semantic, and strict live-TLS profiles,
+then export the pinned native producer views and source-bound physical-line
+map:
 
 ```powershell
-cargo llvm-cov --locked --workspace --all-features --no-report
+$env:SYNCPLAY_LEGACY_ROOT = `
+  (Resolve-Path .interop-cache/syncplay-legacy).Path
+python scripts/coverage_profile_lanes.py run `
+  --repo-root . `
+  --output target/verification/coverage-profile-lanes.json
+python scripts/coverage_profile_lanes.py validate `
+  --report target/verification/coverage-profile-lanes.json
 cargo llvm-cov report --json --skip-functions `
   --output-path target/coverage.json
 cargo llvm-cov report --text `
@@ -198,6 +211,16 @@ cargo-llvm-cov otherwise prompts interactively and can look hung. Pull-request
 policy is based on unique changed physical production lines, while LLVM's
 aggregate line-instance summary is retained as separate diagnostic evidence;
 see [`coverage/README.md`](../coverage/README.md).
+
+Each execution lane must both pass its behavior oracle and create or update a
+raw profile. The collector removes only generated raw/merged coverage inputs
+below `target` before starting, attests the reset, and requires continuous
+current-run profile counts. It hashes profile content, forbids a lane from
+removing prior evidence, and requires the merge to leave raw inputs unchanged.
+It rejects a stale semantic binary, incomplete scenario inventory, skipped
+legacy prerequisite, wrong Syncplay revision, unexpected compatibility
+selector/count, or unmergeable profiles. It does not claim native interactive
+Windows coverage or the currently red complete legacy fanout matrix.
 
 ## Targeted Mutation Testing
 

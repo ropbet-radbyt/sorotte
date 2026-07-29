@@ -221,6 +221,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temporary.name)
         self.base = self.root / "base.json"
+        self.profile_lanes = self.root / "profile-lanes.json"
         self.llvm_json = self.root / "coverage.json"
         self.llvm_text = self.root / "coverage.txt"
         self.line_map = self.root / "line-map.json"
@@ -237,10 +238,146 @@ class CoverageFinalizerTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        self.write_profile_lanes()
         self.llvm_json.write_text('{"native":"llvm-json"}\n', encoding="utf-8")
         self.llvm_text.write_text("native llvm source view\n", encoding="utf-8")
         self.write_line_map()
         self.write_policy()
+
+    @staticmethod
+    def profile_log_metadata(name: str) -> dict[str, object]:
+        return {
+            "path": f"target/verification/coverage-profile-logs/{name}.log",
+            "size_bytes": 0,
+            "sha256": guard.hashlib.sha256(b"").hexdigest(),
+        }
+
+    def profile_lane_entry(self, lane: str) -> dict[str, object]:
+        profile_lanes = guard.coverage_profile_lanes
+        if lane == "workspace-all-features":
+            oracle: dict[str, object] = {
+                "kind": "exit-and-profile-delta"
+            }
+        elif lane == "gui-semantic":
+            oracle = {
+                "kind": "semantic-suite-json",
+                "total": len(profile_lanes.EXPECTED_SEMANTIC_SCENARIOS),
+                "passed": len(profile_lanes.EXPECTED_SEMANTIC_SCENARIOS),
+                "failed": 0,
+                "scenarios": list(
+                    profile_lanes.EXPECTED_SEMANTIC_SCENARIOS
+                ),
+            }
+        elif lane == "compat-live-tls":
+            oracle = {
+                "kind": "libtest-exact-live-tls",
+                "passed": len(profile_lanes.EXPECTED_COMPAT_TESTS),
+                "failed": 0,
+                "ignored": 0,
+                "filtered_out": profile_lanes.EXPECTED_COMPAT_FILTERED_OUT,
+                "tests": list(profile_lanes.EXPECTED_COMPAT_TESTS),
+                "skip_markers": [],
+            }
+        else:
+            oracle = {
+                "kind": "llvm-profile-merge",
+                "summary_detected": True,
+            }
+        deltas = (
+            [
+                {
+                    "path": f"target/{lane}.profraw",
+                    "size_bytes": 3,
+                    "sha256": guard.hashlib.sha256(b"raw").hexdigest(),
+                }
+            ]
+            if lane in profile_lanes.PROFILE_LANES
+            else []
+        )
+        profile_counts = {
+            "workspace-all-features": (0, 1),
+            "gui-semantic": (1, 2),
+            "compat-live-tls": (2, 3),
+            "merge-check": (3, 3),
+        }
+        before_count, after_count = profile_counts[lane]
+        return {
+            "status": "passed",
+            "command": list(profile_lanes.LANE_COMMANDS[lane]),
+            "instrumentation": profile_lanes.LANE_INSTRUMENTATION[lane],
+            "environment_overrides": list(
+                profile_lanes.LANE_ENVIRONMENT_OVERRIDES[lane]
+            ),
+            "exit_code": 0,
+            "duration_seconds": 0.01,
+            "stdout": self.profile_log_metadata(f"{lane}.stdout"),
+            "stderr": self.profile_log_metadata(f"{lane}.stderr"),
+            "profile_count_before": before_count,
+            "profile_count_after": after_count,
+            "profile_delta_count": len(deltas),
+            "profile_deltas": deltas,
+            "profile_removed_count": 0,
+            "oracle": oracle,
+            "errors": [],
+        }
+
+    def write_profile_lanes(
+        self,
+        *,
+        status: str = "passed",
+        errors: list[str] | None = None,
+    ) -> None:
+        profile_lanes = guard.coverage_profile_lanes
+        self.profile_lanes.write_text(
+            json.dumps(
+                {
+                    "schema_version": profile_lanes.SCHEMA_VERSION,
+                    "kind": profile_lanes.REPORT_KIND,
+                    "status": status,
+                    "producer": {
+                        "cargo_llvm_cov_version": (
+                            profile_lanes.PINNED_CARGO_LLVM_COV_VERSION
+                        ),
+                        "version_command": list(
+                            profile_lanes.VERSION_COMMAND
+                        ),
+                    },
+                    "legacy_reference": {
+                        "path": ".interop-cache/syncplay-legacy",
+                        "commit_sha": (
+                            profile_lanes.PINNED_LEGACY_SYNCPLAY_SHA
+                        ),
+                    },
+                    "instrumentation_environment": {
+                        "keys": sorted(
+                            profile_lanes.EXPECTED_SHOW_ENV_KEYS
+                        ),
+                        "profile_pattern": "target/fixture-%p-%32m.profraw",
+                        "target_dir": "target",
+                        "build_dir": "target",
+                        "crate_count": 2,
+                        "required_crates": sorted(
+                            profile_lanes.REQUIRED_INSTRUMENTED_CRATES
+                        ),
+                    },
+                    "profile_reset": {
+                        "kind": "fresh-profile-reset",
+                        "profile_root": "target",
+                        "removed_raw_profile_count": 4,
+                        "removed_merged_profile_count": 1,
+                        "remaining_raw_profile_count": 0,
+                        "remaining_merged_profile_count": 0,
+                    },
+                    "lane_order": list(profile_lanes.LANE_ORDER),
+                    "lanes": {
+                        lane: self.profile_lane_entry(lane)
+                        for lane in profile_lanes.LANE_ORDER
+                    },
+                    "errors": errors or [],
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def write_line_map(
         self,
@@ -348,6 +485,8 @@ class CoverageFinalizerTests(unittest.TestCase):
             str(self.line_map),
             "--policy-report",
             str(self.policy),
+            "--profile-lanes",
+            str(self.profile_lanes),
             "--output",
             str(self.output),
         ]
@@ -380,9 +519,26 @@ class CoverageFinalizerTests(unittest.TestCase):
             report["phases"]["line-map"]["report"]["line_model"],
             "unique-physical-source-lines",
         )
+        self.assertEqual(
+            report["phases"]["coverage-profiles"]["report"]["lane_order"],
+            list(guard.coverage_profile_lanes.LANE_ORDER),
+        )
+        self.assertEqual(
+            report["phases"]["coverage-profiles"]["report"][
+                "profile_reset"
+            ]["remaining_raw_profile_count"],
+            0,
+        )
+        self.assertEqual(
+            report["phases"]["coverage-profiles"]["report"]["lanes"][
+                "gui-semantic"
+            ]["oracle"]["passed"],
+            14,
+        )
 
     def test_base_failure_still_writes_phase_aware_diagnostics(self) -> None:
         self.base.unlink()
+        self.profile_lanes.unlink()
         self.llvm_json.unlink()
         self.llvm_text.unlink()
         self.line_map.unlink()
@@ -405,6 +561,62 @@ class CoverageFinalizerTests(unittest.TestCase):
         self.assertEqual(report["phases"]["diff-policy"]["status"], "blocked")
         self.assertTrue(
             any("cannot read base report" in error for error in report["errors"])
+        )
+
+    def test_profile_success_requires_complete_bound_lane_report(self) -> None:
+        self.profile_lanes.unlink()
+        result, report = self.invoke()
+        self.assertEqual(result, 1)
+        phase = report["phases"]["coverage-profiles"]
+        self.assertEqual(phase["status"], "failed")
+        self.assertTrue(
+            any("profile lane report" in error for error in phase["errors"])
+        )
+
+        self.write_profile_lanes(
+            status="failed",
+            errors=["semantic lane produced no raw profile"],
+        )
+        result, report = self.invoke(profiles_outcome="failure")
+        self.assertEqual(result, 1)
+        phase = report["phases"]["coverage-profiles"]
+        self.assertEqual(phase["status"], "failed")
+        self.assertEqual(phase["report"]["status"], "failed")
+        self.assertTrue(
+            any("did not pass" in error for error in phase["errors"])
+        )
+
+    def test_profile_report_rejects_lane_command_drift(self) -> None:
+        document = json.loads(self.profile_lanes.read_text(encoding="utf-8"))
+        document["lanes"]["compat-live-tls"]["command"] = ["cargo", "test"]
+        self.profile_lanes.write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+        result, report = self.invoke()
+        self.assertEqual(result, 1)
+        phase = report["phases"]["coverage-profiles"]
+        self.assertEqual(phase["status"], "failed")
+        self.assertTrue(
+            any("command drifted" in error for error in phase["errors"])
+        )
+
+    def test_profile_report_rejects_stale_profile_reset(self) -> None:
+        document = json.loads(self.profile_lanes.read_text(encoding="utf-8"))
+        document["profile_reset"]["remaining_raw_profile_count"] = 1
+        self.profile_lanes.write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+        result, report = self.invoke()
+        self.assertEqual(result, 1)
+        phase = report["phases"]["coverage-profiles"]
+        self.assertEqual(phase["status"], "failed")
+        self.assertTrue(
+            any(
+                "retained stale profile artifacts" in error
+                for error in phase["errors"]
+            )
         )
 
     def test_json_export_failure_is_recorded_even_when_consumers_are_skipped(

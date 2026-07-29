@@ -31,6 +31,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import coverage_profile_lanes
+
 
 BASE_SCHEMA_VERSION = 1
 PHASE_SCHEMA_VERSION = 2
@@ -546,6 +548,65 @@ def finalize(args: argparse.Namespace) -> int:
         )
     except CoverageCiGuardError as error:
         fail("coverage-profiles", error)
+    if args.profiles_outcome in {"success", "failure"}:
+        try:
+            profile_path = pathlib.Path(args.profile_lanes)
+            phases["coverage-profiles"].update(
+                file_metadata(
+                    profile_path,
+                    limit=coverage_profile_lanes.MAX_REPORT_BYTES,
+                    description="coverage profile lane report",
+                )
+            )
+            profile_report = read_json(
+                profile_path,
+                description="coverage profile lane report",
+                limit=coverage_profile_lanes.MAX_REPORT_BYTES,
+            )
+            lanes = profile_report.get("lanes")
+            lane_summaries: dict[str, Any] = {}
+            if isinstance(lanes, Mapping):
+                for lane_name, lane in lanes.items():
+                    if isinstance(lane_name, str) and isinstance(lane, Mapping):
+                        lane_summaries[lane_name] = {
+                            field: lane.get(field)
+                            for field in (
+                                "status",
+                                "command",
+                                "instrumentation",
+                                "environment_overrides",
+                                "exit_code",
+                                "profile_count_before",
+                                "profile_count_after",
+                                "profile_delta_count",
+                                "profile_removed_count",
+                                "oracle",
+                                "errors",
+                            )
+                        }
+            phases["coverage-profiles"]["report"] = {
+                field: profile_report.get(field)
+                for field in (
+                    "schema_version",
+                    "kind",
+                    "status",
+                    "producer",
+                    "legacy_reference",
+                    "instrumentation_environment",
+                    "profile_reset",
+                    "lane_order",
+                    "errors",
+                )
+            }
+            phases["coverage-profiles"]["report"]["lanes"] = lane_summaries
+            try:
+                coverage_profile_lanes.validate_report_document(profile_report)
+            except coverage_profile_lanes.CoverageProfileLaneError as error:
+                raise CoverageCiGuardError(
+                    f"coverage profile lane report did not pass: {error}"
+                ) from error
+        except CoverageCiGuardError as error:
+            fail("coverage-profiles", error)
     pass_if_clean("coverage-profiles")
 
     validate_file_phase(
@@ -739,6 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
     phase.add_argument("--llvm-text", required=True)
     phase.add_argument("--line-map", required=True)
     phase.add_argument("--policy-report", required=True)
+    phase.add_argument("--profile-lanes", required=True)
     phase.add_argument("--output", required=True)
     phase.set_defaults(func=finalize)
     return parser

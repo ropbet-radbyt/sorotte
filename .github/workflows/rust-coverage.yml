@@ -16,6 +16,8 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
     defaults:
       run:
         working-directory: .
@@ -23,6 +25,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+
+      - name: Checkout pinned legacy reference for merged coverage
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Syncplay/syncplay
+          ref: d1c5f85af377c960c5a940707c4d01bc84fd9c3f
+          path: .interop-cache/syncplay-legacy
           persist-credentials: false
 
       - name: Setup Rust
@@ -36,14 +46,21 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install merged coverage prerequisites
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements/legacy-python-interop.txt
+
       - name: Install pinned cargo-llvm-cov
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-llvm-cov@0.8.4
 
-      - name: Generate locked all-feature coverage profiles
+      - name: Generate merged behavioral coverage profiles
         run: >-
-          cargo llvm-cov --locked --workspace --all-features --no-report
+          python scripts/coverage_profile_lanes.py run
+          --repo-root .
+          --output target/verification/coverage-profile-lanes.json
 
       - name: Export pinned LLVM JSON
         run: >-
@@ -71,6 +88,8 @@ jobs:
             target/coverage.json
             target/coverage.txt
             target/coverage-line-map.json
+            target/verification/coverage-profile-lanes.json
+            target/verification/coverage-profile-logs/
           if-no-files-found: error
           retention-days: 14
           overwrite: true
