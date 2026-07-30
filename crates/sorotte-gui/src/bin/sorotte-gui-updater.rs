@@ -140,6 +140,10 @@ enum ApplyProgress {
 const PROCESS_INTERRUPT_BOUNDARY_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_BOUNDARY";
 #[cfg(test)]
 const PROCESS_INTERRUPT_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_ROOT";
+#[cfg(test)]
+const PROCESS_INTERRUPT_MARKER: &str = "boundary-reached";
+#[cfg(test)]
+const PROCESS_INTERRUPT_PENDING_MARKER: &str = ".boundary-reached.pending";
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +171,38 @@ impl ProcessInterruptBoundary {
 }
 
 #[cfg(test)]
+fn publish_process_interrupt_boundary(root: &Path, label: &str) -> Result<(), String> {
+    let pending = root.join(PROCESS_INTERRUPT_PENDING_MARKER);
+    let marker = root.join(PROCESS_INTERRUPT_MARKER);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .map_err(|error| {
+            format!(
+                "failed creating updater interruption boundary {}: {error}",
+                pending.display()
+            )
+        })?;
+    file.write_all(label.as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed flushing updater interruption boundary {}: {error}",
+                pending.display()
+            )
+        })?;
+    drop(file);
+    fs::rename(&pending, &marker).map_err(|error| {
+        format!(
+            "failed atomically publishing updater interruption boundary {}: {error}",
+            marker.display()
+        )
+    })
+}
+
+#[cfg(test)]
 fn process_interrupt_barrier(boundary: ProcessInterruptBoundary) {
     let Some(expected) = env::var_os(PROCESS_INTERRUPT_BOUNDARY_ENV) else {
         return;
@@ -179,7 +215,7 @@ fn process_interrupt_barrier(boundary: ProcessInterruptBoundary) {
         env::var_os(PROCESS_INTERRUPT_ROOT_ENV)
             .expect("an updater interruption boundary must include its fixture root"),
     );
-    fs::write(root.join("boundary-reached"), label.as_bytes())
+    publish_process_interrupt_boundary(&root, &label)
         .expect("the updater child must publish its durable interruption boundary");
     let release = root.join("release-boundary");
     while !release.exists() {
@@ -3357,7 +3393,11 @@ mod tests {
             }
 
             fn marker(&self) -> PathBuf {
-                self.path.join("boundary-reached")
+                self.path.join(PROCESS_INTERRUPT_MARKER)
+            }
+
+            fn pending_marker(&self) -> PathBuf {
+                self.path.join(PROCESS_INTERRUPT_PENDING_MARKER)
             }
         }
 
@@ -3518,11 +3558,56 @@ mod tests {
             )
         }
 
+        fn boundary_marker_has_expected_content(
+            marker: &Path,
+            expected_boundary: &str,
+        ) -> Result<bool, String> {
+            match fs::read(marker) {
+                Ok(contents) => Ok(contents == expected_boundary.as_bytes()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(format!(
+                    "failed reading updater boundary marker {}: {error}",
+                    marker.display()
+                )),
+            }
+        }
+
+        fn assert_boundary_marker_handshake_is_atomic_and_content_acknowledged() {
+            let fixture = ProcessFixtureRoot::new("boundary-marker-handshake");
+            let marker = fixture.marker();
+            let expected = "replaced-6";
+
+            for incomplete in [b"".as_slice(), b"replaced-".as_slice(), b"unexpected"] {
+                fs::write(&marker, incomplete)
+                    .expect("the incomplete boundary marker should be writable");
+                assert!(
+                    !boundary_marker_has_expected_content(&marker, expected)
+                        .expect("the incomplete boundary marker should be readable"),
+                    "an incomplete or wrong boundary payload must not acknowledge readiness"
+                );
+            }
+
+            fs::remove_file(&marker).expect("the incomplete boundary marker should be removable");
+            publish_process_interrupt_boundary(&fixture.path, expected)
+                .expect("the complete boundary marker should publish atomically");
+            assert!(
+                boundary_marker_has_expected_content(&marker, expected)
+                    .expect("the complete boundary marker should be readable"),
+                "only the complete expected boundary payload may acknowledge readiness"
+            );
+            assert!(
+                !fixture.pending_marker().exists(),
+                "atomic publication must not retain its pending marker"
+            );
+        }
+
         fn wait_for_boundary_and_terminate(fixture: &ProcessFixtureRoot, expected_boundary: &str) {
             let mut child = spawn_fixture(&fixture.path, "apply", Some(expected_boundary));
             let deadline = Instant::now() + Duration::from_secs(15);
             loop {
-                if fixture.marker().exists() {
+                if boundary_marker_has_expected_content(&fixture.marker(), expected_boundary)
+                    .expect("the updater boundary marker should be observable")
+                {
                     break;
                 }
                 if child
@@ -3543,9 +3628,6 @@ mod tests {
                 );
                 std::thread::yield_now();
             }
-            let observed = fs::read_to_string(fixture.marker())
-                .expect("the boundary marker should be readable");
-            assert_eq!(observed, expected_boundary);
             child
                 .child_mut()
                 .kill()
@@ -3683,6 +3765,8 @@ mod tests {
 
         #[test]
         fn real_process_termination_recovers_every_durable_transaction_boundary() {
+            assert_boundary_marker_handshake_is_atomic_and_content_acknowledged();
+
             let schedules = [
                 ("journal-header", CompleteInstallState::Old),
                 ("prepared-1", CompleteInstallState::Old),
