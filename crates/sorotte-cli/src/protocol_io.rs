@@ -8,15 +8,91 @@ use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
 pub(crate) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InboundProtocolReadObservation {
+    ConsumedPartial(usize),
+    CancelledPartial(usize),
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static INBOUND_PROTOCOL_READ_OBSERVER:
+        tokio::sync::mpsc::UnboundedSender<InboundProtocolReadObservation>;
+}
+
+#[cfg(test)]
+pub(crate) async fn observe_inbound_protocol_reads<F>(
+    observer: tokio::sync::mpsc::UnboundedSender<InboundProtocolReadObservation>,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    INBOUND_PROTOCOL_READ_OBSERVER.scope(observer, future).await
+}
+
+#[cfg(test)]
+struct InboundProtocolReadGuard {
+    partial_bytes: usize,
+    completed: bool,
+}
+
+#[cfg(test)]
+impl InboundProtocolReadGuard {
+    fn new() -> Self {
+        Self {
+            partial_bytes: 0,
+            completed: false,
+        }
+    }
+
+    fn consumed_partial(&mut self, bytes: usize) {
+        self.partial_bytes = bytes;
+        let _ = INBOUND_PROTOCOL_READ_OBSERVER.try_with(|observer| {
+            observer.send(InboundProtocolReadObservation::ConsumedPartial(bytes))
+        });
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+#[cfg(test)]
+impl Drop for InboundProtocolReadGuard {
+    fn drop(&mut self) {
+        if self.partial_bytes == 0 || self.completed {
+            return;
+        }
+        let _ = INBOUND_PROTOCOL_READ_OBSERVER.try_with(|observer| {
+            observer.send(InboundProtocolReadObservation::CancelledPartial(
+                self.partial_bytes,
+            ))
+        });
+    }
+}
+
 pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
 where
     R: AsyncBufRead + Unpin,
 {
+    #[cfg(test)]
+    let mut read_guard = InboundProtocolReadGuard::new();
     let mut line = Vec::new();
     loop {
-        let available = reader.fill_buf().await?;
+        let available = match reader.fill_buf().await {
+            Ok(available) => available,
+            Err(error) => {
+                #[cfg(test)]
+                read_guard.complete();
+                return Err(error.into());
+            }
+        };
         if available.is_empty() {
             if line.is_empty() {
+                #[cfg(test)]
+                read_guard.complete();
                 return Ok(None);
             }
             break;
@@ -30,6 +106,8 @@ where
                 raw_line_len.saturating_sub(usize::from(available[newline_index - 1] == b'\r'))
             };
             if line_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                #[cfg(test)]
+                read_guard.complete();
                 return Err(anyhow::anyhow!(
                     "Inbound protocol line too long: exceeded {} bytes",
                     MAX_INBOUND_PROTOCOL_LINE_BYTES
@@ -49,6 +127,8 @@ where
             .is_some_and(|byte| *byte == b'\r');
         let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
         if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+            #[cfg(test)]
+            read_guard.complete();
             return Err(anyhow::anyhow!(
                 "Inbound protocol line too long: exceeded {} bytes",
                 MAX_INBOUND_PROTOCOL_LINE_BYTES
@@ -58,6 +138,8 @@ where
         let take = available.len();
         line.extend_from_slice(available);
         reader.consume(take);
+        #[cfg(test)]
+        read_guard.consumed_partial(line.len());
     }
 
     if line.last() == Some(&b'\n') {
@@ -66,6 +148,8 @@ where
     if line.last() == Some(&b'\r') {
         line.pop();
     }
+    #[cfg(test)]
+    read_guard.complete();
     Ok(Some(String::from_utf8(line)?))
 }
 

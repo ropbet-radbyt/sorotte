@@ -9,6 +9,7 @@ Process-interruption persistence update: 2026-07-30
 Outstanding-defect closure update: 2026-07-30
 Deep-boundary testing update: 2026-07-30
 Atomic TLS and parallel-boundary update: 2026-07-30
+Raw-loopback framing update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -33,6 +34,12 @@ characterizations: `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
 `TC-PLEX-001` and `TC-GUI-003`. This remediation slice fixes all seven,
 converts their characterizations to positive regressions, and restores an
 explicitly empty defect registry.
+The later raw-loopback framing slice opens `TC-CLI-003` with two deterministic
+characterizations. A connected-session `select!` can cancel a partially
+completed inbound read after bytes have been consumed from the transport,
+discarding the future-local prefix before CRLF. That defect remains
+deliberately unfixed in this testing slice; the current registry contains one
+defect and two exact characterizations.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -58,6 +65,18 @@ Before the shrinkable suite was added:
 After the coverage tranche was integrated:
 
 - `cargo fmt --all --check` passed.
+- The four-slice 2026-07-30 checkpoint passed its complete owning surfaces:
+  445/445 client session tests, 712/712 client-core tests, 356 CLI library
+  tests with the same eight declared ignores, and 355/355 server library tests
+  plus all server binary and release-verification tests. The complete locked
+  all-feature workspace, including integration tests and doctests, passed in
+  239.424 seconds; warning-denied all-target/all-feature workspace Clippy
+  passed in 7.36 seconds.
+- At that checkpoint all 386 Python policy/infrastructure tests passed.
+  Actionlint accepted both changed workflows, the retained 34-profile Windows
+  process report revalidated, the mutation policy validated four shards and
+  11 exact accepted-unviable rewrites, and the executable known-defect policy
+  exactly matched one open defect and its two characterizations.
 - The deep-boundary tree passed the locked all-feature workspace in 205.1
   seconds after resolving `TC-HARNESS-015`, warning-denied all-target/
   all-feature workspace Clippy in 7.07 seconds, all 354 infrastructure/policy
@@ -2122,6 +2141,45 @@ channel; mpv control is through IPC, so no supported behavior depends on
 inheritance. The nested subprocess test now positively proves the sentinel
 cannot reach the child, independently of the existing stdout/stderr and
 detached-ownership proofs.
+
+## TC-CLI-003: Connected-session select cancellation drops fragmented inbound protocol prefixes
+
+Status: **Open 2026-07-30; deterministically characterized at the real loopback boundary**
+
+Severity: **High (ordinary TCP fragmentation can corrupt an otherwise valid
+server frame and disconnect the client)**
+Detection: gated partial-read and read-future-cancellation barriers through
+the production CLI connected-session runner
+
+`read_inbound_protocol_line` consumes available socket bytes into a
+future-local `Vec`. The connected-session loop constructs that read directly
+inside its outer `tokio::select!`. If another ready branch wins before the
+line delimiter arrives, dropping the read future also drops the already
+consumed prefix. The next read begins at the remaining suffix and reports
+misleading JSON errors for a valid frame.
+
+Two ordinary, non-ignored expected-failure tests make the schedule exact. The
+loopback peer first publishes a partial valid Hello; a test-only task-local
+observer confirms those bytes were consumed. Closing a supplied local-input
+channel forces a competing branch, and the observer confirms the partial read
+was cancelled before the peer releases the remainder. One case continues one
+application byte at a time; the other gates precisely between `\r` and `\n`.
+Both fail with:
+
+```text
+TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter
+```
+
+The same slice positively proves server-side one-byte fragmentation, split
+CRLF, coalescing, valid-prefix/fault-suffix ordering, truncation, half-close,
+and peer isolation, plus every unaffected CLI framing outcome. Fifty serial
+repetitions of each boundary selector passed. The initial ungated split-CRLF
+test independently failed on stress iteration 12 before the deterministic
+cancellation barrier was added.
+
+No production fix is included. The complete matrix, root-cause trace, commands,
+and limitations are retained in
+[`raw-loopback-framing-20260730.md`](evidence/test-coverage/raw-loopback-framing-20260730.md).
 
 ## TC-UPDATER-001: Tampered prepared file prevents safe update rollback cleanup
 

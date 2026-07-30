@@ -623,6 +623,7 @@ mod mpv_startup;
 mod notification_messages;
 mod output_notifications;
 mod plex_watch_sync;
+mod raw_protocol_framing;
 mod reconnect_diagnostics;
 mod runtime_notifications;
 mod startup_playlist;
