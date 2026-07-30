@@ -104,24 +104,18 @@ fn roundtrip_raw_json_value_fixture() {
 }
 
 #[test]
-#[should_panic(
-    expected = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
-)]
-fn known_defect_tc_protocol_004_raw_floating_point_roundtrip_is_exact() {
+fn raw_floating_point_roundtrip_is_exact() {
     let value = decode_line("70E70").expect("counterexample is valid JSON");
     let encoded = encode_line(&value).expect("decoded counterexample should encode");
     let decoded = decode_line(&encoded).expect("encoded counterexample should decode");
     assert_eq!(
         value, decoded,
-        "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+        "protocol floating-point value must remain exact across decode/encode/decode"
     );
 }
 
 #[test]
-#[should_panic(
-    expected = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
-)]
-fn known_defect_tc_protocol_004_typed_state_floating_point_roundtrip_is_exact() {
+fn typed_state_floating_point_roundtrip_is_exact() {
     let message = decode_message_line(r#"{"State":{"playstate":{"position":70E70}}}"#)
         .expect("counterexample is a valid State message");
     let encoded =
@@ -130,7 +124,7 @@ fn known_defect_tc_protocol_004_typed_state_floating_point_roundtrip_is_exact() 
         decode_message_line(&encoded).expect("encoded counterexample message should decode");
     assert_eq!(
         message, decoded,
-        "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+        "typed floating-point value must remain exact across decode/encode/decode"
     );
 }
 

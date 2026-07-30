@@ -5,7 +5,6 @@ use std::fmt;
 
 use libfuzzer_sys::fuzz_target;
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
-use serde_json::Value;
 use sorotte_protocol::{
     DEFAULT_MAX_PROTOCOL_LINE_BYTES, ProtocolMessage, decode_line, decode_message_line,
     decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
@@ -45,53 +44,14 @@ fn unique_source_key_order(line: &str) -> serde_json::Result<Vec<String>> {
         .collect())
 }
 
-fn matches_tc_protocol_004(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(left), Value::Number(right)) => {
-            if left == right {
-                return true;
-            }
-            let (Some(left), Some(right)) = (left.as_f64(), right.as_f64()) else {
-                return false;
-            };
-            left.is_finite()
-                && right.is_finite()
-                && left.is_sign_negative() == right.is_sign_negative()
-                && left.to_bits().abs_diff(right.to_bits()) == 1
-        }
-        (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| matches_tc_protocol_004(left, right))
-        }
-        (Value::Object(left), Value::Object(right)) => {
-            left.len() == right.len()
-                && left.iter().all(|(key, left)| {
-                    right
-                        .get(key)
-                        .is_some_and(|right| matches_tc_protocol_004(left, right))
-                })
-        }
-        _ => left == right,
-    }
-}
-
 fn assert_typed_roundtrip(message: &ProtocolMessage) {
     let encoded = encode_message_line(message).expect("typed protocol messages must serialize");
     let decoded =
         decode_message_line(&encoded).expect("serialized typed protocol messages must decode");
-    if &decoded != message {
-        let before =
-            serde_json::to_value(message).expect("decoded typed messages must serialize to JSON");
-        let after =
-            serde_json::to_value(&decoded).expect("roundtripped messages must serialize to JSON");
-        assert!(
-            matches_tc_protocol_004(&before, &after),
-            "typed protocol encode/decode drifted outside registered TC-PROTOCOL-004"
-        );
-    }
+    assert_eq!(
+        &decoded, message,
+        "typed protocol encode/decode must preserve exact values"
+    );
 }
 
 fn exercise_public_protocol_boundary(line: &str) {
@@ -121,9 +81,9 @@ fn exercise_public_protocol_boundary(line: &str) {
     let encoded_value = encode_line(&value).expect("decoded JSON values must serialize");
     let decoded_value =
         decode_line(&encoded_value).expect("serialized JSON values must decode");
-    assert!(
-        matches_tc_protocol_004(&value, &decoded_value),
-        "raw JSON encode/decode drifted outside registered TC-PROTOCOL-004"
+    assert_eq!(
+        value, decoded_value,
+        "raw JSON encode/decode must preserve exact values"
     );
 
     if let Some(object) = value.as_object() {

@@ -32,7 +32,7 @@ enum CorpusExpectation {
     Invalid,
 }
 
-const CORPUS_FILES: [(&str, CorpusExpectation); 14] = [
+const CORPUS_FILES: [(&str, CorpusExpectation); 16] = [
     (
         "typed-escaped-composite-order.json",
         CorpusExpectation::Typed,
@@ -41,11 +41,13 @@ const CORPUS_FILES: [(&str, CorpusExpectation); 14] = [
     ("typed-nested-lookalikes.json", CorpusExpectation::Typed),
     ("typed-unicode-chat.json", CorpusExpectation::Typed),
     ("typed-leading-whitespace.json", CorpusExpectation::Typed),
+    ("typed-state-float-roundtrip.json", CorpusExpectation::Typed),
     ("json-unknown-after-valid.json", CorpusExpectation::Json),
     ("json-empty-object.json", CorpusExpectation::Json),
     ("json-array.json", CorpusExpectation::Json),
     ("json-null.json", CorpusExpectation::Json),
     ("json-duplicate-unknown.json", CorpusExpectation::Json),
+    ("json-float-roundtrip.json", CorpusExpectation::Json),
     ("invalid-truncated-object.json", CorpusExpectation::Invalid),
     ("invalid-string-escape.json", CorpusExpectation::Invalid),
     ("invalid-trailing-token.json", CorpusExpectation::Invalid),

@@ -24,7 +24,7 @@ FUZZ_RUNNER_PATH = REPO_ROOT / "fuzz" / "run_protocol_fuzz.py"
 FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
 
 CORPUS_PATH = "crates/sorotte-protocol/tests/corpus/protocol_parser"
-CORPUS_FILE_COUNT = 14
+CORPUS_FILE_COUNT = 16
 FUZZ_TOOLCHAIN = "nightly-2026-07-29"
 FUZZ_SECONDS_EXPRESSION = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'push') "
@@ -308,7 +308,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             ),
             original.replace("--sanitizer address", "--sanitizer none"),
             original.replace('--source-sha "${{ github.sha }}"', "--source-sha bad"),
-            original.replace("--expected-seed-count 14", "--expected-seed-count 1"),
+            original.replace("--expected-seed-count 16", "--expected-seed-count 1"),
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -327,7 +327,10 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             {
                 "libfuzzer-sys": "=0.4.13",
                 "serde": "=1.0.229",
-                "serde_json": "=1.0.151",
+                "serde_json": {
+                    "version": "=1.0.151",
+                    "features": ["float_roundtrip"],
+                },
                 "sorotte-protocol": {"path": "../crates/sorotte-protocol"},
             },
         )
@@ -369,19 +372,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             self.assertIn(public_function, target)
         self.assertIn("MapAccess", target)
         self.assertIn("IgnoredAny", target)
-        self.assertIn("matches_tc_protocol_004", target)
-        self.assertIn(
-            "left.to_bits().abs_diff(right.to_bits()) == 1",
-            target,
-        )
-        self.assertIn(
-            "left.is_sign_negative() == right.is_sign_negative()",
-            target,
-        )
-        self.assertIn(
-            "drifted outside registered TC-PROTOCOL-004",
-            target,
-        )
+        self.assertIn("must preserve exact values", target)
+        self.assertNotIn("matches_tc_protocol_004", target)
+        self.assertNotIn("TC-PROTOCOL-004", target)
         self.assertNotIn("top_level_key_order", target)
 
     def test_runner_enforces_limits_and_failure_minimization(self) -> None:

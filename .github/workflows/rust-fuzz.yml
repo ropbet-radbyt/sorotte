@@ -92,7 +92,7 @@ jobs:
           --source-sha "${{ github.sha }}"
           --seconds "${FUZZ_SECONDS}"
           --seed-corpus crates/sorotte-protocol/tests/corpus/protocol_parser
-          --expected-seed-count 14
+          --expected-seed-count 16
           --output-root target/fuzz-ci/protocol-line
 
       - name: Upload protocol fuzz evidence
