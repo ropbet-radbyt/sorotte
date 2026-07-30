@@ -1383,6 +1383,8 @@ class CiPolicyTests(unittest.TestCase):
                         "server-auth",
                         "protocol-codec",
                         "client-reconnect-state",
+                        "client-runtime-config",
+                        "client-ping",
                     ]
                 },
             },
@@ -1517,6 +1519,41 @@ class CiPolicyTests(unittest.TestCase):
                         ],
                         "test_target": "lib",
                         "test_filter": "session::tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-runtime-config",
+                        "owner": "client-configuration",
+                        "package": "sorotte-client-app",
+                        "files": [
+                            "crates/sorotte-client-app/src/"
+                            "legacy_runtime_config.rs"
+                        ],
+                        "test_target": "lib",
+                        "test_filter": "legacy_runtime_config::tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-ping",
+                        "owner": "client-networking",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/ping.rs"
+                        ],
+                        "test_target": "lib",
+                        "test_filter": "session::tests::ping_tests::",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -1723,6 +1760,71 @@ class CiPolicyTests(unittest.TestCase):
                             "cargo-mutants replaces the Rust let-chain && "
                             "with ||, but let expressions are only valid in "
                             "&& chains so the generated mutant cannot parse"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "client-runtime-config-host-let-chain-or",
+                        "shard": "client-runtime-config",
+                        "file": (
+                            "crates/sorotte-client-app/src/"
+                            "legacy_runtime_config.rs"
+                        ),
+                        "function": (
+                            "parse_host_and_optional_port_from_host_arg_"
+                            "legacy_compatible"
+                        ),
+                        "return_type": "-> (String, Option<u16>)",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "reason": (
+                            "cargo-mutants replaces the Rust let-chain && "
+                            "with ||, but let expressions are only valid in "
+                            "&& chains so both generated sites fail to parse"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "client-runtime-config-room-let-chain-or",
+                        "shard": "client-runtime-config",
+                        "file": (
+                            "crates/sorotte-client-app/src/"
+                            "legacy_runtime_config.rs"
+                        ),
+                        "function": (
+                            "normalize_controlled_room_input_legacy_compatible"
+                        ),
+                        "return_type": "-> (String, Option<String>)",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "reason": (
+                            "cargo-mutants replaces the Rust let-chain && "
+                            "with ||, but let expressions are only valid in "
+                            "&& chains so both generated sites fail to parse"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "client-runtime-config-fallback-let-chain-or",
+                        "shard": "client-runtime-config",
+                        "file": (
+                            "crates/sorotte-client-app/src/"
+                            "legacy_runtime_config.rs"
+                        ),
+                        "function": (
+                            "stored_client_settings_runtime_snapshot_"
+                            "legacy_compatible"
+                        ),
+                        "return_type": (
+                            "-> StoredClientSettingsRuntimeSnapshot"
+                        ),
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "reason": (
+                            "cargo-mutants replaces the Rust let-chain && "
+                            "with ||, but let expressions are only valid in "
+                            "&& chains so the generated fallback mutant "
+                            "cannot parse"
                         ),
                         "review_by": "2026-10-31",
                     },
