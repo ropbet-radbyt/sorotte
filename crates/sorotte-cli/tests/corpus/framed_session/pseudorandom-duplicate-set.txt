@@ -1,0 +1,1 @@
+3009{"Set":{"ready":{"isReady":true},"file":{"name":"discarded.mkv"}},"Set":{"playlistIndex":{"index":7},"room":{"name":"surviving-room"}}}

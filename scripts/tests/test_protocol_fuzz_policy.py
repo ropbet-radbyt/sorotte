@@ -19,12 +19,23 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-fuzz.yml"
 FUZZ_MANIFEST_PATH = REPO_ROOT / "fuzz" / "Cargo.toml"
 FUZZ_LOCK_PATH = REPO_ROOT / "fuzz" / "Cargo.lock"
+CLI_MANIFEST_PATH = REPO_ROOT / "crates" / "sorotte-cli" / "Cargo.toml"
+CLI_LIB_PATH = REPO_ROOT / "crates" / "sorotte-cli" / "src" / "lib.rs"
+CLI_PROTOCOL_IO_PATH = (
+    REPO_ROOT / "crates" / "sorotte-cli" / "src" / "protocol_io.rs"
+)
 FUZZ_TARGET_PATH = REPO_ROOT / "fuzz" / "fuzz_targets" / "protocol_line.rs"
+FRAMED_SESSION_TARGET_PATH = (
+    REPO_ROOT / "fuzz" / "fuzz_targets" / "framed_session.rs"
+)
 FUZZ_RUNNER_PATH = REPO_ROOT / "fuzz" / "run_protocol_fuzz.py"
 FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
 
 CORPUS_PATH = "crates/sorotte-protocol/tests/corpus/protocol_parser"
 CORPUS_FILE_COUNT = 16
+FRAMED_SESSION_CORPUS_PATH = "crates/sorotte-cli/tests/corpus/framed_session"
+FRAMED_SESSION_CORPUS_FILE_COUNT = 14
+FRAMED_SESSION_CORPUS_DIRECTORY = REPO_ROOT / FRAMED_SESSION_CORPUS_PATH
 FUZZ_TOOLCHAIN = "nightly-2026-07-29"
 FUZZ_SECONDS_EXPRESSION = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'push') "
@@ -32,6 +43,8 @@ FUZZ_SECONDS_EXPRESSION = (
 )
 FUZZ_OUTPUT_PATH = "target/fuzz-ci/protocol-line"
 FUZZ_TARGET = "protocol_line"
+FRAMED_SESSION_OUTPUT_PATH = "target/fuzz-ci/framed-session"
+FRAMED_SESSION_TARGET = "framed_session"
 
 PINNED_USES = {
     "Checkout": (
@@ -62,14 +75,28 @@ EXPECTED_STEP_NAMES = [
     "Run bounded protocol fuzz target",
     "Upload protocol fuzz evidence",
 ]
+EXPECTED_FRAMED_SESSION_STEP_NAMES = [
+    "Checkout",
+    "Setup pinned nightly Rust",
+    "Setup Python",
+    "Install CI policy prerequisites",
+    "Install pinned cargo-fuzz",
+    "Verify exact fuzz toolchain",
+    "Validate protocol fuzz policy",
+    "Build framed-session fuzz target",
+    "Run bounded framed-session fuzz target",
+    "Upload framed-session fuzz evidence",
+]
 EXPECTED_PATHS = [
     "Cargo.toml",
+    "Cargo.lock",
     "rust-toolchain.toml",
     "coverage/behaviors.toml",
     "coverage/known-defects.toml",
-    "crates/sorotte-protocol/**",
+    "crates/**",
     "fuzz/**",
     ".github/workflows/rust-fuzz.yml",
+    "requirements/ci-policy.txt",
     "scripts/known_defect_policy.py",
     "scripts/tests/test_known_defect_policy.py",
     "scripts/tests/test_protocol_fuzz_policy.py",
@@ -154,7 +181,10 @@ def assert_workflow_contract(text: str) -> None:
         "weekly schedule changed",
     )
 
-    require(set(workflow["jobs"]) == {"protocol-fuzz"}, "unexpected fuzz jobs")
+    require(
+        set(workflow["jobs"]) == {"protocol-fuzz", "framed-session-fuzz"},
+        "unexpected fuzz jobs",
+    )
     job = workflow["jobs"]["protocol-fuzz"]
     require(job.get("runs-on") == "ubuntu-latest", "fuzzing must run on Linux")
     require(job.get("timeout-minutes") == "25", "job timeout must remain bounded")
@@ -168,7 +198,10 @@ def assert_workflow_contract(text: str) -> None:
     )
 
     uses_matches = USES_LINE.findall(text)
-    require(len(uses_matches) == len(PINNED_USES), "every action must be commit-pinned")
+    require(
+        len(uses_matches) == len(PINNED_USES) * 2,
+        "every action in both fuzz jobs must be commit-pinned",
+    )
     for step_name, expected_uses in PINNED_USES.items():
         step = named_step(job, step_name)
         require(step.get("uses") == expected_uses, f"{step_name} action pin changed")
@@ -275,6 +308,151 @@ def assert_workflow_contract(text: str) -> None:
         },
         "fuzz evidence retention contract changed",
     )
+
+    framed_job = workflow["jobs"]["framed-session-fuzz"]
+    require(
+        framed_job.get("runs-on") == "ubuntu-latest",
+        "framed-session fuzzing must run on Linux",
+    )
+    require(
+        framed_job.get("timeout-minutes") == "25",
+        "framed-session job timeout must remain bounded",
+    )
+    require(
+        framed_job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
+        "framed-session event-specific duration changed",
+    )
+    require(
+        [step.get("name") for step in framed_job.get("steps", [])]
+        == EXPECTED_FRAMED_SESSION_STEP_NAMES,
+        "framed-session step order changed",
+    )
+    for step_name in (
+        "Checkout",
+        "Setup pinned nightly Rust",
+        "Setup Python",
+        "Install pinned cargo-fuzz",
+    ):
+        require(
+            named_step(framed_job, step_name).get("uses")
+            == PINNED_USES[step_name],
+            f"framed-session {step_name} action pin changed",
+        )
+    require(
+        named_step(framed_job, "Upload framed-session fuzz evidence").get("uses")
+        == PINNED_USES["Upload protocol fuzz evidence"],
+        "framed-session upload action pin changed",
+    )
+    require(
+        named_step(framed_job, "Checkout").get("with")
+        == {"persist-credentials": "false"},
+        "framed-session checkout credentials must not persist",
+    )
+    require(
+        named_step(framed_job, "Setup pinned nightly Rust").get("with")
+        == {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"},
+        "framed-session nightly toolchain contract changed",
+    )
+    require(
+        named_step(framed_job, "Setup Python").get("with")
+        == {"python-version": "3.11"},
+        "framed-session Python pin changed",
+    )
+    require(
+        named_step(framed_job, "Install pinned cargo-fuzz").get("with")
+        == {"tool": "cargo-fuzz@0.13.2", "fallback": "none"},
+        "framed-session cargo-fuzz installation changed",
+    )
+    require(
+        command_tokens(named_step(framed_job, "Install CI policy prerequisites"))
+        == [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-r",
+            "requirements/ci-policy.txt",
+        ],
+        "framed-session policy prerequisite command changed",
+    )
+    framed_verify = named_step(
+        framed_job,
+        "Verify exact fuzz toolchain",
+    ).get("run", "")
+    require(
+        'test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"'
+        in framed_verify,
+        "framed-session cargo-fuzz runtime check missing",
+    )
+    require(
+        f"rustc +{FUZZ_TOOLCHAIN} -vV" in framed_verify,
+        "framed-session nightly runtime identity check missing",
+    )
+    require(
+        command_tokens(named_step(framed_job, "Validate protocol fuzz policy"))
+        == [
+            "python",
+            "-m",
+            "unittest",
+            "scripts.tests.test_protocol_fuzz_policy",
+            "-v",
+        ],
+        "framed-session policy check changed",
+    )
+    require(
+        command_tokens(named_step(framed_job, "Build framed-session fuzz target"))
+        == [
+            "cargo",
+            f"+{FUZZ_TOOLCHAIN}",
+            "fuzz",
+            "build",
+            "--fuzz-dir",
+            "fuzz",
+            "--sanitizer",
+            "address",
+            FRAMED_SESSION_TARGET,
+        ],
+        "framed-session fuzz build contract changed",
+    )
+    require(
+        command_tokens(named_step(framed_job, "Run bounded framed-session fuzz target"))
+        == [
+            "python",
+            "fuzz/run_protocol_fuzz.py",
+            "--target",
+            FRAMED_SESSION_TARGET,
+            "--toolchain",
+            FUZZ_TOOLCHAIN,
+            "--source-sha",
+            "${{ github.sha }}",
+            "--seconds",
+            "${FUZZ_SECONDS}",
+            "--seed-corpus",
+            FRAMED_SESSION_CORPUS_PATH,
+            "--expected-seed-count",
+            str(FRAMED_SESSION_CORPUS_FILE_COUNT),
+            "--output-root",
+            FRAMED_SESSION_OUTPUT_PATH,
+        ],
+        "bounded framed-session runner command changed",
+    )
+    framed_upload = named_step(framed_job, "Upload framed-session fuzz evidence")
+    require(
+        framed_upload.get("if") == "always()",
+        "framed-session evidence must upload on failure",
+    )
+    require(
+        framed_upload.get("with")
+        == {
+            "name": "sorotte-framed-session-fuzz",
+            "path": FRAMED_SESSION_OUTPUT_PATH,
+            "if-no-files-found": "error",
+            "retention-days": "14",
+            "overwrite": "true",
+        },
+        "framed-session evidence retention contract changed",
+    )
     require("continue-on-error" not in text, "fuzz failures must never be tolerated")
     require("|| true" not in text, "workflow must not mask a failing command")
 
@@ -309,6 +487,11 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             original.replace("--sanitizer address", "--sanitizer none"),
             original.replace('--source-sha "${{ github.sha }}"', "--source-sha bad"),
             original.replace("--expected-seed-count 16", "--expected-seed-count 1"),
+            original.replace("--target framed_session", "--target protocol_line"),
+            original.replace(
+                "target/fuzz-ci/framed-session",
+                "target/fuzz-ci/protocol-line",
+            ),
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -325,13 +508,28 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertEqual(
             manifest["dependencies"],
             {
+                "anyhow": "=1.0.104",
                 "libfuzzer-sys": "=0.4.13",
                 "serde": "=1.0.229",
                 "serde_json": {
                     "version": "=1.0.151",
                     "features": ["float_roundtrip"],
                 },
+                "sorotte-cli": {
+                    "path": "../crates/sorotte-cli",
+                    "features": ["fuzz-support"],
+                },
+                "sorotte-client-app": {
+                    "path": "../crates/sorotte-client-app",
+                },
+                "sorotte-player-api": {
+                    "path": "../crates/sorotte-player-api",
+                },
                 "sorotte-protocol": {"path": "../crates/sorotte-protocol"},
+                "tokio": {
+                    "version": "=1.53.1",
+                    "features": ["io-util", "rt", "sync"],
+                },
             },
         )
         self.assertEqual(
@@ -343,7 +541,14 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                     "test": False,
                     "doc": False,
                     "bench": False,
-                }
+                },
+                {
+                    "name": FRAMED_SESSION_TARGET,
+                    "path": "fuzz_targets/framed_session.rs",
+                    "test": False,
+                    "doc": False,
+                    "bench": False,
+                },
             ],
         )
 
@@ -351,9 +556,11 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         locked_versions = {
             (package["name"], package["version"]) for package in lock["package"]
         }
+        self.assertIn(("anyhow", "1.0.104"), locked_versions)
         self.assertIn(("libfuzzer-sys", "0.4.13"), locked_versions)
         self.assertIn(("serde", "1.0.229"), locked_versions)
         self.assertIn(("serde_json", "1.0.151"), locked_versions)
+        self.assertIn(("tokio", "1.53.1"), locked_versions)
 
     def test_target_exercises_every_public_decode_boundary_and_oracle(self) -> None:
         target = FUZZ_TARGET_PATH.read_text(encoding="utf-8")
@@ -377,9 +584,76 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertNotIn("TC-PROTOCOL-004", target)
         self.assertNotIn("top_level_key_order", target)
 
+    def test_framed_session_target_uses_real_reader_and_application_state(self) -> None:
+        target = FRAMED_SESSION_TARGET_PATH.read_text(encoding="utf-8")
+        self.assertIn("#![no_main]", target)
+        self.assertIn("fuzz_target!(|bytes: &[u8]|", target)
+        self.assertIn("InboundProtocolLineReader", target)
+        self.assertIn("MAX_INBOUND_PROTOCOL_LINE_BYTES", target)
+        self.assertIn("ClientApplication::with_default_session", target)
+        self.assertIn("runtime.apply_protocol_line(", target)
+        self.assertIn("read_with_one_cancellation", target)
+        self.assertIn("ScheduledReader", target)
+        self.assertIn("reference_outcome", target)
+        self.assertIn("assert_session_invariants", target)
+        self.assertIn("input-derived frame bound", target)
+        self.assertIn("framing schedules must preserve real session", target)
+        self.assertNotIn("TcpStream", target)
+        self.assertNotIn("UdpSocket", target)
+        self.assertNotIn("std::net", target)
+
+    def test_framed_session_support_is_a_feature_gated_exact_reexport(self) -> None:
+        manifest = tomllib.loads(CLI_MANIFEST_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["features"]["fuzz-support"], [])
+        library = CLI_LIB_PATH.read_text(encoding="utf-8")
+        self.assertIn('#[cfg(feature = "fuzz-support")]', library)
+        self.assertIn("pub mod fuzz_support", library)
+        self.assertIn("InboundProtocolLineReader", library)
+        self.assertIn("MAX_INBOUND_PROTOCOL_LINE_BYTES", library)
+        protocol_io = CLI_PROTOCOL_IO_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = "
+            "DEFAULT_MAX_PROTOCOL_LINE_BYTES",
+            protocol_io,
+        )
+        self.assertIn("pub struct InboundProtocolLineReader", protocol_io)
+        self.assertNotIn("cfg(feature = \"fuzz-support\")", protocol_io)
+
+    def test_framed_session_seed_corpus_is_direct_and_covers_control_modes(self) -> None:
+        entries = sorted(FRAMED_SESSION_CORPUS_DIRECTORY.iterdir())
+        self.assertEqual(len(entries), FRAMED_SESSION_CORPUS_FILE_COUNT)
+        self.assertTrue(
+            all(entry.is_file() and not entry.is_symlink() for entry in entries)
+        )
+        payloads = [entry.read_bytes() for entry in entries]
+        ordinary = [
+            payload
+            for payload in payloads
+            if not payload.startswith(b"!SEAM")
+        ]
+        seam = [payload for payload in payloads if payload.startswith(b"!SEAM")]
+        self.assertTrue(all(len(payload) >= 4 for payload in ordinary))
+        self.assertEqual(
+            {payload[:1] for payload in ordinary},
+            {b"0", b"1", b"2", b"3"},
+        )
+        self.assertTrue(any(payload[2] % 2 == 1 for payload in ordinary))
+        self.assertEqual(
+            {payload[:6] for payload in seam},
+            {b"!SEAM0", b"!SEAM1", b"!SEAM2", b"!SEAM3"},
+        )
+
     def test_runner_enforces_limits_and_failure_minimization(self) -> None:
         runner = load_runner()
         self.assertEqual(runner.TARGET_NAME, FUZZ_TARGET)
+        self.assertEqual(
+            runner.FRAMED_SESSION_TARGET_NAME,
+            FRAMED_SESSION_TARGET,
+        )
+        self.assertEqual(
+            runner.SUPPORTED_TARGETS,
+            (FUZZ_TARGET, FRAMED_SESSION_TARGET),
+        )
         self.assertEqual(runner.MAX_TOTAL_SECONDS, 900)
         self.assertEqual(runner.MAX_INPUT_BYTES, 65_536)
         self.assertEqual(runner.PER_INPUT_TIMEOUT_SECONDS, 5)
@@ -411,6 +685,15 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertIn("-print_final_stats=1", command)
         self.assertEqual(command.count("--sanitizer"), 1)
         self.assertEqual(command[command.index("--sanitizer") + 1], "address")
+        framed_command = runner.fuzz_command(
+            FUZZ_TOOLCHAIN,
+            corpus,
+            artifacts,
+            45,
+            FRAMED_SESSION_TARGET,
+        )
+        self.assertIn(FRAMED_SESSION_TARGET, framed_command)
+        self.assertNotIn(FUZZ_TARGET, framed_command)
 
         minimize = runner.minimization_command(
             FUZZ_TOOLCHAIN,
@@ -421,6 +704,13 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertTrue(
             any(argument.startswith("-exact_artifact_path=") for argument in minimize)
         )
+        framed_minimize = runner.minimization_command(
+            FUZZ_TOOLCHAIN,
+            pathlib.Path("crash-input"),
+            pathlib.Path("minimized-input"),
+            FRAMED_SESSION_TARGET,
+        )
+        self.assertIn(FRAMED_SESSION_TARGET, framed_minimize)
 
     def test_runner_rejects_untrusted_source_identity_before_writing_evidence(
         self,
@@ -461,6 +751,37 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertTrue(
             all(workflow_path_covers(path) for path in expected_paths),
             "every source-bound input must trigger the fuzz workflow",
+        )
+        self.assertEqual(manifest["file_count"], len(expected_paths))
+        self.assertEqual(
+            manifest["total_bytes"],
+            sum(entry["bytes"] for entry in manifest["files"]),
+        )
+        self.assertEqual(
+            manifest["aggregate_sha256"],
+            runner.manifest_digest(manifest["files"]),
+        )
+
+    def test_runner_binds_complete_framed_session_workspace_inventory(self) -> None:
+        runner = load_runner()
+        manifest = runner.bound_source_manifest(
+            REPO_ROOT,
+            FRAMED_SESSION_TARGET,
+        )
+        actual_paths = {entry["path"] for entry in manifest["files"]}
+        expected_paths = set(runner.FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS)
+        expected_paths.update(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (
+                REPO_ROOT / runner.FRAMED_SESSION_SOURCE_DIRECTORY
+            ).rglob("*")
+            if path.is_file()
+        )
+
+        self.assertEqual(actual_paths, expected_paths)
+        self.assertTrue(
+            all(workflow_path_covers(path) for path in expected_paths),
+            "every framed-session source-bound input must trigger the workflow",
         )
         self.assertEqual(manifest["file_count"], len(expected_paths))
         self.assertEqual(

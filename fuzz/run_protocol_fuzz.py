@@ -15,12 +15,14 @@ from typing import Any, Sequence
 
 
 TARGET_NAME = "protocol_line"
+FRAMED_SESSION_TARGET_NAME = "framed_session"
 MAX_TOTAL_SECONDS = 900
 MAX_INPUT_BYTES = 65_536
 PER_INPUT_TIMEOUT_SECONDS = 5
 RSS_LIMIT_MB = 2_048
 MINIMIZE_TIMEOUT_SECONDS = 120
 REPORT_SCHEMA = "sorotte-protocol-fuzz-v1"
+FRAMED_SESSION_REPORT_SCHEMA = "sorotte-framed-session-fuzz-v1"
 EXPECTED_CARGO_FUZZ_VERSION = "cargo-fuzz 0.13.2"
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BOUND_FIXED_SOURCE_PATHS = (
@@ -39,6 +41,24 @@ BOUND_FIXED_SOURCE_PATHS = (
     "scripts/tests/test_protocol_fuzz_policy.py",
 )
 PROTOCOL_SOURCE_DIRECTORY = "crates/sorotte-protocol/src"
+FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS = (
+    ".github/workflows/rust-fuzz.yml",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "coverage/behaviors.toml",
+    "coverage/known-defects.toml",
+    "fuzz/Cargo.toml",
+    "fuzz/Cargo.lock",
+    "fuzz/fuzz_targets/framed_session.rs",
+    "fuzz/run_protocol_fuzz.py",
+    "requirements/ci-policy.txt",
+    "scripts/known_defect_policy.py",
+    "scripts/tests/test_known_defect_policy.py",
+    "scripts/tests/test_protocol_fuzz_policy.py",
+)
+FRAMED_SESSION_SOURCE_DIRECTORY = "crates"
+SUPPORTED_TARGETS = (TARGET_NAME, FRAMED_SESSION_TARGET_NAME)
 REQUIRED_FINAL_STATISTICS = (
     "number_of_executed_units",
     "average_exec_per_sec",
@@ -90,22 +110,40 @@ def file_manifest_entry(
     }
 
 
-def bound_source_manifest(repository_root: pathlib.Path) -> dict[str, Any]:
+def bound_source_manifest(
+    repository_root: pathlib.Path,
+    target_name: str = TARGET_NAME,
+) -> dict[str, Any]:
     repository_root = repository_root.resolve()
-    paths = [repository_root / path for path in BOUND_FIXED_SOURCE_PATHS]
-    protocol_source_root = repository_root / PROTOCOL_SOURCE_DIRECTORY
-    if protocol_source_root.is_symlink() or not protocol_source_root.is_dir():
+    if target_name == TARGET_NAME:
+        fixed_paths = BOUND_FIXED_SOURCE_PATHS
+        source_directory = PROTOCOL_SOURCE_DIRECTORY
+        source_label = "protocol"
+        source_filter = lambda path: path.suffix == ".rs"
+    elif target_name == FRAMED_SESSION_TARGET_NAME:
+        fixed_paths = FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS
+        source_directory = FRAMED_SESSION_SOURCE_DIRECTORY
+        source_label = "workspace"
+        source_filter = lambda path: path.is_file()
+    else:
+        raise ValueError(f"unsupported fuzz target: {target_name}")
+
+    paths = [repository_root / path for path in fixed_paths]
+    source_root = repository_root / source_directory
+    if source_root.is_symlink() or not source_root.is_dir():
         raise ValueError(
-            f"protocol source directory must be a direct directory: "
-            f"{protocol_source_root}"
+            f"{source_label} source directory must be a direct directory: "
+            f"{source_root}"
         )
-    protocol_sources = sorted(
-        protocol_source_root.rglob("*.rs"),
+    sources = sorted(
+        (path for path in source_root.rglob("*") if source_filter(path)),
         key=lambda path: path.relative_to(repository_root).as_posix(),
     )
-    if not protocol_sources:
-        raise ValueError("protocol source binding must contain at least one Rust source")
-    paths.extend(protocol_sources)
+    if not sources:
+        raise ValueError(
+            f"{source_label} source binding must contain at least one source file"
+        )
+    paths.extend(sources)
 
     entries = [
         file_manifest_entry(path, repository_root)
@@ -271,7 +309,10 @@ def fuzz_command(
     corpus: pathlib.Path,
     artifact_directory: pathlib.Path,
     seconds: int,
+    target_name: str = TARGET_NAME,
 ) -> list[str]:
+    if target_name not in SUPPORTED_TARGETS:
+        raise ValueError(f"unsupported fuzz target: {target_name}")
     artifact_prefix = str(artifact_directory.resolve()) + os.sep
     return [
         *cargo_fuzz_prefix(toolchain),
@@ -282,7 +323,7 @@ def fuzz_command(
         "address",
         "--jobs",
         "1",
-        TARGET_NAME,
+        target_name,
         str(corpus.resolve()),
         "--",
         f"-max_total_time={seconds}",
@@ -298,7 +339,10 @@ def minimization_command(
     toolchain: str,
     artifact: pathlib.Path,
     minimized: pathlib.Path,
+    target_name: str = TARGET_NAME,
 ) -> list[str]:
+    if target_name not in SUPPORTED_TARGETS:
+        raise ValueError(f"unsupported fuzz target: {target_name}")
     return [
         *cargo_fuzz_prefix(toolchain),
         "tmin",
@@ -306,7 +350,7 @@ def minimization_command(
         "fuzz",
         "--sanitizer",
         "address",
-        TARGET_NAME,
+        target_name,
         str(artifact.resolve()),
         "--",
         f"-max_len={MAX_INPUT_BYTES}",
@@ -317,7 +361,12 @@ def minimization_command(
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the bounded, source-bound Sorotte protocol fuzz target."
+        description="Run a bounded, source-bound Sorotte local parser target."
+    )
+    parser.add_argument(
+        "--target",
+        choices=SUPPORTED_TARGETS,
+        default=TARGET_NAME,
     )
     parser.add_argument("--toolchain", required=True)
     parser.add_argument("--source-sha", required=True)
@@ -355,6 +404,11 @@ def tool_identities(toolchain: str, repository_root: pathlib.Path) -> dict[str, 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    report_schema = (
+        REPORT_SCHEMA
+        if args.target == TARGET_NAME
+        else FRAMED_SESSION_REPORT_SCHEMA
+    )
     if SOURCE_SHA_PATTERN.fullmatch(args.source_sha) is None:
         raise ValueError(
             "source SHA must be exactly 40 lowercase hexadecimal characters"
@@ -392,8 +446,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     minimized_directory.mkdir()
     started_at = utc_now()
     report: dict[str, Any] = {
-        "schema": REPORT_SCHEMA,
-        "target": TARGET_NAME,
+        "schema": report_schema,
+        "target": args.target,
         "source_sha": args.source_sha,
         "started_at": started_at,
         "finished_at": None,
@@ -434,11 +488,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         seeds = copy_seed_corpus(seed_source, corpus, args.expected_seed_count)
         report["seed_corpus"]["files"] = seeds
-        source_binding_before = bound_source_manifest(repository_root)
+        source_binding_before = bound_source_manifest(repository_root, args.target)
         report["source_bindings"]["before"] = source_binding_before
         tools = tool_identities(args.toolchain, repository_root)
         report["tools"] = tools
-        command = fuzz_command(args.toolchain, corpus, artifacts, args.seconds)
+        command = fuzz_command(
+            args.toolchain,
+            corpus,
+            artifacts,
+            args.seconds,
+            args.target,
+        )
         report["command"] = command
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         report["finished_at"] = utc_now()
@@ -505,7 +565,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for artifact in artifact_paths:
             minimized = minimized_directory / f"minimized-{artifact.name}"
             minimize_log = minimized_directory / f"{artifact.name}.log"
-            minimize_command = minimization_command(args.toolchain, artifact, minimized)
+            minimize_command = minimization_command(
+                args.toolchain,
+                artifact,
+                minimized,
+                args.target,
+            )
             try:
                 with minimize_log.open("w", encoding="utf-8") as log:
                     try:
@@ -545,7 +610,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
     try:
-        source_binding_after = bound_source_manifest(repository_root)
+        source_binding_after = bound_source_manifest(repository_root, args.target)
         source_stable = source_binding_before == source_binding_after
     except (OSError, ValueError) as error:
         source_binding_after = None
@@ -584,5 +649,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"protocol fuzz runner failed closed: {error}", file=sys.stderr)
+        print(f"Sorotte fuzz runner failed closed: {error}", file=sys.stderr)
         raise SystemExit(2) from error

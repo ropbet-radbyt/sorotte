@@ -8,6 +8,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+fuzz-support = []
+
 [dependencies]
 anyhow.workspace = true
 rustls.workspace = true

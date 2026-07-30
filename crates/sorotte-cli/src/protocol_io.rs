@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
-pub(crate) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+pub const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,12 +74,12 @@ impl Drop for InboundProtocolReadGuard {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct InboundProtocolLineReader {
+pub struct InboundProtocolLineReader {
     partial_line: Vec<u8>,
 }
 
 impl InboundProtocolLineReader {
-    pub(crate) async fn read_line<R>(&mut self, reader: &mut R) -> anyhow::Result<Option<String>>
+    pub async fn read_line<R>(&mut self, reader: &mut R) -> anyhow::Result<Option<String>>
     where
         R: AsyncBufRead + Unpin,
     {

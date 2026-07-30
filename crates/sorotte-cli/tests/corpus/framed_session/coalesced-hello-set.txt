@@ -1,0 +1,2 @@
+0000{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}
+{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}

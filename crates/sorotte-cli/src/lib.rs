@@ -53,6 +53,12 @@ mod stdin_input;
 mod stored_settings;
 mod update_check;
 
+#[cfg(feature = "fuzz-support")]
+#[doc(hidden)]
+pub mod fuzz_support {
+    pub use crate::protocol_io::{InboundProtocolLineReader, MAX_INBOUND_PROTOCOL_LINE_BYTES};
+}
+
 #[cfg(test)]
 use self::client_args::{
     LegacyClientArgOverrides, legacy_force_gui_prompt_compatibility_line_legacy_compatible,
