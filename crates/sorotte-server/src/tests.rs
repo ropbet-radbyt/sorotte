@@ -621,6 +621,7 @@ fn dispatch_error_message(dispatch: &ServerRuntimeDispatch) -> Option<String> {
 
 mod controller_playlist_tests;
 mod network_tests;
+mod persistence_platform_syscall_fault_tests;
 mod persistence_tests;
 mod playback_barrier_tests;
 mod raw_protocol_framing_tests;
