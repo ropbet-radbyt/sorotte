@@ -15,6 +15,7 @@ Provenance-bound parser fuzz, configuration properties, and mutation-ratchet upd
 Final CLI/protocol defect resolution update: 2026-07-30
 Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
+Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -65,7 +66,16 @@ slices add controlled-room configuration properties, real Windows and Unix
 SQLite pathname-denial/recovery probes, a zero-survivor playlist shuffle/undo
 mutation ratchet, and source-bound coverage-guided in-memory framed-session
 testing. None surfaced a product defect, and the current registry remains
-explicitly empty:
+explicitly empty. The 2026-07-31 system-boundary tranche then adds a
+dispatch-only ephemeral-interactive Windows workflow contract, executes one
+genuine local native GUI-to-real-mpv Open/Play/Pause/Exit vertical, implements
+a nonce-owned disposable block-replay capability, and replaces the direct
+server-container push with a build/load/consume/SBOM/sign/public-compare
+contract. The native real-mpv vertical is locally green. The external
+interactive runner, privileged `dm-log-writes` replay, and container
+publication chain were not available locally and remain explicitly
+unexecuted; their repository policies and fail-closed preflights are green.
+No product defect surfaced, and the registry remains explicitly empty:
 
 - a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -793,22 +803,22 @@ boundaries rather than adding hundreds more nearby examples.
 |---|---|---|---|
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, a six-test public parser suite with 16 corpus files plus 6,144 fixed-seed scheduled-depth cases, a source-bound protocol ASan/libFuzzer target whose post-fix exact-oracle campaign passed 1,994,358 executions, and a second source-bound framed-session target whose canonical campaign passed 292,528 executions | independent streaming order/value and exact raw/typed roundtrip oracles are enforced; in-memory CLI framing/session scheduling is coverage-guided; framed mpv IPC and the Python differential remain absent | retain both deterministic corpora and coverage-guided lanes, then add framed-mpv and differential Python oracles |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
-| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, a 25/25 viable arbitration mutation ratchet, store- and worker-owned `SQLITE_FULL`, worker write denial, real VFS open-failure proofs, and real Windows/Unix pathname-denial and recovery probes | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, integrity, and ordinary host open/rename/delete denial are proven; parent-directory sync, kernel power loss, device-cache behavior, and physical durability remain unproven | retain worker/platform fault and mutation regressions; add disposable block-device and power-loss durability proof without broadening the claim |
+| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, a 25/25 viable arbitration mutation ratchet, store- and worker-owned `SQLITE_FULL`, worker write denial, real VFS open-failure proofs, real Windows/Unix pathname-denial and recovery probes, and a nonce-owned disposable `dm-log-writes` replay capability | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, integrity, and ordinary host open/rename/delete denial are proven; the replay safety policy and plain-file phase model pass, but the privileged block replay did not run, so parent-directory sync, kernel power loss, device-cache behavior, and physical durability remain unproven | retain worker/platform fault and mutation regressions; execute the bounded disposable replay only on a capable reviewed Linux host and report only its three observed cuts |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, a 30/30 viable reconnect mutation ratchet, and a 5/5 inbound `Set` ordering ratchet | reset transaction invalidation, stale-completion rejection, and command-order completion are positive; adapter clock schedules remain incomplete | retain both zero-survivor shards and add clock-controlled adapter schedules |
 | Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, bracketed wall-clock wrappers, and a 47/47 viable mutation ratchet | arithmetic and public clock delegation are mechanically encoded; clock monotonicity, cross-host authenticity, jitter, scheduler latency, and playback outcomes are not | retain the zero-survivor shard; add deterministic jitter/drift simulation and real synchronization telemetry |
 | Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet, a black-box 30-field INI/runtime/environment composition property suite, generated legacy scalar/container/malformed-value migration properties, and four independent-model controlled-room properties | mutation covers all 31 persisted runtime overrides in both precedence directions, generated composition covers all 30 environment-overridable fields, migration is canonical/idempotent, and controlled-room normalization/credentials/precedence/redaction are generated; CLI argument parsing remains separate | retain the mutation, composition, migration, and controlled-room proofs; add only CLI-layer composition where it crosses a distinct parser boundary |
 | CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, deterministic partial-read cancellation matrices, generated byte schedules through committed session state, a 33/33 viable framing mutation ratchet, and source-bound in-memory coverage-guided framing/session application | session-owned framing state and positive cancellation regressions close `TC-CLI-003`; deterministic schedules and the 292,528-execution canonical campaign cover cancellation, EOF, UTF-8, payload seams, and session projections, while real-network timing and 142 older test-path sleeps remain gaps | retain the cancellation barriers, generated schedules, zero-survivor shard, and framed-session fuzz lane; continue clock/barrier replacement and real transport timing proof |
-| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
+| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, real child-process large-pipe/exit/hang/handle-release proofs, and one locally green digest-bound native GUI-to-real-mpv Open/Play/Pause/Exit vertical | the new real-mpv vertical proves one healthy generated-media path; fault injection still uses a deterministic peer and Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix and healthy real-mpv vertical; add the Unix-socket equivalent, minimum/newest-supported mpv, and real fault/recovery traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
-| Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, and pre-termination failure capture | the complete ten-scenario contract is locally green, but still needs an isolated interactive Windows CI lane and uses a deterministic player rather than real mpv | require the strict contract on an ephemeral interactive Windows lane, then add one real-mpv vertical slice |
+| Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, pre-termination failure capture, a dispatch-only ephemeral-runner workflow contract, and one locally green genuine real-mpv vertical | the ten-scenario and real-mpv contracts are locally green; the external one-job interactive runner has not been provisioned or executed, so the workflow is not a required gate | execute and retain repeated green runs on the attested ephemeral interactive runner before promotion; keep the real-mpv vertical as a distinct capability lane |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
 | Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap, strict banner, unterminated-output, and bounded dual-pipe large-output proofs | generated-media ffmpeg harness remains opt-in | require generated media in a capability CI lane |
 | Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, candidate-order adversarial part tests, evidence-ranked selection, genuine-tie controls, and terminal-context retry proofs | uniquely identified versions resolve; genuine ambiguity fails once and projects terminal state | add an explicit version/part picker for genuinely indistinguishable or multipart media |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
 | Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, an atomic content-acknowledged boundary marker, and a separate 50-test Windows/MSVC coverage domain are strong | `TC-HARNESS-016` is closed by 100/100 exact process replays; kernel power-loss, filesystem durability, and updater-specific disk-full and permission gaps remain | retain the exact handshake regression; add updater-specific failure probes, parent-dir sync, and platform restart proof |
-| Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability | public registry digest/SBOM/signature binding remains | verify the uploaded/public digest is the tested content and enforce provenance policy |
-| Server container | non-root runtime | workflow builds and pushes in one step without smoke | build/load, protocol/TLS/persistence smoke, scan/SBOM, then push exact digest |
+| Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability; the container workflow now encodes digest/SBOM/signature/public-reference cross-binding | archive publication and the new container chain have separate contracts; the container chain has not yet executed in CI or against public GHCR | run the container publication workflow, retain its complete green artifact, and keep archive/container signing claims distinct |
+| Server container | non-root runtime plus a pinned build-once/load/inspect/plaintext-TLS-persistence/SBOM/push/sign/anonymous-public-compare contract | offline policy is green; no local Docker/Syft/Cosign/GHCR execution occurred, so runtime and publication assurance remain unproven until CI produces every report | execute the exact CI-owned chain and require its final cross-identity gate before treating any tag as published |
 
 ## 6. Current quantitative coverage
 
@@ -1111,7 +1121,12 @@ all behavioral and strict checks in 110,173 and 109,614 ms respectively, both
 with zero native stderr. The causal failures, rejected hypotheses, artifact
 hashes, and final proof are preserved in
 [`docs/evidence/test-coverage/native-input-ownership-20260729.md`](evidence/test-coverage/native-input-ownership-20260729.md).
-The remaining work is CI placement, not an open native-contract defect.
+The repository now contains a dispatch-only workflow for the exact strict
+inventory. It requires external one-job/ephemeral attestations and proves an
+interactive desktop before checkout. The matching runner and its post-job
+destruction were not available, so the remaining work is operational
+provisioning, execution, and later gate promotion—not an open native-contract
+defect.
 
 **Decision:** every native/semantic contract must have one of four structured
 states: `required-pass`, `optional-pass`, `optional-skip(reason)`, or
@@ -1223,33 +1238,41 @@ and secret-creation stages, then proves integrity, complete old-or-new state,
 normal recovery, and a second idempotent reopen. Store- and worker-owned
 `SQLITE_FULL`, deterministic worker write denial, real VFS open failure, and
 Windows/Unix production-path denial now cover the ordinary
-disk-full/write/open/rename/delete layer. The remaining durability gap begins
-below that layer: parent-directory sync, device/cache behavior, torn writes,
-and physical power loss, plus queued actor intent that has not entered desired
-state.
+disk-full/write/open/rename/delete layer. A nonce-owned disposable
+`dm-log-writes` harness now encodes three explicit flush/replay cuts and the
+same complete-old-or-complete-new oracle. Its safety policy, nonprivileged
+preflight, and plain-file production-worker model pass, but the privileged
+replay did not run. The remaining durability gap therefore still begins below
+the ordinary host layer: parent-directory sync, observed device/cache replay,
+torn writes, and physical power loss, plus queued actor intent that has not
+entered desired state.
 
-**Decision:** define the durability contract—old complete state or new complete
-state, never partial. Retain the implemented SQLite process-restart matrix and
-ordinary platform-denial probes, then extend the same rule through controlled
-flush, parent-directory sync, device interruption, and restart boundaries on
-a disposable filesystem or block device.
+**Decision:** retain the implemented SQLite process-restart matrix, ordinary
+platform-denial probes, and fail-closed disposable capability. Execute the
+privileged harness only on a reviewed capable Linux host and report the exact
+observed cuts; do not infer parent-directory, hardware-cache, torn-sector, or
+physical-power durability from the unexecuted contract.
 
 ### P1 — Release artifacts are not consumed before publication
 
 The GUI workflow builds, packages, and uploads. The server container workflow
-builds and pushes in one step. Neither independently consumes the precise final
-artifact before publication.
+now encodes a build-once/load-first chain: inspect and consume the loaded image,
+prove plaintext/TLS plus restart persistence, generate and bind an SPDX SBOM,
+then push only tags of the tested daemon image, sign/attest the resulting
+digest, and anonymously compare every public reference. Its offline policy is
+green, but the Docker/Syft/Cosign/GHCR phases have not executed in this slice.
 
-**Decision:** test immutable artifacts, not just source. Build/load first,
-inspect and run, then publish the exact digest or archive already tested.
+**Decision:** test immutable artifacts, not just source. Require a complete
+green CI artifact from the new chain before making a container publication
+claim; a workflow definition or offline policy pass is not runtime evidence.
 
 The supply-chain gate should also cover the mechanism that produces those
-artifacts. This branch pins every third-party action in the Rust CI and
-coverage workflows to a verified full commit SHA and adds pinned actionlint
-validation. Other release/container workflows still use floating references,
-and the container build uses tag-only base images and a Cargo build without
-`--locked`. Finish pinning action and base-image digests, automate
-dependency/action update pull requests, and run license/advisory/source policy.
+artifacts. This branch pins every third-party action in the Rust CI, coverage,
+native-interactive, and server-container workflows to a verified full commit
+SHA and adds pinned actionlint validation. The server Dockerfile also pins its
+frontend and both base images by digest and uses Cargo `--locked`. Continue
+pinning any remaining release workflows, automate dependency/action update
+pull requests, and run license/advisory/source policy.
 These checks do not replace behavior tests; they prevent an unreviewed build
 input from invalidating otherwise good evidence.
 
@@ -1675,8 +1698,18 @@ independent outputs:
 2. Syncplay protocol output and room readiness;
 3. mpv IPC/process state plus structured lifecycle/effect trace.
 
-Future required PR or pre-merge scenarios once the Tranche D system harness
-lands:
+Implementation status (2026-07-31): the first bounded vertical is locally
+green. It binds the actual GUI and supported mpv binaries by digest, uses
+generated local PCM media and an isolated configuration, attests both
+IPv4-loopback session endpoints and exact Hello objects, physically selects
+Open Media and Exit, observes ordered real-mpv Play/Pause state, and requires
+natural GUI/mpv/session cleanup. A strict validator checks its exact
+13-assertion, 10-artifact inventory. This healthy-path capability is not yet a
+CI gate and does not implement the fault-injecting HTTP or recovery matrix
+below.
+
+Future required PR or pre-merge scenarios after a suitable capability lane is
+available:
 
 - open local media and reach active/readiness state;
 - replace A with B while A emits late events;
@@ -2021,9 +2054,15 @@ Release must consume or reproduce an immutable green commit artifact:
 7. publish the exact tested archive/digest;
 8. query the public release/registry and compare digest/checksum.
 
-For the server container, replace build-and-push with build-and-load, run
-non-root TLS/protocol/persistence-restart smoke, scan, then push the same
-content-addressed digest.
+For the server container, the required sequence is build-and-load, non-root
+TLS/protocol/persistence-restart smoke, scan, and only then pushing the same
+content-addressed image to obtain its registry manifest digest.
+
+The 2026-07-31 server-container workflow implements that sequence, including
+SPDX generation, keyless digest signing/attestation, logout, and anonymous
+public GHCR comparison. Its offline policy is green; no Docker, Syft, Cosign,
+or GHCR execution occurred locally. Publication assurance begins only when the
+CI-owned final gate and retained artifact pass.
 
 ## 13. Concrete implementation backlog
 
@@ -2327,18 +2366,21 @@ defects at their owning boundaries. The strict live-reference inventory is
 required, exact, and green; no defect quarantine or equivalence exception
 turns those failures green.
 
-The most valuable remaining next steps are:
+The most valuable remaining next steps are now execution and promotion of the
+new bounded capabilities:
 
-1. promote the locally proven strict native inventory to an ephemeral,
-   interactive Windows required lane and retain its zero-stderr policy;
-2. add one genuine native GUI-to-real-mpv vertical harness with isolated
-   configuration and complete failure artifacts;
-3. extend the proven store/worker/platform SQLite fault matrix into a
-   disposable block-device and power-loss harness that controls flush,
-   restart, and recovery without claiming more than the observed durability;
-4. extend the proven server and GUI archive consumers to a build-and-load
-   server-container smoke, then verify the public release/registry digest is
-   the same tested content and add SBOM/signature policy.
+1. provision and independently attest a one-job ephemeral interactive Windows
+   runner, execute the dispatch-only zero-stderr native lane repeatedly, and
+   promote it only after retained green evidence;
+2. retain the locally green GUI-to-real-mpv healthy vertical, then add real-mpv
+   replacement, failure, and recovery traces without weakening its exact
+   process/Hello/artifact identity;
+3. install the reviewed `replay-log` capability on a disposable capable Linux
+   host and execute the three nonce-owned block-replay cuts before making any
+   observed durability claim;
+4. execute the server-container workflow against public GHCR and require its
+   runtime, restart/persistence, SBOM, signature, attestation, and anonymous
+   digest final gate before treating a tag as published.
 
 That combination encodes behavior mechanically, searches the failure spaces
 that produced the post-report regressions, and makes future verification

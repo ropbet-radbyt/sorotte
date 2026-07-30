@@ -626,13 +626,23 @@ python scripts/llvm_cov_line_map.py \
 captured or headless runs can therefore appear hung unless the component is
 provisioned first. CI installs it explicitly.
 
-`scripts/gui-native-smoke.ps1` now treats the complete native inventory as required
+## Native interactive and real-mpv system evidence
+
+`scripts/gui-native-smoke.ps1` treats the complete native inventory as required
 by default, prebuilds the GUI and native harness, binds the report to the GUI
 path and SHA-256, preserves raw output and producer exit state, rejects skips,
 duplicate JSON keys, unexpected stderr, and binary mutation, and kills a hung
-process tree on a derived wall-clock deadline. This remains a trusted
-interactive-Windows lane: a hosted noninteractive runner must not be counted
-as equivalent evidence.
+process tree on a derived wall-clock deadline.
+
+`.github/workflows/gui-native-interactive.yml` now owns a dispatch-only,
+fail-closed contract for running that exact inventory on a separately
+provisioned, one-job, ephemeral interactive Windows runner. It checks the
+external runner attestations and interactive desktop before checkout, binds
+checkout to a requested full SHA, retains the exact evidence inventory, and
+has no stderr exception. No matching external runner was available in this
+slice, so the workflow is implemented but is not yet an executed or required
+merge gate. The exact contract and operational blocker are retained in
+[`native-interactive-ci-contract-20260731.md`](../docs/evidence/test-coverage/native-interactive-ci-contract-20260731.md).
 
 The native bundle retains screenshots, redacted UI Automation trees, isolated
 configuration, structured capability outcomes, invocation identity, process
@@ -640,6 +650,46 @@ exit, and scenario logs. Loopback-only fixture policy plus stderr rejection
 catches the networking failures observed in this work; OS-level network
 isolation is still required before claiming that silent outbound traffic is
 impossible.
+
+The opt-in `scripts/gui-real-mpv-vertical.ps1` lane crosses the actual native
+GUI and managed-player boundary with an exact digest-bound mpv binary,
+generated local WAV, isolated configuration, IPv4-loopback session fixture,
+physical Open Media and Exit leaves, and real mpv Play/Pause observations. A
+fresh canonical local run passed its exact 13-assertion, 10-artifact contract;
+the missing-mpv preflight failed closed before build or launch. This is local
+Windows evidence, not a new CI gate. The pass, retained red bundles, strict
+path/Hello/process identity, and limitations are recorded in
+[`native-gui-real-mpv-vertical-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-vertical-20260731.md).
+
+## Disposable persistence replay capability
+
+`scripts/persistence_power_loss_harness.py` and its test-only Rust driver add a
+nonce-owned, opt-in Linux `dm-log-writes` replay capability over newly created
+sparse images only. The safety policy, plain-temporary-file production-worker
+phase model, Windows compilation, and nonprivileged WSL preflight passed. The
+privileged device-mapper capability did not run: `replay-log` was absent and
+the unprivileged WSL process could not access device mapper. Consequently this
+slice makes no power-loss, device-cache, torn-write, or physical-media
+durability claim. The exact old-or-new recovery oracle, ownership guards,
+preflight output, and future invocation are retained in
+[`persistence-disposable-block-replay-harness-20260731.md`](../docs/evidence/test-coverage/persistence-disposable-block-replay-harness-20260731.md).
+
+## Server-container consumer and publication contract
+
+The server-container workflow now builds and loads once, inspects and runs the
+loaded non-root image, generates an SPDX SBOM from that local identity, pushes
+only tags of the consumed daemon image, signs and attests its resulting
+manifest digest, logs out, and compares every anonymous public GHCR reference
+with the tested config and RootFS identity. Its final gate cross-binds runtime,
+restart/persistence, SBOM, push, signature, attestation, and public-registry
+reports. Actions, Dockerfile frontend, base images, Syft, and Cosign are pinned.
+
+The offline policy suite passed, but Docker, Syft, Cosign, and a publication
+target were unavailable locally. No image build, container run, push,
+signature, attestation, or public-registry comparison is claimed until the CI
+workflow produces its complete green artifact. The contract and that remaining
+execution boundary are recorded in
+[`server-container-build-load-publication-contract-20260731.md`](../docs/evidence/test-coverage/server-container-build-load-publication-contract-20260731.md).
 
 Known product findings deliberately left unfixed by this coverage branch are
 tracked in [`docs/TEST_COVERAGE_FINDINGS.md`](../docs/TEST_COVERAGE_FINDINGS.md).

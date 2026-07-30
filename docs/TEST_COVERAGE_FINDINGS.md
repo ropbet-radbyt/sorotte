@@ -15,6 +15,7 @@ Provenance-bound parser fuzz, configuration properties, and mutation-ratchet upd
 Final CLI/protocol defect resolution update: 2026-07-30
 Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
+Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
 
 Branch: `codex/test-coverage-design`
 
@@ -80,12 +81,70 @@ ratchet, and source-bound coverage-guided in-memory framed-session testing. The
 short and canonical randomized campaigns were green, no red artifact or
 independent product behavior surfaced, and no production fix was required.
 The current product-defect registry remains explicitly empty.
+The 2026-07-31 four-slice system-boundary continuation adds an externally
+attested interactive-runner workflow contract, one executed native
+GUI-to-real-mpv healthy vertical, a disposable block-replay capability, and a
+build-once/load-first server-container publication contract. Only the local
+real-mpv vertical executed its full capability path. The external interactive
+runner, privileged block replay, and Docker/Syft/Cosign/GHCR chain remain
+unexecuted and are not reported as green runtime evidence. No product behavior
+changed and the product-defect registry remains explicitly empty.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
 one ordering defect found by the strengthened oracle, and converted every case
 into positive regression evidence. No expected failure, compatibility
 exception, retry, or skip is used to make the required lane green.
+
+## 2026-07-31 bounded system-boundary tranche
+
+Status: **Implemented with explicit capability boundaries; no product defect
+surfaced**
+
+The four slices deliberately separate repository policy from executed system
+evidence:
+
+- The native workflow requires an externally provisioned one-job ephemeral
+  interactive Windows runner, checks its desktop before checkout, and retains
+  the exact strict ten-scenario inventory. No matching runner was available,
+  so the workflow is dispatch-only and is not yet a required gate.
+- The genuine GUI-to-real-mpv lane passed locally with the exact GUI and mpv
+  binaries digest-bound, generated local media, isolated configuration,
+  IPv4-loopback session endpoints, exact client/server Hello objects, physical
+  Open Media and Exit leaves, ordered real-mpv Play/Pause observations, and
+  natural GUI/mpv/session cleanup. Its canonical contract has exactly 13
+  assertions and 10 hashed artifacts. Missing mpv fails before build or GUI
+  launch.
+- The persistence capability accepts no caller device, image, mount, mapper,
+  or work path. It creates only nonce-owned sparse files below `/var/tmp`,
+  binds ordered data/log mapper operands to their recorded loop identities,
+  and encodes complete-old-or-complete-new recovery at three replay cuts. The
+  nonprivileged policy and plain-file worker model passed; the privileged
+  `dm-log-writes` path did not run, so no power-loss result is claimed.
+- The container workflow encodes a single loaded image identity across
+  non-root plaintext/TLS restart persistence, SPDX generation, tag-only push,
+  keyless signature/attestation, logout, and anonymous public GHCR comparison.
+  The offline policy passes, but the image and publication capabilities did
+  not run locally and remain CI-owned.
+
+Iteration exposed test-infrastructure weaknesses rather than product defects:
+foreground acquisition needed a bounded Windows input-queue attachment;
+equivalent extended-length Windows paths needed narrow canonical handling; the
+real-mpv validator initially accepted incomplete Hello/assertion identity; the
+device-mapper guard initially proved only an unordered dependency set rather
+than data/log roles; and the first container draft checked SQLite integrity
+without proving a distinctive protocol write/restart/restore or rescanning the
+exact SBOM source tag. Each oracle was strengthened before this tranche was
+accepted. Failed native exploratory bundles were retained rather than
+normalized away.
+
+Exact commands, identities, red evidence, limitations, and future execution
+steps are retained in:
+
+- [`native-interactive-ci-contract-20260731.md`](evidence/test-coverage/native-interactive-ci-contract-20260731.md)
+- [`native-gui-real-mpv-vertical-20260731.md`](evidence/test-coverage/native-gui-real-mpv-vertical-20260731.md)
+- [`persistence-disposable-block-replay-harness-20260731.md`](evidence/test-coverage/persistence-disposable-block-replay-harness-20260731.md)
+- [`server-container-build-load-publication-contract-20260731.md`](evidence/test-coverage/server-container-build-load-publication-contract-20260731.md)
 
 ## Experimental baseline
 
@@ -104,6 +163,16 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The final four-slice system-boundary integration passed 471/471 Python
+  policy and infrastructure tests, warning-denied all-target/all-feature
+  workspace Clippy in 23.7 seconds, and the complete locked all-feature
+  workspace on its first attempt in 269.3 seconds. Formatting, whitespace,
+  actionlint, the ten-shard mutation policy with 17 exact accepted
+  compiler-unviable identities, and the explicitly empty product-defect
+  registry passed. Focused ownership checks passed 6/6 GUI real-mpv Rust
+  tests, 2/2 persistence Rust tests, and all 68 focused Python contract tests.
+  After the full workspace build, a fresh canonical real-mpv run passed its
+  exact 13-assertion/10-artifact contract and natural lifecycle cleanup.
 - The latest four completed slices add 50,240 controlled-room generated cases
   across default/scheduled/stress depths; real Windows and Ubuntu WSL
   production-path denial with 50/50 Windows stress; and a playlist
