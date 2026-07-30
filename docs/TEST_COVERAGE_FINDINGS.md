@@ -8,6 +8,7 @@ Deterministic clock implementation update: 2026-07-30
 Process-interruption persistence update: 2026-07-30
 Outstanding-defect closure update: 2026-07-30
 Deep-boundary testing update: 2026-07-30
+Atomic TLS and parallel-boundary update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -24,7 +25,11 @@ updater experiments opened six additional defects. The 2026-07-30 closure
 update implements all six, converts all eight expected-failure
 characterizations into positive regressions, and leaves the executable defect
 registry explicitly empty at that checkpoint. The subsequent deep-boundary
-slice opened one new, deterministic characterization: `TC-SERVER-004`.
+slice opened `TC-SERVER-004`; the current slice resolves it with an atomic
+authenticated generation protocol and executable publisher proof. Parallel
+adversarial reset/protocol/media-process work opened five narrow
+characterizations: `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
+`TC-GUI-001`/`002`.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -116,8 +121,9 @@ After the coverage tranche was integrated:
   defects and eight exact characterizations. It now validates as zero defects
   and zero characterizations at the closure checkpoint; each former expected
   failure is an ordinary positive regression at its owning boundary. The
-  current deep-boundary tree validates as one open defect and one exact
-  characterization for `TC-SERVER-004`.
+  that deep-boundary checkpoint validated as one open defect and one exact
+  characterization for `TC-SERVER-004`; the current registry removes it and
+  exactly matches five new reset/protocol/media-process characterizations.
 - The deterministic TLS model passed 10 consecutive runs: 2,430 generated
   histories and 12,150 checked transitions. Its in-flight real-network,
   restoration, and retry-cap selectors each passed 50/50 replays. The
@@ -1649,6 +1655,45 @@ the matching-echo retirement regression, all reconnect playlist tests, and the
 128-case generated history suite pass as ordinary positive tests. There is no
 retry, clock tolerance, or defect classifier in that proof.
 
+## TC-CLIENT-002: Reconnect reset retains in-flight reducer transactions
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **High (a completion from the disconnected session can seek or pause the replacement session)**
+Detection: exhaustive fresh-reference reset projection plus stale completion
+injection
+
+`reset_sync_state_for_reconnect` resets most connection-scoped state but
+retains both in-flight pause transactions and
+`local_pause_change_health`. A completion that belongs to the disconnected
+player/session can therefore still match reducer state after reset. The
+characterization completes a stale pre-reset `SetPlayerPosition(391.0)` and
+observes the fresh session adopt position `391.0` and emit
+`SetPlayerPaused(true)`; later stale pause completions also mutate the new
+session's pause projection.
+
+The exact expected-failure prefix is:
+
+```text
+TC-CLIENT-002: reconnect reset retains in-flight reducer transactions
+```
+
+The companion mechanical oracle seeds every top-level session/model aggregate
+with distinguishable state, performs the owning reconnect transition across
+24 generated seeds, and compares the complete result with a fresh reference
+that preserves only intentional configuration/identity. It normalizes exactly
+the two retained transactions and the retained health field so no adjacent
+reset omission is concealed. A second complete-projection test proves reset
+idempotence.
+
+The lean repair is to invalidate both reducer transactions and restore
+`local_pause_change_health` to `Healthy` in the same owning reset operation.
+If future player commands need to survive a transport reconnect, the stronger
+alternative is an explicit player-generation token on every effect and
+completion; generation mismatch would then reject stale completions
+mechanically. Current behavior treats these transactions as session-scoped,
+so clearing them is the proportional fix once that intent is confirmed.
+
 ## TC-SERVER-003: TLS rotation max-mtime token can miss bundle-member changes
 
 Status: **Resolved 2026-07-30; content fingerprint and snapshot parsing implemented**
@@ -1707,7 +1752,7 @@ invalid captured snapshot is never installed as a `ServerConfig`.
 
 ## TC-SERVER-004: Sequential TLS bundle reads can install a cross-generation snapshot
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; atomic generations are the preferred publication contract**
 
 Severity: **High (one installed TLS context can combine key, certificate, and
 chain material from different rotation generations)**
@@ -1721,8 +1766,8 @@ The three bundle members are still read sequentially from independently
 mutable paths, however. The server has no generation boundary proving that all
 three reads came from one publication.
 
-The characterization builds two complete, distinct, independently
-rustls-loadable generations and injects replacement at both possible
+The former characterization built two complete, distinct, independently
+rustls-loadable generations and injected replacement at both possible
 mid-capture boundaries:
 
 ```text
@@ -1730,56 +1775,58 @@ boundary 1: private key A | certificate B | chain B
 boundary 2: private key A | certificate A | chain B
 ```
 
-At both boundaries, the captured fingerprint differs from the fingerprint of
-complete generation A and complete generation B, yet rustls accepts the mixed
-snapshot as a server configuration. The test executes both schedules before
-failing with the exact oracle:
+At both boundaries, the captured fingerprint differed from the fingerprint of
+complete generation A and complete generation B, yet rustls accepted the mixed
+snapshot as a server configuration. The former exact oracle was:
 
 ```text
 rustls must never install a TLS bundle assembled from multiple observed generations
 ```
 
-This is not a fingerprint collision and cannot be solved by adding more file
-metadata to the fingerprint. It is a publication-atomicity problem. A reader
-cannot infer a common generation from three mutable loose files when a writer
-may pause or fail between replacements.
+This was not a fingerprint collision and could not be solved by adding more
+file metadata. Production now implements the immutable, versioned publication
+protocol:
 
-The full solution is an immutable, versioned bundle publication protocol:
+1. `current.json` has a strict `sorotte-tls-bundle-v1` schema and names one
+   constrained generation below `generations/`.
+2. The selector authenticates exact `privkey.pem`, `cert.pem`, and `chain.pem`
+   byte lengths and canonical lowercase SHA-256 digests. Unknown/duplicate
+   fields, traversal identifiers, oversized files, symlinks, reparse points,
+   and digest drift fail closed.
+3. The reader captures the selector, reads only that immutable generation,
+   authenticates every member, constructs a snapshot from those bytes, and
+   rechecks the selector. A concurrent switch retries rather than installing
+   the stale capture.
+4. The SWAG publisher resolves all three live links to one immutable
+   Let's Encrypt archive directory and numeric lineage before copying. It
+   rehashes the sources after capture, renames the complete staged generation,
+   calls `sync`, and atomically renames a fully written selector. A failed
+   selector replacement leaves the previous selector byte-for-byte unchanged.
+5. Older generations remain available for readers that observed the previous
+   selector. Temporary staging and selector files are removed on interruption.
 
-1. The writer creates a fresh generation directory containing the private key,
-   certificate, chain, and a manifest with the generation identifier, member
-   names, lengths, and SHA-256 digests.
-2. It flushes and closes every staged member, validates the complete
-   generation, then publishes that directory without modifying it again.
-3. It atomically replaces a small `current` manifest or pointer naming the
-   immutable generation.
-4. The server captures the pointer, reads and authenticates only that
-   generation, constructs rustls from those captured bytes, and rechecks the
-   pointer before installation. Existing connections retain their already
-   captured context; later connections observe either the old or new complete
-   generation.
-5. Old generations are garbage-collected only after they are no longer
-   referenced, and interrupted staging directories are never eligible for
-   selection.
+The positive Rust regressions switch `current.json` after each of the three
+member reads and accept only complete generation B, keep partial and complete
+but unselected generations invisible, reject path escape/digest drift/
+duplicate fields, and retain the active runtime context without consuming a
+rotation retry while a selected generation is unavailable. The executable
+shell integration performs two successive publications, proves generation A
+is immutable after B becomes current, injects failure at the selector rename,
+and rejects a mixed Certbot lineage before any target state is staged.
 
-For compatibility with existing loose-file deployments, a bounded
-double-capture can be added as a defensive fallback: read all members twice
-and accept only two identical framed fingerprints. That cheaply rejects
-ordinary replacements that overlap observation, but it is not the complete
-fix because a writer can leave a stable mixed directory between member
-operations. The fallback should therefore be documented as race reduction,
-not generation-atomic TLS rotation.
+For compatibility, an absent `current.json` still selects loose
+`cert.pem`/`chain.pem`/`privkey.pem` files. The reader accepts only two
+identical consecutive framed captures. This rejects observed replacement
+boundaries, but a stable mixed loose directory remains unknowable; the
+operator guides therefore identify loose mode as static or externally
+serialized compatibility only, not generation-atomic rotation.
 
-The eventual positive regression must require both injected boundaries to be
-rejected, exercise interrupted publication before and after the atomic pointer
-switch, prove new connections see only complete A or B, and preserve the
-existing in-flight-context and retry semantics. Capture instability should be
-treated as a transient observation rather than consuming the terminal
-invalid-generation retry budget.
-
-The complete four-stream schedule inventory, owning-suite results, integrated
-validation, and `TC-HARNESS-015` reproduction are retained in
+The discovery schedule and `TC-HARNESS-015` reproduction are retained in
 [`deep-boundary-slice-20260730.md`](evidence/test-coverage/deep-boundary-slice-20260730.md).
+The resolved reader/publisher contract, eleven parallel boundary streams,
+new defect characterizations, stress counts, and integrated validation are
+retained in
+[`atomic-tls-parallel-continuation-20260730.md`](evidence/test-coverage/atomic-tls-parallel-continuation-20260730.md).
 
 ## Local all-feature LCOV proof
 
@@ -1853,6 +1900,118 @@ one execution position. Rejecting all duplicate keys remains a possible future
 protocol-hardening decision, but is not required to give current peers one
 deterministic meaning. Both duplicate-`Set` tests are now ordinary positive
 regressions.
+
+## TC-PROTOCOL-002: Duplicate top-level Set uses discarded payload order
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **High (the decoded payload and its execution ledger can describe
+different commands)**
+Detection: escaped duplicate top-level command with disjoint nested `Set`
+members
+
+Top-level duplicate commands intentionally retain the first source position
+and the final serde payload value. The raw ordering scanner, however, attaches
+the nested `Set.command_order` captured from the first/discarded top-level
+payload to the final/surviving payload. The minimized line has
+`ready,file` in the first `Set` and `playlistIndex,room` in the escaped second
+`Set`. Its typed payload correctly retains only `playlistIndex,room`, while
+its command ledger incorrectly remains `ready,file`.
+
+The exact expected-failure oracle is:
+
+```text
+surviving duplicate Set payload must determine nested command execution order
+```
+
+The lean compatible repair is to retain first position for the top-level
+envelope but replace the associated nested-order ledger whenever serde's
+surviving duplicate payload is replaced. That preserves the established
+first-position/last-value rule while making value and execution metadata come
+from the same occurrence. Rejecting duplicate top-level commands at the wire
+boundary is a cleaner future protocol rule, but would be a compatibility
+decision rather than a lean correction.
+
+## TC-PROTOCOL-003: Decoded item Debug exposes credential-bearing unknown command
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **Medium (untrusted wire text can cross a diagnostic redaction boundary)**
+Detection: credential canary embedded in an unknown top-level command name
+
+`DecodedMessageLineItem` already wraps its raw payload in `RedactedJsonValue`
+and its typed errors avoid reflecting sensitive input. Its custom `Debug`
+implementation still renders the raw optional `command` string. An unknown
+command such as `Future?access_token=<canary>` therefore appears verbatim in a
+diagnostic dump even though a credential-bearing invalid typed payload is
+successfully redacted by the adjacent control test.
+
+The exact expected-failure oracle is:
+
+```text
+credential-bearing unknown command must not appear in diagnostics
+```
+
+The lean repair is diagnostic-only: known command names can render normally,
+while unknown names should render a fixed marker and, if useful, their byte
+length. The public field can retain the original value for protocol handling;
+only its `Debug` projection needs to become non-reflective. A broader
+alternative is a shared redacted string wrapper for every untrusted
+identifier, but that is unnecessary to close this demonstrated boundary.
+
+## TC-GUI-001: Version probe accepts unusable successful output
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **Medium (an unusable or wrong executable is reported healthy and persisted as a media tool)**
+Detection: real exit-zero child processes with empty, invalid-UTF-8, and
+unrelated stdout
+
+The media-match version probe treats every exit-zero process as a healthy
+ffmpeg/ffprobe tool. Empty output becomes the successful literal
+`version output empty`, invalid UTF-8 is accepted after lossy replacement, and
+arbitrary unrelated text becomes the recorded version. These values feed tool
+health and imported managed-tool metadata, so a wrong executable can pass the
+readiness gate before later extraction fails.
+
+The exact expected-failure oracle is:
+
+```text
+successful process without a valid tool version must be rejected
+```
+
+The lean repair is to decode stdout as strict UTF-8, require a nonempty first
+line, and validate a tool-specific anchored banner (`ffmpeg version ` or
+`ffprobe version `) before returning success. If distributor-specific banners
+make that contract too narrow, the stronger alternative is a tiny capability
+probe against generated media; it is more expensive and belongs in the
+install/CI tier rather than every health refresh.
+
+## TC-GUI-002: Version probe deadlocks on finite output larger than pipe capacity
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **Medium (a finite successful child is killed and falsely reported timed out)**
+Detection: real child writes 512 KiB to piped stdout and exits
+
+The timeout loop polls `try_wait` before calling `wait_with_output`. Because no
+reader drains stdout or stderr while the child runs, a finite producer can
+fill the kernel pipe, block before exit, and remain forever in the polling
+state. The timeout does bound the hang and correctly kills/reaps the child, but
+it converts valid completion into a false timeout.
+
+The exact expected-failure oracle is:
+
+```text
+finite fake-tool output must be drained while the process runs
+```
+
+The lean repair is two bounded drain workers, one per pipe, started immediately
+after spawn. The parent retains the current deadline/kill/reap loop; each
+worker stores only a configured prefix while continuing to drain excess bytes,
+then both are joined after exit or kill. An async process runner is a viable
+alternative if this path later moves under Tokio, but introducing a runtime
+only for a version probe would be disproportionate.
 
 ## TC-CLI-001: Managed attach waits through its deadline after the child exits
 

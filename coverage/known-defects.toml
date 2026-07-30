@@ -1,15 +1,71 @@
 schema_version = 1
 
 [[defect]]
-id = "TC-SERVER-004"
-title = "Sequential TLS bundle reads can install a cross-generation snapshot"
+id = "TC-CLIENT-002"
+title = "Reconnect reset retains in-flight reducer transactions"
 severity = "high"
-owners = ["server", "security"]
+owners = ["client-core", "player"]
 finding = "docs/TEST_COVERAGE_FINDINGS.md"
 expires = "2026-09-30"
 
 [[defect.characterization]]
-package = "sorotte-server"
-source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
-test = "tests::tls_snapshot_fault_tests::known_defect_tls_snapshot_can_mix_members_replaced_during_observation"
-expected_panic = "rustls must never install a TLS bundle assembled from multiple observed generations"
+package = "sorotte-client-core"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/reset_tests/completeness.rs"
+test = "session::tests::reconnect_tests::reset_tests::completeness::known_defect_reconnect_reset_rejects_stale_reducer_completions"
+expected_panic = "TC-CLIENT-002: reconnect reset retains in-flight reducer transactions"
+
+[[defect]]
+id = "TC-PROTOCOL-002"
+title = "Duplicate top-level Set uses discarded payload order"
+severity = "high"
+owners = ["protocol"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-protocol"
+source = "crates/sorotte-protocol/src/adversarial_input_tests.rs"
+test = "adversarial_input_tests::known_defect_duplicate_top_level_set_uses_discarded_payload_order"
+expected_panic = "surviving duplicate Set payload must determine nested command execution order"
+
+[[defect]]
+id = "TC-PROTOCOL-003"
+title = "Decoded item Debug exposes credential-bearing unknown command"
+severity = "medium"
+owners = ["protocol", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-protocol"
+source = "crates/sorotte-protocol/src/adversarial_input_tests.rs"
+test = "adversarial_input_tests::known_defect_decoded_item_debug_exposes_credential_bearing_unknown_command"
+expected_panic = "credential-bearing unknown command must not appear in diagnostics"
+
+[[defect]]
+id = "TC-GUI-001"
+title = "Version probe accepts unusable successful output"
+severity = "medium"
+owners = ["gui", "media-match"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-gui"
+source = "crates/sorotte-gui/src/app/media_match_support/process_fault_tests.rs"
+test = "app::media_match_support::process_fault_tests::known_defect_version_probe_accepts_unusable_success_output"
+expected_panic = "successful process without a valid tool version must be rejected"
+
+[[defect]]
+id = "TC-GUI-002"
+title = "Version probe deadlocks on finite output larger than pipe capacity"
+severity = "medium"
+owners = ["gui", "media-match"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-gui"
+source = "crates/sorotte-gui/src/app/media_match_support/process_fault_tests.rs"
+test = "app::media_match_support::process_fault_tests::known_defect_version_probe_deadlocks_on_finite_output_larger_than_pipe_capacity"
+expected_panic = "finite fake-tool output must be drained while the process runs"
