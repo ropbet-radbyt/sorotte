@@ -40,9 +40,9 @@ struct InboundProtocolReadGuard {
 
 #[cfg(test)]
 impl InboundProtocolReadGuard {
-    fn new() -> Self {
+    fn new(partial_bytes: usize) -> Self {
         Self {
-            partial_bytes: 0,
+            partial_bytes,
             completed: false,
         }
     }
@@ -73,39 +73,69 @@ impl Drop for InboundProtocolReadGuard {
     }
 }
 
-pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
-where
-    R: AsyncBufRead + Unpin,
-{
-    #[cfg(test)]
-    let mut read_guard = InboundProtocolReadGuard::new();
-    let mut line = Vec::new();
-    loop {
-        let available = match reader.fill_buf().await {
-            Ok(available) => available,
-            Err(error) => {
-                #[cfg(test)]
-                read_guard.complete();
-                return Err(error.into());
-            }
-        };
-        if available.is_empty() {
-            if line.is_empty() {
-                #[cfg(test)]
-                read_guard.complete();
-                return Ok(None);
-            }
-            break;
-        }
+#[derive(Debug, Default)]
+pub(crate) struct InboundProtocolLineReader {
+    partial_line: Vec<u8>,
+}
 
-        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
-            let raw_line_len = line.len() + newline_index;
-            let line_len = if newline_index == 0 {
-                raw_line_len.saturating_sub(usize::from(line.last() == Some(&b'\r')))
-            } else {
-                raw_line_len.saturating_sub(usize::from(available[newline_index - 1] == b'\r'))
+impl InboundProtocolLineReader {
+    pub(crate) async fn read_line<R>(&mut self, reader: &mut R) -> anyhow::Result<Option<String>>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        #[cfg(test)]
+        let mut read_guard = InboundProtocolReadGuard::new(self.partial_line.len());
+        loop {
+            let available = match reader.fill_buf().await {
+                Ok(available) => available,
+                Err(error) => {
+                    self.partial_line.clear();
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Err(error.into());
+                }
             };
-            if line_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+            if available.is_empty() {
+                if self.partial_line.is_empty() {
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Ok(None);
+                }
+                break;
+            }
+
+            if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+                let raw_line_len = self.partial_line.len() + newline_index;
+                let line_len = if newline_index == 0 {
+                    raw_line_len
+                        .saturating_sub(usize::from(self.partial_line.last() == Some(&b'\r')))
+                } else {
+                    raw_line_len.saturating_sub(usize::from(available[newline_index - 1] == b'\r'))
+                };
+                if line_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                    self.partial_line.clear();
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Err(anyhow::anyhow!(
+                        "Inbound protocol line too long: exceeded {} bytes",
+                        MAX_INBOUND_PROTOCOL_LINE_BYTES
+                    ));
+                }
+
+                let take = newline_index + 1;
+                self.partial_line.extend_from_slice(&available[..take]);
+                reader.consume(take);
+                break;
+            }
+
+            let buffered_len = self.partial_line.len() + available.len();
+            let ends_with_framing_cr = available
+                .last()
+                .or_else(|| self.partial_line.last())
+                .is_some_and(|byte| *byte == b'\r');
+            let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
+            if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                self.partial_line.clear();
                 #[cfg(test)]
                 read_guard.complete();
                 return Err(anyhow::anyhow!(
@@ -114,43 +144,31 @@ where
                 ));
             }
 
-            let take = newline_index + 1;
-            line.extend_from_slice(&available[..take]);
+            let take = available.len();
+            self.partial_line.extend_from_slice(available);
             reader.consume(take);
-            break;
-        }
-
-        let buffered_len = line.len() + available.len();
-        let ends_with_framing_cr = available
-            .last()
-            .or_else(|| line.last())
-            .is_some_and(|byte| *byte == b'\r');
-        let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
-        if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
             #[cfg(test)]
-            read_guard.complete();
-            return Err(anyhow::anyhow!(
-                "Inbound protocol line too long: exceeded {} bytes",
-                MAX_INBOUND_PROTOCOL_LINE_BYTES
-            ));
+            read_guard.consumed_partial(self.partial_line.len());
         }
 
-        let take = available.len();
-        line.extend_from_slice(available);
-        reader.consume(take);
+        let mut line = std::mem::take(&mut self.partial_line);
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
         #[cfg(test)]
-        read_guard.consumed_partial(line.len());
+        read_guard.complete();
+        Ok(Some(String::from_utf8(line)?))
     }
+}
 
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-    #[cfg(test)]
-    read_guard.complete();
-    Ok(Some(String::from_utf8(line)?))
+pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    InboundProtocolLineReader::default().read_line(reader).await
 }
 
 pub(crate) async fn write_protocol_line<W>(writer: &mut W, line: &str) -> anyhow::Result<()>

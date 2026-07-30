@@ -268,46 +268,37 @@ async fn run_forced_cancelled_fragment(prefix_len: usize) -> anyhow::Result<Conn
     result
 }
 
-fn assert_tc_cli_003(result: anyhow::Result<ConnectedSessionExit>) {
-    match result {
-        Err(error) => panic!(
-            "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter: {error:#}"
-        ),
-        Ok(exit) => assert_eq!(
-            exit,
-            ConnectedSessionExit::TransportClosed,
-            "a cancellation-safe reader should accept the complete released frame"
-        ),
-    }
+fn assert_cancelled_fragment_survives(result: anyhow::Result<ConnectedSessionExit>) {
+    assert_eq!(
+        result.expect("the complete released frame should remain valid after read cancellation"),
+        ConnectedSessionExit::TransportClosed,
+        "a cancellation-safe reader should accept the complete released frame"
+    );
 }
 
 #[test]
-#[should_panic(
-    expected = "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter"
-)]
-fn known_defect_one_byte_fragmentation_must_survive_select_cancellation() {
+fn one_byte_fragmentation_survives_select_cancellation() {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .expect("raw framing test runtime should build")
         .block_on(async {
-            assert_tc_cli_003(run_forced_cancelled_fragment(4).await);
+            assert_cancelled_fragment_survives(run_forced_cancelled_fragment(4).await);
         });
 }
 
 #[test]
-#[should_panic(
-    expected = "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter"
-)]
-fn known_defect_split_crlf_must_survive_select_cancellation() {
+fn split_crlf_survives_select_cancellation() {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .expect("raw framing test runtime should build")
         .block_on(async {
-            assert_tc_cli_003(run_forced_cancelled_fragment(SERVER_HELLO.len() + 1).await);
+            assert_cancelled_fragment_survives(
+                run_forced_cancelled_fragment(SERVER_HELLO.len() + 1).await,
+            );
         });
 }
 

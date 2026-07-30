@@ -456,6 +456,7 @@ struct StartTlsNegotiationResult {
 async fn read_inbound_or_prefetched_protocol_line<R>(
     reader: &mut R,
     prefetched_lines: &mut VecDeque<String>,
+    line_reader: &mut InboundProtocolLineReader,
 ) -> anyhow::Result<Option<String>>
 where
     R: tokio::io::AsyncBufRead + Unpin,
@@ -463,7 +464,7 @@ where
     if let Some(line) = prefetched_lines.pop_front() {
         return Ok(Some(line));
     }
-    read_inbound_protocol_line(reader).await
+    line_reader.read_line(reader).await
 }
 
 #[cfg(test)]
@@ -699,6 +700,7 @@ where
     emit_application_service_events(runtime.pump_plex_service().await);
 
     let mut reader = BufReader::new(reader);
+    let mut inbound_line_reader = InboundProtocolLineReader::default();
     let connected_start = Instant::now();
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
@@ -757,6 +759,7 @@ where
             line = read_inbound_or_prefetched_protocol_line(
                 &mut reader,
                 &mut prefetched_inbound_lines,
+                &mut inbound_line_reader,
             ) => {
                 match line? {
                     Some(line) => {
@@ -1234,11 +1237,15 @@ mod tests {
         ] {
             let mut pending = prefer_tls_prefetched_lines_for_response(response).await;
             let mut reader = BufReader::new(tokio::io::empty());
-            let reinjected =
-                read_inbound_or_prefetched_protocol_line(&mut reader, &mut pending)
-                    .await
-                    .expect("prefetched protocol line should be readable")
-                    .expect("prefetched protocol line should be present");
+            let mut line_reader = InboundProtocolLineReader::default();
+            let reinjected = read_inbound_or_prefetched_protocol_line(
+                &mut reader,
+                &mut pending,
+                &mut line_reader,
+            )
+            .await
+            .expect("prefetched protocol line should be readable")
+            .expect("prefetched protocol line should be present");
             assert_eq!(
                 decode_message_line(&reinjected)
                     .expect("re-injected line should enter normal protocol decoding"),
@@ -1294,9 +1301,11 @@ mod tests {
         server_task.await.expect("server task should complete");
 
         let mut reader = BufReader::new(negotiation.stream);
+        let mut line_reader = InboundProtocolLineReader::default();
         let first = read_inbound_or_prefetched_protocol_line(
             &mut reader,
             &mut negotiation.prefetched_plaintext_lines,
+            &mut line_reader,
         )
         .await
         .expect("prefetched Hello read should succeed")
@@ -1311,6 +1320,7 @@ mod tests {
             read_inbound_or_prefetched_protocol_line(
                 &mut reader,
                 &mut negotiation.prefetched_plaintext_lines,
+                &mut line_reader,
             ),
         )
         .await

@@ -1,26 +1,6 @@
 schema_version = 1
 
 [[defect]]
-id = "TC-CLI-003"
-title = "Connected-session select cancellation drops fragmented inbound protocol prefixes"
-severity = "high"
-owners = ["cli", "protocol"]
-finding = "docs/TEST_COVERAGE_FINDINGS.md"
-expires = "2026-09-30"
-
-[[defect.characterization]]
-package = "sorotte-cli"
-source = "crates/sorotte-cli/src/tests/raw_protocol_framing.rs"
-test = "tests::raw_protocol_framing::known_defect_one_byte_fragmentation_must_survive_select_cancellation"
-expected_panic = "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter"
-
-[[defect.characterization]]
-package = "sorotte-cli"
-source = "crates/sorotte-cli/src/tests/raw_protocol_framing.rs"
-test = "tests::raw_protocol_framing::known_defect_split_crlf_must_survive_select_cancellation"
-expected_panic = "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter"
-
-[[defect]]
 id = "TC-PROTOCOL-004"
 title = "Protocol floating-point values can drift across decode and re-encode"
 severity = "low"
