@@ -12,6 +12,7 @@ Atomic TLS and parallel-boundary update: 2026-07-30
 Raw-loopback framing update: 2026-07-30
 Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
+Final CLI/protocol defect resolution update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -36,25 +37,34 @@ characterizations: `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
 `TC-PLEX-001` and `TC-GUI-003`. This remediation slice fixes all seven,
 converts their characterizations to positive regressions, and restores an
 explicitly empty defect registry.
-The later raw-loopback framing slice opens `TC-CLI-003` with two deterministic
+The later raw-loopback framing slice opened `TC-CLI-003` with two deterministic
 characterizations. A connected-session `select!` can cancel a partially
 completed inbound read after bytes have been consumed from the transport,
 discarding the future-local prefix before CRLF. That defect remains
-deliberately unfixed in this testing slice; at that checkpoint the registry
+deliberately unfixed in that testing slice; at that checkpoint the registry
 contained one defect and two exact characterizations.
 The subsequent four-slice continuation added deterministic protocol
 property/corpus tests, actor-owned persistence fault injection, and
 zero-survivor configuration and ping mutation gates. These experiments found
 no new product defect and did not modify `TC-CLI-003`; that checkpoint
 therefore remained at one open defect and two characterizations.
-The latest continuation adds zero-survivor persistence-arbitration and inbound
+The next continuation added zero-survivor persistence-arbitration and inbound
 `Set` ordering mutation ratchets, black-box composition properties for all 30
 environment-overridable settings, and a source-bound coverage-guided protocol
 parser lane. The first executable parser campaign found
 `TC-PROTOCOL-004`, an adjacent finite floating-point representation change
-across raw and typed decode/encode/decode. Production behavior remains
-unchanged. The current registry contains exactly two open defects and four
-exact characterizations: two each for `TC-CLI-003` and `TC-PROTOCOL-004`.
+across raw and typed decode/encode/decode. Production behavior remained
+unchanged at that checkpoint, which contained two open defects and four exact
+characterizations.
+The final defect-resolution slice moves the fragmented-line buffer to
+connected-session ownership and enables serde_json's exact float-roundtrip
+parser. All four former characterizations are now positive regressions, the
+fuzz oracle is unconditional again, and the current registry is explicitly
+empty.
+The final workspace gate independently reproduced `TC-HARNESS-016`, a race in
+the updater test's boundary-marker handshake. It is characterized separately
+and left unchanged because the failure occurs before updater recovery is
+exercised and is outside the two authorized product corrections.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -91,21 +101,35 @@ After the coverage tranche was integrated:
   parser integration tests, and strict protocol Clippy passes.
 - The source-bound parser target first exposed and registered
   `TC-PROTOCOL-004`. Its 45-second continuation passed 559,788 executions.
-  The canonical 180-second campaign over committed SHA
+  The pre-fix canonical 180-second campaign over committed SHA
   `729214d0de7ced9c56da7361bda68dc75b831179` passed 1,915,137 executions,
   added 6,634 corpus units, peaked at 519 MiB, retained a stable 29-file source
   manifest and 14-file seed manifest, and produced no artifact or independent
-  failure. Both changed workflows pass actionlint, and the executable
-  known-defect policy now exactly matches two open defects and four
-  characterizations.
-- Final validation passed warning-denied all-target/all-feature workspace
+  failure. After the correction, a fresh exact-oracle 180-second campaign over
+  `034e10511ae6473f0165f3028a026a0bad4f6db3` passed 1,994,358 executions,
+  added 7,163 corpus units, peaked at 533 MiB, retained a stable 29-file source
+  manifest and 16-file seed manifest, and produced no artifact. The executable
+  known-defect policy now validates zero defects and zero characterizations.
+- Final defect-resolution validation passed all-target/all-feature workspace
+  Clippy in 22.173 seconds, all 399 Python infrastructure/policy tests in
+  20.427 seconds, formatting, diff whitespace, actionlint, all direct
+  registries, and a complete locked all-feature workspace retry in 208.298
+  seconds. The positive CLI raw-framing matrix passed 50/50 serial runs
+  (250/250 test executions), and the 16-file parser corpus passed 50/50 serial
+  replays (800/800 files).
+- The first complete workspace attempt stopped after 125.962 seconds at
+  `TC-HARNESS-016`. Its exact updater test passed on immediate retry, failed at
+  iteration 5 of a serial stress, and then passed a 20/20 diagnostic capture.
+  The unchanged complete workspace retry passed; the initial failure remains
+  recorded rather than being hidden by the green retry.
+- The preceding tranche's final validation passed warning-denied
+  all-target/all-feature workspace
   Clippy in 15.65 seconds. The complete locked all-feature workspace,
   including integration tests, the real-Python server release verifier, and
   every doctest, passed on its first run in 250.8 seconds. All 399 Python
   infrastructure and policy tests passed in 20.383 seconds; formatting,
   diff whitespace, both changed workflows, the eight-shard mutation policy,
-  and the two-defect/four-characterization registry also passed their exact
-  gates.
+  and the then-current registry also passed their exact gates.
 - The parser/worker/configuration/ping checkpoint passed every focused and
   broad gate on the integrated tree. The protocol parser suite passed 6/6 at
   the scheduled 6,144-case depth; the worker-owned persistence family passed
@@ -198,14 +222,16 @@ After the coverage tranche was integrated:
   const-context mutation is explicitly matched and expires for review on
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
-- The behavior catalog validates 17 behavior IDs, 40 exact proofs, and two
+- The behavior catalog validates 20 behavior IDs, 51 exact proofs, and two
   lanes. Before the closure slice, the executable registry contained six open
   defects and eight exact characterizations. It now validates as zero defects
   and zero characterizations at the closure checkpoint; each former expected
   failure is an ordinary positive regression at its owning boundary. The
   deep-boundary checkpoint validated as one open defect and one exact
-  characterization for `TC-SERVER-004`; the current registry removes it and
-  exactly matches seven reset/protocol/media-process/Plex characterizations.
+  characterization for `TC-SERVER-004`; the subsequent remediation registry
+  removed it and exactly matched seven reset/protocol/media-process/Plex
+  characterizations. Those seven and the final CLI/protocol pair are now
+  resolved, so the current registry is empty.
 - The deterministic TLS model passed 10 consecutive runs: 2,430 generated
   histories and 12,150 checked transitions. Its in-flight real-network,
   restoration, and retry-cap selectors each passed 50/50 replays. The
@@ -227,7 +253,8 @@ After the coverage tranche was integrated:
   oracle to start with its own defect identifier; all 22 focused policy tests
   pass. The historical populated registry, the closure checkpoint's explicit
   zero-defect registry, the raw-framing checkpoint's single-defect registry,
-  and the current two-defect registry all use the same fail-closed contract.
+  the former two-defect checkpoint, and the current empty registry all use the
+  same fail-closed contract.
   The complete infrastructure suite at the earlier checkpoint passed 295/295
   tests in 12.421 seconds.
 - The ignored-test registry exactly classifies all 23 source attributes:
@@ -679,6 +706,43 @@ guard, and requires the observer to receive the restored value. The owning
 module passes 15/15, warning-denied CLI Clippy passes, and ten consecutive
 complete all-feature CLI library runs pass 10/10 in 111.7 seconds. No retry or
 test-thread serialization is needed.
+
+## TC-HARNESS-016: updater interruption marker can be observed before its payload is written
+
+Status: **Open 2026-07-30; independently reproduced and isolated from the
+CLI/protocol fixes**
+
+Severity: **Harness correctness (the required workspace gate can fail before
+testing updater recovery)**
+Detection: full locked all-feature workspace gate followed by serial exact-test
+stress
+
+The updater process-interruption child publishes a boundary with
+`fs::write(root.join("boundary-reached"), label)`. On Windows, creating the
+file and filling its payload are separately observable. The parent polls only
+`marker().exists()`, then immediately calls `read_to_string` and requires the
+complete label. It can therefore observe the newly created zero-length file
+before the child writes the boundary text.
+
+The first post-fix workspace run failed at that assertion:
+
+```text
+expected: "replaced-6"
+observed: ""
+```
+
+The exact updater test passed on its first isolated retry, then failed at
+iteration 5 of a bounded serial stress. A subsequent diagnostic capture passed
+20/20, confirming an intermittent observation race. The failure occurs before
+the parent kills the child and before either recovery subprocess is started,
+so it is not evidence of an incomplete update or rollback.
+
+This task does not alter the unrelated updater harness. A future correction
+should publish the marker atomically or keep bounded polling until its content
+equals the expected boundary while still checking for premature child exit.
+The finding is not placed in `known-defects.toml`: that registry inventories
+deterministic Rust expected-failure characterizations, while this remains an
+ordinary intermittent required-test failure.
 
 ## TC-SEC-001: structured credential aliases survive transcript sanitization (resolved)
 
@@ -2206,7 +2270,7 @@ detached-ownership proofs.
 
 ## TC-CLI-003: Connected-session select cancellation drops fragmented inbound protocol prefixes
 
-Status: **Open 2026-07-30; deterministically characterized at the real loopback boundary**
+Status: **Resolved 2026-07-30; partial framing state survives selected-read cancellation**
 
 Severity: **High (ordinary TCP fragmentation can corrupt an otherwise valid
 server frame and disconnect the client)**
@@ -2220,17 +2284,31 @@ line delimiter arrives, dropping the read future also drops the already
 consumed prefix. The next read begins at the remaining suffix and reports
 misleading JSON errors for a valid frame.
 
-Two ordinary, non-ignored expected-failure tests make the schedule exact. The
+Two ordinary, non-ignored tests make the schedule exact. The
 loopback peer first publishes a partial valid Hello; a test-only task-local
 observer confirms those bytes were consumed. Closing a supplied local-input
 channel forces a competing branch, and the observer confirms the partial read
 was cancelled before the peer releases the remainder. One case continues one
 application byte at a time; the other gates precisely between `\r` and `\n`.
-Both fail with:
+The former expected-failure oracle was:
 
 ```text
 TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter
 ```
+
+`InboundProtocolLineReader` now owns the partial buffer for the lifetime of the
+connected session. Each selected read borrows that state, so dropping the
+future cannot discard an already consumed prefix. Completed frames move the
+buffer out for UTF-8 decoding, while terminal I/O and line-limit errors clear
+it. The same forced schedules are now positive:
+
+```text
+tests::raw_protocol_framing::one_byte_fragmentation_survives_select_cancellation
+tests::raw_protocol_framing::split_crlf_survives_select_cancellation
+```
+
+Both accept the complete released Hello and reach
+`ConnectedSessionExit::TransportClosed`.
 
 The same slice positively proves server-side one-byte fragmentation, split
 CRLF, coalescing, valid-prefix/fault-suffix ordering, truncation, half-close,
@@ -2239,14 +2317,13 @@ repetitions of each boundary selector passed. The initial ungated split-CRLF
 test independently failed on stress iteration 12 before the deterministic
 cancellation barrier was added.
 
-No production fix is included. The complete matrix, root-cause trace, commands,
-and limitations are retained in
+The complete matrix, root-cause trace, correction, commands, and limitations
+are retained in
 [`raw-loopback-framing-20260730.md`](evidence/test-coverage/raw-loopback-framing-20260730.md).
 
 ## TC-PROTOCOL-004: Protocol floating-point values can drift across decode and re-encode
 
-Status: **Open 2026-07-30; coverage-guided counterexample characterized at raw
-and typed protocol boundaries**
+Status: **Resolved 2026-07-30; exact raw and typed float roundtrips restored**
 
 Severity: **Low (ordinary synchronization magnitudes are not known to hit the
 counterexample, but accepted finite JSON numbers do not satisfy the advertised
@@ -2263,26 +2340,36 @@ change is reproducible inside the valid typed frame
 `Value` and `ProtocolMessage` roundtrip oracle without requiring malformed
 input, a panic in production code, or sanitizer-detected memory unsafety.
 
-Two ordinary, non-ignored expected-failure tests bind the raw and typed
-counterexamples to:
+Two ordinary, non-ignored expected-failure tests originally bound the raw and
+typed counterexamples to:
 
 ```text
 TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode
 ```
 
-The exact continuation classifier passed 559,788 executions in its first
-45-second run. After provenance binding and the implementation commit, a fresh
-180-second canonical campaign passed 1,915,137 executions over SHA
+The historical continuation classifier passed 559,788 executions in its first
+45-second run. After provenance binding, a fresh pre-fix 180-second canonical
+campaign passed 1,915,137 executions over SHA
 `729214d0de7ced9c56da7361bda68dc75b831179`, with stable 29-file source and
 14-file seed manifests, no artifact, and no independent failure.
 
-No production fix is included. To continue searching for independent parser
-failures, the fuzz oracle admits only structurally identical values whose
-finite floating-point leaves are unchanged or differ by exactly one ULP with
-the same sign. Any structural, integer, sign, non-finite, or larger numeric
-drift still fails the campaign. The full toolchain identity, source binding,
-counterexample, continuation runs, and limitations are retained in
+The fix keeps serde_json pinned at 1.0.151 and enables its
+`float_roundtrip` feature in the workspace and standalone fuzz package. The
+raw and typed characterizations are now positive exact-equality regressions,
+and both minimized inputs are checked-in seeds in a 16-file corpus. The
+one-ULP classifier was deleted; raw `Value` and typed `ProtocolMessage`
+roundtrips are unconditional exact assertions.
+
+A fresh post-fix 180-second campaign over
+`034e10511ae6473f0165f3028a026a0bad4f6db3` passed 1,994,358 executions,
+added 7,163 corpus units, peaked at 533 MiB, retained stable 29-file source and
+16-file seed manifests, and produced no artifact. The full toolchain identity,
+source binding, counterexample, historical and exact-oracle continuations, and
+limitations are retained in
 [`protocol-coverage-guided-20260730.md`](evidence/test-coverage/protocol-coverage-guided-20260730.md).
+The combined implementation diff, positive selectors, empty-registry proof,
+native launch characterization, WSL campaign, and evidence hashes are in
+[`outstanding-defect-resolution-20260730.md`](evidence/test-coverage/outstanding-defect-resolution-20260730.md).
 
 ## TC-UPDATER-001: Tampered prepared file prevents safe update rollback cleanup
 

@@ -1,5 +1,15 @@
 # Test-coverage continuation handoff — 2026-07-30
 
+## Completion note
+
+This handoff is a historical checkpoint. Its tranche-local instruction not to
+repair discovered product behavior was superseded by the user's explicit
+request to fix the outstanding defects. `TC-CLI-003` was corrected in
+`b938561`, `TC-PROTOCOL-004` was corrected in `034e105`, all four
+characterizations are positive regressions, and the registry is empty.
+Current proof is in
+[`outstanding-defect-resolution-20260730.md`](outstanding-defect-resolution-20260730.md).
+
 ## Purpose and safety context
 
 This handoff resumes a defensive software-quality review of the Sorotte Rust

@@ -1,5 +1,16 @@
 # Raw loopback protocol framing evidence (2026-07-30)
 
+## Resolution update
+
+`TC-CLI-003` is resolved. Partial-frame bytes now belong to a
+connected-session-owned `InboundProtocolLineReader`, so dropping a selected
+read future cannot discard bytes already consumed from `BufReader`. The two
+deterministic expected-panic characterizations were converted to ordinary
+positive regressions and the registry entry was removed. The discovery
+history below is retained to explain the fault; current implementation,
+selectors, and validation are recorded in
+[`outstanding-defect-resolution-20260730.md`](outstanding-defect-resolution-20260730.md).
+
 ## Scope
 
 This slice exercises raw protocol bytes across real IPv4 loopback TCP sockets at both production
@@ -33,15 +44,15 @@ transport completion as barriers; there are no timing sleeps.
 | CLI | valid Hello followed by a line over the client limit | Hello state remains committed and the framing-limit error is returned |
 | CLI | malformed unterminated JSON followed by server write half-close | EOF causes a typed JSON error and cannot activate the session |
 | CLI | valid unterminated Hello followed by server write half-close | final frame commits and the runner returns `TransportClosed` |
-| CLI | one-byte continuation after an observed partial read is cancelled | deterministic expected-panic characterization of TC-CLI-003 |
-| CLI | line feed released after an observed payload-plus-CR read is cancelled | independent deterministic expected-panic characterization of TC-CLI-003 |
+| CLI | one-byte continuation after an observed partial read is cancelled | complete released Hello is accepted and the session reaches orderly transport close |
+| CLI | line feed released after an observed payload-plus-CR read is cancelled | split CRLF prefix is retained and the complete released Hello is accepted |
 
 The loopback server keeps its receive half open after half-closing its write half and drains it
 until the client closes. This is required on Windows: dropping a socket with unread peer bytes can
 replace the intended orderly EOF with `WSAECONNABORTED`, which would test teardown behavior rather
 than framing.
 
-## Surfaced defect: TC-CLI-003
+## Historical surfaced defect: TC-CLI-003
 
 **Proposed title:** Connected-session select cancellation drops fragmented inbound protocol
 prefixes.
@@ -77,11 +88,10 @@ behavior:
 The reproducer gates the server after the prefix, waits for fact 1, closes a supplied local-input
 channel to make a competing branch ready, waits for fact 2, and only then releases the remaining
 bytes. One case releases the remaining frame one application byte at a time. The other places the
-gate between `\r` and `\n`. Both are ordinary, non-ignored `#[should_panic]` tests with the exact
-prefix above. A cancellation-safe implementation will stop panicking, which makes both
-characterizations fail until their expected-panic annotations are removed or inverted.
-
-No product fix is included in this slice.
+gate between `\r` and `\n`. Both were originally ordinary, non-ignored `#[should_panic]` tests
+with the exact prefix above. The correction moved partial-frame ownership outside the cancellable
+future. Their expected-panic annotations and defect-prefixed oracles are now removed; the same
+forced schedules must succeed.
 
 ## Files
 
@@ -89,7 +99,8 @@ No product fix is included in this slice.
 - `crates/sorotte-server/src/tests.rs`
 - `crates/sorotte-cli/src/tests/raw_protocol_framing.rs`
 - `crates/sorotte-cli/src/tests.rs`
-- `crates/sorotte-cli/src/protocol_io.rs` (`cfg(test)` observation only)
+- `crates/sorotte-cli/src/protocol_io.rs` (production persistent read state plus the
+  `cfg(test)` observation seam)
 
 ## Validation
 
@@ -101,14 +112,15 @@ cargo test -p sorotte-server raw_protocol_framing_tests -- --nocapture
 
 cargo test -p sorotte-cli raw_protocol_framing -- --nocapture --test-threads=1
   5 passed; 0 failed; 0 ignored
-  (includes two expected-panic TC-CLI-003 characterizations)
+  (includes two positive forced-cancellation regressions)
 ```
 
 Deterministic stress:
 
 ```text
 server raw framing selector, serial, 50 iterations: 50/50 passed
-CLI raw framing selector, serial, 50 iterations: 50/50 passed
+positive CLI raw framing matrix, serial, 50 iterations:
+  50/50 matrices and 250/250 test executions passed
 ```
 
 Owning-crate gates:

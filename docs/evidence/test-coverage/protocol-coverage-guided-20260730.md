@@ -3,29 +3,33 @@
 ## Result
 
 Sorotte now has a bounded, source-bound libFuzzer/AddressSanitizer lane for
-its own public JSON protocol parser. The first executable campaign found one
+its own public JSON protocol parser. The first executable campaign found the
 low-severity product defect:
 
 `TC-PROTOCOL-004: Protocol floating-point values can drift across decode and re-encode`
 
-The defect is deliberately unfixed. Two ordinary expected-failure
-characterizations register its raw and typed forms. The continuing oracle
-admits only that exact defect class and remains strict for structure,
-integers, non-floating leaves, sign, non-finite values, and floating-point
-drift larger than one ULP.
+That defect is now resolved by enabling serde_json 1.0.151's
+`float_roundtrip` parser feature. Its raw and typed characterizations are
+ordinary positive regressions, both minimized inputs are retained in the
+checked-in corpus, and the one-ULP continuation classifier has been removed.
+Raw and typed fuzz roundtrips are exact again.
 
-After that registration:
+Campaign history:
 
 - a 45-second continuation passed 559,788 executions;
-- a fresh canonical 180-second continuation passed 1,915,137 executions;
-- the two continuations passed 2,474,925 executions in total;
+- the pre-fix canonical 180-second continuation passed 1,915,137 executions
+  under the narrow registered allowance;
+- the post-fix canonical 180-second campaign passed 1,994,358 executions
+  under the unconditional exact oracle;
 - no independent crash, sanitizer report, hang, or invariant failure
   surfaced; and
-- `TC-CLI-003` and `TC-PROTOCOL-004` remain unchanged.
+- the known-defect registry is now explicitly empty.
 
-The canonical report is bound to committed implementation SHA
-`729214d0de7ced9c56da7361bda68dc75b831179`. Its 29-file source manifest was
-identical before and after the campaign.
+The post-fix report is bound to committed implementation SHA
+`034e10511ae6473f0165f3028a026a0bad4f6db3`. Its 29-file source manifest and
+16-file seed manifest were identical before and after the campaign. Full
+resolution evidence is also summarized in
+[`outstanding-defect-resolution-20260730.md`](outstanding-defect-resolution-20260730.md).
 
 ## Safety and scope
 
@@ -37,8 +41,8 @@ This is defensive quality assurance of Sorotte's own local Rust parser:
   persistence, privilege change, or third-party interaction;
 - AddressSanitizer and libFuzzer are used only to detect application crashes
   and violated parser invariants; and
-- product defects found by this tranche are characterized, registered, and
-  left unfixed.
+- product defects are retained as minimized regressions and removed from the
+  registry only after their production corrections pass.
 
 All campaign output is retained under ignored `target/fuzz-ci/` directories.
 No corpus, log, crash artifact, build output, or `fuzz/target/` file is
@@ -54,7 +58,7 @@ direct pins:
 | cargo-fuzz | `0.13.2` |
 | libfuzzer-sys | `0.4.13` |
 | serde | `1.0.229` |
-| serde_json | `1.0.151` |
+| serde_json | `1.0.151` with `float_roundtrip` |
 | Rust toolchain | `nightly-2026-07-29` |
 | sanitizer | AddressSanitizer |
 | target | `fuzz/fuzz_targets/protocol_line.rs` |
@@ -86,7 +90,7 @@ The target checks:
    items.
 9. Aggregate messages preserve item count, kind, and order.
 10. Every decoded raw value and typed message survives encode/decode with
-    exact semantics, except for the registered `TC-PROTOCOL-004` class.
+    exact semantics.
 
 The byte entrypoint remains total for invalid UTF-8 by declining to invoke the
 string parser. libFuzzer still mutates arbitrary bytes and therefore exercises
@@ -113,7 +117,7 @@ fresh 180-second output directory.
 The runner requires:
 
 - an exact 40-character lowercase source SHA;
-- exactly 14 direct, regular seed files;
+- exactly 16 direct, regular seed files;
 - an output directory under `target/` that does not already exist;
 - exact cargo-fuzz identity;
 - complete libFuzzer final statistics on successful runs;
@@ -156,7 +160,7 @@ manual campaigns.
 including a regression that every fixed bound source is covered by a workflow
 trigger. Both changed workflows pass the installed actionlint binary.
 
-## Product finding: TC-PROTOCOL-004
+## Resolved product finding: TC-PROTOCOL-004
 
 The first real campaign reduced the failure to the five-byte input:
 
@@ -184,23 +188,27 @@ The automatic `tmin` subprocess exited 1 and emitted an empty output, so that
 zero-byte file is not represented as a successful minimization. The original
 five-byte artifact itself is the exact reproducer above.
 
-Two ordinary, non-ignored characterizations are registered:
+The two former expected-failure characterizations are now ordinary,
+non-ignored positive regressions:
 
 ```text
-tests::known_defect_tc_protocol_004_raw_floating_point_roundtrip_is_exact
-tests::known_defect_tc_protocol_004_typed_state_floating_point_roundtrip_is_exact
+tests::raw_floating_point_roundtrip_is_exact
+tests::typed_state_floating_point_roundtrip_is_exact
 ```
 
-Both use the exact panic oracle:
+Both require exact equality. The minimized forms are also replayed by the
+16-file deterministic and fuzz seed corpus:
 
 ```text
-TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode
+json-float-roundtrip.json
+typed-state-float-roundtrip.json
 ```
 
-No serde feature was enabled, no numeric input was rejected or clamped, and no
-production behavior was repaired.
+The workspace and standalone fuzz package keep serde_json pinned at 1.0.151
+and enable its `float_roundtrip` feature. No numeric input is rejected or
+clamped.
 
-## Continuation classifier
+## Historical continuation classifier
 
 The continuing target recursively compares the before/after JSON values. It
 accepts a leaf only when:
@@ -216,9 +224,10 @@ strings, non-finite conversions, structural changes, sign changes, and
 larger floating-point changes remain failures. Typed-message drift is first
 converted independently to JSON and subjected to the same recursive rule.
 
-This classifier is intentionally limited to the registered defect class. It
-is not presented as a positive proof that exact floating-point roundtrip is
-correct.
+This classifier was intentionally limited to the registered defect class and
+was never presented as a positive proof that exact floating-point roundtrip
+was correct. It was deleted with the fix; the current target uses
+unconditional exact equality for raw and typed roundtrips.
 
 ## Portability and provenance hardening
 
@@ -256,6 +265,8 @@ as the exact 29-file manifest.
 | `protocol-line-smoke-v3` | `failed` | genuine `TC-PROTOCOL-004` counterexample `70E70` |
 | `protocol-line-smoke-v4` | `passed` | 45-second continuation with the exact one-ULP classifier |
 | `protocol-line-deep-canonical-729214d-v1` | `passed` | fresh 180-second canonical campaign over committed implementation HEAD |
+| `protocol-line-defect-fixes-034e105-v1` | `failed` | native Windows ASan executable did not start: `STATUS_DLL_NOT_FOUND`; zero executions and artifacts |
+| `protocol-line-defect-fixes-034e105-wsl-v1` | `passed` | fresh 180-second post-fix campaign with 16 seeds and unconditional exact roundtrip oracles |
 
 ### Setup attempt hashes
 
@@ -399,6 +410,54 @@ Canonical attestations:
 
 The source and seed manifests were byte-identical before and after execution.
 
+### Post-fix canonical 180-second campaign
+
+After `TC-PROTOCOL-004` was corrected, the target removed its one-ULP
+allowance and added the raw and typed counterexamples to the seed corpus. A
+native Windows attempt preserved a zero-execution `STATUS_DLL_NOT_FOUND`
+launch failure, then the established WSL path completed:
+
+```text
+wsl.exe -d Ubuntu \
+  --cd /mnt/c/tmp/sorotte-test-coverage-design \
+  bash -lc "python3 fuzz/run_protocol_fuzz.py \
+    --toolchain nightly-2026-07-29 \
+    --source-sha 034e10511ae6473f0165f3028a026a0bad4f6db3 \
+    --seconds 180 \
+    --seed-corpus crates/sorotte-protocol/tests/corpus/protocol_parser \
+    --expected-seed-count 16 \
+    --output-root target/fuzz-ci/protocol-line-defect-fixes-034e105-wsl-v1"
+```
+
+| Statistic | Value |
+| --- | ---: |
+| status | passed |
+| fuzzer exit | 0 |
+| executed units | 1,994,358 |
+| average executions/second | 10,958 |
+| new units | 7,163 |
+| slowest unit | 0 seconds |
+| peak RSS | 533 MiB |
+| final corpus | 1,987 files / 429,068 bytes |
+| artifacts | 0 |
+| evidence errors | 0 |
+
+Post-fix attestations:
+
+| Evidence | Identity |
+| --- | --- |
+| committed source SHA | `034e10511ae6473f0165f3028a026a0bad4f6db3` |
+| bound source before/after | 29 files / 363,262 bytes |
+| bound source aggregate | `bb80ae1203cfdd754ab8bde7172e24c960a73fd7a566bcae31e1534c716eeda8` |
+| seed source | 16 files / 866 bytes |
+| seed aggregate | `438c044fd552e7b2b6d7dd7633e99bcadca5fb0e6ceff1b4eee8522ff8a81909` |
+| final corpus aggregate | `70d4e19723402ecceab30b692513dab5c3b75e43ce9b69ccc0ed5d488e6118ed` |
+| empty-artifact aggregate | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
+| report | 383,122 bytes / `cfd3909ad7b0f378ffa4dc7dd9ca09ad0d5c5c5abff7976db125e274fd69a26b` |
+| log | 894,558 bytes / `21e589c44e108cfe07f3f51e46ad6920f6afe97bac927031ffbc9e6c194d162a` |
+
+The source and seed manifests were byte-identical before and after execution.
+
 ## Canonical tool identities
 
 ```text
@@ -418,17 +477,16 @@ The integrated implementation passed:
 | Check | Result |
 | --- | --- |
 | protocol fuzz plus known-defect policy suites | 34/34 |
-| combined mutation, CI, known-defect, and fuzz policy suites | 84/84 |
-| real known-defect registry | 2 defects / 4 exact characterizations |
-| exact `TC-PROTOCOL-004` selectors | 2/2 expected-failure characterizations |
+| real known-defect registry | 0 defects / 0 characterizations |
+| former `TC-PROTOCOL-004` selectors | 2/2 positive regressions |
 | complete protocol package | 88 library + 6 parser integration tests |
 | strict protocol Clippy | passed with warnings denied |
 | formatting and diff whitespace | passed |
 | fuzz workflow actionlint | passed |
-| canonical 180-second ASan campaign | 1,915,137 executions; no independent failure |
-| full workspace Clippy | passed all targets/features with warnings denied in 15.65 seconds |
-| full workspace tests | passed locked/all-feature on the first run in 250.8 seconds |
-| complete Python infrastructure/policy suite | 399/399 passed in 20.383 seconds |
+| post-fix canonical 180-second ASan campaign | 1,994,358 executions; exact oracle; no artifact |
+| full workspace Clippy | passed all targets/features with warnings denied in 22.173 seconds |
+| complete Python infrastructure/policy suite | 399/399 passed in 20.427 seconds |
+| full workspace tests | first attempt exposed `TC-HARNESS-016`; unchanged retry passed in 208.298 seconds |
 
 The known-defect validator now additionally requires every registered
 `expected_panic` to begin with its own defect identifier. A regression proves
@@ -451,8 +509,9 @@ This evidence is deliberately narrow:
 - parser fuzzing does not prove SQLite durability, operating-system ACL or
   syscall behavior, real-player integration, semantic GUI behavior, or native
   GUI rendering/accessibility; and
-- the one-ULP classifier is an explicit known-defect continuation allowance,
-  not evidence that exact floating-point roundtrip is correct.
+- the historical one-ULP classifier was only a continuation allowance and has
+  now been removed.
 
-`TC-CLI-003` and `TC-PROTOCOL-004` remain open, registered, and deliberately
-unfixed.
+`TC-CLI-003` and `TC-PROTOCOL-004` are resolved, their four former
+characterizations are positive regressions, and the registry is explicitly
+empty.

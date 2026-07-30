@@ -73,15 +73,21 @@ a strategy remains stable, while named deterministic regressions remain the
 durable behavior contract. The seven 2026-07-30 reconnect, protocol,
 media-tool process, Plex part-selection, and Plex retry characterizations were
 converted to ordinary positive regressions after their production fixes
-landed. The later raw-loopback framing slice registered `TC-CLI-003` with two
-deterministic expected-failure characterizations: a partial inbound frame is
-consumed by a future-local buffer and lost when another connected-session
-`select!` branch cancels that read before CRLF. The coverage-guided protocol
-parser lane subsequently registered `TC-PROTOCOL-004` with raw and typed
-characterizations for an adjacent floating-point representation change across
-decode/encode/decode. The current registry therefore contains two open defects
-and four exact characterizations; none is treated as a positive behavior
-proof.
+landed. The later raw-loopback framing slice registered `TC-CLI-003` after
+proving that a future-local partial frame was lost when another
+connected-session `select!` branch cancelled its read before CRLF. That state
+now belongs to the session and both forced-cancellation cases are positive.
+The coverage-guided protocol parser lane subsequently registered
+`TC-PROTOCOL-004` for an adjacent floating-point representation change across
+raw and typed decode/encode/decode. serde_json's `float_roundtrip` parser
+feature now preserves both minimized cases exactly, and the fuzz target no
+longer has a one-ULP allowance. The current registry is explicitly empty; all
+four former characterizations are ordinary positive regressions.
+Final validation independently exposed `TC-HARNESS-016`: the updater
+process-interruption parent can observe its marker file before the child has
+written the boundary label. That ordinary required-test race is tracked in the
+findings ledger rather than `known-defects.toml`, which is reserved for exact
+expected-failure characterizations.
 `TC-SERVER-004` is now resolved by immutable authenticated TLS generations and
 an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime
@@ -290,16 +296,17 @@ uninstrumented contract.
 `crates/sorotte-protocol/tests/protocol_parser_robustness.rs` exercises the
 public byte, raw-JSON, line-item, and typed-message entrypoints through ordinary
 locked Cargo tests. A fixed-seed Proptest suite covers bounded arbitrary bytes,
-arbitrary Unicode, and insert/replace/delete/truncate mutations of 14 checked-in
+arbitrary Unicode, and insert/replace/delete/truncate mutations of 16 checked-in
 UTF-8 corpus files. A serde streaming `MapAccess` visitor independently derives
 top-level source order and surviving duplicate-key values; it does not call or
 copy the production order scanner.
 
 The default run executes 1,536 generated cases. The existing scheduled
 `PROPTEST_CASES=2048` depth executes 6,144 cases without another workflow. Both
-depths, all 14 corpus entries, 50 consecutive corpus replays, the complete
-protocol crate, and strict Clippy passed. This is deterministic parser
-robustness evidence, not coverage-guided fuzzing or transport scheduling.
+depths, all 16 corpus entries, 50 consecutive corpus replays, the complete
+protocol crate, and strict Clippy passed. The corpus includes the minimized
+raw and typed float regressions. This is deterministic parser robustness
+evidence, not coverage-guided fuzzing or transport scheduling.
 Commands, corpus inventory, oracle boundaries, and results are retained in
 [`protocol-property-corpus-20260730.md`](../docs/evidence/test-coverage/protocol-property-corpus-20260730.md).
 
@@ -315,23 +322,28 @@ RSS at 2,048 MiB, and campaigns at 900 seconds; rejects stale output; and
 attests the exact source, seed, command, tools, corpus, artifacts, statistics,
 and before/after stability.
 
-The first real campaign found `TC-PROTOCOL-004`: `70E70` changes from
+The first real campaign found `TC-PROTOCOL-004`: `70E70` changed from
 `7.000000000000001e71` to the adjacent
 `7.000000000000002e71` across raw and valid typed
-decode/encode/decode. Two exact expected-failure characterizations retain the
-defect without changing production behavior. A narrowly registered
-continuation classifier permits only structurally identical, same-sign finite
-floating-point leaves that differ by one ULP; every non-floating, structural,
-sign, non-finite, or larger change remains a failure.
+decode/encode/decode. Enabling serde_json 1.0.151's `float_roundtrip` feature
+corrects both forms. Two positive regressions and two checked-in corpus seeds
+retain the minimized inputs. The former narrow continuation classifier was
+deleted; every raw and typed roundtrip now requires exact equality.
 
 The first continuation passed 559,788 executions. A fresh 180-second campaign
 over committed SHA `729214d0de7ced9c56da7361bda68dc75b831179` passed
-1,915,137 executions with no artifact or independent failure. Its 29-file
-bound-source and 14-file seed manifests were stable. Pull-request and
+1,915,137 executions with no artifact or independent failure under the
+historical narrow allowance. A post-fix 180-second campaign over committed
+SHA `034e10511ae6473f0165f3028a026a0bad4f6db3` passed 1,994,358 executions
+with exact oracles and no artifact. Its 29-file bound-source and 16-file seed
+manifests were stable. Pull-request and
 `main`-push path filters cover every fixed bound input, and the scheduled
 workflow runs the same fail-closed runner for 900 seconds. Exact experiments,
-tool identities, hashes, classifier, and limitations are retained in
+tool identities, hashes, historical classifier, resolution, and limitations
+are retained in
 [`protocol-coverage-guided-20260730.md`](../docs/evidence/test-coverage/protocol-coverage-guided-20260730.md).
+The combined CLI/protocol correction and empty-registry proof are retained in
+[`outstanding-defect-resolution-20260730.md`](../docs/evidence/test-coverage/outstanding-defect-resolution-20260730.md).
 
 ## Configuration composition property evidence
 

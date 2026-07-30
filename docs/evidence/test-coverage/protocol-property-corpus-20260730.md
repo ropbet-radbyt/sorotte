@@ -18,6 +18,13 @@ The new ordinary integration suite passed at both its default fixed-seed
 budget and the repository's scheduled-depth budget. It found no product
 defect.
 
+Resolution update: after coverage-guided testing found and the product fix
+resolved `TC-PROTOCOL-004`, its minimized raw and typed inputs were added to
+this corpus. The explicit manifest now contains 16 files, exact raw and typed
+roundtrip remains unconditional, and the renewed 50-run stress passed 800/800
+file replays. Full resolution evidence is in
+[`outstanding-defect-resolution-20260730.md`](outstanding-defect-resolution-20260730.md).
+
 The implementation deliberately uses the existing `proptest` dependency and
 ordinary `cargo test`. No separate runner or networked test environment is
 required. The existing `nightly-deep` job already sets
@@ -68,12 +75,12 @@ silently reducing it; excessive positive values are capped at 100,000.
 
 ## Checked-in corpus
 
-The explicit corpus manifest contains 14 UTF-8 files:
+The explicit corpus manifest contains 16 UTF-8 files:
 
 | Expected boundary | Files | Representative shapes |
 |---|---:|---|
-| fully typed protocol | 5 | escaped command key, composite order, duplicate `Set`, nested structural lookalikes, Unicode, surrounding whitespace |
-| valid JSON with a typed rejection allowed | 5 | unknown command after a valid command, empty object, array, scalar null, duplicate unknown command |
+| fully typed protocol | 6 | escaped command key, composite order, duplicate `Set`, nested structural lookalikes, Unicode, surrounding whitespace, exact float roundtrip |
+| valid JSON with a typed rejection allowed | 6 | unknown command after a valid command, empty object, array, scalar null, duplicate unknown command, exact float roundtrip |
 | invalid JSON | 4 | truncated object, malformed escape, trailing token, unclosed nested array |
 
 Replay rejects an absent corpus, missing or unexpected entries, non-UTF-8
@@ -99,7 +106,7 @@ Result:
 
 - 6/6 ordinary integration tests passed;
 - 1,536 fixed-seed generated cases passed;
-- 14/14 checked-in corpus entries replayed;
+- 16/16 checked-in corpus entries replayed;
 - elapsed test time: 0.27 seconds.
 
 ### Scheduled-depth deterministic run
@@ -122,7 +129,7 @@ The exact corpus replay test was executed 50 consecutive times.
 Result:
 
 - 50/50 invocations passed;
-- 700/700 individual corpus-file replays passed.
+- 800/800 individual corpus-file replays passed.
 
 ### Owning crate and lint gates
 
@@ -136,7 +143,7 @@ rustfmt --edition 2024 --check \
 
 Result:
 
-- 86/86 protocol unit tests passed;
+- 88/88 protocol unit tests passed;
 - 6/6 protocol parser integration tests passed;
 - documentation test target passed with zero tests;
 - all-target, all-feature Clippy passed with warnings denied;

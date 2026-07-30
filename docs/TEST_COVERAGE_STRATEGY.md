@@ -1,6 +1,6 @@
 # Sorotte Test Coverage and Verification Strategy
 
-Status: implemented verification program with two open defects exactly characterized
+Status: implemented verification program with an explicitly empty product-defect registry and one characterized updater-harness race
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -12,6 +12,7 @@ Atomic TLS and parallel-boundary update: 2026-07-30
 Raw framing, Windows process coverage, mutation, and SQLite-full update: 2026-07-30
 Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
+Final CLI/protocol defect resolution update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -37,19 +38,24 @@ fixes all seven and returned the exact registry to zero at that checkpoint.
 The next four parallel slices add a separate Windows/MSVC process-coverage
 domain, a zero-survivor reconnect mutation shard, generic raw-loopback framing,
 and real `SQLITE_FULL` recovery evidence. Raw client framing surfaced
-`TC-CLI-003`; its two deterministic characterizations remain deliberately
-unfixed. The preceding four-slice continuation added an independent
+`TC-CLI-003`; its two deterministic characterizations remained deliberately
+unfixed at that checkpoint. The preceding four-slice continuation added an independent
 protocol parser/corpus oracle, faults on the actual persistence-worker
 connection, and zero-survivor configuration and ping mutation shards. None
 surfaced a product defect. The latest continuation adds zero-survivor
 persistence-arbitration and inbound-order mutation ratchets, a 30-field
 configuration-composition property suite, and a true coverage-guided protocol
 parser lane. The first parser campaign surfaced `TC-PROTOCOL-004`; raw and
-typed exact characterizations retain the adjacent floating-point roundtrip
-change without repairing it. The current registry therefore contains two open
-defects and four exact characterizations:
+typed exact characterizations retained the adjacent floating-point roundtrip
+change at that checkpoint. The final resolution moves partial framing state outside the
+cancellable read future and enables serde_json's exact float parser. All four
+characterizations are now positive regressions, the fuzz oracle is
+unconditional, and the current registry is explicitly empty. Final validation
+also exposed `TC-HARNESS-016`, an intermittent zero-length boundary-marker
+observation in the updater process test; it is outside the deterministic
+expected-failure registry and remains separately characterized:
 
-- a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
+- a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
   14-scenario GUI semantic inventory;
 - Git SHA, repository, workflow-run, attempt, catalog, OS, selector, command,
@@ -89,9 +95,8 @@ defects and four exact characterizations:
   `TC-SERVER-004` is now positive atomic-publication evidence, and
   `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
   `TC-PLEX-001`, and `TC-GUI-003` are now positive regressions; the later
-  `TC-CLI-003` fragmented-read cancellation defect has two exact,
-  non-ignored expected-failure proofs, and `TC-PROTOCOL-004` has two exact
-  raw/typed floating-point roundtrip proofs;
+  `TC-CLI-003` fragmented-read cancellation and `TC-PROTOCOL-004` raw/typed
+  floating-point roundtrip defects are also positive exact regressions;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -118,13 +123,13 @@ defects and four exact characterizations:
   and separately retain typed `SQLITE_CANTOPEN` context from a real VFS path
   collision;
 - a six-test ordinary protocol parser suite with an independent streaming-order
-  oracle, 14 checked-in corpus files, 6,144 fixed-seed scheduled-depth cases,
+  oracle, 16 checked-in corpus files, 6,144 fixed-seed scheduled-depth cases,
   strict UTF-8 boundaries, duplicate-key value semantics, and raw/typed
   roundtrip invariants;
 - a source-bound libFuzzer/AddressSanitizer protocol-line target with exact
   tool/resource pins, independent order/value oracles, fail-closed evidence,
-  a 559,788-execution continuation, and a canonical 1,915,137-execution
-  continuation over committed source;
+  a historical 1,915,137-execution continuation and a post-fix
+  1,994,358-execution exact-oracle campaign over committed source;
 - a black-box 30-field configuration-composition property suite crossing INI
   upsert/parse, runtime snapshot, and environment-aware startup planning, with
   6,144 scheduled and 30,000 stress cases;
@@ -327,7 +332,8 @@ checkpoint's zero-defect/zero-characterization registry after converting
 `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
 `TC-PLEX-001`, and `TC-GUI-003` to ordinary positive regressions. The later
 raw-framing checkpoint validates one open defect and two exact
-characterizations for `TC-CLI-003`.
+characterizations for `TC-CLI-003`; the final resolution converts both to
+positive regressions and restores the empty registry.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -743,13 +749,13 @@ boundaries rather than adding hundreds more nearby examples.
 
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
-| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, a six-test public parser suite with 14 corpus files plus 6,144 fixed-seed scheduled-depth cases, and a source-bound ASan/libFuzzer target whose canonical continuation passed 1,915,137 executions | independent streaming order/value and raw/typed roundtrip oracles are enforced; `TC-PROTOCOL-004` remains registered; framed transport fuzzing and the Python differential remain absent | retain deterministic corpus and coverage-guided replay, resolve the float defect separately, then add framed-transport targets and a differential Python oracle |
+| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, a six-test public parser suite with 16 corpus files plus 6,144 fixed-seed scheduled-depth cases, and a source-bound ASan/libFuzzer target whose post-fix exact-oracle campaign passed 1,994,358 executions | independent streaming order/value and exact raw/typed roundtrip oracles are enforced; framed transport fuzzing and the Python differential remain absent | retain deterministic corpus and coverage-guided replay, then add framed-transport targets and a differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, a 25/25 viable arbitration mutation ratchet, store- and worker-owned `SQLITE_FULL`, worker write denial, and real VFS open-failure proofs | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, and integrity are proven; OS ACL/syscall semantics, kernel power loss, and physical durability remain unproven | retain worker fault and mutation regressions; add disposable-platform ACL/syscall and durability probes without broadening the claim |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, a 30/30 viable reconnect mutation ratchet, and a 5/5 inbound `Set` ordering ratchet | reset transaction invalidation, stale-completion rejection, and command-order completion are positive; adapter clock schedules remain incomplete | retain both zero-survivor shards and add clock-controlled adapter schedules |
 | Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, bracketed wall-clock wrappers, and a 47/47 viable mutation ratchet | arithmetic and public clock delegation are mechanically encoded; clock monotonicity, cross-host authenticity, jitter, scheduler latency, and playback outcomes are not | retain the zero-survivor shard; add deterministic jitter/drift simulation and real synchronization telemetry |
 | Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet plus a black-box 30-field INI/runtime/environment composition property suite | mutation covers all 31 persisted runtime overrides in both precedence directions, while generated composition covers all 30 environment-overridable fields; controlled-room composition, CLI parsing, and migration remain separate | retain the mutation and composition proofs; add controlled-room and configuration-migration properties |
-| CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, and deterministic partial-read cancellation matrices | `TC-CLI-003` proves future-local partial bytes are lost when a competing `select!` branch cancels the read; 142 older test-path sleeps retain scheduler-luck risk | make framing state cancellation-safe, convert both characterizations, then continue clock/barrier replacement |
+| CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, and deterministic partial-read cancellation matrices | session-owned framing state and two positive forced-cancellation regressions close `TC-CLI-003`; 142 older test-path sleeps retain scheduler-luck risk | retain the cancellation barriers and continue clock/barrier replacement |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
@@ -1151,9 +1157,10 @@ remain.
 
 Lifecycle transcript capture starts after JSON decoding. Handwritten protocol
 JSON-order scanning now has a bounded, source-bound libFuzzer/AddressSanitizer
-target over every public protocol-line decoder and encoder. It found and
-registered `TC-PROTOCOL-004`; two continuations passed 2,474,925 executions
-without an independent failure. Framed mpv IPC, transcript decoding, and
+target over every public protocol-line decoder and encoder. It found
+`TC-PROTOCOL-004`; the defect is fixed, its minimized inputs are retained, and
+a post-fix exact-oracle campaign passed 1,994,358 executions with no artifact.
+Framed mpv IPC, transcript decoding, and
 transport/session cancellation still do not have coverage-guided targets.
 
 **Decision:** record and replay a sanitized duplex boundary with outgoing
@@ -1411,16 +1418,17 @@ Reference: [Rust Fuzz Book](https://rust-fuzz.github.io/book/).
 
 Implementation status (updated 2026-07-30): target 1 is implemented as a
 standalone, exact-pinned cargo-fuzz package over every public protocol-line
-decoder and encoder. The runner binds 29 source/policy files and 14 seed files,
+decoder and encoder. The runner binds 29 source/policy files and 16 seed files,
 enforces 64 KiB input, 5-second per-input, 2 GiB RSS, and 900-second campaign
 caps, preserves artifacts and statistics, and rejects source, seed, tool, or
 evidence drift. The first real campaign found `TC-PROTOCOL-004`, a one-ULP
-finite-float change reproduced at raw and typed boundaries. It remains open
-with two exact characterizations. A narrowly registered continuation oracle
-still rejects all structural, integer, sign, non-finite, and larger numeric
-drift. Subsequent 45- and 180-second campaigns passed 559,788 and 1,915,137
-executions respectively with no independent failure. Targets 2 through 7 and
-the Python differential remain future work. See
+finite-float change reproduced at raw and typed boundaries. serde_json's
+`float_roundtrip` feature now corrects it, the two minimized forms are
+positive tests and corpus seeds, and the narrow allowance was removed. The
+pre-fix 45- and 180-second continuations passed 559,788 and 1,915,137
+executions respectively; the post-fix exact-oracle campaign passed 1,994,358
+executions with no artifact. Targets 2 through 7 and the Python differential
+remain future work. See
 [`protocol-coverage-guided-20260730.md`](evidence/test-coverage/protocol-coverage-guided-20260730.md).
 
 ### 9.3 Deterministic network and concurrency schedules
@@ -2064,7 +2072,7 @@ post-emission reconnect model, ten-generation real-loopback acknowledgement
 suite, and the real Windows named-pipe fragmentation/correlation/disconnect
 matrix are implemented. Real child-process player faults additionally cover
 large concurrent stdio, fragmented 512 KiB IPC, early exit, hang, kill/reap,
-and handle release. The later parser continuation adds a 14-file corpus and
+and handle release. The later parser continuation adds a 16-file corpus and
 three fixed-seed property families at public byte/raw/typed entrypoints,
 including an oracle independent of the production order scanner. The
 persistence continuation applies capacity and write-denial faults to the
@@ -2121,8 +2129,8 @@ in
 [`plex-part-selection-retry-20260730.md`](evidence/test-coverage/plex-part-selection-retry-20260730.md).
 The next parallel continuation is retained as four independent proof records:
 
-- the real server/CLI byte-framing matrix and open `TC-CLI-003` cancellation
-  defect in
+- the real server/CLI byte-framing matrix and historical `TC-CLI-003`
+  cancellation discovery in
   [`raw-loopback-framing-20260730.md`](evidence/test-coverage/raw-loopback-framing-20260730.md);
 - the separate 50-test, 34-profile Windows/MSVC process coverage domain in
   [`windows-process-merged-profiles-20260730.md`](evidence/test-coverage/windows-process-merged-profiles-20260730.md);
@@ -2143,6 +2151,10 @@ The latest four independent proof records are:
   [`targeted-mutation-config-20260730.md`](evidence/test-coverage/targeted-mutation-config-20260730.md);
 - the 47/47 ping/RTT mutation ratchet in
   [`targeted-mutation-client-ping-20260730.md`](evidence/test-coverage/targeted-mutation-client-ping-20260730.md).
+
+The final `TC-CLI-003` and `TC-PROTOCOL-004` corrections, positive
+regressions, empty registry, and post-fix exact-oracle campaign are retained in
+[`outstanding-defect-resolution-20260730.md`](evidence/test-coverage/outstanding-defect-resolution-20260730.md).
 
 Acceptance:
 
@@ -2233,21 +2245,22 @@ turns those failures green.
 
 The most valuable remaining next steps are:
 
-1. make the CLI inbound frame accumulator cancellation-safe, convert both
-   `TC-CLI-003` characterizations to positive regressions, and retain the real
-   one-byte and split-CRLF loopback schedules;
-2. promote the locally proven strict native inventory to an ephemeral,
+1. replace `TC-HARNESS-016`'s existence-only updater boundary marker with an
+   atomic or content-acknowledged handshake, then stress the exact process test;
+2. extend the protocol-line fuzz lane to framed transport and session state
+   while retaining the cancellation-safe accumulator and real one-byte and
+   split-CRLF loopback schedules;
+3. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. extend the proven store- and worker-owned `SQLITE_FULL`, deterministic
+4. extend the proven store- and worker-owned `SQLITE_FULL`, deterministic
    write-denial, and VFS-open failures into disposable-platform ACL/syscall and
    durability probes without overclaiming kernel power-loss behavior;
-4. extend the implemented protocol-line fuzz lane to framed transport/session
-   state and add configuration-migration properties and transport/session
-   mutation shards, retaining the deterministic parser corpus, 30-field
-   composition suite, and all eight zero-survivor ratchets;
-5. add one genuine native GUI-to-real-mpv vertical harness with isolated
+5. add configuration-migration properties and transport/session mutation
+   shards, retaining the deterministic parser corpus, 30-field composition
+   suite, and all eight zero-survivor ratchets;
+6. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
-6. extend the proven server and GUI archive consumers to a build-and-load
+7. extend the proven server and GUI archive consumers to a build-and-load
    server-container smoke, then verify the public release/registry digest is
    the same tested content and add SBOM/signature policy.
 
