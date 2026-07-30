@@ -70,10 +70,15 @@ proving reactivation clears stale logical-terminal state.
 Proptest seeds under each participating crate's `proptest-regressions/`
 directory are source-file and strategy-shape scoped. They improve replay while
 a strategy remains stable, while named deterministic regressions remain the
-durable behavior contract. `known-defects.toml` is currently empty. The seven
-2026-07-30 reconnect, protocol, media-tool process, Plex part-selection, and
-Plex retry characterizations were converted to ordinary positive regressions
-after their production fixes landed.
+durable behavior contract. The seven 2026-07-30 reconnect, protocol,
+media-tool process, Plex part-selection, and Plex retry characterizations were
+converted to ordinary positive regressions after their production fixes
+landed. The later raw-loopback framing slice registered `TC-CLI-003` with two
+deterministic expected-failure characterizations: a partial inbound frame is
+consumed by a future-local buffer and lost when another connected-session
+`select!` branch cancels that read before CRLF. The current registry therefore
+contains one defect and two exact characterizations; neither is treated as a
+positive behavior proof.
 `TC-SERVER-004` is now resolved by immutable authenticated TLS generations and
 an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime
@@ -264,12 +269,26 @@ Windows profiles remain a separate evidence boundary. Exact experiments and
 limits are retained in
 [`merged-profile-lanes-20260729.md`](../docs/evidence/test-coverage/merged-profile-lanes-20260729.md).
 
+`scripts/coverage_windows_process_lanes.py` owns a separate
+`windows-x86_64-msvc` profile domain. It requires exactly 50 noninteractive
+tests across updater transactions, installed-updater self-replacement, mpv
+named-pipe and external-process faults, and media-tool child-process faults.
+Every lane must add a fresh nonempty profile; all profiles must remain
+continuous and merge-compatible; the final merge may not mutate them. Producer
+identity, Rust host, source state, commands, inventories, filtered counts,
+logs, and the native-UI exclusion are schema-bound. The real experiment
+retained 34 profiles in the final local replay and the scheduled Windows job
+always uploads its report
+and logs, including on failure. Interactive UI Automation remains a separate
+uninstrumented contract.
+
 ## Targeted mutation evidence
 
 The scheduled mutation matrix covers the pure privacy boundary in
-`sorotte-secret`, controlled-room authorization in `sorotte-server`, and raw
-command-order/error/redaction behavior in `sorotte-protocol`. It deliberately
-does not mutate the whole workspace.
+`sorotte-secret`, controlled-room authorization in `sorotte-server`, raw
+command-order/error/redaction behavior in `sorotte-protocol`, and reconnect/
+state-acknowledgement decisions in `sorotte-client-core`. It deliberately does
+not mutate the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
 namespace, all-feature locked Cargo execution, two workers, per-command
@@ -315,13 +334,19 @@ now catch 19/19 through a focused 7-test namespace in 113.36 seconds. The
 protocol baseline caught only 70/97 viable mutations; 17 exact scanner,
 error-chain, and redaction oracles plus bounded scanner seams now catch 80/80
 with zero misses or timeouts.
+The reconnect baseline first proved a reconnect-only selector was too narrow,
+then the owning `session::tests::` selector exposed seven surviving decisions.
+Four focused contracts now catch 30/30 viable mutants; two exact let-chain
+rewrites are compiler-unviable and expire on 2026-10-31. The wrapper also
+preflights `cargo test --list --format terse`, records its 445-test digest, and
+rejects zero tests, namespace escape, or zero mutants before execution.
 Commands, timings, hashes, classifications, and limitations are retained in
-[`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md)
-,
+[`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
 [`targeted-mutation-server-auth-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-server-auth-20260729.md),
+[`targeted-mutation-protocol-codec-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md),
 and
-[`targeted-mutation-protocol-codec-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md).
+[`targeted-mutation-client-reconnect-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

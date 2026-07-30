@@ -1,6 +1,6 @@
 # Sorotte Test Coverage and Verification Strategy
 
-Status: implemented verification program with all registered defects resolved
+Status: implemented verification program with one newly surfaced defect characterized
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -9,6 +9,7 @@ GUI release artifact implementation update: 2026-07-30
 Outstanding-defect closure update: 2026-07-30
 Deep-boundary testing update: 2026-07-30
 Atomic TLS and parallel-boundary update: 2026-07-30
+Raw framing, Windows process coverage, mutation, and SQLite-full update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -30,7 +31,13 @@ at that checkpoint. A later deep-boundary slice deterministically exposed
 generations and an atomic selector. Parallel adversarial reset, protocol, and
 media-process tests retained five newly discovered defects; the subsequent
 Plex part-selection and retry slice added two more. The current remediation
-fixes all seven and returns the exact registry to zero:
+fixes all seven and returned the exact registry to zero at that checkpoint.
+The next four parallel slices add a separate Windows/MSVC process-coverage
+domain, a zero-survivor reconnect mutation shard, generic raw-loopback framing,
+and real `SQLITE_FULL` recovery evidence. Raw client framing surfaced
+`TC-CLI-003`; its two deterministic characterizations remain deliberately
+unfixed, so the current registry contains one defect and two exact
+characterizations:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -71,14 +78,29 @@ fixes all seven and returns the exact registry to zero:
   and `TC-UPDATER-001` characterizations have also been converted;
   `TC-SERVER-004` is now positive atomic-publication evidence, and
   `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
-  `TC-PLEX-001`, and `TC-GUI-003` are now positive regressions; the current
-  registry is empty;
+  `TC-PLEX-001`, and `TC-GUI-003` are now positive regressions; the later
+  `TC-CLI-003` fragmented-read cancellation defect has two exact,
+  non-ignored expected-failure proofs;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
 - deterministic protocol-order, production-worker IPC fragmentation,
   coalescing, reordering, duplication, truncation and half-close,
   persistence-corruption, concurrent-secret, and migration-failpoint tests;
+- real loopback byte-framing matrices at the production server and CLI
+  session boundaries, including one-byte writes, split CRLF, coalescing,
+  valid-prefix/fault-suffix ordering, truncation, half-close, and peer
+  isolation;
+- a separate fail-closed Windows/MSVC profile producer covering 50 exact
+  updater, named-pipe, external-player, and media-tool process tests across 34
+  merge-compatible raw profiles in the final replay without overclaiming
+  interactive native UI;
+- a scheduled reconnect/state mutation shard with an exact 445-test preflight,
+  30/30 viable mutants caught, two expiring compiler-unviable rewrites, and
+  hard rejection of zero tests, namespace escape, or zero mutants;
+- a production-store `SQLITE_FULL` proof that preserves all eight durable room
+  columns, passes integrity checks, recovers the old state, and progresses
+  after capacity returns;
 - generated credential-taint coverage across transcript serialization,
   diagnostic dumps, parser errors, and player error display;
 - a strict ten-scenario native GUI contract with typed AccessKit menu
@@ -248,7 +270,10 @@ and 240/240 complete actor tests. The full server persistence selector passes
 including 338/338 server library tests, and full-workspace warning-denied
 Clippy passed in 6.96 seconds. This is process-termination evidence, not a
 claim about power loss, kernel cache durability, disk-full behavior, or an
-actor message not yet written to a transaction.
+actor message not yet written to a transaction. The later `SQLITE_FULL` slice
+closes the production-store full-write atomicity and same-connection recovery
+gap while leaving the kernel durability and worker-owned fault-injection gaps
+explicitly open.
 
 The accompanying policy audit found that the TLS defect had reused the already
 assigned `TC-SERVER-001` identifier and that multiline Rust
@@ -258,10 +283,12 @@ multiline attributes and rejects duplicate finding headings and title drift.
 Its 21 focused tests pass against both populated fixtures and the real
 closure checkpoint's explicitly empty registry; the historical
 two-defect/four-characterization checkpoint therefore remains policy evidence
-rather than current inventory. The same policy now validates the current
-zero-defect/zero-characterization registry after converting
+rather than current inventory. The same policy validates the remediation
+checkpoint's zero-defect/zero-characterization registry after converting
 `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
-`TC-PLEX-001`, and `TC-GUI-003` to ordinary positive regressions.
+`TC-PLEX-001`, and `TC-GUI-003` to ordinary positive regressions. The later
+raw-framing checkpoint validates one open defect and two exact
+characterizations for `TC-CLI-003`.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -679,9 +706,9 @@ boundaries rather than adding hundreds more nearby examples.
 |---|---|---|---|
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, and a 654-case raw-wire adversarial matrix | surviving duplicate `Set` payload/order pairing and fixed-marker unknown-command diagnostics are positive regressions | add coverage-guided byte fuzzing and a differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
-| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, and deterministic pre-transaction arbitration schedules | kernel power-loss, disk-full/permission/syscall faults, and actor messages not yet admitted to desired state remain unproven | filesystem/storage failpoints and platform durability probes |
-| Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, and a complete 24-seed reset projection/idempotence oracle | reset transaction invalidation and stale-completion rejection are positive; adapter clock schedules remain incomplete | add clock-controlled adapter schedules |
-| CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
+| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, and real `SQLITE_FULL` old-row/recovery proof | production-store full-write atomicity is proven; kernel power-loss, permission/syscall faults, worker-connection full injection, and actor messages not yet admitted to desired state remain unproven | filesystem/storage failpoints and platform durability probes |
+| Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, and a 30/30 viable reconnect mutation ratchet | reset transaction invalidation and stale-completion rejection are positive; adapter clock schedules remain incomplete | retain the zero-survivor shard and add clock-controlled adapter schedules |
+| CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, and deterministic partial-read cancellation matrices | `TC-CLI-003` proves future-local partial bytes are lost when a competing `select!` branch cancels the read; 142 older test-path sleeps retain scheduler-luck risk | make framing state cancellation-safe, convert both characterizations, then continue clock/barrier replacement |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
@@ -690,7 +717,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap, strict banner, unterminated-output, and bounded dual-pipe large-output proofs | generated-media ffmpeg harness remains opt-in | require generated media in a capability CI lane |
 | Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, candidate-order adversarial part tests, evidence-ranked selection, genuine-tie controls, and terminal-context retry proofs | uniquely identified versions resolve; genuine ambiguity fails once and projects terminal state | add an explicit version/part picker for genuinely indistinguishable or multipart media |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
-| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, and 11 real forced-process-termination boundaries with two-process recovery are strong | kernel power-loss, filesystem durability, disk-full, and permission gaps remain | filesystem syscall faults, parent-dir sync, and platform restart proof |
+| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, and a separate 50-test Windows/MSVC coverage domain are strong | kernel power-loss, filesystem durability, updater disk-full, and permission gaps remain | filesystem syscall faults, parent-dir sync, and platform restart proof |
 | Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability | public registry digest/SBOM/signature binding remains | verify the uploaded/public digest is the tested content and enforce provenance policy |
 | Server container | non-root runtime | workflow builds and pushes in one step without smoke | build/load, protocol/TLS/persistence smoke, scan/SBOM, then push exact digest |
 
@@ -1995,6 +2022,18 @@ process, parser, GUI-pump, and package-consumer continuation are retained in
 The Plex part-permutation oracle and permanent-miss GUI schedule are retained
 in
 [`plex-part-selection-retry-20260730.md`](evidence/test-coverage/plex-part-selection-retry-20260730.md).
+The next parallel continuation is retained as four independent proof records:
+
+- the real server/CLI byte-framing matrix and open `TC-CLI-003` cancellation
+  defect in
+  [`raw-loopback-framing-20260730.md`](evidence/test-coverage/raw-loopback-framing-20260730.md);
+- the separate 50-test, 34-profile Windows/MSVC process coverage domain in
+  [`windows-process-merged-profiles-20260730.md`](evidence/test-coverage/windows-process-merged-profiles-20260730.md);
+- the 30/30 viable reconnect mutation ratchet and fail-closed test inventory
+  in
+  [`targeted-mutation-client-reconnect-20260730.md`](evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md);
+- the real `SQLITE_FULL` old-row integrity and forward-recovery proof in
+  [`sqlite-full-recovery-20260730.md`](evidence/test-coverage/sqlite-full-recovery-20260730.md).
 
 Acceptance:
 
@@ -2085,18 +2124,18 @@ turns those failures green.
 
 The most valuable remaining next steps are:
 
-1. extend the proven workspace + semantic + strict-live-reference merge to compatible
-   updater/process and OS-specific profiles; keep interactive native Windows
-   separate until a trustworthy runner exists;
+1. make the CLI inbound frame accumulator cancellation-safe, convert both
+   `TC-CLI-003` characterizations to positive regressions, and retain the real
+   one-byte and split-CRLF loopback schedules;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. retain the positive regressions from
-   [the completed remediation design](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md),
-   then extend the proven persistence interruption/arbitration boundary into
-   disk-full, permission, syscall, and platform durability faults;
-4. add coverage-guided parser fuzzing and mutation scoring for the critical
-   behavior catalog, retaining the deterministic adversarial corpus as the
-   stable regression layer;
+3. extend the new production-store `SQLITE_FULL` proof into worker-owned
+   connection injection, permission/syscall failure, and platform durability
+   probes without overclaiming kernel power-loss behavior;
+4. add coverage-guided parser fuzzing and further mutation shards for
+   protocol transport/session state, persistence arbitration, and
+   configuration decisions, retaining deterministic corpora and the new
+   reconnect zero-survivor ratchet;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
 6. extend the proven server and GUI archive consumers to a build-and-load
