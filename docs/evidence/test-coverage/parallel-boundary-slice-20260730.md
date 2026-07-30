@@ -313,13 +313,16 @@ Outcomes:
 - complete locked all-feature Rust workspace, including release verification:
   passed in 209.4 seconds;
 - warning-denied all-target/all-feature workspace Clippy: passed in 8.9
-  seconds.
+  seconds;
+- actionlint v1.7.12 against the modified release workflow and the complete
+  repository workflow inventory: passed with zero findings.
 
-The pinned `actionlint` command could not run locally because Go is not
-installed. This is an environment limitation, not a green result. The Python
-CI-policy suite independently passed the release workflow's action pin,
-ordering, source-SHA, report, and upload-path assertions; the normal Linux CI
-job still runs pinned actionlint.
+The installed actionlint binary was outside the inherited shell `PATH`, at
+`C:\Users\shaun\go\bin\actionlint.exe`. Its reported version exactly matches
+the workflow-pinned v1.7.12. Both the focused release-workflow invocation and
+the default repository-wide invocation exited successfully without output.
+The Python CI-policy suite independently passed the release workflow's action
+pin, ordering, source-SHA, report, and upload-path assertions.
 
 ## Remaining boundaries
 
