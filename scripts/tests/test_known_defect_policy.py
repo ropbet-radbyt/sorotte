@@ -28,9 +28,9 @@ class KnownDefectPolicyTests(unittest.TestCase):
             textwrap.dedent(
                 """\
                 #[test]
-                #[should_panic(expected = "desired invariant")]
+                #[should_panic(expected = "TC-DEMO-001: desired invariant")]
                 fn known_defect_reproduction() {
-                    assert!(false, "desired invariant");
+                    assert!(false, "TC-DEMO-001: desired invariant");
                 }
 
                 #[test]
@@ -65,7 +65,7 @@ class KnownDefectPolicyTests(unittest.TestCase):
     def registry(
         self,
         *,
-        expected: str = "desired invariant",
+        expected: str = "TC-DEMO-001: desired invariant",
         selector: str = "tests::known_defect_reproduction",
         expiry: str = "2030-01-01",
         extra_root: str = "",
@@ -160,7 +160,14 @@ class KnownDefectPolicyTests(unittest.TestCase):
 
     def test_expected_panic_drift_fails_closed(self) -> None:
         with self.assertRaisesRegex(policy.PolicyError, "expected panic drifted"):
-            self.validate(self.registry(expected="weakened oracle"))
+            self.validate(self.registry(expected="TC-DEMO-001: weakened oracle"))
+
+    def test_characterization_panic_must_name_its_registered_defect(self) -> None:
+        with self.assertRaisesRegex(
+            policy.PolicyError,
+            "expected_panic must start with 'TC-DEMO-001: '",
+        ):
+            self.validate(self.registry(expected="TC-OTHER-001: desired invariant"))
 
     def test_multiline_expected_panic_attribute_is_inventoried(self) -> None:
         self.source.write_text(
@@ -168,10 +175,10 @@ class KnownDefectPolicyTests(unittest.TestCase):
                 """\
                 #[test]
                 #[should_panic(
-                    expected = "desired invariant"
+                    expected = "TC-DEMO-001: desired invariant"
                 )]
                 fn known_defect_reproduction() {
-                    assert!(false, "desired invariant");
+                    assert!(false, "TC-DEMO-001: desired invariant");
                 }
                 """
             ),

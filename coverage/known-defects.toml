@@ -19,3 +19,23 @@ package = "sorotte-cli"
 source = "crates/sorotte-cli/src/tests/raw_protocol_framing.rs"
 test = "tests::raw_protocol_framing::known_defect_split_crlf_must_survive_select_cancellation"
 expected_panic = "TC-CLI-003: fragmented inbound protocol read lost bytes before the CRLF delimiter"
+
+[[defect]]
+id = "TC-PROTOCOL-004"
+title = "Protocol floating-point values can drift across decode and re-encode"
+severity = "low"
+owners = ["protocol"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-protocol"
+source = "crates/sorotte-protocol/src/tests.rs"
+test = "tests::known_defect_tc_protocol_004_raw_floating_point_roundtrip_is_exact"
+expected_panic = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+
+[[defect.characterization]]
+package = "sorotte-protocol"
+source = "crates/sorotte-protocol/src/tests.rs"
+test = "tests::known_defect_tc_protocol_004_typed_state_floating_point_roundtrip_is_exact"
+expected_panic = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"

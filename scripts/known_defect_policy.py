@@ -364,6 +364,12 @@ def validate_registry(
             expected = require_string(
                 item["expected_panic"], f"{item_context}.expected_panic"
             )
+            expected_prefix = f"{defect_id}: "
+            if not expected.startswith(expected_prefix):
+                raise PolicyError(
+                    f"{item_context}.expected_panic must start with "
+                    f"{expected_prefix!r}"
+                )
             key = (source, function)
             if key in registered:
                 previous = registered[key][0]

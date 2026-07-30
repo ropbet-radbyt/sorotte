@@ -2205,6 +2205,41 @@ No production fix is included. The complete matrix, root-cause trace, commands,
 and limitations are retained in
 [`raw-loopback-framing-20260730.md`](evidence/test-coverage/raw-loopback-framing-20260730.md).
 
+## TC-PROTOCOL-004: Protocol floating-point values can drift across decode and re-encode
+
+Status: **Open 2026-07-30; coverage-guided counterexample characterized at raw
+and typed protocol boundaries**
+
+Severity: **Low (ordinary synchronization magnitudes are not known to hit the
+counterexample, but accepted finite JSON numbers do not satisfy the advertised
+exact roundtrip invariant)**
+Detection: pinned Linux libFuzzer/AddressSanitizer campaign over every public
+protocol line decoder and encoder
+
+The first 45-second coverage-guided parser run found the minimized five-byte
+input `70E70` after 108,863 executions. `decode_line` represents that finite
+JSON number as `7.000000000000001e71`; `encode_line` emits a decimal which the
+same decoder reads as the adjacent `7.000000000000002e71`. The same one-ULP
+change is reproducible inside the valid typed frame
+`{"State":{"playstate":{"position":70E70}}}`. This disproves the prior exact
+`Value` and `ProtocolMessage` roundtrip oracle without requiring malformed
+input, a panic in production code, or sanitizer-detected memory unsafety.
+
+Two ordinary, non-ignored expected-failure tests bind the raw and typed
+counterexamples to:
+
+```text
+TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode
+```
+
+No production fix is included. To continue searching for independent parser
+failures, the fuzz oracle admits only structurally identical values whose
+finite floating-point leaves are unchanged or differ by exactly one ULP with
+the same sign. Any structural, integer, sign, non-finite, or larger numeric
+drift still fails the campaign. The full toolchain identity, source binding,
+counterexample, continuation runs, and limitations are retained in
+[`protocol-coverage-guided-20260730.md`](evidence/test-coverage/protocol-coverage-guided-20260730.md).
+
 ## TC-UPDATER-001: Tampered prepared file prevents safe update rollback cleanup
 
 Status: **Resolved 2026-07-30; uncommitted scratch is safely disposable**

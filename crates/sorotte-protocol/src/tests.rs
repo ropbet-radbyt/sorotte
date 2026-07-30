@@ -104,6 +104,37 @@ fn roundtrip_raw_json_value_fixture() {
 }
 
 #[test]
+#[should_panic(
+    expected = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+)]
+fn known_defect_tc_protocol_004_raw_floating_point_roundtrip_is_exact() {
+    let value = decode_line("70E70").expect("counterexample is valid JSON");
+    let encoded = encode_line(&value).expect("decoded counterexample should encode");
+    let decoded = decode_line(&encoded).expect("encoded counterexample should decode");
+    assert_eq!(
+        value, decoded,
+        "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+)]
+fn known_defect_tc_protocol_004_typed_state_floating_point_roundtrip_is_exact() {
+    let message = decode_message_line(r#"{"State":{"playstate":{"position":70E70}}}"#)
+        .expect("counterexample is a valid State message");
+    let encoded =
+        encode_message_line(&message).expect("decoded counterexample message should encode");
+    let decoded =
+        decode_message_line(&encoded).expect("encoded counterexample message should decode");
+    assert_eq!(
+        message, decoded,
+        "TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode"
+    );
+}
+
+#[test]
 fn playback_barrier_fixtures_decode_from_nested_extension_maps() {
     let prepare_message = decode_message_line(&read_fixture("set_playback_barrier_prepare.json"))
         .expect("prepare fixture should decode");
