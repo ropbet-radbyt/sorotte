@@ -1,9 +1,107 @@
 use super::*;
 use crate::{RoomPersistenceError, RoomPersistenceStore};
-use rusqlite::params;
+use rusqlite::{ErrorCode, params};
 use sorotte_protocol::ListUserEntry;
 use std::collections::BTreeMap;
 use std::sync::Barrier;
+
+#[derive(Debug, PartialEq)]
+struct RawPersistedRoomRow {
+    playlist: String,
+    playlist_json: String,
+    playlist_index: Option<i64>,
+    position: f64,
+    last_activity_at_seconds: f64,
+    persistence_version: i64,
+    owner_bucket: Option<String>,
+    created_at_seconds: f64,
+}
+
+fn sqlite_full_baseline_room_state() -> PersistedRoomState {
+    PersistedRoomState {
+        files: vec![
+            "baseline-episode-01.mkv".to_owned(),
+            "baseline-episode-02.mkv".to_owned(),
+            "baseline-episode-03.mkv".to_owned(),
+        ],
+        index: Some(1),
+        position: 125.25,
+        last_activity_at_seconds: 1_001.5,
+        version: 41,
+        owner_bucket: Some("quota:v1:sqlite-full-baseline".to_owned()),
+        created_at_seconds: 901.25,
+    }
+}
+
+fn sqlite_full_replacement_room_state(version: u64) -> PersistedRoomState {
+    PersistedRoomState {
+        files: (0..512)
+            .map(|index| {
+                format!(
+                    "replacement-{index:04}-{}.mkv",
+                    "deterministic-payload-".repeat(256)
+                )
+            })
+            .collect(),
+        index: Some(511),
+        position: 987.75,
+        last_activity_at_seconds: 2_002.5,
+        version,
+        owner_bucket: Some("quota:v1:sqlite-full-replacement".to_owned()),
+        created_at_seconds: 902.5,
+    }
+}
+
+fn raw_persisted_room_row(
+    connection: &rusqlite::Connection,
+    room_name: &str,
+) -> RawPersistedRoomRow {
+    connection
+        .query_row(
+            "SELECT playlist, playlistJson, playlistIndex, position, lastSavedUpdate, \
+                    persistenceVersion, ownerBucket, createdAt \
+             FROM persistent_rooms WHERE name = ?1",
+            [room_name],
+            |row| {
+                Ok(RawPersistedRoomRow {
+                    playlist: row.get(0)?,
+                    playlist_json: row.get(1)?,
+                    playlist_index: row.get(2)?,
+                    position: row.get(3)?,
+                    last_activity_at_seconds: row.get(4)?,
+                    persistence_version: row.get(5)?,
+                    owner_bucket: row.get(6)?,
+                    created_at_seconds: row.get(7)?,
+                })
+            },
+        )
+        .expect("the durable room row should remain queryable")
+}
+
+fn assert_sqlite_integrity_ok(connection: &rusqlite::Connection) {
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("SQLite integrity check should complete");
+    assert_eq!(integrity, "ok");
+}
+
+fn assert_room_persistence_disk_full(error: &RoomPersistenceError, expected_path: &Path) {
+    let RoomPersistenceError::Sqlite {
+        action,
+        path,
+        source,
+    } = error;
+    assert_eq!(*action, "save persisted room");
+    assert_eq!(path, expected_path);
+    let rusqlite::Error::SqliteFailure(sqlite_error, _) = source else {
+        panic!("expected a classified SQLite failure, got {source:?}");
+    };
+    assert_eq!(
+        sqlite_error.code,
+        ErrorCode::DiskFull,
+        "the constrained production write must surface SQLITE_FULL"
+    );
+}
 
 fn decode_single_list_rooms(
     lines: Vec<String>,
@@ -741,6 +839,97 @@ fn room_persistence_sets_busy_timeout_or_wal() {
     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
 
     drop(connection);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn room_persistence_sqlite_full_preserves_old_row_and_recovers_after_limit_lift() {
+    let db_path = temporary_sqlite_path("room-persistence-sqlite-full-recovery");
+    let _ = fs::remove_file(&db_path);
+    let store =
+        RoomPersistenceStore::open(&db_path).expect("room persistence schema should initialize");
+    let connection = store
+        .connection("test SQLITE_FULL durability")
+        .expect("room persistence connection should open");
+    let baseline = sqlite_full_baseline_room_state();
+    store
+        .save_room(&connection, "durable-room", &baseline)
+        .expect("the baseline room should persist");
+    let checkpoint_busy: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .expect("the baseline WAL should checkpoint");
+    assert_eq!(
+        checkpoint_busy, 0,
+        "the baseline checkpoint must not be busy"
+    );
+
+    let durable_before_failure = raw_persisted_room_row(&connection, "durable-room");
+    let page_count: i64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .expect("the current SQLite page count should be queryable");
+    connection
+        .pragma_update(None, "max_page_count", page_count)
+        .expect("the database page limit should be constrained to its current size");
+    let constrained_page_count: i64 = connection
+        .query_row("PRAGMA max_page_count", [], |row| row.get(0))
+        .expect("the constrained SQLite page count should be queryable");
+    assert_eq!(
+        constrained_page_count, page_count,
+        "the fixture must leave no page allocation headroom"
+    );
+
+    let replacement = sqlite_full_replacement_room_state(42);
+    let error = store
+        .save_room(&connection, "durable-room", &replacement)
+        .expect_err("a materially larger replacement must exhaust the page limit");
+    assert_room_persistence_disk_full(&error, &db_path);
+
+    let durable_after_failure = raw_persisted_room_row(&connection, "durable-room");
+    assert_eq!(
+        durable_after_failure, durable_before_failure,
+        "SQLITE_FULL must not leak any replacement playlist, index, scalar, or version column"
+    );
+    assert_sqlite_integrity_ok(&connection);
+
+    let reopened =
+        RoomPersistenceStore::open(&db_path).expect("the database should reopen after SQLITE_FULL");
+    let recovered_old_rooms = reopened
+        .load_rooms()
+        .expect("the old durable snapshot should recover normally");
+    assert_eq!(
+        recovered_old_rooms.get("durable-room"),
+        Some(&baseline),
+        "normal recovery must expose the complete pre-failure room"
+    );
+    drop(reopened);
+
+    connection
+        .pragma_update(None, "max_page_count", page_count + 4_096)
+        .expect("the artificial page limit should lift");
+    store
+        .save_room(&connection, "durable-room", &replacement)
+        .expect("the newer room should persist after capacity returns");
+    assert_sqlite_integrity_ok(&connection);
+    drop(connection);
+
+    let final_reopen = RoomPersistenceStore::open(&db_path)
+        .expect("the recovered database should reopen normally");
+    let recovered_new_rooms = final_reopen
+        .load_rooms()
+        .expect("the newer durable snapshot should reload");
+    assert_eq!(
+        recovered_new_rooms.get("durable-room"),
+        Some(&replacement),
+        "capacity restoration must permit complete forward progress"
+    );
+    let final_connection = final_reopen
+        .connection("final SQLITE_FULL integrity check")
+        .expect("the final inspection connection should open");
+    assert_sqlite_integrity_ok(&final_connection);
+
+    drop(final_connection);
+    drop(final_reopen);
+    drop(store);
     fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
 }
 
