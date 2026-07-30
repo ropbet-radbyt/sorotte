@@ -617,6 +617,7 @@ mod connected_session_desync;
 mod connected_session_local_commands;
 mod connected_session_reconnect_restore;
 mod env_client_config;
+mod framed_transport_schedules;
 mod local_input_commands;
 mod mpv_smoke;
 mod mpv_startup;
