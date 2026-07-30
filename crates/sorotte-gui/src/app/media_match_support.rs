@@ -1,8 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -14,9 +15,6 @@ use std::{
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
@@ -48,6 +46,7 @@ const MEDIA_MATCH_DISCOVERY_MAX_DEPTH: usize = 64;
 const MEDIA_MATCH_DISCOVERY_MAX_NODES: usize = 250_000;
 const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
@@ -362,6 +361,13 @@ impl MediaMatchTool {
         }
     }
 
+    fn version_banner_prefix(self) -> &'static str {
+        match self {
+            Self::Ffmpeg => "ffmpeg version ",
+            Self::Ffprobe => "ffprobe version ",
+        }
+    }
+
     fn assign_version(self, metadata: &mut ManagedMediaMatchMetadata, version: String) {
         match self {
             Self::Ffmpeg => metadata.ffmpeg_version = Some(version),
@@ -607,7 +613,7 @@ where
         Some(target.display().to_string()),
         0.72,
     ));
-    let version = probe_executable_version(&target, tool.version_args())?;
+    let version = probe_executable_version(&target, tool.version_args(), tool)?;
     let mut metadata = load_managed_media_match_metadata(root).unwrap_or_default();
     metadata.version = MEDIA_MATCH_METADATA_VERSION;
     metadata.installed_at_unix_seconds = Some(current_unix_seconds());
@@ -688,6 +694,7 @@ where
             let version = probe_executable_version(
                 &managed_media_match_tool_path(root, tool),
                 tool.version_args(),
+                tool,
             )?;
             tool.assign_version(&mut metadata, version);
         }
@@ -1334,7 +1341,7 @@ fn probe_tool(root: Option<&Path>, tool: MediaMatchTool) -> MediaMatchToolProbe 
             status: format!("Missing {}", tool.display_name()),
         };
     };
-    match probe_executable_version(&path, tool.version_args()) {
+    match probe_executable_version(&path, tool.version_args(), tool) {
         Ok(version) => MediaMatchToolProbe {
             path: Some(path.clone()),
             error: None,
@@ -2761,9 +2768,17 @@ fn find_executable_on_path(file_name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String> {
+fn probe_executable_version(
+    path: &Path,
+    args: &[&str],
+    expected_tool: MediaMatchTool,
+) -> Result<String, String> {
     let output =
         probe_executable_output_with_timeout(path, args, MEDIA_MATCH_VERSION_PROBE_TIMEOUT)?;
+    debug_assert!(output.stderr.len() <= MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES);
+    debug_assert!(
+        !output.stderr_truncated || output.stderr.len() == MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES
+    );
     if !output.status.success() {
         return Err(format!(
             "exited with status {}",
@@ -2774,24 +2789,85 @@ fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String
                 .unwrap_or_else(|| "unknown".to_owned())
         ));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let first_line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("version output empty")
-        .trim();
+    let (first_line, terminated) = first_nonempty_output_line(&output.stdout)
+        .ok_or_else(|| "version output was empty".to_owned())?;
+    if output.stdout_truncated && !terminated {
+        return Err(format!(
+            "{} version banner exceeded the {} byte capture limit",
+            expected_tool.display_name(),
+            MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES
+        ));
+    }
+    let first_line = std::str::from_utf8(first_line)
+        .map_err(|_| "version banner was not valid UTF-8".to_owned())?
+        .trim_end();
+    let Some(version) = first_line.strip_prefix(expected_tool.version_banner_prefix()) else {
+        return Err(format!(
+            "output did not begin with a {} version banner",
+            expected_tool.display_name()
+        ));
+    };
+    if version.trim().is_empty() {
+        return Err(format!(
+            "{} version banner did not contain a version",
+            expected_tool.display_name()
+        ));
+    }
     Ok(first_line.to_owned())
+}
+
+#[derive(Debug)]
+struct BoundedProcessOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+#[derive(Debug)]
+struct BoundedPipeCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn first_nonempty_output_line(bytes: &[u8]) -> Option<(&[u8], bool)> {
+    bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .find_map(|line| {
+            let terminated = line.ends_with(b"\n");
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            (!line.iter().all(u8::is_ascii_whitespace)).then_some((line, terminated))
+        })
+}
+
+fn drain_pipe_bounded(
+    mut pipe: impl Read,
+    capture_limit: usize,
+) -> Result<BoundedPipeCapture, String> {
+    let mut bytes = Vec::with_capacity(capture_limit.min(8 * 1024));
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut truncated = false;
+    loop {
+        let count = pipe
+            .read(&mut buffer)
+            .map_err(|error| format!("failed draining child process output: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        let retained = capture_limit.saturating_sub(bytes.len()).min(count);
+        bytes.extend_from_slice(&buffer[..retained]);
+        truncated |= retained < count;
+    }
+    Ok(BoundedPipeCapture { bytes, truncated })
 }
 
 fn probe_executable_output_with_timeout(
     path: &Path,
     args: &[&str],
     timeout: Duration,
-) -> Result<Output, String> {
-    // Version probes use bounded `-version` output from ffmpeg/ffprobe. Keeping
-    // stdout/stderr piped is acceptable here because the process is also
-    // timeout-protected; long-running media extraction uses the streaming
-    // runner that drains pipes concurrently.
+) -> Result<BoundedProcessOutput, String> {
     let mut child = hidden_media_match_command(path)
         .args(args)
         .stdin(Stdio::null())
@@ -2805,22 +2881,36 @@ fn probe_executable_output_with_timeout(
                 args.join(" ")
             )
         })?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "failed opening stdout from '{} {}'",
+            path.display(),
+            args.join(" ")
+        ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "failed opening stderr from '{} {}'",
+            path.display(),
+            args.join(" ")
+        ));
+    };
+    let stdout_drain =
+        thread::spawn(move || drain_pipe_bounded(stdout, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
+    let stderr_drain =
+        thread::spawn(move || drain_pipe_bounded(stderr, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
     let started = Instant::now();
-    loop {
+    let completion = loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                return child.wait_with_output().map_err(|error| {
-                    format!(
-                        "failed collecting output from '{} {}': {error}",
-                        path.display(),
-                        args.join(" ")
-                    )
-                });
-            }
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
+                break Err(format!(
                     "timed out after {:.1}s running '{} {}'",
                     timeout.as_secs_f64(),
                     path.display(),
@@ -2831,14 +2921,28 @@ fn probe_executable_output_with_timeout(
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
+                break Err(format!(
                     "failed waiting for '{} {}': {error}",
                     path.display(),
                     args.join(" ")
                 ));
             }
         }
-    }
+    };
+    let stdout = stdout_drain
+        .join()
+        .map_err(|_| "stdout drain thread panicked".to_owned())??;
+    let stderr = stderr_drain
+        .join()
+        .map_err(|_| "stderr drain thread panicked".to_owned())??;
+    let status = completion?;
+    Ok(BoundedProcessOutput {
+        status,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+        stdout_truncated: stdout.truncated,
+        stderr_truncated: stderr.truncated,
+    })
 }
 
 #[cfg(windows)]

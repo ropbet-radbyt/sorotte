@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{probe_executable_output_with_timeout, probe_executable_version};
+use super::{
+    MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES, MediaMatchTool, probe_executable_output_with_timeout,
+    probe_executable_version,
+};
 
 const LARGE_STDOUT_FIXTURE_TEST: &str = concat!(
     "app::media_match_support::process_fault_tests::",
@@ -77,12 +80,17 @@ fn shell_probe(script: &str) -> Result<String, String> {
     probe_executable_version(
         Path::new("powershell.exe"),
         &["-NoProfile", "-NonInteractive", "-Command", script],
+        MediaMatchTool::Ffprobe,
     )
 }
 
 #[cfg(not(windows))]
 fn shell_probe(script: &str) -> Result<String, String> {
-    probe_executable_version(Path::new("/bin/sh"), &["-c", script])
+    probe_executable_version(
+        Path::new("/bin/sh"),
+        &["-c", script],
+        MediaMatchTool::Ffprobe,
+    )
 }
 
 #[cfg(windows)]
@@ -136,6 +144,15 @@ fn media_match_large_stdout_process_fixture() {
     stdout
         .flush()
         .expect("large-output fixture should flush stdout");
+    let mut stderr = io::stderr().lock();
+    for _ in 0..(FINITE_FAKE_TOOL_OUTPUT_BYTES / chunk.len()) {
+        stderr
+            .write_all(&chunk)
+            .expect("large-output fixture should write stderr");
+    }
+    stderr
+        .flush()
+        .expect("large-output fixture should flush stderr");
 }
 
 #[test]
@@ -168,8 +185,7 @@ fn version_probe_preserves_nonzero_exit_status() {
 }
 
 #[test]
-#[should_panic(expected = "successful process without a valid tool version must be rejected")]
-fn known_defect_version_probe_accepts_unusable_success_output() {
+fn version_probe_rejects_unusable_success_output() {
     let accepted = [
         ("empty", shell_probe(EMPTY_SUCCESS_SCRIPT)),
         ("invalid-utf8", shell_probe(INVALID_UTF8_SCRIPT)),
@@ -203,24 +219,16 @@ fn timed_out_version_probe_reaps_process_and_releases_executable() {
 }
 
 #[test]
-#[should_panic(expected = "finite fake-tool output must be drained while the process runs")]
-fn known_defect_version_probe_deadlocks_on_finite_output_larger_than_pipe_capacity() {
+fn version_probe_drains_finite_output_larger_than_pipe_capacity() {
     let fixture = FakeMediaMatchTool::new("finite-large-output");
     let args = fixture_args(LARGE_STDOUT_FIXTURE_TEST);
     let output =
-        probe_executable_output_with_timeout(fixture.executable(), &args, PROCESS_FIXTURE_TIMEOUT);
+        probe_executable_output_with_timeout(fixture.executable(), &args, PROCESS_FIXTURE_TIMEOUT)
+            .expect("finite fake-tool output must drain without any process or pipe error");
     fixture.assert_process_and_image_released();
-    match output {
-        Ok(output) => {
-            assert!(output.status.success());
-            assert!(
-                output.stdout.len() >= FINITE_FAKE_TOOL_OUTPUT_BYTES,
-                "a successful probe must retain the complete finite output"
-            );
-        }
-        Err(error) => assert!(
-            !error.contains("timed out"),
-            "finite fake-tool output must be drained while the process runs: {error}"
-        ),
-    }
+    assert!(output.status.success());
+    assert_eq!(output.stdout.len(), MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES);
+    assert_eq!(output.stderr.len(), MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES);
+    assert!(output.stdout_truncated);
+    assert!(output.stderr_truncated);
 }
