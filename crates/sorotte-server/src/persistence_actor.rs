@@ -302,6 +302,10 @@ struct RoomPersistenceDesiredState {
 type DesiredRoomEffects = Arc<Mutex<BTreeMap<String, RoomPersistenceDesiredState>>>;
 
 #[cfg(test)]
+type BeforeRoomTransactionHook =
+    Arc<dyn Fn(&Connection, &ServerPersistenceEffect) + Send + Sync + 'static>;
+
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RoomWorkerTestCheckpoint {
     BeforeScan,
@@ -315,6 +319,8 @@ struct RoomPersistenceWorkerHooks {
     on_checkpoint: Option<Arc<dyn Fn(RoomWorkerTestCheckpoint) + Send + Sync + 'static>>,
     #[cfg(test)]
     transaction_entries: Option<Arc<Mutex<Vec<ServerPersistenceEffect>>>>,
+    #[cfg(test)]
+    before_transaction: Option<BeforeRoomTransactionHook>,
 }
 
 impl RoomPersistenceWorkerHooks {
@@ -358,6 +364,13 @@ impl RoomPersistenceWorkerHooks {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(_effect.clone());
+        }
+    }
+
+    #[cfg(test)]
+    fn before_transaction(&self, connection: &Connection, effect: &ServerPersistenceEffect) {
+        if let Some(before_transaction) = self.before_transaction.as_ref() {
+            before_transaction(connection, effect);
         }
     }
 }
@@ -618,6 +631,8 @@ fn apply_desired_room_effects(
 
         hooks.after_arbitration(&effect);
         hooks.record_transaction_entry(&effect);
+        #[cfg(test)]
+        hooks.before_transaction(connection, &effect);
         let transaction = match connection.unchecked_transaction() {
             Ok(transaction) => transaction,
             Err(error) => {
@@ -794,15 +809,17 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use rusqlite::{Connection, OptionalExtension, params};
+    use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
     use tokio::sync::broadcast;
 
     use super::{
         RoomPersistenceService, RoomPersistenceWorkerHooks, RoomWorkerTestCheckpoint,
         ServerPersistenceEffect, ServerPersistenceEvent, StatsPersistenceService,
+        room_effect_key_and_version,
     };
     use crate::{
-        PersistedRoomState, RoomPersistenceStore, StatsPersistenceStore, persistence::test_crash,
+        PersistedRoomState, RoomPersistenceError, RoomPersistenceStore, StatsPersistenceStore,
+        persistence::test_crash,
     };
 
     fn temporary_sqlite_path(name: &str) -> PathBuf {
@@ -903,6 +920,7 @@ mod tests {
                     .expect("checkpoint controller should release the persistence worker");
             })),
             transaction_entries: Some(Arc::clone(&transaction_entries)),
+            ..RoomPersistenceWorkerHooks::default()
         };
         (
             hooks,
@@ -1091,6 +1109,74 @@ mod tests {
             version: 1,
             owner_bucket: Some("owner-v1".to_owned()),
             created_at_seconds: 13.5,
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct RawPersistedRoomRow {
+        playlist: String,
+        playlist_json: String,
+        playlist_index: Option<i64>,
+        position: f64,
+        last_activity_at_seconds: f64,
+        persistence_version: i64,
+        owner_bucket: Option<String>,
+        created_at_seconds: f64,
+    }
+
+    fn raw_persisted_room_row(db_path: &Path, room_name: &str) -> RawPersistedRoomRow {
+        Connection::open(db_path)
+            .expect("persisted room database should open for raw inspection")
+            .query_row(
+                "SELECT playlist, playlistJson, playlistIndex, position, lastSavedUpdate, \
+                        persistenceVersion, ownerBucket, createdAt \
+                 FROM persistent_rooms WHERE name = ?1",
+                [room_name],
+                |row| {
+                    Ok(RawPersistedRoomRow {
+                        playlist: row.get(0)?,
+                        playlist_json: row.get(1)?,
+                        playlist_index: row.get(2)?,
+                        position: row.get(3)?,
+                        last_activity_at_seconds: row.get(4)?,
+                        persistence_version: row.get(5)?,
+                        owner_bucket: row.get(6)?,
+                        created_at_seconds: row.get(7)?,
+                    })
+                },
+            )
+            .expect("persisted room should remain queryable")
+    }
+
+    fn room_state_effect(room_name: &str, state: &PersistedRoomState) -> ServerPersistenceEffect {
+        ServerPersistenceEffect::SaveRoom {
+            room_name: room_name.to_owned(),
+            files: state.files.clone(),
+            playlist_index: state.index,
+            position: state.position,
+            last_activity_at_seconds: state.last_activity_at_seconds,
+            owner_bucket: state.owner_bucket.clone(),
+            created_at_seconds: state.created_at_seconds,
+            version: state.version,
+        }
+    }
+
+    fn sqlite_full_replacement_room_state(version: u64) -> PersistedRoomState {
+        PersistedRoomState {
+            files: (0..512)
+                .map(|index| {
+                    format!(
+                        "replacement-{index:04}-{}.mkv",
+                        "deterministic-payload-".repeat(256)
+                    )
+                })
+                .collect(),
+            index: Some(511),
+            position: 987.75,
+            last_activity_at_seconds: 2_002.5,
+            version,
+            owner_bucket: Some("owner-after-capacity-recovery".to_owned()),
+            created_at_seconds: 902.5,
         }
     }
 
@@ -1672,6 +1758,342 @@ mod tests {
         drop(service);
         drop(external);
         fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn room_worker_start_classifies_filesystem_path_open_failure() {
+        let db_path = temporary_sqlite_path("room-worker-path-open-failure");
+        remove_sqlite_artifacts(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize before path replacement");
+        remove_sqlite_artifacts(&db_path);
+        fs::create_dir(&db_path)
+            .expect("a directory should replace the database file for deterministic open failure");
+
+        let (events, _) = broadcast::channel(8);
+        let error = RoomPersistenceService::start(store, events, Arc::new(AtomicUsize::new(0)))
+            .expect_err("the worker-owned connection must reject a directory as its file");
+        let RoomPersistenceError::Sqlite {
+            action,
+            path,
+            source,
+        } = error;
+        assert_eq!(action, "connect persistence worker");
+        assert_eq!(path, db_path);
+        let rusqlite::Error::SqliteFailure(sqlite_error, message) = source else {
+            panic!("worker connection should expose a classified SQLite open failure");
+        };
+        assert_eq!(
+            sqlite_error.code,
+            ErrorCode::CannotOpen,
+            "the real filesystem boundary should classify the path collision as SQLITE_CANTOPEN"
+        );
+        assert!(
+            message
+                .as_deref()
+                .is_some_and(|message| message.contains("unable to open database file")),
+            "the SQLite VFS should retain its concrete open-failure context"
+        );
+
+        fs::remove_dir(&db_path).expect("temporary database-path directory should be removable");
+    }
+
+    #[test]
+    fn room_worker_sqlite_full_preserves_old_row_and_recovers_on_same_connection() {
+        let db_path = temporary_sqlite_path("room-worker-sqlite-full-recovery");
+        remove_sqlite_artifacts(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let baseline = PersistedRoomState {
+            version: 41,
+            ..baseline_room_state()
+        };
+        let seed_connection = store
+            .connection("seed worker SQLITE_FULL baseline")
+            .expect("baseline connection should open");
+        store
+            .save_room(&seed_connection, "room", &baseline)
+            .expect("baseline room should persist");
+        let checkpoint_busy: i64 = seed_connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .expect("baseline WAL should checkpoint");
+        assert_eq!(checkpoint_busy, 0, "baseline checkpoint must not be busy");
+        drop(seed_connection);
+        let durable_before_failure = raw_persisted_room_row(&db_path, "room");
+
+        let connection_limits = Arc::new(Mutex::new(Vec::new()));
+        let hook_connection_limits = Arc::clone(&connection_limits);
+        let hooks = RoomPersistenceWorkerHooks {
+            before_transaction: Some(Arc::new(move |connection, effect| {
+                let (_, version) = room_effect_key_and_version(effect)
+                    .expect("the room worker hook should receive only room effects");
+                let page_count: i64 = connection
+                    .query_row("PRAGMA page_count", [], |row| row.get(0))
+                    .expect("worker-owned connection page count should be queryable");
+                let requested_limit = if version == 42 {
+                    page_count
+                } else {
+                    page_count + 4_096
+                };
+                connection
+                    .pragma_update(None, "max_page_count", requested_limit)
+                    .expect("worker-owned connection page limit should update");
+                let effective_limit: i64 = connection
+                    .query_row("PRAGMA max_page_count", [], |row| row.get(0))
+                    .expect("worker-owned connection page limit should be queryable");
+                hook_connection_limits
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((version, page_count, effective_limit));
+            })),
+            ..RoomPersistenceWorkerHooks::default()
+        };
+        let (events, _) = broadcast::channel(64);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            Arc::clone(&degraded_worker_count),
+            4,
+            hooks,
+        )
+        .expect("controlled room persistence worker should start");
+
+        let failed_replacement = sqlite_full_replacement_room_state(42);
+        service.enqueue(room_state_effect("room", &failed_replacement));
+        assert!(
+            !service.flush(),
+            "SQLITE_FULL must remain an unresolved worker failure"
+        );
+        assert_eq!(
+            degraded_worker_count.load(Ordering::Acquire),
+            1,
+            "the room worker must enter degraded mode exactly once"
+        );
+        let failure_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(failure_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Failed {
+                effect: ServerPersistenceEffect::SaveRoom { version: 42, .. },
+                error,
+                ..
+            } if error.contains("database or disk is full")
+        )));
+        assert_eq!(
+            failure_events
+                .iter()
+                .filter(|event| matches!(event, ServerPersistenceEvent::Degraded { .. }))
+                .count(),
+            1,
+            "retries of one unresolved capacity failure must not duplicate degradation"
+        );
+        assert!(!failure_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { version: 42, .. },
+                ..
+            }
+        )));
+        assert_eq!(
+            raw_persisted_room_row(&db_path, "room"),
+            durable_before_failure,
+            "the worker transaction must roll back every persisted column after SQLITE_FULL"
+        );
+        assert_sqlite_integrity(&db_path);
+        let constrained_observations = connection_limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(
+            constrained_observations
+                .iter()
+                .any(|(version, page_count, limit)| version == &42 && limit == page_count),
+            "the failure must be imposed on the actor-owned connection with no page headroom"
+        );
+
+        let recovered_replacement = sqlite_full_replacement_room_state(43);
+        service.enqueue(room_state_effect("room", &recovered_replacement));
+        assert!(
+            service.flush(),
+            "a newer desired state should persist after capacity is restored on the same worker connection"
+        );
+        assert_eq!(
+            degraded_worker_count.load(Ordering::Acquire),
+            0,
+            "successful forward progress should clear worker degradation"
+        );
+        let recovery_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(recovery_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { version: 43, .. },
+                ..
+            }
+        )));
+        assert_eq!(
+            recovery_events
+                .iter()
+                .filter(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+                .count(),
+            1,
+            "the successful replacement should report one recovery transition"
+        );
+        assert!(
+            connection_limits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|(version, page_count, limit)| version == &43 && limit > page_count),
+            "recovery must lift the limit on the same actor-owned connection"
+        );
+        drop(service);
+
+        let reopened = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence should reopen after worker recovery");
+        assert_eq!(
+            reopened
+                .load_rooms()
+                .expect("recovered room state should load")
+                .get("room"),
+            Some(&recovered_replacement),
+            "normal reopen must expose the complete newer room state"
+        );
+        assert_sqlite_integrity(&db_path);
+        drop(reopened);
+        remove_sqlite_artifacts(&db_path);
+    }
+
+    #[test]
+    fn room_worker_read_only_connection_preserves_old_row_and_recovers() {
+        let db_path = temporary_sqlite_path("room-worker-read-only-recovery");
+        remove_sqlite_artifacts(&db_path);
+        let store = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence schema should initialize");
+        let baseline = baseline_room_state();
+        let seed_connection = store
+            .connection("seed worker read-only baseline")
+            .expect("baseline connection should open");
+        store
+            .save_room(&seed_connection, "room", &baseline)
+            .expect("baseline room should persist");
+        drop(seed_connection);
+        let durable_before_failure = raw_persisted_room_row(&db_path, "room");
+
+        let query_only_observations = Arc::new(Mutex::new(Vec::new()));
+        let hook_query_only_observations = Arc::clone(&query_only_observations);
+        let hooks = RoomPersistenceWorkerHooks {
+            before_transaction: Some(Arc::new(move |connection, effect| {
+                let (_, version) = room_effect_key_and_version(effect)
+                    .expect("the room worker hook should receive only room effects");
+                connection
+                    .pragma_update(None, "query_only", version == 2)
+                    .expect("worker-owned connection query-only mode should update");
+                let query_only: bool = connection
+                    .query_row("PRAGMA query_only", [], |row| row.get(0))
+                    .expect("worker-owned connection query-only mode should be queryable");
+                hook_query_only_observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((version, query_only));
+            })),
+            ..RoomPersistenceWorkerHooks::default()
+        };
+        let (events, _) = broadcast::channel(64);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            Arc::clone(&degraded_worker_count),
+            4,
+            hooks,
+        )
+        .expect("controlled room persistence worker should start");
+
+        let denied = replacement_room_state();
+        service.enqueue(room_state_effect("room", &denied));
+        assert!(
+            !service.flush(),
+            "a write-denied worker connection must retain an unresolved desired state"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        let failure_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(failure_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Failed {
+                effect: ServerPersistenceEffect::SaveRoom { version: 2, .. },
+                error,
+                ..
+            } if error.contains("readonly database")
+        )));
+        assert_eq!(
+            raw_persisted_room_row(&db_path, "room"),
+            durable_before_failure,
+            "a write-denied worker transaction must preserve all baseline columns"
+        );
+        assert_sqlite_integrity(&db_path);
+        assert!(
+            query_only_observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|observation| observation == &(2, true)),
+            "the failure must occur with the actor-owned connection in query-only mode"
+        );
+
+        let recovered = PersistedRoomState {
+            files: vec!["recovered.mkv".to_owned()],
+            index: Some(0),
+            position: 55.5,
+            last_activity_at_seconds: 66.5,
+            version: 3,
+            owner_bucket: Some("owner-after-write-access".to_owned()),
+            created_at_seconds: 77.5,
+        };
+        service.enqueue(room_state_effect("room", &recovered));
+        assert!(
+            service.flush(),
+            "a newer desired state should persist once write access returns"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+        let recovery_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(recovery_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { version: 3, .. },
+                ..
+            }
+        )));
+        assert_eq!(
+            recovery_events
+                .iter()
+                .filter(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            query_only_observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|observation| observation == &(3, false)),
+            "recovery must restore write access on the same actor-owned connection"
+        );
+        drop(service);
+
+        let reopened = RoomPersistenceStore::open(&db_path)
+            .expect("room persistence should reopen after write-access recovery");
+        assert_eq!(
+            reopened
+                .load_rooms()
+                .expect("recovered room state should load")
+                .get("room"),
+            Some(&recovered)
+        );
+        assert_sqlite_integrity(&db_path);
+        drop(reopened);
+        remove_sqlite_artifacts(&db_path);
     }
 
     #[test]
