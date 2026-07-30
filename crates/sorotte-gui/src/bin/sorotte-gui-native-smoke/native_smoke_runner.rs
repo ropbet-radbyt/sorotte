@@ -12,6 +12,8 @@ mod loopback_contract;
 mod menu_open_media_contract;
 #[path = "native_smoke_runner/missing_media_contracts.rs"]
 mod missing_media_contracts;
+#[path = "native_smoke_runner/real_mpv_vertical.rs"]
+mod real_mpv_vertical;
 #[path = "native_smoke_runner/relaunch_contract.rs"]
 mod relaunch_contract;
 #[path = "native_smoke_runner/transport_contract.rs"]
@@ -27,6 +29,7 @@ use menu_open_media_contract::verify_menu_open_media_contract;
 use missing_media_contracts::{
     verify_detached_missing_media_contract, verify_missing_media_continue_session_contract,
 };
+pub(super) use real_mpv_vertical::run_real_mpv_vertical_from_args;
 use relaunch_contract::verify_relaunch_config_reload_contract;
 use transport_contract::verify_transport_reconnect_contract;
 

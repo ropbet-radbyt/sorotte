@@ -61,7 +61,11 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
         command.env_remove(name);
     }
     if let Some(appdata_root) = test_overrides.appdata_root {
-        command.env_remove("SOROTTE_CLIENT_CONFIG_PATH");
+        if test_overrides.explicit_config_path_with_appdata_root {
+            command.env("SOROTTE_CLIENT_CONFIG_PATH", launch.config_path);
+        } else {
+            command.env_remove("SOROTTE_CLIENT_CONFIG_PATH");
+        }
         command.env("APPDATA", appdata_root);
         command.env(
             "SOROTTE_CLIENT_INSTALL_ROOT",

@@ -14,8 +14,18 @@ pub(super) fn capture_native_failure_artifacts<D: NativeGuiDriver>(
     else {
         return;
     };
+    capture_native_failure_artifacts_at(driver, window, &artifact_directory, scope, failure);
+}
+
+pub(super) fn capture_native_failure_artifacts_at<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    artifact_directory: &Path,
+    scope: &str,
+    failure: &str,
+) {
     let mut capture_errors = Vec::new();
-    if let Err(error) = fs::create_dir_all(&artifact_directory) {
+    if let Err(error) = fs::create_dir_all(artifact_directory) {
         eprintln!(
             "failed to create native-smoke failure artifact directory {}: {error}",
             artifact_directory.display()
@@ -574,6 +584,12 @@ pub(super) fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
 }
 
 impl MockSessionServer {
+    pub(super) fn recv_peer(&self, timeout: Duration, label: &str) -> Result<String, String> {
+        self.peer_rx.recv_timeout(timeout).map_err(|error| {
+            format!("timed out waiting for {label} peer endpoint from mock TCP server: {error}")
+        })
+    }
+
     pub(super) fn recv_hello(&self, timeout: Duration, label: &str) -> Result<String, String> {
         self.hello_rx.recv_timeout(timeout).map_err(|error| {
             format!("timed out waiting for {label} hello line from mock TCP server: {error}")
@@ -661,11 +677,12 @@ fn start_mock_session_server_with_release_policy(
         .map_err(|error| format!("failed to read mock TCP listener address: {error}"))?;
     let port = address.port();
 
+    let (peer_tx, peer_rx) = mpsc::channel();
     let (hello_tx, hello_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::spawn(move || -> Result<(), String> {
         let accept_deadline = Instant::now() + Duration::from_secs(25);
-        let (mut stream, _) = loop {
+        let (mut stream, peer) = loop {
             if release_rx.try_recv().is_ok() {
                 return Ok(());
             }
@@ -685,6 +702,14 @@ fn start_mock_session_server_with_release_policy(
                 }
             }
         };
+        if !peer.is_ipv4() || !peer.ip().is_loopback() {
+            return Err(format!(
+                "mock TCP server rejected non-IPv4-loopback peer {peer}"
+            ));
+        }
+        peer_tx.send(peer.to_string()).map_err(|error| {
+            format!("mock TCP server failed to report connected peer endpoint: {error}")
+        })?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("mock TCP server failed to restore blocking mode: {error}"))?;
@@ -786,6 +811,7 @@ fn start_mock_session_server_with_release_policy(
     Ok(MockSessionServer {
         address: address.to_string(),
         port,
+        peer_rx,
         hello_rx,
         release_tx,
         join_handle: Some(join_handle),
@@ -805,11 +831,12 @@ pub(super) fn start_phased_mock_session_server(
         .map_err(|error| format!("failed to read mock TCP listener address: {error}"))?;
     let port = address.port();
 
+    let (peer_tx, peer_rx) = mpsc::channel();
     let (hello_tx, hello_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::spawn(move || -> Result<(), String> {
         let accept_deadline = Instant::now() + Duration::from_secs(25);
-        let (mut stream, _) = loop {
+        let (mut stream, peer) = loop {
             if release_rx.try_recv().is_ok() {
                 return Ok(());
             }
@@ -829,6 +856,14 @@ pub(super) fn start_phased_mock_session_server(
                 }
             }
         };
+        if !peer.is_ipv4() || !peer.ip().is_loopback() {
+            return Err(format!(
+                "mock TCP server rejected non-IPv4-loopback peer {peer}"
+            ));
+        }
+        peer_tx.send(peer.to_string()).map_err(|error| {
+            format!("mock TCP server failed to report connected peer endpoint: {error}")
+        })?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("mock TCP server failed to restore blocking mode: {error}"))?;
@@ -873,6 +908,7 @@ pub(super) fn start_phased_mock_session_server(
     Ok(MockSessionServer {
         address: address.to_string(),
         port,
+        peer_rx,
         hello_rx,
         release_tx,
         join_handle: Some(join_handle),

@@ -96,6 +96,7 @@ struct GuiLaunchConfig<'a> {
 struct GuiLaunchTestOverrides<'a> {
     theme: Option<&'a str>,
     appdata_root: Option<&'a Path>,
+    explicit_config_path_with_appdata_root: bool,
     config_storage_browse_path: Option<&'a Path>,
     test_player_observation_path: Option<&'a Path>,
     lifecycle_observation_path: Option<&'a Path>,
@@ -106,6 +107,7 @@ struct GuiLaunchTestOverrides<'a> {
 struct MockSessionServer {
     address: String,
     port: u16,
+    peer_rx: mpsc::Receiver<String>,
     hello_rx: mpsc::Receiver<String>,
     release_tx: mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
@@ -205,7 +207,7 @@ const MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS: f64 = 2.5;
 const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 #[path = "sorotte-gui-native-smoke/platform_driver.rs"]
 mod platform_driver;
-use native_smoke_runner::run_native_smoke;
+use native_smoke_runner::{run_native_smoke, run_real_mpv_vertical_from_args};
 use platform_driver::{
     NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver,
 };
@@ -239,6 +241,19 @@ fn main() {
     enable_native_smoke_dpi_awareness();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--real-mpv-vertical") {
+        match run_real_mpv_vertical_from_args(&args) {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("sorotte-gui real-mpv vertical failed: {error}");
+                println!("{}", render_error(&error, OutputFormat::Json));
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|arg| arg == "--visual-suite") {
         match visual_artifacts::run_visual_suite_from_args(&args) {
             Ok(report) => {

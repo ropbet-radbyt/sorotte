@@ -638,6 +638,7 @@ fn capture_visual_scenario(
             appdata_root: scenario
                 .uses_default_storage_root()
                 .then_some(runtime_root.as_path()),
+            explicit_config_path_with_appdata_root: false,
             config_storage_browse_path: (scenario == VisualScenario::StorageLocationPending)
                 .then_some(config_storage_browse_path.as_path()),
             test_player_observation_path: None,

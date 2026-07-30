@@ -1,5 +1,67 @@
 use super::{NativeAccessibilityNode, PlatformNativeGuiDriver, PlatformWindowHandle};
 
+struct ForegroundInputAttachment {
+    caller_thread_id: u32,
+    foreground_thread_id: u32,
+    attached: bool,
+}
+
+impl ForegroundInputAttachment {
+    fn attach(caller_thread_id: u32, foreground_thread_id: u32) -> Self {
+        let attached = caller_thread_id != 0
+            && foreground_thread_id != 0
+            && caller_thread_id != foreground_thread_id
+            // SAFETY: Both IDs were returned by Win32 for live threads on the interactive
+            // desktop. This bounded attachment is released before input is delivered, with
+            // `Drop` providing the unconditional fallback path.
+            && unsafe { windows_sys::Win32::System::Threading::AttachThreadInput(
+                caller_thread_id,
+                foreground_thread_id,
+                1,
+            ) != 0 };
+        Self {
+            caller_thread_id,
+            foreground_thread_id,
+            attached,
+        }
+    }
+
+    fn detach(&mut self) -> Option<bool> {
+        if !self.attached {
+            return None;
+        }
+        // SAFETY: These are the exact thread IDs successfully attached by `attach`. A failed
+        // detach remains armed so `Drop` makes one unconditional cleanup attempt.
+        let detached = unsafe {
+            windows_sys::Win32::System::Threading::AttachThreadInput(
+                self.caller_thread_id,
+                self.foreground_thread_id,
+                0,
+            ) != 0
+        };
+        if detached {
+            self.attached = false;
+        }
+        Some(detached)
+    }
+}
+
+impl Drop for ForegroundInputAttachment {
+    fn drop(&mut self) {
+        if self.attached {
+            // SAFETY: `attached` is true only when `attach` joined these exact input queues and
+            // no successful explicit detach has occurred.
+            unsafe {
+                windows_sys::Win32::System::Threading::AttachThreadInput(
+                    self.caller_thread_id,
+                    self.foreground_thread_id,
+                    0,
+                );
+            }
+        }
+    }
+}
+
 impl PlatformNativeGuiDriver {
     pub(super) fn with_ui_automation<T, F>(
         window: PlatformWindowHandle,
@@ -285,9 +347,12 @@ impl PlatformNativeGuiDriver {
             thread,
             time::{Duration, Instant},
         };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            BringWindowToTop, GetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow,
-            ShowWindow,
+        use windows_sys::Win32::{
+            System::Threading::GetCurrentThreadId,
+            UI::WindowsAndMessaging::{
+                BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
+                SW_RESTORE, SetForegroundWindow, ShowWindow,
+            },
         };
 
         // SAFETY: `window` is the top-level GUI HWND discovered for the child process. Restoring
@@ -301,19 +366,48 @@ impl PlatformNativeGuiDriver {
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut set_foreground_succeeded = false;
         loop {
-            // SAFETY: Both calls operate on the validated top-level smoke-test HWND.
-            unsafe {
-                let _ = BringWindowToTop(window);
-                set_foreground_succeeded |= SetForegroundWindow(window) != 0;
-                if GetForegroundWindow() == window {
-                    return Ok(());
-                }
+            // SAFETY: These calls only query the interactive desktop and the validated test
+            // window. Thread IDs are used by the scoped attachment guard below.
+            let (observed_before, caller_thread_id, foreground_thread_id) = unsafe {
+                let observed = GetForegroundWindow();
+                let foreground_thread_id = if observed.is_null() {
+                    0
+                } else {
+                    GetWindowThreadProcessId(observed, std::ptr::null_mut())
+                };
+                (observed, GetCurrentThreadId(), foreground_thread_id)
+            };
+            if observed_before == window {
+                return Ok(());
+            }
+            // Windows restricts a background test process from transferring foreground
+            // ownership even to its own child. Join the current foreground input queue only for
+            // this activation transaction, then prove that the GUI itself owns foreground before
+            // any physical input is sent.
+            let mut attachment =
+                ForegroundInputAttachment::attach(caller_thread_id, foreground_thread_id);
+            let attach_succeeded = attachment.attached;
+            // SAFETY: Both operations target the validated top-level smoke-test HWND. Their
+            // return values are retained for failure diagnostics; foreground equality remains
+            // the authoritative acknowledgement.
+            let (bring_to_top_succeeded, set_foreground_attempt_succeeded, observed_after) = unsafe {
+                let brought = BringWindowToTop(window) != 0;
+                let foregrounded = SetForegroundWindow(window) != 0;
+                (brought, foregrounded, GetForegroundWindow())
+            };
+            set_foreground_succeeded |= set_foreground_attempt_succeeded;
+            let detach_succeeded = attachment.detach();
+            let attempt_diagnostics = format!(
+                "caller_thread_id={caller_thread_id}, foreground_thread_id={foreground_thread_id}, attach={attach_succeeded}, BringWindowToTop={bring_to_top_succeeded}, SetForegroundWindow={set_foreground_attempt_succeeded}, detach={detach_succeeded:?}, foreground_before={observed_before:?}, foreground_after={observed_after:?}"
+            );
+            if observed_after == window {
+                return Ok(());
             }
             if Instant::now() >= deadline {
                 // SAFETY: Diagnostic read of the current foreground HWND.
                 let observed = unsafe { GetForegroundWindow() };
                 return Err(format!(
-                    "failed to foreground {context} within 1s; SetForegroundWindow accepted={set_foreground_succeeded}, expected_hwnd={window:?}, foreground_hwnd={observed:?}"
+                    "failed to foreground {context} within 1s; SetForegroundWindow accepted={set_foreground_succeeded}, expected_hwnd={window:?}, foreground_hwnd={observed:?}; last_attempt: {attempt_diagnostics}"
                 ));
             }
             thread::sleep(Duration::from_millis(25));
