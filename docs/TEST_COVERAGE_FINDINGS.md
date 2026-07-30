@@ -10,6 +10,7 @@ Outstanding-defect closure update: 2026-07-30
 Deep-boundary testing update: 2026-07-30
 Atomic TLS and parallel-boundary update: 2026-07-30
 Raw-loopback framing update: 2026-07-30
+Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -40,6 +41,11 @@ completed inbound read after bytes have been consumed from the transport,
 discarding the future-local prefix before CRLF. That defect remains
 deliberately unfixed in this testing slice; the current registry contains one
 defect and two exact characterizations.
+The subsequent four-slice continuation added deterministic protocol
+property/corpus tests, actor-owned persistence fault injection, and
+zero-survivor configuration and ping mutation gates. These experiments found
+no new product defect and did not modify `TC-CLI-003`; the registry therefore
+remains exactly one open defect and two characterizations.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -65,6 +71,24 @@ Before the shrinkable suite was added:
 After the coverage tranche was integrated:
 
 - `cargo fmt --all --check` passed.
+- The parser/worker/configuration/ping continuation passed every focused and
+  broad gate on the integrated tree. The protocol parser suite passed 6/6 at
+  the scheduled 6,144-case depth; the worker-owned persistence family passed
+  9/9; configuration passed 14/14; and ping passed 8/8. The complete owning
+  packages pass 86 protocol unit plus 6 parser integration tests, 358 server
+  library plus 14 binary-unit, 2 binary-integration, and 6 release-verification
+  tests, 185 client-app tests, and 715 client-core tests.
+  Source-bound mutation reports catch 98/98 viable configuration mutants and
+  47/47 viable ping mutants with zero misses or timeouts; all six scheduled
+  shards catch 395/395 current viable mutations. The policy validates 14 exact
+  accepted-unviable identities, while ping requires none.
+- The exact integrated `cargo test --locked --workspace --all-features` gate
+  passed on its first attempt in 217.002 seconds, including integration tests,
+  the real-Python server release verifier, and every doctest. Warning-denied
+  all-target/all-feature workspace Clippy passed in 10.606 seconds.
+  All 386 Python policy/infrastructure tests passed in 19.436 seconds;
+  actionlint accepted the changed workflow, and the executable known-defect
+  policy still exactly matches one open defect and two characterizations.
 - The four-slice 2026-07-30 checkpoint passed its complete owning surfaces:
   445/445 client session tests, 712/712 client-core tests, 356 CLI library
   tests with the same eight declared ignores, and 355/355 server library tests

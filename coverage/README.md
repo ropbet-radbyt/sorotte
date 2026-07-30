@@ -282,12 +282,51 @@ always uploads its report
 and logs, including on failure. Interactive UI Automation remains a separate
 uninstrumented contract.
 
+## Protocol parser property and corpus evidence
+
+`crates/sorotte-protocol/tests/protocol_parser_robustness.rs` exercises the
+public byte, raw-JSON, line-item, and typed-message entrypoints through ordinary
+locked Cargo tests. A fixed-seed Proptest suite covers bounded arbitrary bytes,
+arbitrary Unicode, and insert/replace/delete/truncate mutations of 14 checked-in
+UTF-8 corpus files. A serde streaming `MapAccess` visitor independently derives
+top-level source order and surviving duplicate-key values; it does not call or
+copy the production order scanner.
+
+The default run executes 1,536 generated cases. The existing scheduled
+`PROPTEST_CASES=2048` depth executes 6,144 cases without another workflow. Both
+depths, all 14 corpus entries, 50 consecutive corpus replays, the complete
+protocol crate, and strict Clippy passed. This is deterministic parser
+robustness evidence, not coverage-guided fuzzing or transport scheduling.
+Commands, corpus inventory, oracle boundaries, and results are retained in
+[`protocol-property-corpus-20260730.md`](../docs/evidence/test-coverage/protocol-property-corpus-20260730.md).
+
+## Persistence worker fault evidence
+
+Three ordinary server tests now cross the production
+`RoomPersistenceService` boundary and fault its actor-owned SQLite connection
+immediately before the real transaction. They prove that worker-owned
+`SQLITE_FULL` and deterministic `query_only` write denial preserve the raw
+eight-column durable row and integrity, retain unresolved desired state,
+project degradation once, recover on the same connection, emit exactly one
+recovery transition, and survive a normal close/reopen. A separate real VFS
+path collision proves startup retains `SQLITE_CANTOPEN`, the action, and the
+database path.
+
+The three regressions passed 150/150 focused stress repetitions and the
+complete server package. The test-only hook exposes the exact production
+connection and effect under `cfg(test)`; it does not introduce a production
+failure branch. This is not an NTFS/POSIX ACL, kernel power-loss, torn-sector,
+`fsync`, or storage-cache claim. Exact fault construction and raw-state oracles
+are retained in
+[`persistence-worker-faults-20260730.md`](../docs/evidence/test-coverage/persistence-worker-faults-20260730.md).
+
 ## Targeted mutation evidence
 
 The scheduled mutation matrix covers the pure privacy boundary in
 `sorotte-secret`, controlled-room authorization in `sorotte-server`, raw
-command-order/error/redaction behavior in `sorotte-protocol`, and reconnect/
-state-acknowledgement decisions in `sorotte-client-core`. It deliberately does
+command-order/error/redaction behavior in `sorotte-protocol`, reconnect/state-
+acknowledgement and ping/RTT decisions in `sorotte-client-core`, and persisted
+runtime-configuration precedence in `sorotte-client-app`. It deliberately does
 not mutate the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
@@ -340,13 +379,25 @@ Four focused contracts now catch 30/30 viable mutants; two exact let-chain
 rewrites are compiler-unviable and expire on 2026-10-31. The wrapper also
 preflights `cargo test --list --format terse`, records its 445-test digest, and
 rejects zero tests, namespace escape, or zero mutants before execution.
+The runtime-configuration baseline caught only 52/101 viable mutations.
+Four whole-contract precedence and normalization tests now catch 98/98; five
+generated let-chain parse failures collapse to three exact expiring policy
+identities. The ping baseline caught 43/52. Input-validity, zero/equality,
+moving-average, forward-delay, and wall-clock oracles caught every observable
+survivor. One remaining comparison mutant was algebraically equivalent, so the
+formula was behavior-preservingly normalized to a base delay plus a
+nonnegative delta; the final source-bound inventory catches 47/47 with no
+exception. Across the six scheduled shards, all 395 current viable mutations
+are caught with zero misses and zero timeouts.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
 [`targeted-mutation-server-auth-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-server-auth-20260729.md),
 [`targeted-mutation-protocol-codec-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md),
+[`targeted-mutation-client-reconnect-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md),
+[`targeted-mutation-config-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-config-20260730.md),
 and
-[`targeted-mutation-client-reconnect-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md).
+[`targeted-mutation-client-ping-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-ping-20260730.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

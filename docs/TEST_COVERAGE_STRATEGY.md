@@ -10,6 +10,7 @@ Outstanding-defect closure update: 2026-07-30
 Deep-boundary testing update: 2026-07-30
 Atomic TLS and parallel-boundary update: 2026-07-30
 Raw framing, Windows process coverage, mutation, and SQLite-full update: 2026-07-30
+Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -37,7 +38,11 @@ domain, a zero-survivor reconnect mutation shard, generic raw-loopback framing,
 and real `SQLITE_FULL` recovery evidence. Raw client framing surfaced
 `TC-CLI-003`; its two deterministic characterizations remain deliberately
 unfixed, so the current registry contains one defect and two exact
-characterizations:
+characterizations. The latest four-slice continuation added an independent
+protocol parser/corpus oracle, faults on the actual persistence-worker
+connection, and zero-survivor configuration and ping mutation shards. None
+surfaced a product defect, so the registry remains at that exact one-defect,
+two-characterization state:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -101,6 +106,22 @@ characterizations:
 - a production-store `SQLITE_FULL` proof that preserves all eight durable room
   columns, passes integrity checks, recovers the old state, and progresses
   after capacity returns;
+- worker-owned SQLite fault proofs that apply `SQLITE_FULL` and deterministic
+  write denial immediately before the production transaction, retain all eight
+  durable columns and unresolved desired state, recover on the same connection,
+  and separately retain typed `SQLITE_CANTOPEN` context from a real VFS path
+  collision;
+- a six-test ordinary protocol parser suite with an independent streaming-order
+  oracle, 14 checked-in corpus files, 6,144 fixed-seed scheduled-depth cases,
+  strict UTF-8 boundaries, duplicate-key value semantics, and raw/typed
+  roundtrip invariants;
+- a scheduled persisted-runtime-configuration mutation shard that improved
+  from 52/101 to 98/98 viable mutations caught through whole-plan environment
+  precedence, controlled-room, and blank-value contracts;
+- a scheduled ping/RTT mutation shard that improved from 43/52 to 47/47 on its
+  final behavior-preserving normalized inventory, covering atomic input
+  rejection, zero/equality boundaries, moving-average arithmetic, forward
+  delay, and production wall-clock wrappers;
 - generated credential-taint coverage across transcript serialization,
   diagnostic dumps, parser errors, and player error display;
 - a strict ten-scenario native GUI contract with typed AccessKit menu
@@ -170,9 +191,10 @@ skipped Open Media contract while emitting repeated outbound DNS failures.
 The completed fix now proves exact UIA/AccessKit identities, detached
 disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Mutation,
-remaining deterministic clocks/network scheduling outside the CLI and TLS
-rotation boundaries, power-loss and filesystem-syscall persistence faults,
-coverage-guided fuzzing, sanitizers, interactive native CI, server-container
+remaining deterministic clocks/network scheduling outside the CLI, TLS
+rotation, and ping arithmetic boundaries, OS ACL/syscall and physical
+durability faults, coverage-guided fuzzing, mutation of transport/session and
+persistence arbitration, sanitizers, interactive native CI, server-container
 consumption, and public digest comparison remain proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
 defects, one server message-ordering defect, and four harness/oracle defects.
@@ -704,10 +726,12 @@ boundaries rather than adding hundreds more nearby examples.
 
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
-| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, and a 654-case raw-wire adversarial matrix | surviving duplicate `Set` payload/order pairing and fixed-marker unknown-command diagnostics are positive regressions | add coverage-guided byte fuzzing and a differential Python oracle |
+| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, and a six-test public parser suite with 14 corpus files plus 6,144 fixed-seed scheduled-depth cases | independent streaming order/value and raw/typed roundtrip oracles are required; coverage-guided exploration and the Python differential remain absent | retain deterministic corpus replay, add coverage-guided byte fuzzing and a differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
-| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, and real `SQLITE_FULL` old-row/recovery proof | production-store full-write atomicity is proven; kernel power-loss, permission/syscall faults, worker-connection full injection, and actor messages not yet admitted to desired state remain unproven | filesystem/storage failpoints and platform durability probes |
+| Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, store- and worker-owned `SQLITE_FULL`, worker write denial, and real VFS open-failure proofs | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, and integrity are proven; OS ACL/syscall semantics, kernel power loss, and physical durability remain unproven | retain worker fault regressions; add disposable-platform ACL/syscall and durability probes without broadening the claim |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, and a 30/30 viable reconnect mutation ratchet | reset transaction invalidation and stale-completion rejection are positive; adapter clock schedules remain incomplete | retain the zero-survivor shard and add clock-controlled adapter schedules |
+| Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, bracketed wall-clock wrappers, and a 47/47 viable mutation ratchet | arithmetic and public clock delegation are mechanically encoded; clock monotonicity, cross-host authenticity, jitter, scheduler latency, and playback outcomes are not | retain the zero-survivor shard; add deterministic jitter/drift simulation and real synchronization telemetry |
+| Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet | all 31 persisted runtime overrides are checked in both precedence directions; broader INI parsing, CLI composition, and migration remain outside this shard | retain the source-bound shard; add generated layer-composition and configuration migration properties |
 | CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, and deterministic partial-read cancellation matrices | `TC-CLI-003` proves future-local partial bytes are lost when a competing `select!` branch cancels the read; 142 older test-path sleeps retain scheduler-luck risk | make framing state cancellation-safe, convert both characterizations, then continue clock/barrier replacement |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
@@ -1450,7 +1474,7 @@ Targets:
 
 Reference: [cargo-mutants](https://mutants.rs/getting-started.html).
 
-Implementation status (2026-07-29): the scheduled matrix covers three critical
+Implementation status (updated 2026-07-30): the scheduled matrix covers six critical
 boundaries with pinned cargo-mutants 27.1.0. The original `sorotte-secret`
 privacy shard moved from 22/43 to 43/43 viable mutations caught against an
 identical 44-mutant inventory. Credential-classifier expansion later caused a
@@ -1478,8 +1502,19 @@ and
 [`targeted-mutation-server-auth-20260729.md`](evidence/test-coverage/targeted-mutation-server-auth-20260729.md),
 and
 [`targeted-mutation-protocol-codec-20260729.md`](evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md).
-This establishes the mechanism and three critical shards, not workspace-wide
-mutation assurance.
+The later reconnect shard catches 30/30 viable decisions with two expiring
+compiler-unviable identities. Persisted runtime configuration moved from
+52/101 viable caught to 98/98, with five compiler-unviable let-chain sites
+covered by three exact expiring identities. Ping/RTT arithmetic moved from
+43/52 to a normalized 47/47 final inventory without an exception. The six
+current shards catch all 395 viable mutations with zero misses and zero
+timeouts; 14 exact accepted-unviable policy identities fail closed on drift or
+expiry. See
+[`targeted-mutation-client-reconnect-20260730.md`](evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md),
+[`targeted-mutation-config-20260730.md`](evidence/test-coverage/targeted-mutation-config-20260730.md),
+and
+[`targeted-mutation-client-ping-20260730.md`](evidence/test-coverage/targeted-mutation-client-ping-20260730.md).
+This is bounded critical-module assurance, not workspace-wide mutation proof.
 
 ### 9.6 Genuine vertical player system harness
 
@@ -1974,10 +2009,14 @@ post-emission reconnect model, ten-generation real-loopback acknowledgement
 suite, and the real Windows named-pipe fragmentation/correlation/disconnect
 matrix are implemented. Real child-process player faults additionally cover
 large concurrent stdio, fragmented 512 KiB IPC, early exit, hang, kill/reap,
-and handle release. This is not yet coverage-guided fuzzing, generic
-client/server raw socket-byte framing, a Unix-domain socket equivalent,
-filesystem/power-loss fault injection, or a durability contract for actor
-intent that has not entered desired state.
+and handle release. The later parser continuation adds a 14-file corpus and
+three fixed-seed property families at public byte/raw/typed entrypoints,
+including an oracle independent of the production order scanner. The
+persistence continuation applies capacity and write-denial faults to the
+actual worker-owned connection and forces a real SQLite VFS open failure. This
+is not yet coverage-guided fuzzing, a Unix-domain socket equivalent, OS
+ACL/syscall fault injection, kernel/power-loss proof, or a durability contract
+for actor intent that has not entered desired state.
 
 ### Tranche D — real system and deep analysis
 
@@ -1988,11 +2027,13 @@ intent that has not entered desired state.
 5. Add immutable package/container consumer tests.
 6. Add nightly soak and weekly chaos/performance trends.
 
-Item 2 is now partially implemented: weekly bounded privacy, server
-controlled-room authorization, and protocol codec/redaction shards have 100%
-viable kill ratchets and fail-closed evidence. Protocol transport/session
-state, persistence arbitration, lifecycle, and configuration decision shards
-remain outstanding. Item 5 is implemented for the standalone server archive:
+Item 2 is now partially implemented: six weekly bounded privacy, server
+controlled-room authorization, protocol codec/redaction, reconnect,
+persisted-runtime-configuration, and ping/RTT shards have 100% viable kill
+ratchets and fail-closed evidence. Protocol transport/session state,
+persistence arbitration, broader lifecycle, and configuration migration/layer
+composition shards remain outstanding. Item 5 is implemented for the
+standalone server archive:
 the package contains a source-SHA-bound manifest with an exact payload
 inventory, and the release workflow safely extracts, verifies, and executes
 the exact archive and optional symbols bundle before uploading those same
@@ -2034,6 +2075,18 @@ The next parallel continuation is retained as four independent proof records:
   [`targeted-mutation-client-reconnect-20260730.md`](evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md);
 - the real `SQLITE_FULL` old-row integrity and forward-recovery proof in
   [`sqlite-full-recovery-20260730.md`](evidence/test-coverage/sqlite-full-recovery-20260730.md).
+
+The latest four independent proof records are:
+
+- the public protocol parser properties, independent order/value oracle, and
+  checked-in corpus in
+  [`protocol-property-corpus-20260730.md`](evidence/test-coverage/protocol-property-corpus-20260730.md);
+- worker-owned SQLite capacity/write-denial recovery and VFS-open failure in
+  [`persistence-worker-faults-20260730.md`](evidence/test-coverage/persistence-worker-faults-20260730.md);
+- the 98/98 persisted-runtime-configuration mutation ratchet in
+  [`targeted-mutation-config-20260730.md`](evidence/test-coverage/targeted-mutation-config-20260730.md);
+- the 47/47 ping/RTT mutation ratchet in
+  [`targeted-mutation-client-ping-20260730.md`](evidence/test-coverage/targeted-mutation-client-ping-20260730.md).
 
 Acceptance:
 
@@ -2129,13 +2182,13 @@ The most valuable remaining next steps are:
    one-byte and split-CRLF loopback schedules;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. extend the new production-store `SQLITE_FULL` proof into worker-owned
-   connection injection, permission/syscall failure, and platform durability
-   probes without overclaiming kernel power-loss behavior;
+3. extend the proven store- and worker-owned `SQLITE_FULL`, deterministic
+   write-denial, and VFS-open failures into disposable-platform ACL/syscall and
+   durability probes without overclaiming kernel power-loss behavior;
 4. add coverage-guided parser fuzzing and further mutation shards for
    protocol transport/session state, persistence arbitration, and
-   configuration decisions, retaining deterministic corpora and the new
-   reconnect zero-survivor ratchet;
+   configuration migration/layer composition, retaining the deterministic
+   parser corpus and all six zero-survivor ratchets;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
 6. extend the proven server and GUI archive consumers to a build-and-load
