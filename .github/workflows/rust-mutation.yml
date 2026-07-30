@@ -29,6 +29,7 @@ jobs:
           - client-ping
           - server-persistence-arbitration
           - client-inbound-order
+          - client-playlist-shuffle
           - cli-framing
     steps:
       - name: Checkout

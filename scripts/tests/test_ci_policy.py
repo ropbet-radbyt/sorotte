@@ -1387,6 +1387,7 @@ class CiPolicyTests(unittest.TestCase):
                         "client-ping",
                         "server-persistence-arbitration",
                         "client-inbound-order",
+                        "client-playlist-shuffle",
                         "cli-framing",
                     ]
                 },
@@ -1594,6 +1595,27 @@ class CiPolicyTests(unittest.TestCase):
                         ],
                         "test_target": "lib",
                         "test_filter": "session::tests::protocol_tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-playlist-shuffle",
+                        "owner": "client-playlist",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/session/playlist/"
+                            "shuffle_helpers.rs"
+                        ],
+                        "test_target": "lib",
+                        "test_filter": (
+                            "session::tests::playlist_tests::"
+                            "shuffle_undo_tests::"
+                        ),
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -1924,6 +1946,28 @@ class CiPolicyTests(unittest.TestCase):
                             "cargo-mutants requests Default for a persistence "
                             "effect whose required room or snapshot identity "
                             "has no valid default"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": "client-playlist-shuffle-let-chain-or",
+                        "shard": "client-playlist-shuffle",
+                        "file": (
+                            "crates/sorotte-client-core/src/session/playlist/"
+                            "shuffle_helpers.rs"
+                        ),
+                        "function": (
+                            "ClientSession::local_playlist_target_index_from_"
+                            "changed_playlist_legacy_compatible"
+                        ),
+                        "return_type": "-> usize",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "reason": (
+                            "cargo-mutants replaces each of the forward- and "
+                            "backward-search Rust let-chain && sites with ||, "
+                            "but let expressions are only valid in && chains "
+                            "so both generated mutants cannot parse"
                         ),
                         "review_by": "2026-10-31",
                     },
