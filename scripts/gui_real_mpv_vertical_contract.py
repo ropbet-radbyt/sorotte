@@ -15,6 +15,7 @@ REPORT_KIND = "sorotte-gui-real-mpv-vertical"
 SUMMARY_KIND = "sorotte-gui-real-mpv-vertical-contract"
 SESSION_EXCHANGE_KIND = "sorotte-gui-real-mpv-loopback-exchange"
 MENU_INTERACTIONS_KIND = "sorotte-gui-real-mpv-menu-interactions"
+RECOVERY_KIND = "sorotte-gui-real-mpv-owned-process-recovery"
 SESSION_CAPABILITIES = ("chat", "readiness", "sharedPlaylists")
 EXPECTED_CLIENT_HELLO = {
     "Hello": {
@@ -65,6 +66,18 @@ REQUIRED_ASSERTIONS = (
     "native-success-screenshot",
     "gui-exit-reaped-owned-mpv",
 )
+RECOVERY_REQUIRED_ASSERTIONS = (
+    *REQUIRED_ASSERTIONS[:-2],
+    "exact-attested-owned-mpv-terminated",
+    "automatic-relaunch-distinct-owned-exact-mpv",
+    "gui-remained-on-active-room-during-automatic-relaunch",
+    "replacement-mpv-loaded-generated-media",
+    "gui-play-command-observed-by-replacement-mpv",
+    "gui-pause-command-observed-by-replacement-mpv",
+    "replacement-transport-recovered-with-old-mpv-fenced",
+    "native-success-screenshot",
+    "gui-exit-reaped-replacement-owned-mpv",
+)
 REQUIRED_ARTIFACTS = (
     "config",
     "generated_media",
@@ -77,6 +90,45 @@ REQUIRED_ARTIFACTS = (
     "success_screenshot",
     "state",
 )
+RECOVERY_REQUIRED_ARTIFACTS = (
+    *REQUIRED_ARTIFACTS,
+    "owned_mpv_recovery",
+    "automatic_relaunch_screenshot",
+    "recovery_screenshot",
+)
+RECOVERY_KEYS = {
+    "schema_version",
+    "kind",
+    "result",
+    "fault",
+    "recovery_mode",
+    "automatic_relaunch_timeout_ms",
+    "initial_pid",
+    "initial_parent_pid",
+    "initial_process_image_path",
+    "initial_sha256",
+    "initial_ipc_endpoint",
+    "initial_process_terminated",
+    "automatic_relaunch_observation_index",
+    "automatic_relaunch_observation_event",
+    "gui_room_remained_active",
+    "manual_retry_invoked",
+    "recovered_pid",
+    "recovered_parent_pid",
+    "recovered_process_image_path",
+    "recovered_sha256",
+    "recovered_ipc_endpoint",
+    "distinct_pid",
+    "distinct_ipc_endpoint",
+    "post_termination_observation_index",
+    "recovered_file_loaded_index",
+    "recovered_playing_index",
+    "recovered_paused_index",
+    "initial_process_still_terminated_after_recovery",
+    "initial_process_still_terminated_after_gui_exit",
+    "recovered_process_terminated_after_gui_exit",
+    "error",
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -147,7 +199,7 @@ def validate_observations(
     path: Path,
     expected_media: Path,
     expected_mpv_pid: int,
-) -> None:
+) -> list[dict[str, Any]]:
     observations: list[dict[str, Any]] = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
@@ -197,6 +249,7 @@ def validate_observations(
         None,
     )
     require(paused_index is not None, "missing real-mpv pause=true observation after Play")
+    return observations
 
 
 def validate_report(
@@ -208,6 +261,7 @@ def validate_report(
     expected_mpv: Path,
     expected_mpv_sha256: str,
     producer_exit_code: int,
+    expect_recovery: bool = False,
 ) -> dict[str, Any]:
     artifact_root = normalized_resolved_path(artifact_root)
     expected_gui = normalized_resolved_path(expected_gui)
@@ -238,6 +292,41 @@ def validate_report(
         normalized_resolved_path(mpv.get("process_image_path", "")) == expected_mpv,
         "running mpv image path mismatch",
     )
+    recovered_mpv = report.get("recovered_mpv")
+    if expect_recovery:
+        validate_binary_identity(
+            recovered_mpv,
+            expected_mpv,
+            expected_mpv_sha256,
+            "recovered mpv binary",
+        )
+        require(isinstance(recovered_mpv, dict), "recovered mpv identity must be an object")
+        require(
+            recovered_mpv.get("minimum_supported_version") == "0.41.0",
+            "recovered minimum mpv drift",
+        )
+        require(
+            recovered_mpv.get("version") == mpv["version"],
+            "recovered mpv version identity drifted",
+        )
+        require(
+            isinstance(recovered_mpv.get("pid"), int)
+            and recovered_mpv["pid"] > 0
+            and recovered_mpv["pid"] != mpv["pid"],
+            "recovered mpv PID was not a distinct positive process",
+        )
+        require(
+            recovered_mpv.get("parent_pid") == mpv["parent_pid"],
+            "recovered mpv was not owned by the same GUI",
+        )
+        require(
+            normalized_resolved_path(recovered_mpv.get("process_image_path", ""))
+            == expected_mpv,
+            "recovered running mpv image path mismatch",
+        )
+    else:
+        require("recovered_mpv" not in report, "baseline report unexpectedly included recovery")
+        require("recovery" not in report, "baseline report unexpectedly included recovery state")
 
     isolation = report.get("isolation")
     require(isinstance(isolation, dict), "isolation contract missing")
@@ -284,21 +373,27 @@ def validate_report(
         "managed mpv IPC endpoint was not bound to the GUI process",
     )
 
+    required_assertions = (
+        RECOVERY_REQUIRED_ASSERTIONS if expect_recovery else REQUIRED_ASSERTIONS
+    )
     assertions = report.get("assertions")
     require(isinstance(assertions, list), "assertions must be a list")
     require(
-        assertions == list(REQUIRED_ASSERTIONS),
+        assertions == list(required_assertions),
         "assertion inventory or order drifted",
     )
 
+    required_artifacts = (
+        RECOVERY_REQUIRED_ARTIFACTS if expect_recovery else REQUIRED_ARTIFACTS
+    )
     artifacts = report.get("artifacts")
     require(isinstance(artifacts, dict), "artifact manifest missing")
     require(
-        set(artifacts) == set(REQUIRED_ARTIFACTS),
+        set(artifacts) == set(required_artifacts),
         f"artifact inventory mismatch: {sorted(artifacts)}",
     )
     resolved_artifacts: dict[str, Path] = {}
-    for label in REQUIRED_ARTIFACTS:
+    for label in required_artifacts:
         identity = artifacts[label]
         require(isinstance(identity, dict), f"{label} artifact identity must be an object")
         path = resolved_child(artifact_root, str(identity.get("path", "")), label)
@@ -311,6 +406,14 @@ def validate_report(
         resolved_artifacts["success_screenshot"].read_bytes().startswith(b"\x89PNG\r\n\x1a\n"),
         "success screenshot was not a PNG",
     )
+    if expect_recovery:
+        for label in ("automatic_relaunch_screenshot", "recovery_screenshot"):
+            require(
+                resolved_artifacts[label]
+                .read_bytes()
+                .startswith(b"\x89PNG\r\n\x1a\n"),
+                f"{label} was not a PNG",
+            )
     require(resolved_artifacts["mpv_log"].stat().st_size > 0, "mpv log was empty")
     require(
         resolved_artifacts["generated_media"].resolve() == expected_media,
@@ -399,9 +502,14 @@ def validate_report(
     require(menu_interactions.get("error") is None, "menu interactions retained an error")
     interaction_rows = menu_interactions.get("interactions")
     require(isinstance(interaction_rows, list), "menu interactions must be an array")
+    expected_menu_actions = (
+        ["menu.open_media", "menu.open_media", "menu.exit"]
+        if expect_recovery
+        else ["menu.open_media", "menu.exit"]
+    )
     require(
         [row.get("action_automation_id") for row in interaction_rows]
-        == ["menu.open_media", "menu.exit"],
+        == expected_menu_actions,
         "menu action inventory or order drifted",
     )
     for row in interaction_rows:
@@ -452,11 +560,164 @@ def validate_report(
     require(state.get("stage") == "complete", "state did not reach complete")
     require(state.get("gui_pid") == mpv["parent_pid"], "GUI ownership PID mismatch")
     require(state.get("mpv_pid") == mpv["pid"], "mpv state PID mismatch")
+    if expect_recovery:
+        require(
+            state.get("recovered_mpv_pid") == recovered_mpv["pid"],
+            "recovered mpv state PID mismatch",
+        )
+    else:
+        require(
+            "recovered_mpv_pid" not in state,
+            "baseline state unexpectedly included recovery PID",
+        )
     require(state.get("assertions") == assertions, "state/report assertions diverged")
 
-    validate_observations(
+    observations = validate_observations(
         resolved_artifacts["mpv_observation"], expected_media, mpv["pid"]
     )
+    if expect_recovery:
+        recovery = report.get("recovery")
+        require(isinstance(recovery, dict), "recovery contract missing")
+        require(set(recovery) == RECOVERY_KEYS, "recovery field inventory drifted")
+        artifact_recovery = load_json(
+            resolved_artifacts["owned_mpv_recovery"], "owned-mpv recovery"
+        )
+        require(artifact_recovery == recovery, "report/artifact recovery evidence diverged")
+        require(
+            recovery.get("schema_version") == SCHEMA_VERSION,
+            "recovery schema mismatch",
+        )
+        require(recovery.get("kind") == RECOVERY_KIND, "recovery kind mismatch")
+        require(recovery.get("result") == "passed", "recovery did not finish passed")
+        require(
+            recovery.get("fault") == "terminate-exact-attested-gui-owned-mpv",
+            "recovery fault contract drifted",
+        )
+        require(
+            recovery.get("recovery_mode")
+            == "active-session-automatic-managed-mpv-relaunch",
+            "automatic recovery mode drifted",
+        )
+        require(
+            isinstance(recovery.get("automatic_relaunch_timeout_ms"), int)
+            and recovery["automatic_relaunch_timeout_ms"] > 0
+            and recovery["automatic_relaunch_timeout_ms"] <= 12_000,
+            "automatic relaunch timeout was not positive and bounded",
+        )
+        require(recovery.get("error") is None, "recovery retained an error")
+        require(recovery.get("initial_pid") == mpv["pid"], "recovery initial PID mismatch")
+        require(
+            recovery.get("initial_parent_pid") == mpv["parent_pid"],
+            "recovery initial parent mismatch",
+        )
+        require(
+            normalized_resolved_path(recovery.get("initial_process_image_path", ""))
+            == expected_mpv,
+            "recovery initial image mismatch",
+        )
+        require(
+            recovery.get("initial_sha256") == expected_mpv_sha256,
+            "recovery initial digest mismatch",
+        )
+        require(
+            recovery.get("initial_ipc_endpoint") == isolation["ipc_endpoint"],
+            "recovery initial IPC mismatch",
+        )
+        require(
+            recovery.get("initial_process_terminated") is True,
+            "initial owned mpv was not confirmed terminated before automatic relaunch",
+        )
+        require(
+            recovery.get("automatic_relaunch_observation_event") == "pause",
+            "automatic relaunch observation event drifted",
+        )
+        require(
+            recovery.get("gui_room_remained_active") is True
+            and recovery.get("manual_retry_invoked") is False,
+            "automatic recovery unexpectedly required manual retry or left the active room",
+        )
+        require(
+            recovery.get("recovered_pid") == recovered_mpv["pid"]
+            and recovery.get("recovered_parent_pid") == recovered_mpv["parent_pid"],
+            "recovery replacement ownership mismatch",
+        )
+        require(
+            normalized_resolved_path(recovery.get("recovered_process_image_path", ""))
+            == expected_mpv
+            and recovery.get("recovered_sha256") == expected_mpv_sha256,
+            "recovery replacement image identity mismatch",
+        )
+        recovered_ipc = str(recovery.get("recovered_ipc_endpoint", ""))
+        require(
+            recovered_ipc.startswith(ipc_prefix)
+            and recovered_ipc != isolation["ipc_endpoint"],
+            "recovery replacement IPC was not distinct and GUI-owned",
+        )
+        require(
+            recovery.get("distinct_pid") is True
+            and recovery.get("distinct_ipc_endpoint") is True,
+            "recovery replacement identity was not explicitly distinct",
+        )
+        require(
+            recovery.get("initial_process_still_terminated_after_recovery") is True
+            and recovery.get("initial_process_still_terminated_after_gui_exit") is True
+            and recovery.get("recovered_process_terminated_after_gui_exit") is True,
+            "recovery final process cleanup was incomplete",
+        )
+        observation_indices = [
+            recovery.get("post_termination_observation_index"),
+            recovery.get("automatic_relaunch_observation_index"),
+            recovery.get("recovered_file_loaded_index"),
+            recovery.get("recovered_playing_index"),
+            recovery.get("recovered_paused_index"),
+        ]
+        require(
+            all(isinstance(index, int) and index >= 0 for index in observation_indices),
+            "recovery observation indices were invalid",
+        )
+        boundary, relaunch_index, loaded_index, playing_index, paused_index = (
+            observation_indices
+        )
+        require(
+            boundary
+            <= relaunch_index
+            < loaded_index
+            < playing_index
+            < paused_index
+            < len(observations),
+            "recovery observation ordering or bounds drifted",
+        )
+        require(
+            all(
+                item.get("pid") == recovered_mpv["pid"]
+                for item in observations[boundary:]
+            ),
+            "stale or foreign mpv generation observed after termination boundary",
+        )
+        require(
+            observations[relaunch_index].get("event") == "pause"
+            and observations[relaunch_index].get("pause") is True
+            and observations[relaunch_index].get("ipc_endpoint") == recovered_ipc,
+            "automatic replacement start observation mismatch",
+        )
+        recovered_loaded = observations[loaded_index]
+        require(
+            recovered_loaded.get("event") == "file-loaded"
+            and normalized_resolved_path(recovered_loaded.get("path", ""))
+            == expected_media
+            and recovered_loaded.get("ipc_endpoint") == recovered_ipc,
+            "replacement mpv file-loaded observation mismatch",
+        )
+        require(
+            observations[playing_index].get("event") == "pause"
+            and observations[playing_index].get("pause") is False,
+            "replacement mpv playing observation mismatch",
+        )
+        require(
+            observations[paused_index].get("event") == "pause"
+            and observations[paused_index].get("pause") is True,
+            "replacement mpv paused observation mismatch",
+        )
     config_text = resolved_artifacts["config"].read_text(encoding="utf-8")
     expected_mpv_spellings = {str(expected_mpv)}
     if os.name == "nt":
@@ -467,16 +728,19 @@ def validate_report(
     )
     require("host =" not in config_text, "isolated real-mpv config unexpectedly defined a host")
 
-    return {
+    summary = {
         "schema_version": SCHEMA_VERSION,
         "kind": SUMMARY_KIND,
         "result": "passed",
         "capability": "executed",
-        "assertion_count": len(REQUIRED_ASSERTIONS),
-        "artifact_count": len(REQUIRED_ARTIFACTS),
+        "assertion_count": len(required_assertions),
+        "artifact_count": len(required_artifacts),
         "gui_sha256": expected_gui_sha256,
         "mpv_sha256": expected_mpv_sha256,
     }
+    if expect_recovery:
+        summary["recovery_exercised"] = True
+    return summary
 
 
 def write_summary(path: Path, payload: dict[str, Any]) -> None:
@@ -494,6 +758,7 @@ def main() -> int:
     parser.add_argument("--expected-mpv-sha256", required=True)
     parser.add_argument("--producer-exit-code", type=int, required=True)
     parser.add_argument("--summary", type=Path, required=True)
+    parser.add_argument("--expect-recovery", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -506,6 +771,7 @@ def main() -> int:
             expected_mpv=args.expected_mpv,
             expected_mpv_sha256=args.expected_mpv_sha256,
             producer_exit_code=args.producer_exit_code,
+            expect_recovery=args.expect_recovery,
         )
     except (OSError, ValueError) as error:
         summary = {

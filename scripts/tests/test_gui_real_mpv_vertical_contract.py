@@ -194,6 +194,129 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
     return report, arguments
 
 
+def extend_with_owned_mpv_recovery(
+    report: dict[str, Any], arguments: dict[str, Any]
+) -> None:
+    root = pathlib.Path(arguments["artifact_root"])
+    observations = root / "mpv-observation.jsonl"
+    menu_path = root / "menu-interactions.json"
+    state_path = root / "real-mpv-state.json"
+    recovery_path = root / "owned-mpv-recovery.json"
+    automatic_relaunch_screenshot = root / "owned-mpv-automatic-relaunch.png"
+    recovery_screenshot = root / "owned-mpv-recovered.png"
+    media = root / "generated-silence.wav"
+    initial_pid = report["mpv"]["pid"]
+    recovered_pid = initial_pid + 100
+    initial_ipc = report["isolation"]["ipc_endpoint"]
+    recovered_ipc = initial_ipc + "-replacement"
+
+    rows = [
+        json.loads(line)
+        for line in observations.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    boundary = len(rows)
+    rows.extend(
+        [
+            {
+                "event": "pause",
+                "pid": recovered_pid,
+                "pause": True,
+                "ipc_endpoint": recovered_ipc,
+            },
+            {
+                "event": "file-loaded",
+                "pid": recovered_pid,
+                "path": str(media),
+                "filename": media.name,
+                "duration": 12.0,
+                "pause": True,
+                "ipc_endpoint": recovered_ipc,
+            },
+            {
+                "event": "pause",
+                "pid": recovered_pid,
+                "pause": False,
+                "ipc_endpoint": recovered_ipc,
+            },
+            {
+                "event": "pause",
+                "pid": recovered_pid,
+                "pause": True,
+                "ipc_endpoint": recovered_ipc,
+            },
+        ]
+    )
+    observations.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    menu = json.loads(menu_path.read_text(encoding="utf-8"))
+    replacement_open = copy.deepcopy(menu["interactions"][0])
+    menu["interactions"].insert(1, replacement_open)
+    write_json(menu_path, menu)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["recovered_mpv_pid"] = recovered_pid
+    state["assertions"] = list(contract.RECOVERY_REQUIRED_ASSERTIONS)
+    write_json(state_path, state)
+
+    recovered_mpv = copy.deepcopy(report["mpv"])
+    recovered_mpv["pid"] = recovered_pid
+    recovery = {
+        "schema_version": 1,
+        "kind": contract.RECOVERY_KIND,
+        "result": "passed",
+        "fault": "terminate-exact-attested-gui-owned-mpv",
+        "recovery_mode": "active-session-automatic-managed-mpv-relaunch",
+        "automatic_relaunch_timeout_ms": 12_000,
+        "initial_pid": initial_pid,
+        "initial_parent_pid": report["mpv"]["parent_pid"],
+        "initial_process_image_path": report["mpv"]["process_image_path"],
+        "initial_sha256": report["mpv"]["sha256"],
+        "initial_ipc_endpoint": initial_ipc,
+        "initial_process_terminated": True,
+        "automatic_relaunch_observation_index": boundary,
+        "automatic_relaunch_observation_event": "pause",
+        "gui_room_remained_active": True,
+        "manual_retry_invoked": False,
+        "recovered_pid": recovered_pid,
+        "recovered_parent_pid": report["mpv"]["parent_pid"],
+        "recovered_process_image_path": report["mpv"]["process_image_path"],
+        "recovered_sha256": report["mpv"]["sha256"],
+        "recovered_ipc_endpoint": recovered_ipc,
+        "distinct_pid": True,
+        "distinct_ipc_endpoint": True,
+        "post_termination_observation_index": boundary,
+        "recovered_file_loaded_index": boundary + 1,
+        "recovered_playing_index": boundary + 2,
+        "recovered_paused_index": boundary + 3,
+        "initial_process_still_terminated_after_recovery": True,
+        "initial_process_still_terminated_after_gui_exit": True,
+        "recovered_process_terminated_after_gui_exit": True,
+        "error": None,
+    }
+    write_json(recovery_path, recovery)
+    automatic_relaunch_screenshot.write_bytes(
+        b"\x89PNG\r\n\x1a\nowned-mpv-automatic-relaunch"
+    )
+    recovery_screenshot.write_bytes(b"\x89PNG\r\n\x1a\nowned-mpv-recovered")
+
+    report["assertions"] = list(contract.RECOVERY_REQUIRED_ASSERTIONS)
+    report["recovered_mpv"] = recovered_mpv
+    report["recovery"] = recovery
+    for label, path in {
+        "mpv_observation": observations,
+        "menu_interactions": menu_path,
+        "state": state_path,
+        "owned_mpv_recovery": recovery_path,
+        "automatic_relaunch_screenshot": automatic_relaunch_screenshot,
+        "recovery_screenshot": recovery_screenshot,
+    }.items():
+        report["artifacts"][label] = identity(path, relative_to=root)
+
+
 class RealMpvVerticalContractTests(unittest.TestCase):
     def test_accepts_complete_owned_isolated_vertical_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -203,6 +326,115 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self.assertEqual(summary["result"], "passed")
         self.assertEqual(summary["assertion_count"], len(contract.REQUIRED_ASSERTIONS))
         self.assertEqual(summary["artifact_count"], len(contract.REQUIRED_ARTIFACTS))
+        self.assertNotIn("recovery_exercised", summary)
+
+    def test_accepts_separate_exact_owned_mpv_recovery_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")
+            extend_with_owned_mpv_recovery(report, arguments)
+            summary = contract.validate_report(
+                report,
+                **arguments,
+                expect_recovery=True,
+            )
+
+        self.assertEqual(summary["result"], "passed")
+        self.assertTrue(summary["recovery_exercised"])
+        self.assertEqual(
+            summary["assertion_count"], len(contract.RECOVERY_REQUIRED_ASSERTIONS)
+        )
+        self.assertEqual(
+            summary["artifact_count"], len(contract.RECOVERY_REQUIRED_ARTIFACTS)
+        )
+
+    def test_recovery_contract_rejects_reused_identity_and_incomplete_cleanup(self) -> None:
+        mutations = (
+            (
+                "reused PID",
+                lambda report: report["recovered_mpv"].__setitem__(
+                    "pid", report["mpv"]["pid"]
+                ),
+                "distinct positive process",
+            ),
+            (
+                "reused IPC",
+                lambda report: report["recovery"].__setitem__(
+                    "recovered_ipc_endpoint", report["recovery"]["initial_ipc_endpoint"]
+                ),
+                "distinct and GUI-owned",
+            ),
+            (
+                "incomplete cleanup",
+                lambda report: report["recovery"].__setitem__(
+                    "recovered_process_terminated_after_gui_exit", False
+                ),
+                "final process cleanup was incomplete",
+            ),
+            (
+                "manual retry substituted for automatic recovery",
+                lambda report: report["recovery"].__setitem__(
+                    "manual_retry_invoked", True
+                ),
+                "unexpectedly required manual retry",
+            ),
+        )
+        for label, mutate, error_pattern in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                report, arguments = build_valid_fixture(
+                    pathlib.Path(temporary) / "artifacts"
+                )
+                extend_with_owned_mpv_recovery(report, arguments)
+                mutate(report)
+                recovery_path = (
+                    pathlib.Path(arguments["artifact_root"]) / "owned-mpv-recovery.json"
+                )
+                write_json(recovery_path, report["recovery"])
+                report["artifacts"]["owned_mpv_recovery"] = identity(
+                    recovery_path,
+                    relative_to=pathlib.Path(arguments["artifact_root"]),
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    contract.validate_report(
+                        report,
+                        **arguments,
+                        expect_recovery=True,
+                    )
+
+    def test_recovery_contract_rejects_old_generation_after_termination_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")
+            extend_with_owned_mpv_recovery(report, arguments)
+            observations = (
+                pathlib.Path(arguments["artifact_root"]) / "mpv-observation.jsonl"
+            )
+            rows = [
+                json.loads(line)
+                for line in observations.read_text(encoding="utf-8").splitlines()
+            ]
+            boundary = report["recovery"]["post_termination_observation_index"]
+            rows.insert(
+                boundary,
+                {
+                    "event": "pause",
+                    "pid": report["mpv"]["pid"],
+                    "pause": True,
+                    "ipc_endpoint": report["recovery"]["initial_ipc_endpoint"],
+                },
+            )
+            observations.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            report["artifacts"]["mpv_observation"] = identity(
+                observations,
+                relative_to=pathlib.Path(arguments["artifact_root"]),
+            )
+            with self.assertRaisesRegex(ValueError, "stale or foreign mpv generation"):
+                contract.validate_report(
+                    report,
+                    **arguments,
+                    expect_recovery=True,
+                )
 
     def test_rejects_nonzero_producer_and_tampered_binary_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -428,6 +660,9 @@ class RealMpvVerticalContractTests(unittest.TestCase):
             "exit 125",
             '@("build", "--quiet", "--locked", "-p", "sorotte-gui"',
             '"--real-mpv-vertical"',
+            "--exercise-owned-mpv-recovery",
+            "--expect-recovery",
+            "gui-real-mpv-owned-process-recovery",
             "--expected-gui-sha256",
             "--expected-mpv-sha256",
             "--producer-exit-code",

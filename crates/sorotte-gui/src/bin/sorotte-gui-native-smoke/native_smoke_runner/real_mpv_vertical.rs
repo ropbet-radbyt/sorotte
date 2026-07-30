@@ -13,6 +13,7 @@ const REAL_MPV_LOOPBACK_ROOM: &str = "real-mpv-room";
 const REAL_MPV_SESSION_HELLO: &str = r#"{"Hello":{"username":"real-mpv-user","room":{"name":"real-mpv-room"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sharedPlaylists":true}}}"#;
 const REAL_MPV_SESSION_CAPABILITIES: &[&str] = &["chat", "readiness", "sharedPlaylists"];
 const REAL_MPV_MENU_INTERACTIONS_KIND: &str = "sorotte-gui-real-mpv-menu-interactions";
+const REAL_MPV_RECOVERY_KIND: &str = "sorotte-gui-real-mpv-owned-process-recovery";
 const PLAY_CONTROL_AUTOMATION_ID: &str = "main-window:control:play";
 const PAUSE_CONTROL_AUTOMATION_ID: &str = "main-window:control:pause";
 
@@ -22,6 +23,7 @@ struct RealMpvVerticalOptions {
     mpv_path: PathBuf,
     artifact_dir: PathBuf,
     timeout: Duration,
+    exercise_recovery: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +37,8 @@ struct RealMpvVerticalState {
     mpv_binary: Option<String>,
     gui_pid: Option<u32>,
     mpv_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovered_mpv_pid: Option<u32>,
     assertions: Vec<String>,
     error: Option<String>,
 }
@@ -51,6 +55,7 @@ impl RealMpvVerticalState {
             mpv_binary: None,
             gui_pid: None,
             mpv_pid: None,
+            recovered_mpv_pid: None,
             assertions: Vec::new(),
             error: None,
         }
@@ -125,10 +130,94 @@ struct RealMpvVerticalReport {
     capability: &'static str,
     gui: BinaryIdentity,
     mpv: MpvIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovered_mpv: Option<MpvIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<MpvRecoveryEvidence>,
     isolation: IsolationContract,
     assertions: Vec<String>,
     artifacts: BTreeMap<String, ArtifactIdentity>,
     duration_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MpvRecoveryEvidence {
+    schema_version: u32,
+    kind: &'static str,
+    result: String,
+    fault: &'static str,
+    recovery_mode: &'static str,
+    automatic_relaunch_timeout_ms: u128,
+    initial_pid: u32,
+    initial_parent_pid: u32,
+    initial_process_image_path: String,
+    initial_sha256: String,
+    initial_ipc_endpoint: String,
+    initial_process_terminated: bool,
+    automatic_relaunch_observation_index: Option<usize>,
+    automatic_relaunch_observation_event: &'static str,
+    gui_room_remained_active: bool,
+    manual_retry_invoked: bool,
+    recovered_pid: Option<u32>,
+    recovered_parent_pid: Option<u32>,
+    recovered_process_image_path: Option<String>,
+    recovered_sha256: Option<String>,
+    recovered_ipc_endpoint: Option<String>,
+    distinct_pid: bool,
+    distinct_ipc_endpoint: bool,
+    post_termination_observation_index: Option<usize>,
+    recovered_file_loaded_index: Option<usize>,
+    recovered_playing_index: Option<usize>,
+    recovered_paused_index: Option<usize>,
+    initial_process_still_terminated_after_recovery: bool,
+    initial_process_still_terminated_after_gui_exit: bool,
+    recovered_process_terminated_after_gui_exit: bool,
+    error: Option<String>,
+}
+
+impl MpvRecoveryEvidence {
+    fn new(
+        initial_pid: u32,
+        initial_parent_pid: u32,
+        initial_process_image_path: &Path,
+        initial_sha256: &str,
+        initial_ipc_endpoint: &str,
+        automatic_relaunch_timeout: Duration,
+    ) -> Self {
+        Self {
+            schema_version: REAL_MPV_SCHEMA_VERSION,
+            kind: REAL_MPV_RECOVERY_KIND,
+            result: "running".to_owned(),
+            fault: "terminate-exact-attested-gui-owned-mpv",
+            recovery_mode: "active-session-automatic-managed-mpv-relaunch",
+            automatic_relaunch_timeout_ms: automatic_relaunch_timeout.as_millis(),
+            initial_pid,
+            initial_parent_pid,
+            initial_process_image_path: initial_process_image_path.display().to_string(),
+            initial_sha256: initial_sha256.to_owned(),
+            initial_ipc_endpoint: initial_ipc_endpoint.to_owned(),
+            initial_process_terminated: false,
+            automatic_relaunch_observation_index: None,
+            automatic_relaunch_observation_event: "pause",
+            gui_room_remained_active: false,
+            manual_retry_invoked: false,
+            recovered_pid: None,
+            recovered_parent_pid: None,
+            recovered_process_image_path: None,
+            recovered_sha256: None,
+            recovered_ipc_endpoint: None,
+            distinct_pid: false,
+            distinct_ipc_endpoint: false,
+            post_termination_observation_index: None,
+            recovered_file_loaded_index: None,
+            recovered_playing_index: None,
+            recovered_paused_index: None,
+            initial_process_still_terminated_after_recovery: false,
+            initial_process_still_terminated_after_gui_exit: false,
+            recovered_process_terminated_after_gui_exit: false,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +332,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let state_path = artifact_root.join("real-mpv-state.json");
     let session_exchange_path = artifact_root.join("session-exchange.json");
     let menu_interactions_path = artifact_root.join("menu-interactions.json");
+    let recovery_path = artifact_root.join("owned-mpv-recovery.json");
     let mut state = RealMpvVerticalState::new(&artifact_root);
     write_json_file(&state_path, &state)?;
     let mut menu_interactions = MenuInteractionsEvidence::new();
@@ -252,9 +342,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let driver = PlatformNativeGuiDriver;
     let mut child: Option<Child> = None;
     let mut window = None;
-    let mut verified_mpv_pid = None;
+    let mut verified_mpv_pids = Vec::new();
     let mut session_server: Option<MockSessionServer> = None;
     let mut session_exchange: Option<SessionExchangeEvidence> = None;
+    let mut recovery_evidence: Option<MpvRecoveryEvidence> = None;
 
     let run_result = (|| -> Result<RealMpvVerticalReport, String> {
         #[cfg(not(target_os = "windows"))]
@@ -291,6 +382,9 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         let observation_path = artifact_root.join("mpv-observation.jsonl");
         let mpv_log_path = artifact_root.join("mpv.log");
         let lifecycle_path = artifact_root.join("gui-lifecycle.jsonl");
+        let automatic_relaunch_screenshot_path =
+            artifact_root.join("owned-mpv-automatic-relaunch.png");
+        let recovery_screenshot_path = artifact_root.join("owned-mpv-recovered.png");
         let success_screenshot_path = artifact_root.join("success-real-mpv.png");
         fs::create_dir_all(&appdata_root).map_err(|error| {
             format!(
@@ -486,15 +580,15 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 "real mpv PID {mpv_pid} was not owned by the launched GUI PID {gui_pid}; parent PID was {parent_pid}"
             ));
         }
-        let process_image_path = process_image_path(mpv_pid)?;
-        let process_identity = binary_identity(&process_image_path)?;
+        let initial_process_image_path = process_image_path(mpv_pid)?;
+        let process_identity = binary_identity(&initial_process_image_path)?;
         if process_identity.sha256 != mpv_preflight.identity.sha256 {
             return Err(format!(
                 "GUI-owned mpv process digest {} did not match preflight digest {}",
                 process_identity.sha256, mpv_preflight.identity.sha256
             ));
         }
-        verified_mpv_pid = Some(mpv_pid);
+        verified_mpv_pids.push(mpv_pid);
         state.mpv_pid = Some(mpv_pid);
         let ipc_endpoint = file_loaded
             .ipc_endpoint
@@ -508,6 +602,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             return Err(format!(
                 "GUI-owned mpv IPC endpoint {ipc_endpoint:?} did not use the expected product-generated prefix {expected_ipc_prefix:?}"
             ));
+        }
+        if options.exercise_recovery {
+            let recovery = MpvRecoveryEvidence::new(
+                mpv_pid,
+                parent_pid,
+                &initial_process_image_path,
+                &process_identity.sha256,
+                &ipc_endpoint,
+                step_timeout,
+            );
+            write_json_file(&recovery_path, &recovery)?;
+            recovery_evidence = Some(recovery);
         }
         state.advance(
             &state_path,
@@ -598,6 +704,302 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             Some("gui-projected-paused-after-real-mpv-observation"),
         )?;
 
+        let mut active_mpv_pid = mpv_pid;
+        let mut recovered_mpv_identity = None;
+        if options.exercise_recovery {
+            terminate_test_process(mpv_pid)?;
+            wait_for_process_termination(mpv_pid, step_timeout)?;
+            if process_is_running(mpv_pid) {
+                return Err(format!(
+                    "initial mpv PID {mpv_pid} remained alive before automatic replacement"
+                ));
+            }
+            let post_termination_observation_index =
+                read_mpv_observations(&observation_path)?.len();
+            {
+                let recovery = recovery_evidence
+                    .as_mut()
+                    .expect("real-mpv recovery evidence must be initialized");
+                recovery.initial_process_terminated = true;
+                recovery.post_termination_observation_index =
+                    Some(post_termination_observation_index);
+                write_json_file(&recovery_path, recovery)?;
+            }
+            state.advance(
+                &state_path,
+                "owned-mpv-terminated",
+                Some("exact-attested-owned-mpv-terminated"),
+            )?;
+
+            let (automatic_relaunch_observation_index, recovered_started) =
+                wait_for_automatic_replacement_observation(
+                    &observation_path,
+                    post_termination_observation_index,
+                    mpv_pid,
+                    &expected_ipc_prefix,
+                    &ipc_endpoint,
+                    step_timeout,
+                )?;
+            let recovered_mpv_pid = recovered_started.pid.ok_or_else(|| {
+                "replacement mpv pause observation did not include its process ID".to_owned()
+            })?;
+            let recovered_ipc_endpoint = recovered_started
+                .ipc_endpoint
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "replacement mpv observation did not expose its managed IPC endpoint".to_owned()
+                })?;
+            if recovered_mpv_pid == mpv_pid {
+                return Err(format!(
+                    "Automatic mpv recovery reused terminated PID {mpv_pid}; expected a replacement process"
+                ));
+            }
+            if recovered_ipc_endpoint == ipc_endpoint {
+                return Err(format!(
+                    "Automatic mpv recovery reused terminated IPC endpoint {ipc_endpoint:?}; expected a fresh endpoint"
+                ));
+            }
+            if !recovered_ipc_endpoint.starts_with(&expected_ipc_prefix) {
+                return Err(format!(
+                    "replacement mpv IPC endpoint {recovered_ipc_endpoint:?} did not use the expected product-generated prefix {expected_ipc_prefix:?}"
+                ));
+            }
+            let recovered_parent_pid = process_parent_pid(recovered_mpv_pid)?;
+            if recovered_parent_pid != gui_pid {
+                return Err(format!(
+                    "replacement real mpv PID {recovered_mpv_pid} was not owned by GUI PID {gui_pid}; parent PID was {recovered_parent_pid}"
+                ));
+            }
+            let recovered_process_image_path = process_image_path(recovered_mpv_pid)?;
+            let recovered_process_identity = binary_identity(&recovered_process_image_path)?;
+            if recovered_process_identity.sha256 != mpv_preflight.identity.sha256 {
+                return Err(format!(
+                    "replacement GUI-owned mpv process digest {} did not match preflight digest {}",
+                    recovered_process_identity.sha256, mpv_preflight.identity.sha256
+                ));
+            }
+            verified_mpv_pids.push(recovered_mpv_pid);
+            active_mpv_pid = recovered_mpv_pid;
+            state.recovered_mpv_pid = Some(recovered_mpv_pid);
+            if process_is_running(mpv_pid) {
+                return Err(format!(
+                    "initial mpv PID {mpv_pid} resumed before automatic replacement attestation"
+                ));
+            }
+            {
+                let recovery = recovery_evidence
+                    .as_mut()
+                    .expect("real-mpv recovery evidence must be initialized");
+                recovery.automatic_relaunch_observation_index =
+                    Some(automatic_relaunch_observation_index);
+                recovery.recovered_pid = Some(recovered_mpv_pid);
+                recovery.recovered_parent_pid = Some(recovered_parent_pid);
+                recovery.recovered_process_image_path =
+                    Some(recovered_process_image_path.display().to_string());
+                recovery.recovered_sha256 = Some(recovered_process_identity.sha256.clone());
+                recovery.recovered_ipc_endpoint = Some(recovered_ipc_endpoint.clone());
+                recovery.distinct_pid = true;
+                recovery.distinct_ipc_endpoint = true;
+                write_json_file(&recovery_path, recovery)?;
+            }
+            state.advance(
+                &state_path,
+                "automatic-replacement-owned-mpv-ready",
+                Some("automatic-relaunch-distinct-owned-exact-mpv"),
+            )?;
+            wait_for_accessible_name(&driver, launched_window, "view: room", step_timeout)?;
+            driver
+                .capture_window_png(launched_window, &automatic_relaunch_screenshot_path)
+                .map_err(|error| {
+                    format!("failed to retain active-room automatic-relaunch screenshot: {error}")
+                })?;
+            {
+                let recovery = recovery_evidence
+                    .as_mut()
+                    .expect("real-mpv recovery evidence must be initialized");
+                recovery.gui_room_remained_active = true;
+                write_json_file(&recovery_path, recovery)?;
+            }
+            state.advance(
+                &state_path,
+                "automatic-relaunch-room-active",
+                Some("gui-remained-on-active-room-during-automatic-relaunch"),
+            )?;
+
+            let observations_before_recovered_open =
+                read_mpv_observations(&observation_path)?.len();
+            invoke_real_mpv_menu_action_with_evidence(
+                &driver,
+                launched_window,
+                FILE_MENU_AUTOMATION_ID,
+                OPEN_MEDIA_MENU_AUTOMATION_ID,
+                step_timeout,
+                &mut menu_interactions,
+                &menu_interactions_path,
+            )?;
+            let (recovered_file_loaded_index, recovered_file_loaded) = wait_for_mpv_observation(
+                &observation_path,
+                observations_before_recovered_open,
+                step_timeout,
+                "file-loaded for generated local media from the replacement real mpv",
+                |observation| {
+                    observation.event == "file-loaded"
+                        && observation.pid == Some(recovered_mpv_pid)
+                        && observation.path.as_deref().is_some_and(|observed| {
+                            observed_media_path_matches(Path::new(observed), &media_path)
+                        })
+                        && observation.ipc_endpoint.as_deref() == Some(&recovered_ipc_endpoint)
+                },
+            )?;
+            if recovered_file_loaded.filename.as_deref() != Some(expected_file_name) {
+                return Err(format!(
+                    "replacement real mpv reported filename {:?}; expected {expected_file_name:?}",
+                    recovered_file_loaded.filename
+                ));
+            }
+            let recovered_duration = recovered_file_loaded.duration.ok_or_else(|| {
+                "replacement mpv file-loaded observation omitted generated-media duration"
+                    .to_owned()
+            })?;
+            if (recovered_duration - f64::from(REAL_MPV_MEDIA_DURATION_SECONDS)).abs() > 0.05 {
+                return Err(format!(
+                    "replacement real mpv reported generated-media duration {recovered_duration}; expected {}",
+                    REAL_MPV_MEDIA_DURATION_SECONDS
+                ));
+            }
+            state.advance(
+                &state_path,
+                "replacement-real-mpv-file-loaded",
+                Some("replacement-mpv-loaded-generated-media"),
+            )?;
+
+            wait_for_enabled_automation_id(
+                &driver,
+                launched_window,
+                PLAY_CONTROL_AUTOMATION_ID,
+                step_timeout,
+            )?;
+            wait_for_enabled_automation_id(
+                &driver,
+                launched_window,
+                PAUSE_CONTROL_AUTOMATION_ID,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            let observations_before_recovered_play =
+                read_mpv_observations(&observation_path)?.len();
+            invoke_named_control_with_wait(
+                &driver,
+                launched_window,
+                PLAY_CONTROL_AUTOMATION_ID,
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            let (recovered_playing_index, _) = wait_for_mpv_observation(
+                &observation_path,
+                observations_before_recovered_play,
+                step_timeout,
+                "pause=false after GUI Play on replacement real mpv",
+                |observation| {
+                    observation.event == "pause"
+                        && observation.pid == Some(recovered_mpv_pid)
+                        && observation.pause == Some(false)
+                },
+            )?;
+            wait_for_accessible_name(
+                &driver,
+                launched_window,
+                "Room state: playing",
+                step_timeout,
+            )?;
+            state.advance(
+                &state_path,
+                "replacement-real-mpv-playing",
+                Some("gui-play-command-observed-by-replacement-mpv"),
+            )?;
+
+            let observations_before_recovered_pause =
+                read_mpv_observations(&observation_path)?.len();
+            invoke_named_control_with_wait(
+                &driver,
+                launched_window,
+                PAUSE_CONTROL_AUTOMATION_ID,
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            let (recovered_paused_index, _) = wait_for_mpv_observation(
+                &observation_path,
+                observations_before_recovered_pause,
+                step_timeout,
+                "pause=true after GUI Pause on replacement real mpv",
+                |observation| {
+                    observation.event == "pause"
+                        && observation.pid == Some(recovered_mpv_pid)
+                        && observation.pause == Some(true)
+                },
+            )?;
+            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            state.advance(
+                &state_path,
+                "replacement-real-mpv-paused",
+                Some("gui-pause-command-observed-by-replacement-mpv"),
+            )?;
+            if !(recovered_file_loaded_index < recovered_playing_index
+                && recovered_playing_index < recovered_paused_index)
+            {
+                return Err(format!(
+                    "replacement mpv ordering was not file-loaded < playing < paused: {recovered_file_loaded_index}, {recovered_playing_index}, {recovered_paused_index}"
+                ));
+            }
+            if process_is_running(mpv_pid) {
+                return Err(format!(
+                    "terminated initial mpv PID {mpv_pid} was running after replacement recovery"
+                ));
+            }
+            let observations_after_termination = read_mpv_observations(&observation_path)?;
+            if observations_after_termination
+                .iter()
+                .skip(post_termination_observation_index)
+                .any(|observation| observation.pid == Some(mpv_pid))
+            {
+                return Err(format!(
+                    "terminated initial mpv PID {mpv_pid} emitted an observation after the recovery boundary"
+                ));
+            }
+            {
+                let recovery = recovery_evidence
+                    .as_mut()
+                    .expect("real-mpv recovery evidence must be initialized");
+                recovery.recovered_file_loaded_index = Some(recovered_file_loaded_index);
+                recovery.recovered_playing_index = Some(recovered_playing_index);
+                recovery.recovered_paused_index = Some(recovered_paused_index);
+                recovery.initial_process_still_terminated_after_recovery = true;
+                recovery.result = "passed".to_owned();
+                write_json_file(&recovery_path, recovery)?;
+            }
+            driver
+                .capture_window_png(launched_window, &recovery_screenshot_path)
+                .map_err(|error| {
+                    format!("failed to retain successful owned-mpv recovery screenshot: {error}")
+                })?;
+            state.advance(
+                &state_path,
+                "owned-mpv-recovery-complete",
+                Some("replacement-transport-recovered-with-old-mpv-fenced"),
+            )?;
+            recovered_mpv_identity = Some(MpvIdentity {
+                path: mpv_preflight.identity.path.clone(),
+                bytes: mpv_preflight.identity.bytes,
+                sha256: mpv_preflight.identity.sha256.clone(),
+                version: mpv_preflight.version.clone(),
+                minimum_supported_version: sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION,
+                pid: recovered_mpv_pid,
+                parent_pid: recovered_parent_pid,
+                process_image_path: recovered_process_image_path.display().to_string(),
+            });
+        }
+
         driver
             .capture_window_png(launched_window, &success_screenshot_path)
             .map_err(|error| format!("failed to retain successful native screenshot: {error}"))?;
@@ -633,7 +1035,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             ],
             step_timeout,
         )?;
-        wait_for_process_termination(mpv_pid, step_timeout)?;
+        for verified_pid in verified_mpv_pids.iter().copied() {
+            wait_for_process_termination(verified_pid, step_timeout)?;
+        }
+        if options.exercise_recovery {
+            let recovery = recovery_evidence
+                .as_mut()
+                .expect("real-mpv recovery evidence must be complete");
+            recovery.initial_process_still_terminated_after_gui_exit = !process_is_running(mpv_pid);
+            recovery.recovered_process_terminated_after_gui_exit =
+                !process_is_running(active_mpv_pid);
+            write_json_file(&recovery_path, recovery)?;
+        }
         let release_result = session_server
             .take()
             .expect("real-mpv loopback server must remain live until GUI exit")
@@ -657,25 +1070,38 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         }
         menu_interactions.result = "passed".to_owned();
         write_json_file(&menu_interactions_path, &menu_interactions)?;
-        state.advance(&state_path, "complete", Some("gui-exit-reaped-owned-mpv"))?;
+        let exit_assertion = if options.exercise_recovery {
+            "gui-exit-reaped-replacement-owned-mpv"
+        } else {
+            "gui-exit-reaped-owned-mpv"
+        };
+        state.advance(&state_path, "complete", Some(exit_assertion))?;
         state.result = "passed".to_owned();
         write_json_file(&state_path, &state)?;
 
-        let artifacts = artifact_manifest(
-            &artifact_root,
-            &[
-                ("config", &config_path),
-                ("generated_media", &media_path),
-                ("observation_script", &observation_script_path),
-                ("mpv_observation", &observation_path),
-                ("mpv_log", &mpv_log_path),
-                ("gui_lifecycle", &lifecycle_path),
-                ("session_exchange", &session_exchange_path),
-                ("menu_interactions", &menu_interactions_path),
-                ("success_screenshot", &success_screenshot_path),
-                ("state", &state_path),
-            ],
-        )?;
+        let mut artifact_files = vec![
+            ("config", config_path.as_path()),
+            ("generated_media", media_path.as_path()),
+            ("observation_script", observation_script_path.as_path()),
+            ("mpv_observation", observation_path.as_path()),
+            ("mpv_log", mpv_log_path.as_path()),
+            ("gui_lifecycle", lifecycle_path.as_path()),
+            ("session_exchange", session_exchange_path.as_path()),
+            ("menu_interactions", menu_interactions_path.as_path()),
+            ("success_screenshot", success_screenshot_path.as_path()),
+            ("state", state_path.as_path()),
+        ];
+        if options.exercise_recovery {
+            artifact_files.extend([
+                ("owned_mpv_recovery", recovery_path.as_path()),
+                (
+                    "automatic_relaunch_screenshot",
+                    automatic_relaunch_screenshot_path.as_path(),
+                ),
+                ("recovery_screenshot", recovery_screenshot_path.as_path()),
+            ]);
+        }
+        let artifacts = artifact_manifest(&artifact_root, &artifact_files)?;
         Ok(RealMpvVerticalReport {
             schema_version: REAL_MPV_SCHEMA_VERSION,
             kind: REAL_MPV_KIND,
@@ -690,8 +1116,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 minimum_supported_version: sorotte_player_mpv::MINIMUM_SUPPORTED_MPV_VERSION,
                 pid: mpv_pid,
                 parent_pid,
-                process_image_path: process_image_path.display().to_string(),
+                process_image_path: initial_process_image_path.display().to_string(),
             },
+            recovered_mpv: recovered_mpv_identity,
+            recovery: recovery_evidence.clone(),
             isolation: IsolationContract {
                 artifact_root: artifact_root.display().to_string(),
                 config_path: config_path.display().to_string(),
@@ -738,10 +1166,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                     let _ = gui_child.wait();
                 }
             }
-            if let Some(mpv_pid) = verified_mpv_pid
-                && process_is_running(mpv_pid)
-            {
-                let _ = terminate_test_process(mpv_pid);
+            for mpv_pid in verified_mpv_pids.iter().copied() {
+                if process_is_running(mpv_pid) {
+                    let _ = terminate_test_process(mpv_pid);
+                }
             }
             if let Some(server) = session_server.take() {
                 if let Some(exchange) = session_exchange.as_mut() {
@@ -779,6 +1207,11 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             menu_interactions.result = "failed".to_owned();
             menu_interactions.error = Some(redact_real_mpv_error(&error));
             let _ = write_json_file(&menu_interactions_path, &menu_interactions);
+            if let Some(recovery) = recovery_evidence.as_mut() {
+                recovery.result = "failed".to_owned();
+                recovery.error = Some(redact_real_mpv_error(&error));
+                let _ = write_json_file(&recovery_path, recovery);
+            }
             state.result = "failed".to_owned();
             state.stage = format!("{}-failed", state.stage);
             state.error = Some(redact_real_mpv_error(&error));
@@ -793,10 +1226,15 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
     let mut mpv_path = None;
     let mut artifact_dir = None;
     let mut timeout = Duration::from_secs(30);
+    let mut exercise_recovery = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--real-mpv-vertical" | "--json" => index += 1,
+            "--exercise-owned-mpv-recovery" => {
+                exercise_recovery = true;
+                index += 1;
+            }
             "--binary" => {
                 binary_path = Some(PathBuf::from(required_value(args, index, "--binary")?));
                 index += 2;
@@ -819,7 +1257,7 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
             }
             argument => {
                 return Err(format!(
-                    "unknown real-mpv vertical argument {argument:?}; expected --binary, --mpv, --artifact-dir, and optional --timeout-ms"
+                    "unknown real-mpv vertical argument {argument:?}; expected --binary, --mpv, --artifact-dir, optional --timeout-ms, and optional --exercise-owned-mpv-recovery"
                 ));
             }
         }
@@ -831,6 +1269,7 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
         artifact_dir: artifact_dir
             .ok_or_else(|| "--real-mpv-vertical requires --artifact-dir PATH".to_owned())?,
         timeout,
+        exercise_recovery,
     })
 }
 
@@ -1073,6 +1512,56 @@ where
             return Err(format!(
                 "timed out waiting for {description}; observations={:?}",
                 observations
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_automatic_replacement_observation(
+    path: &Path,
+    start_index: usize,
+    terminated_pid: u32,
+    expected_ipc_prefix: &str,
+    terminated_ipc_endpoint: &str,
+    timeout: Duration,
+) -> Result<(usize, MpvObservation), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if process_is_running(terminated_pid) {
+            return Err(format!(
+                "terminated initial mpv PID {terminated_pid} became live while waiting for automatic replacement"
+            ));
+        }
+        let observations = read_mpv_observations(path)?;
+        if observations
+            .iter()
+            .skip(start_index)
+            .any(|observation| observation.pid == Some(terminated_pid))
+        {
+            return Err(format!(
+                "terminated initial mpv PID {terminated_pid} emitted an observation while waiting for automatic replacement"
+            ));
+        }
+        if let Some((index, observation)) =
+            observations
+                .iter()
+                .enumerate()
+                .skip(start_index)
+                .find(|(_, observation)| {
+                    observation.event == "pause"
+                        && observation.pid.is_some_and(|pid| pid != terminated_pid)
+                        && observation.ipc_endpoint.as_deref().is_some_and(|endpoint| {
+                            endpoint.starts_with(expected_ipc_prefix)
+                                && endpoint != terminated_ipc_endpoint
+                        })
+                })
+        {
+            return Ok((index, observation.clone()));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for bounded automatic active-session replacement mpv; observations={observations:?}"
             ));
         }
         thread::sleep(Duration::from_millis(50));
@@ -1595,6 +2084,15 @@ mod tests {
         assert_eq!(parsed.mpv_path, PathBuf::from("mpv.exe"));
         assert_eq!(parsed.artifact_dir, PathBuf::from("artifacts"));
         assert_eq!(parsed.timeout, Duration::from_millis(1234));
+        assert!(!parsed.exercise_recovery);
+
+        let mut recovery_args = args.clone();
+        recovery_args.push("--exercise-owned-mpv-recovery".to_owned());
+        assert!(
+            parse_real_mpv_vertical_options(&recovery_args)
+                .expect("recovery options should parse")
+                .exercise_recovery
+        );
 
         assert!(parse_real_mpv_vertical_options(&["--real-mpv-vertical".to_owned()]).is_err());
         let mut zero = args;

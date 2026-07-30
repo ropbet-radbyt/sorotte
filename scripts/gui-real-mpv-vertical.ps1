@@ -1,7 +1,8 @@
 param(
     [string]$MpvPath,
     [string]$BinaryPath,
-    [int]$TimeoutMs = 30000
+    [int]$TimeoutMs = 30000,
+    [switch]$ExerciseOwnedMpvRecovery
 )
 
 Set-StrictMode -Version Latest
@@ -28,7 +29,13 @@ else {
     Join-Path $repoRoot "target"
 }
 $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ")
-$artifactDirectory = Join-Path $targetRoot "verification\gui-real-mpv-vertical\$timestamp-$PID"
+$capabilityDirectory = if ($ExerciseOwnedMpvRecovery) {
+    "gui-real-mpv-owned-process-recovery"
+}
+else {
+    "gui-real-mpv-vertical"
+}
+$artifactDirectory = Join-Path $targetRoot "verification\$capabilityDirectory\$timestamp-$PID"
 if (Test-Path -LiteralPath $artifactDirectory) {
     throw "fresh real-mpv artifact directory already exists: $artifactDirectory"
 }
@@ -274,24 +281,29 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
 $runner = $null
 $producerExitCode = $buildExitCode
 if ($buildExitCode -eq 0 -and -not $prelaunchError) {
-    $runnerTimeout = ([long]$TimeoutMs * 8) + 30000
+    $timeoutMultiplier = if ($ExerciseOwnedMpvRecovery) { 12 } else { 8 }
+    $runnerTimeout = ([long]$TimeoutMs * $timeoutMultiplier) + 30000
     if ($runnerTimeout -gt [int]::MaxValue) {
         throw "derived real-mpv wall-clock timeout exceeds supported process wait"
     }
+    $runnerArguments = @(
+        "--real-mpv-vertical",
+        "--json",
+        "--binary",
+        $effectiveGuiPath,
+        "--mpv",
+        $effectiveMpvPath,
+        "--artifact-dir",
+        $artifactDirectory,
+        "--timeout-ms",
+        [string]$TimeoutMs
+    )
+    if ($ExerciseOwnedMpvRecovery) {
+        $runnerArguments += "--exercise-owned-mpv-recovery"
+    }
     $runner = Invoke-CapturedProcess `
         -FilePath $nativeHarnessPath `
-        -Arguments @(
-            "--real-mpv-vertical",
-            "--json",
-            "--binary",
-            $effectiveGuiPath,
-            "--mpv",
-            $effectiveMpvPath,
-            "--artifact-dir",
-            $artifactDirectory,
-            "--timeout-ms",
-            [string]$TimeoutMs
-        ) `
+        -Arguments $runnerArguments `
         -WorkingDirectory $repoRoot `
         -StdoutPath $reportPath `
         -StderrPath $stderrPath `
@@ -345,16 +357,29 @@ if ($guiSha256Before) {
 
 $validatorExitCode = 1
 if ($pythonCommand -and $guiSha256Before) {
-    & $pythonCommand.Source `
-        $validatorPath `
-        --report $reportPath `
-        --artifact-dir $artifactDirectory `
-        --expected-gui $effectiveGuiPath `
-        --expected-gui-sha256 $guiSha256Before `
-        --expected-mpv $effectiveMpvPath `
-        --expected-mpv-sha256 $mpvSha256 `
-        --producer-exit-code $producerExitCode `
-        --summary $summaryPath
+    $validatorArguments = @(
+        $validatorPath,
+        "--report",
+        $reportPath,
+        "--artifact-dir",
+        $artifactDirectory,
+        "--expected-gui",
+        $effectiveGuiPath,
+        "--expected-gui-sha256",
+        $guiSha256Before,
+        "--expected-mpv",
+        $effectiveMpvPath,
+        "--expected-mpv-sha256",
+        $mpvSha256,
+        "--producer-exit-code",
+        [string]$producerExitCode,
+        "--summary",
+        $summaryPath
+    )
+    if ($ExerciseOwnedMpvRecovery) {
+        $validatorArguments += "--expect-recovery"
+    }
+    & $pythonCommand.Source @validatorArguments
     $validatorExitCode = $LASTEXITCODE
 }
 else {
