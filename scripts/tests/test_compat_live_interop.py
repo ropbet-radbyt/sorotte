@@ -516,6 +516,38 @@ class ClosedSchemaTests(unittest.TestCase):
 
 
 class PreflightModeTests(unittest.TestCase):
+    def test_execution_uses_absolute_attested_oracle_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw).resolve()
+            oracle = {
+                "path": ".interop-cache/syncplay-legacy",
+            }
+            python = {
+                "executable": "C:/Python313/python.exe",
+            }
+
+            environment = interop.build_execution_environment(
+                repo_root=root,
+                environment={
+                    "SYNCPLAY_LEGACY_ROOT": ".interop-cache/syncplay-legacy",
+                },
+                oracle=oracle,
+                python_record=python,
+                required=True,
+            )
+
+        self.assertEqual(
+            pathlib.Path(environment["SYNCPLAY_LEGACY_ROOT"]),
+            root / ".interop-cache" / "syncplay-legacy",
+        )
+        self.assertEqual(
+            environment["SYNCPLAY_PYTHON_BIN"],
+            "C:/Python313/python.exe",
+        )
+        self.assertEqual(environment[interop.REQUIRED_ENVIRONMENT_VARIABLE], "1")
+        self.assertEqual(environment["SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY"], "1")
+        self.assertEqual(environment["SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY"], "1")
+
     def test_missing_oracle_is_optional_only_outside_required_mode(self) -> None:
         source = {
             "commit_sha": "1" * 40,

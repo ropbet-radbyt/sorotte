@@ -829,6 +829,32 @@ def execution_failures(
     return errors
 
 
+def build_execution_environment(
+    *,
+    repo_root: pathlib.Path,
+    environment: Mapping[str, str],
+    oracle: Mapping[str, Any],
+    python_record: Mapping[str, Any],
+    required: bool,
+) -> dict[str, str]:
+    execution_environment = dict(environment)
+    oracle_path = resolve_within(
+        repo_root,
+        pathlib.Path(require_string(oracle["path"], label="oracle path")),
+        label="legacy Syncplay oracle execution path",
+    )
+    execution_environment["SYNCPLAY_LEGACY_ROOT"] = str(oracle_path)
+    execution_environment["SYNCPLAY_PYTHON_BIN"] = require_string(
+        python_record["executable"],
+        label="Python executable",
+    )
+    if required:
+        execution_environment["SYNCPLAY_REQUIRE_LIVE_INTEROP"] = "1"
+        execution_environment["SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY"] = "1"
+        execution_environment["SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY"] = "1"
+    return execution_environment
+
+
 def artifact_record(
     repo_root: pathlib.Path, path: pathlib.Path, data: bytes
 ) -> dict[str, Any]:
@@ -1307,12 +1333,13 @@ def collect_report(
         }
         report["fixtures"] = fixtures
 
-        execution_environment = dict(environment)
-        execution_environment["SYNCPLAY_PYTHON_BIN"] = python_record["executable"]
-        if required:
-            execution_environment["SYNCPLAY_REQUIRE_LIVE_INTEROP"] = "1"
-            execution_environment["SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY"] = "1"
-            execution_environment["SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY"] = "1"
+        execution_environment = build_execution_environment(
+            repo_root=repo_root,
+            environment=environment,
+            oracle=report["oracle"],
+            python_record=python_record,
+            required=required,
+        )
 
         list_result = run_command(
             LIST_COMMAND,
