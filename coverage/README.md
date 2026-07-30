@@ -76,9 +76,12 @@ converted to ordinary positive regressions after their production fixes
 landed. The later raw-loopback framing slice registered `TC-CLI-003` with two
 deterministic expected-failure characterizations: a partial inbound frame is
 consumed by a future-local buffer and lost when another connected-session
-`select!` branch cancels that read before CRLF. The current registry therefore
-contains one defect and two exact characterizations; neither is treated as a
-positive behavior proof.
+`select!` branch cancels that read before CRLF. The coverage-guided protocol
+parser lane subsequently registered `TC-PROTOCOL-004` with raw and typed
+characterizations for an adjacent floating-point representation change across
+decode/encode/decode. The current registry therefore contains two open defects
+and four exact characterizations; none is treated as a positive behavior
+proof.
 `TC-SERVER-004` is now resolved by immutable authenticated TLS generations and
 an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime
@@ -300,6 +303,52 @@ robustness evidence, not coverage-guided fuzzing or transport scheduling.
 Commands, corpus inventory, oracle boundaries, and results are retained in
 [`protocol-property-corpus-20260730.md`](../docs/evidence/test-coverage/protocol-property-corpus-20260730.md).
 
+## Coverage-guided protocol parser evidence
+
+The standalone `fuzz/` package adds a source-bound libFuzzer/AddressSanitizer
+target for every public raw, diagnostic, aggregate, singular, typed, and
+encoding protocol-line boundary. An independent serde `MapAccess` visitor
+checks source order and duplicate-key surviving values. The runner pins
+`cargo-fuzz 0.13.2`, `libfuzzer-sys 0.4.13`, and
+`nightly-2026-07-29`; caps input at 65,536 bytes, each input at 5 seconds,
+RSS at 2,048 MiB, and campaigns at 900 seconds; rejects stale output; and
+attests the exact source, seed, command, tools, corpus, artifacts, statistics,
+and before/after stability.
+
+The first real campaign found `TC-PROTOCOL-004`: `70E70` changes from
+`7.000000000000001e71` to the adjacent
+`7.000000000000002e71` across raw and valid typed
+decode/encode/decode. Two exact expected-failure characterizations retain the
+defect without changing production behavior. A narrowly registered
+continuation classifier permits only structurally identical, same-sign finite
+floating-point leaves that differ by one ULP; every non-floating, structural,
+sign, non-finite, or larger change remains a failure.
+
+The first continuation passed 559,788 executions. A fresh 180-second campaign
+over committed SHA `729214d0de7ced9c56da7361bda68dc75b831179` passed
+1,915,137 executions with no artifact or independent failure. Its 29-file
+bound-source and 14-file seed manifests were stable. Pull-request and
+`main`-push path filters cover every fixed bound input, and the scheduled
+workflow runs the same fail-closed runner for 900 seconds. Exact experiments,
+tool identities, hashes, classifier, and limitations are retained in
+[`protocol-coverage-guided-20260730.md`](../docs/evidence/test-coverage/protocol-coverage-guided-20260730.md).
+
+## Configuration composition property evidence
+
+A black-box `sorotte-client-app` integration suite generates all 30
+environment-overridable persisted fields and crosses the public INI
+upsert/parse, runtime-snapshot, and environment-aware startup-plan boundary.
+Its independent model proves exact roundtrip and idempotence, preservation of
+unknown INI content, single-field noninterference, and exact suppression of
+only the stored field whose environment value is present. The fixed seed is
+`0xC0F1_6C0A_2026_0730`; invalid case budgets fail closed.
+
+The scheduled depth passed 6,144 generated cases and the stress depth passed
+30,000. No production source changed and no product defect surfaced. Exact
+field inventory, case budgets, commands, hashes, and limitations are retained
+in
+[`configuration-composition-properties-20260730.md`](../docs/evidence/test-coverage/configuration-composition-properties-20260730.md).
+
 ## Persistence worker fault evidence
 
 Three ordinary server tests now cross the production
@@ -326,7 +375,9 @@ The scheduled mutation matrix covers the pure privacy boundary in
 `sorotte-secret`, controlled-room authorization in `sorotte-server`, raw
 command-order/error/redaction behavior in `sorotte-protocol`, reconnect/state-
 acknowledgement and ping/RTT decisions in `sorotte-client-core`, and persisted
-runtime-configuration precedence in `sorotte-client-app`. It deliberately does
+runtime-configuration precedence in `sorotte-client-app`. Two additional
+ratchets cover room-persistence arbitration in `sorotte-server` and inbound
+`Set` command completion/order in `sorotte-client-core`. It deliberately does
 not mutate the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
@@ -387,8 +438,13 @@ moving-average, forward-delay, and wall-clock oracles caught every observable
 survivor. One remaining comparison mutant was algebraically equivalent, so the
 formula was behavior-preservingly normalized to a base delay plus a
 nonnegative delta; the final source-bound inventory catches 47/47 with no
-exception. Across the six scheduled shards, all 395 current viable mutations
-are caught with zero misses and zero timeouts.
+exception. The persistence-arbitration baseline caught only 3/25 viable
+mutants; seven deterministic state-machine tests now catch 25/25, with two
+exact expiring compiler-unviable identities. The inbound-order baseline caught
+4/5; three independent command-order oracles now catch 5/5 without an
+exception. Across the eight scheduled shards, all 425 current viable
+mutations are caught with zero misses and zero timeouts. The policy contains
+16 exact accepted compiler-unviable identities.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
@@ -396,8 +452,10 @@ Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-protocol-codec-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-protocol-codec-20260729.md),
 [`targeted-mutation-client-reconnect-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md),
 [`targeted-mutation-config-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-config-20260730.md),
+[`targeted-mutation-client-ping-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-ping-20260730.md),
+[`targeted-mutation-server-persistence-arbitration-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-server-persistence-arbitration-20260730.md),
 and
-[`targeted-mutation-client-ping-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-ping-20260730.md).
+[`targeted-mutation-client-inbound-order-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

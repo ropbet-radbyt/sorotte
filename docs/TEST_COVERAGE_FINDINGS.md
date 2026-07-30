@@ -11,6 +11,7 @@ Deep-boundary testing update: 2026-07-30
 Atomic TLS and parallel-boundary update: 2026-07-30
 Raw-loopback framing update: 2026-07-30
 Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
+Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -39,13 +40,21 @@ The later raw-loopback framing slice opens `TC-CLI-003` with two deterministic
 characterizations. A connected-session `select!` can cancel a partially
 completed inbound read after bytes have been consumed from the transport,
 discarding the future-local prefix before CRLF. That defect remains
-deliberately unfixed in this testing slice; the current registry contains one
-defect and two exact characterizations.
+deliberately unfixed in this testing slice; at that checkpoint the registry
+contained one defect and two exact characterizations.
 The subsequent four-slice continuation added deterministic protocol
 property/corpus tests, actor-owned persistence fault injection, and
 zero-survivor configuration and ping mutation gates. These experiments found
-no new product defect and did not modify `TC-CLI-003`; the registry therefore
-remains exactly one open defect and two characterizations.
+no new product defect and did not modify `TC-CLI-003`; that checkpoint
+therefore remained at one open defect and two characterizations.
+The latest continuation adds zero-survivor persistence-arbitration and inbound
+`Set` ordering mutation ratchets, black-box composition properties for all 30
+environment-overridable settings, and a source-bound coverage-guided protocol
+parser lane. The first executable parser campaign found
+`TC-PROTOCOL-004`, an adjacent finite floating-point representation change
+across raw and typed decode/encode/decode. Production behavior remains
+unchanged. The current registry contains exactly two open defects and four
+exact characterizations: two each for `TC-CLI-003` and `TC-PROTOCOL-004`.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -71,7 +80,33 @@ Before the shrinkable suite was added:
 After the coverage tranche was integrated:
 
 - `cargo fmt --all --check` passed.
-- The parser/worker/configuration/ping continuation passed every focused and
+- The final provenance/mutation/property/fuzz continuation passed all 84
+  combined mutation, CI, known-defect, and fuzz-policy tests. The shared
+  mutation policy validates eight scheduled shards and 16 exact accepted
+  compiler-unviable identities; its checked-in source-bound results catch all
+  425 viable mutations with zero misses or timeouts. The focused owning
+  selectors pass 7/7 persistence-arbitration tests and 38/38 client protocol
+  tests, while the configuration composition suite passes 6,144 scheduled
+  generated cases. The complete protocol package passes 88 library and 6
+  parser integration tests, and strict protocol Clippy passes.
+- The source-bound parser target first exposed and registered
+  `TC-PROTOCOL-004`. Its 45-second continuation passed 559,788 executions.
+  The canonical 180-second campaign over committed SHA
+  `729214d0de7ced9c56da7361bda68dc75b831179` passed 1,915,137 executions,
+  added 6,634 corpus units, peaked at 519 MiB, retained a stable 29-file source
+  manifest and 14-file seed manifest, and produced no artifact or independent
+  failure. Both changed workflows pass actionlint, and the executable
+  known-defect policy now exactly matches two open defects and four
+  characterizations.
+- Final validation passed warning-denied all-target/all-feature workspace
+  Clippy in 15.65 seconds. The complete locked all-feature workspace,
+  including integration tests, the real-Python server release verifier, and
+  every doctest, passed on its first run in 250.8 seconds. All 399 Python
+  infrastructure and policy tests passed in 20.383 seconds; formatting,
+  diff whitespace, both changed workflows, the eight-shard mutation policy,
+  and the two-defect/four-characterization registry also passed their exact
+  gates.
+- The parser/worker/configuration/ping checkpoint passed every focused and
   broad gate on the integrated tree. The protocol parser suite passed 6/6 at
   the scheduled 6,144-case depth; the worker-owned persistence family passed
   9/9; configuration passed 14/14; and ping passed 8/8. The complete owning
@@ -79,8 +114,8 @@ After the coverage tranche was integrated:
   library plus 14 binary-unit, 2 binary-integration, and 6 release-verification
   tests, 185 client-app tests, and 715 client-core tests.
   Source-bound mutation reports catch 98/98 viable configuration mutants and
-  47/47 viable ping mutants with zero misses or timeouts; all six scheduled
-  shards catch 395/395 current viable mutations. The policy validates 14 exact
+  47/47 viable ping mutants with zero misses or timeouts; its six scheduled
+  shards caught 395/395 viable mutations. The policy validated 14 exact
   accepted-unviable identities, while ping requires none.
 - The exact integrated `cargo test --locked --workspace --all-features` gate
   passed on its first attempt in 217.002 seconds, including integration tests,
@@ -88,7 +123,8 @@ After the coverage tranche was integrated:
   all-target/all-feature workspace Clippy passed in 10.606 seconds.
   All 386 Python policy/infrastructure tests passed in 19.436 seconds;
   actionlint accepted the changed workflow, and the executable known-defect
-  policy still exactly matches one open defect and two characterizations.
+  policy at that checkpoint exactly matched one open defect and two
+  characterizations.
 - The four-slice 2026-07-30 checkpoint passed its complete owning surfaces:
   445/445 client session tests, 712/712 client-core tests, 356 CLI library
   tests with the same eight declared ignores, and 355/355 server library tests
@@ -187,11 +223,13 @@ After the coverage tranche was integrated:
 - The strengthened known-defect policy corrected the TLS identifier from the
   already-used `TC-SERVER-001` to `TC-SERVER-003`, rejects duplicate finding
   headings and title drift, and now inventories multiline Rust
-  `should_panic(expected = ...)` attributes. Its 21 focused policy tests pass;
-  the historical populated registry, the closure checkpoint's explicit
-  zero-defect registry, and the current single-defect registry all use the
-  same fail-closed contract. The complete infrastructure suite at that
-  checkpoint passed 295/295 tests in 12.421 seconds.
+  `should_panic(expected = ...)` attributes. It now also requires each panic
+  oracle to start with its own defect identifier; all 22 focused policy tests
+  pass. The historical populated registry, the closure checkpoint's explicit
+  zero-defect registry, the raw-framing checkpoint's single-defect registry,
+  and the current two-defect registry all use the same fail-closed contract.
+  The complete infrastructure suite at the earlier checkpoint passed 295/295
+  tests in 12.421 seconds.
 - The ignored-test registry exactly classifies all 23 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
   capability tests. The two compatibility quarantines were retired after their
@@ -2231,6 +2269,12 @@ counterexamples to:
 ```text
 TC-PROTOCOL-004: protocol floating-point value changed across decode/encode/decode
 ```
+
+The exact continuation classifier passed 559,788 executions in its first
+45-second run. After provenance binding and the implementation commit, a fresh
+180-second canonical campaign passed 1,915,137 executions over SHA
+`729214d0de7ced9c56da7361bda68dc75b831179`, with stable 29-file source and
+14-file seed manifests, no artifact, and no independent failure.
 
 No production fix is included. To continue searching for independent parser
 failures, the fuzz oracle admits only structurally identical values whose
