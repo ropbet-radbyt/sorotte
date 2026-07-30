@@ -1,0 +1,430 @@
+name: Sorotte native GUI interactive contract
+
+run-name: Native GUI interactive contract for ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full trusted Sorotte commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sorotte-native-interactive
+  cancel-in-progress: false
+
+jobs:
+  native_interactive:
+    name: Strict native GUI inventory (ephemeral interactive Windows)
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - sorotte-native-interactive
+      - sorotte-ephemeral
+    timeout-minutes: 45
+    env:
+      NATIVE_ARTIFACT_ROOT: ${{ github.workspace }}\target\verification\gui-native-smoke
+    steps:
+      - name: Attest ephemeral interactive runner before checkout
+        id: preflight
+        continue-on-error: true
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $failures = [System.Collections.Generic.List[string]]::new()
+          function Require-RunnerCondition {
+              param(
+                  [Parameter(Mandatory = $true)][bool]$Condition,
+                  [Parameter(Mandatory = $true)][string]$Message
+              )
+              if (-not $Condition) {
+                  $failures.Add($Message)
+              }
+          }
+
+          $null = New-Item -ItemType Directory -Force -Path $env:NATIVE_CI_EVIDENCE_ROOT
+          $requestedSha = [string]$env:REQUESTED_SOURCE_SHA
+          $runnerContract = [string]$env:SOROTTE_NATIVE_RUNNER_CONTRACT
+          $runnerInstanceId = [string]$env:SOROTTE_NATIVE_RUNNER_INSTANCE_ID
+          $runnerMaxJobs = [string]$env:SOROTTE_NATIVE_RUNNER_MAX_JOBS
+          $sessionName = [string]$env:SESSIONNAME
+          $platform = [System.Environment]::OSVersion.Platform.ToString()
+          $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+
+          Require-RunnerCondition ($requestedSha -cmatch '^[0-9a-f]{40}$') `
+              "source_sha must be a full lowercase commit SHA"
+          Require-RunnerCondition ($env:GITHUB_ACTIONS -eq "true") `
+              "preflight must run inside GitHub Actions"
+          Require-RunnerCondition ($platform -eq "Win32NT") `
+              "runner operating system must be Windows"
+          Require-RunnerCondition ($architecture -eq "X64") `
+              "runner architecture must be X64"
+          Require-RunnerCondition `
+              ($runnerContract -ceq "sorotte-ephemeral-interactive-windows-v1") `
+              "runner contract attestation is missing or unsupported"
+          Require-RunnerCondition ($runnerMaxJobs -ceq "1") `
+              "runner must attest a one-job lifetime"
+
+          $parsedInstanceId = [Guid]::Empty
+          $instanceIdValid = (
+              [Guid]::TryParse($runnerInstanceId, [ref]$parsedInstanceId) -and
+              $parsedInstanceId -ne [Guid]::Empty
+          )
+          Require-RunnerCondition $instanceIdValid `
+              "runner instance ID must be a nonzero UUID"
+          Require-RunnerCondition ($sessionId -gt 0) `
+              "runner process must not execute in Windows session 0"
+          Require-RunnerCondition `
+              (-not [string]::IsNullOrWhiteSpace($sessionName) -and $sessionName -notmatch '^Services$') `
+              "runner must execute in a named interactive Windows session"
+
+          $sameSessionExplorer = @(
+              Get-Process -Name explorer -ErrorAction SilentlyContinue |
+                  Where-Object { $_.SessionId -eq $sessionId }
+          )
+          Require-RunnerCondition ($sameSessionExplorer.Count -gt 0) `
+              "interactive session must contain an Explorer shell"
+
+          $inputDesktopOpened = $false
+          $foregroundWindowInSession = $false
+          try {
+              Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class SorotteNativeInteractivePreflight {
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern IntPtr OpenInputDesktop(
+                  uint flags,
+                  bool inherit,
+                  uint desiredAccess
+              );
+              [DllImport("user32.dll", SetLastError = true)]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool CloseDesktop(IntPtr desktop);
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
+              [DllImport("user32.dll")]
+              public static extern uint GetWindowThreadProcessId(
+                  IntPtr window,
+                  out uint processId
+              );
+          }
+          '@
+              $inputDesktop = [SorotteNativeInteractivePreflight]::OpenInputDesktop(
+                  0,
+                  $false,
+                  0x0100
+              )
+              if ($inputDesktop -ne [IntPtr]::Zero) {
+                  $inputDesktopOpened = $true
+                  $null = [SorotteNativeInteractivePreflight]::CloseDesktop($inputDesktop)
+              }
+
+              $foregroundWindow = [SorotteNativeInteractivePreflight]::GetForegroundWindow()
+              if ($foregroundWindow -ne [IntPtr]::Zero) {
+                  [uint32]$foregroundProcessId = 0
+                  $null = [SorotteNativeInteractivePreflight]::GetWindowThreadProcessId(
+                      $foregroundWindow,
+                      [ref]$foregroundProcessId
+                  )
+                  if ($foregroundProcessId -gt 0) {
+                      $foregroundProcess = Get-Process -Id $foregroundProcessId -ErrorAction Stop
+                      $foregroundWindowInSession = $foregroundProcess.SessionId -eq $sessionId
+                  }
+              }
+          }
+          catch {
+              $failures.Add("interactive desktop probe failed: $($_.Exception.Message)")
+          }
+
+          Require-RunnerCondition $inputDesktopOpened `
+              "runner cannot open the current input desktop"
+          Require-RunnerCondition $foregroundWindowInSession `
+              "runner session does not own the foreground window"
+
+          $preflightResult = if ($failures.Count -eq 0) { "passed" } else { "failed" }
+          [pscustomobject]@{
+              schema_version = 1
+              kind = "sorotte-native-interactive-preflight"
+              result = $preflightResult
+              requested_source_sha = $requestedSha
+              runner_contract = $runnerContract
+              runner_instance_id = $runnerInstanceId
+              runner_max_jobs = $runnerMaxJobs
+              platform = $platform
+              architecture = $architecture
+              session_id = $sessionId
+              session_name = $sessionName
+              explorer_in_session = $sameSessionExplorer.Count -gt 0
+              input_desktop_opened = $inputDesktopOpened
+              foreground_window_in_session = $foregroundWindowInSession
+              failures = @($failures)
+          } | ConvertTo-Json -Depth 4 |
+              Set-Content -LiteralPath (
+                  Join-Path $env:NATIVE_CI_EVIDENCE_ROOT "preflight.json"
+              ) -Encoding utf8
+
+          if ($failures.Count -ne 0) {
+              throw "interactive runner preflight failed: $($failures -join '; ')"
+          }
+
+      - name: Checkout exact trusted source
+        id: checkout
+        if: steps.preflight.outcome == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Bind checkout to requested source
+        id: source_binding
+        if: steps.checkout.outcome == 'success'
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $actualSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualSha -cne $env:REQUESTED_SOURCE_SHA) {
+              throw "checked-out SHA '$actualSha' differs from requested SHA '$env:REQUESTED_SOURCE_SHA'"
+          }
+          $trackedChanges = @(git status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $trackedChanges.Count -ne 0) {
+              throw "checked-out tracked source is not clean"
+          }
+          [pscustomobject]@{
+              schema_version = 1
+              kind = "sorotte-native-interactive-source-binding"
+              requested_source_sha = $env:REQUESTED_SOURCE_SHA
+              actual_source_sha = $actualSha
+              tracked_source_clean = $true
+          } | ConvertTo-Json -Depth 3 |
+              Set-Content -LiteralPath (
+                  Join-Path $env:NATIVE_CI_EVIDENCE_ROOT "source-binding.json"
+              ) -Encoding utf8
+
+      - name: Setup pinned Rust
+        id: rust
+        if: steps.source_binding.outcome == 'success'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+
+      - name: Setup pinned Python
+        id: python
+        if: steps.rust.outcome == 'success'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned native interop prerequisites
+        id: prerequisites
+        if: steps.python.outcome == 'success'
+        shell: pwsh
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements/legacy-python-interop.txt
+
+      - name: Run exact strict native GUI inventory
+        id: native
+        if: steps.prerequisites.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}\sorotte-native-${{ github.run_id }}-${{ github.run_attempt }}\target
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File scripts/gui-native-smoke.ps1 `
+              -Json `
+              -TimeoutMs 80000 `
+              --scenario baseline `
+              --scenario relaunch `
+              --scenario drag-drop `
+              --scenario loopback `
+              --scenario menu-open-media `
+              --scenario live-python `
+              --scenario controlled-room `
+              --scenario detached-missing-media `
+              --scenario missing-media-continue `
+              --scenario transport
+          exit $LASTEXITCODE
+
+      - name: Validate and bind native evidence inventory
+        id: native_inventory
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          NATIVE_OUTCOME: ${{ steps.native.outcome }}
+          NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $failures = [System.Collections.Generic.List[string]]::new()
+          $requiredFiles = @(
+              "native-report.json",
+              "native-stderr.log",
+              "contract-summary.json",
+              "invocation.json",
+              "build-stdout.log",
+              "build-stderr.log",
+              "harness-build-stdout.log",
+              "harness-build-stderr.log"
+          )
+          $runDirectories = @()
+          $inventory = @()
+
+          if ($env:NATIVE_OUTCOME -ne "skipped") {
+              if (-not (Test-Path -LiteralPath $env:NATIVE_ARTIFACT_ROOT -PathType Container)) {
+                  $failures.Add("native artifact root is missing after native execution")
+              }
+              else {
+                  $runDirectories = @(
+                      Get-ChildItem -LiteralPath $env:NATIVE_ARTIFACT_ROOT -Directory
+                  )
+                  if ($runDirectories.Count -ne 1) {
+                      $failures.Add(
+                          "expected exactly one native artifact run directory; found $($runDirectories.Count)"
+                      )
+                  }
+                  if ($runDirectories.Count -eq 1) {
+                      foreach ($requiredFile in $requiredFiles) {
+                          $requiredPath = Join-Path $runDirectories[0].FullName $requiredFile
+                          if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+                              $failures.Add("required native evidence file is missing: $requiredFile")
+                          }
+                      }
+                      $inventory = @(
+                          Get-ChildItem -LiteralPath $runDirectories[0].FullName -File -Recurse |
+                              Sort-Object FullName |
+                              ForEach-Object {
+                                  [pscustomobject]@{
+                                      path = [System.IO.Path]::GetRelativePath(
+                                          $runDirectories[0].FullName,
+                                          $_.FullName
+                                      ).Replace([char]92, [char]47)
+                                      size_bytes = $_.Length
+                                      sha256 = (
+                                          Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+                                      ).Hash.ToLowerInvariant()
+                                  }
+                              }
+                      )
+                  }
+              }
+          }
+
+          [pscustomobject]@{
+              schema_version = 1
+              kind = "sorotte-native-interactive-artifact-inventory"
+              result = if ($failures.Count -eq 0) { "passed" } else { "failed" }
+              native_step_outcome = $env:NATIVE_OUTCOME
+              native_run_directory_count = $runDirectories.Count
+              required_files = $requiredFiles
+              files = $inventory
+              failures = @($failures)
+          } | ConvertTo-Json -Depth 6 |
+              Set-Content -LiteralPath (
+                  Join-Path $env:NATIVE_CI_EVIDENCE_ROOT "native-artifact-inventory.json"
+              ) -Encoding utf8
+
+          if ($failures.Count -ne 0) {
+              throw "native evidence inventory failed: $($failures -join '; ')"
+          }
+
+      - name: Write native lane outcome evidence
+        id: lane_summary
+        if: always()
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          RUST_OUTCOME: ${{ steps.rust.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          PREREQUISITES_OUTCOME: ${{ steps.prerequisites.outcome }}
+          SOURCE_BINDING_OUTCOME: ${{ steps.source_binding.outcome }}
+          NATIVE_OUTCOME: ${{ steps.native.outcome }}
+          NATIVE_INVENTORY_OUTCOME: ${{ steps.native_inventory.outcome }}
+        run: |
+          $null = New-Item -ItemType Directory -Force -Path $env:NATIVE_CI_EVIDENCE_ROOT
+          [pscustomobject]@{
+              schema_version = 1
+              kind = "sorotte-native-interactive-lane-outcomes"
+              requested_source_sha = $env:REQUESTED_SOURCE_SHA
+              preflight = $env:PREFLIGHT_OUTCOME
+              checkout = $env:CHECKOUT_OUTCOME
+              rust = $env:RUST_OUTCOME
+              python = $env:PYTHON_OUTCOME
+              prerequisites = $env:PREREQUISITES_OUTCOME
+              source_binding = $env:SOURCE_BINDING_OUTCOME
+              native = $env:NATIVE_OUTCOME
+              native_inventory = $env:NATIVE_INVENTORY_OUTCOME
+          } | ConvertTo-Json -Depth 3 |
+              Set-Content -LiteralPath (
+                  Join-Path $env:NATIVE_CI_EVIDENCE_ROOT "lane-outcomes.json"
+              ) -Encoding utf8
+
+      - name: Upload all native interactive evidence
+        id: evidence_upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-interactive-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.NATIVE_ARTIFACT_ROOT }}
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Enforce complete native interactive lane
+        if: always()
+        shell: pwsh
+        env:
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          RUST_OUTCOME: ${{ steps.rust.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          PREREQUISITES_OUTCOME: ${{ steps.prerequisites.outcome }}
+          SOURCE_BINDING_OUTCOME: ${{ steps.source_binding.outcome }}
+          NATIVE_OUTCOME: ${{ steps.native.outcome }}
+          NATIVE_INVENTORY_OUTCOME: ${{ steps.native_inventory.outcome }}
+          LANE_SUMMARY_OUTCOME: ${{ steps.lane_summary.outcome }}
+          EVIDENCE_UPLOAD_OUTCOME: ${{ steps.evidence_upload.outcome }}
+        run: |
+          $outcomes = [ordered]@{
+              preflight = $env:PREFLIGHT_OUTCOME
+              checkout = $env:CHECKOUT_OUTCOME
+              rust = $env:RUST_OUTCOME
+              python = $env:PYTHON_OUTCOME
+              prerequisites = $env:PREREQUISITES_OUTCOME
+              source_binding = $env:SOURCE_BINDING_OUTCOME
+              native = $env:NATIVE_OUTCOME
+              native_inventory = $env:NATIVE_INVENTORY_OUTCOME
+              lane_summary = $env:LANE_SUMMARY_OUTCOME
+              evidence_upload = $env:EVIDENCE_UPLOAD_OUTCOME
+          }
+          $failed = @(
+              $outcomes.GetEnumerator() |
+                  Where-Object { $_.Value -ne "success" } |
+                  ForEach-Object { "$($_.Key)=$($_.Value)" }
+          )
+          if ($failed.Count -ne 0) {
+              throw "native interactive lane is incomplete: $($failed -join ', ')"
+          }

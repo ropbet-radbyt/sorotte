@@ -1,0 +1,596 @@
+from __future__ import annotations
+
+import copy
+import pathlib
+import re
+import unittest
+from typing import Any, Callable
+
+import yaml
+
+from scripts import gui_native_smoke_contract
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = (
+    REPO_ROOT / ".github" / "workflows" / "gui-native-interactive.yml"
+)
+ACTIONLINT_CONFIG_PATH = REPO_ROOT / ".github" / "actionlint.yaml"
+
+CHECKOUT_ACTION = (
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+)
+RUST_ACTION = (
+    "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
+)
+PYTHON_ACTION = (
+    "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+)
+UPLOAD_ACTION = (
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+)
+
+RUNNER_LABELS = [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "sorotte-native-interactive",
+    "sorotte-ephemeral",
+]
+ATTESTATION_ENV_KEYS = {
+    "SOROTTE_NATIVE_RUNNER_CONTRACT",
+    "SOROTTE_NATIVE_RUNNER_INSTANCE_ID",
+    "SOROTTE_NATIVE_RUNNER_MAX_JOBS",
+}
+EVIDENCE_ROOT = (
+    "${{ runner.temp }}\\sorotte-native-evidence-"
+    "${{ github.run_id }}-${{ github.run_attempt }}"
+)
+NATIVE_ARTIFACT_ROOT = (
+    "${{ github.workspace }}\\target\\verification\\gui-native-smoke"
+)
+CARGO_TARGET_ROOT = (
+    "${{ runner.temp }}\\sorotte-native-"
+    "${{ github.run_id }}-${{ github.run_attempt }}\\target"
+)
+REQUESTED_SHA = "${{ inputs.source_sha }}"
+
+STEP_NAMES = [
+    "Attest ephemeral interactive runner before checkout",
+    "Checkout exact trusted source",
+    "Bind checkout to requested source",
+    "Setup pinned Rust",
+    "Setup pinned Python",
+    "Install pinned native interop prerequisites",
+    "Run exact strict native GUI inventory",
+    "Validate and bind native evidence inventory",
+    "Write native lane outcome evidence",
+    "Upload all native interactive evidence",
+    "Enforce complete native interactive lane",
+]
+REQUIRED_NATIVE_FILES = [
+    "native-report.json",
+    "native-stderr.log",
+    "contract-summary.json",
+    "invocation.json",
+    "build-stdout.log",
+    "build-stderr.log",
+    "harness-build-stdout.log",
+    "harness-build-stderr.log",
+]
+SUMMARY_OUTCOMES = {
+    "REQUESTED_SOURCE_SHA": REQUESTED_SHA,
+    "PREFLIGHT_OUTCOME": "${{ steps.preflight.outcome }}",
+    "CHECKOUT_OUTCOME": "${{ steps.checkout.outcome }}",
+    "RUST_OUTCOME": "${{ steps.rust.outcome }}",
+    "PYTHON_OUTCOME": "${{ steps.python.outcome }}",
+    "PREREQUISITES_OUTCOME": "${{ steps.prerequisites.outcome }}",
+    "SOURCE_BINDING_OUTCOME": "${{ steps.source_binding.outcome }}",
+    "NATIVE_OUTCOME": "${{ steps.native.outcome }}",
+    "NATIVE_INVENTORY_OUTCOME": "${{ steps.native_inventory.outcome }}",
+}
+ENFORCED_OUTCOMES = {
+    key: value
+    for key, value in SUMMARY_OUTCOMES.items()
+    if key != "REQUESTED_SOURCE_SHA"
+}
+ENFORCED_OUTCOMES.update(
+    {
+        "LANE_SUMMARY_OUTCOME": "${{ steps.lane_summary.outcome }}",
+        "EVIDENCE_UPLOAD_OUTCOME": "${{ steps.evidence_upload.outcome }}",
+    }
+)
+
+
+def parse_yaml(text: str) -> dict[str, Any]:
+    parsed = yaml.load(text, Loader=yaml.BaseLoader)
+    if not isinstance(parsed, dict):
+        raise AssertionError("workflow must be a YAML mapping")
+    return parsed
+
+
+def step_by_name(job: dict[str, Any], name: str) -> dict[str, Any]:
+    matches = [
+        step
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one step named {name!r}; found {len(matches)}"
+        )
+    return matches[0]
+
+
+def require_fragments(text: str, fragments: list[str], *, label: str) -> None:
+    missing = [fragment for fragment in fragments if fragment not in text]
+    if missing:
+        raise AssertionError(f"{label} is missing required fragments: {missing!r}")
+
+
+def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
+    triggers = workflow.get("on")
+    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch"}:
+        raise AssertionError(
+            "native interactive execution must remain explicit trusted dispatch"
+        )
+    dispatch = triggers["workflow_dispatch"]
+    if not isinstance(dispatch, dict) or set(dispatch) != {"inputs"}:
+        raise AssertionError("workflow_dispatch must contain only its input contract")
+    inputs = dispatch["inputs"]
+    if not isinstance(inputs, dict) or set(inputs) != {"source_sha"}:
+        raise AssertionError("workflow must require exactly one source_sha input")
+    if inputs["source_sha"] != {
+        "description": "Full trusted Sorotte commit SHA to validate",
+        "required": "true",
+        "type": "string",
+    }:
+        raise AssertionError("source_sha dispatch contract drifted")
+
+    if workflow.get("permissions") != {"contents": "read"}:
+        raise AssertionError("workflow permissions must remain contents-read only")
+    if "${{ secrets." in str(workflow):
+        raise AssertionError("native interactive workflow must not consume secrets")
+    if "env" in workflow:
+        raise AssertionError("workflow-level environment can bypass runner attestation")
+
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {"native_interactive"}:
+        raise AssertionError("workflow must contain exactly one native_interactive job")
+    job = jobs["native_interactive"]
+    if not isinstance(job, dict):
+        raise AssertionError("native_interactive job must be a mapping")
+    if job.get("runs-on") != RUNNER_LABELS:
+        raise AssertionError("ephemeral interactive runner label contract drifted")
+    if job.get("timeout-minutes") != "45":
+        raise AssertionError("native interactive job timeout must remain 45 minutes")
+    if "environment" in job or "continue-on-error" in job:
+        raise AssertionError("native interactive job cannot weaken failure semantics")
+    if job.get("env") != {"NATIVE_ARTIFACT_ROOT": NATIVE_ARTIFACT_ROOT}:
+        raise AssertionError("job environment must only bind the native artifact root")
+    if ATTESTATION_ENV_KEYS & set(job.get("env", {})):
+        raise AssertionError("workflow cannot self-assert runner attestations")
+
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise AssertionError("native_interactive steps must be an array")
+    if [step.get("name") for step in steps] != STEP_NAMES:
+        raise AssertionError("native interactive step inventory or order drifted")
+    for step in steps:
+        if not isinstance(step, dict):
+            raise AssertionError("every workflow step must be a mapping")
+        env = step.get("env", {})
+        if not isinstance(env, dict):
+            raise AssertionError("step env must be a mapping")
+        if ATTESTATION_ENV_KEYS & set(env):
+            raise AssertionError("workflow cannot self-assert runner attestations")
+
+    preflight = step_by_name(job, STEP_NAMES[0])
+    if (
+        preflight.get("id") != "preflight"
+        or preflight.get("continue-on-error") != "true"
+        or preflight.get("shell") != "pwsh"
+        or "if" in preflight
+    ):
+        raise AssertionError("pre-checkout runner preflight execution contract drifted")
+    if preflight.get("env") != {
+        "REQUESTED_SOURCE_SHA": REQUESTED_SHA,
+        "NATIVE_CI_EVIDENCE_ROOT": EVIDENCE_ROOT,
+    }:
+        raise AssertionError("preflight environment binding drifted")
+    preflight_run = preflight.get("run", "")
+    require_fragments(
+        preflight_run,
+        [
+            "^[0-9a-f]{40}$",
+            "SOROTTE_NATIVE_RUNNER_CONTRACT",
+            "sorotte-ephemeral-interactive-windows-v1",
+            "SOROTTE_NATIVE_RUNNER_INSTANCE_ID",
+            "SOROTTE_NATIVE_RUNNER_MAX_JOBS",
+            '[Guid]::TryParse',
+            'runnerMaxJobs -ceq "1"',
+            "SessionId",
+            "session 0",
+            "Get-Process -Name explorer",
+            "OpenInputDesktop",
+            "GetForegroundWindow",
+            "preflight.json",
+            "interactive runner preflight failed",
+        ],
+        label="preflight",
+    )
+    if preflight_run.index("preflight.json") > preflight_run.index(
+        "interactive runner preflight failed"
+    ):
+        raise AssertionError("preflight failure evidence must be written before failure")
+
+    checkout = step_by_name(job, STEP_NAMES[1])
+    if (
+        checkout.get("id") != "checkout"
+        or checkout.get("if") != "steps.preflight.outcome == 'success'"
+        or checkout.get("uses") != CHECKOUT_ACTION
+        or checkout.get("with")
+        != {
+            "ref": REQUESTED_SHA,
+            "fetch-depth": "1",
+            "clean": "true",
+            "persist-credentials": "false",
+        }
+    ):
+        raise AssertionError("exact source checkout contract drifted")
+
+    source_binding = step_by_name(job, STEP_NAMES[2])
+    if (
+        source_binding.get("id") != "source_binding"
+        or source_binding.get("if") != "steps.checkout.outcome == 'success'"
+        or source_binding.get("shell") != "pwsh"
+        or source_binding.get("env")
+        != {
+            "REQUESTED_SOURCE_SHA": REQUESTED_SHA,
+            "NATIVE_CI_EVIDENCE_ROOT": EVIDENCE_ROOT,
+        }
+    ):
+        raise AssertionError("source-binding step contract drifted")
+    require_fragments(
+        source_binding.get("run", ""),
+        [
+            "git rev-parse HEAD",
+            "-cne $env:REQUESTED_SOURCE_SHA",
+            "git status --porcelain --untracked-files=no",
+            "source-binding.json",
+        ],
+        label="source binding",
+    )
+
+    rust = step_by_name(job, STEP_NAMES[3])
+    if rust != {
+        "name": STEP_NAMES[3],
+        "id": "rust",
+        "if": "steps.source_binding.outcome == 'success'",
+        "uses": RUST_ACTION,
+        "with": {"toolchain": "1.97.1"},
+    }:
+        raise AssertionError("pinned Rust setup contract drifted")
+
+    python = step_by_name(job, STEP_NAMES[4])
+    if python != {
+        "name": STEP_NAMES[4],
+        "id": "python",
+        "if": "steps.rust.outcome == 'success'",
+        "uses": PYTHON_ACTION,
+        "with": {"python-version": "3.11"},
+    }:
+        raise AssertionError("pinned Python setup contract drifted")
+
+    prerequisites = step_by_name(job, STEP_NAMES[5])
+    if (
+        prerequisites.get("id") != "prerequisites"
+        or prerequisites.get("if") != "steps.python.outcome == 'success'"
+        or prerequisites.get("shell") != "pwsh"
+        or "continue-on-error" in prerequisites
+        or " ".join(prerequisites.get("run", "").split())
+        != (
+            "python -m pip install --disable-pip-version-check "
+            "-r requirements/legacy-python-interop.txt"
+        )
+    ):
+        raise AssertionError("native prerequisite installation contract drifted")
+
+    native = step_by_name(job, STEP_NAMES[6])
+    if (
+        native.get("id") != "native"
+        or native.get("if") != "steps.prerequisites.outcome == 'success'"
+        or native.get("continue-on-error") != "true"
+        or native.get("shell") != "pwsh"
+        or native.get("env") != {"CARGO_TARGET_DIR": CARGO_TARGET_ROOT}
+    ):
+        raise AssertionError("strict native execution step contract drifted")
+    native_run = native.get("run", "")
+    require_fragments(
+        native_run,
+        [
+            "& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass",
+            "-File scripts/gui-native-smoke.ps1",
+            "-Json",
+            "-TimeoutMs 80000",
+            "exit $LASTEXITCODE",
+        ],
+        label="native command",
+    )
+    scenarios = re.findall(r"--scenario\s+([a-z0-9-]+)", native_run)
+    if scenarios != list(gui_native_smoke_contract.DEFAULT_REQUIRED_SCENARIOS):
+        raise AssertionError(
+            "workflow scenario inventory differs from the strict validator inventory"
+        )
+    if native_run.count("-TimeoutMs 80000") != 1:
+        raise AssertionError("native command must bind exactly one 80-second timeout")
+    for forbidden in ("--allow-stderr", "-AllowStderr", "-KeepOpen", "-BinaryPath"):
+        if forbidden in native_run:
+            raise AssertionError(f"native command contains forbidden option {forbidden}")
+
+    inventory = step_by_name(job, STEP_NAMES[7])
+    if (
+        inventory.get("id") != "native_inventory"
+        or inventory.get("if") != "always()"
+        or inventory.get("continue-on-error") != "true"
+        or inventory.get("shell") != "pwsh"
+        or inventory.get("env")
+        != {
+            "NATIVE_OUTCOME": "${{ steps.native.outcome }}",
+            "NATIVE_CI_EVIDENCE_ROOT": EVIDENCE_ROOT,
+        }
+    ):
+        raise AssertionError("native evidence inventory step contract drifted")
+    inventory_run = inventory.get("run", "")
+    required_block = re.search(
+        r"\$requiredFiles\s*=\s*@\((.*?)\n\s*\)",
+        inventory_run,
+        flags=re.DOTALL,
+    )
+    if required_block is None:
+        raise AssertionError("native evidence required-file inventory is missing")
+    observed_required_files = re.findall(r'"([^"]+)"', required_block.group(1))
+    if observed_required_files != REQUIRED_NATIVE_FILES:
+        raise AssertionError("native evidence required-file inventory drifted")
+    require_fragments(
+        inventory_run,
+        [
+            '$env:NATIVE_OUTCOME -ne "skipped"',
+            "expected exactly one native artifact run directory",
+            "Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256",
+            "native-artifact-inventory.json",
+            "native evidence inventory failed",
+        ],
+        label="native evidence inventory",
+    )
+
+    summary = step_by_name(job, STEP_NAMES[8])
+    if (
+        summary.get("id") != "lane_summary"
+        or summary.get("if") != "always()"
+        or summary.get("shell") != "pwsh"
+        or summary.get("env")
+        != {
+            **SUMMARY_OUTCOMES,
+            "NATIVE_CI_EVIDENCE_ROOT": EVIDENCE_ROOT,
+        }
+        or "lane-outcomes.json" not in summary.get("run", "")
+    ):
+        raise AssertionError("always-written lane outcome evidence contract drifted")
+
+    upload = step_by_name(job, STEP_NAMES[9])
+    if (
+        upload.get("id") != "evidence_upload"
+        or upload.get("if") != "always()"
+        or upload.get("uses") != UPLOAD_ACTION
+        or "continue-on-error" in upload
+    ):
+        raise AssertionError("always-uploaded native evidence step contract drifted")
+    upload_with = upload.get("with")
+    if not isinstance(upload_with, dict):
+        raise AssertionError("artifact upload inputs must be a mapping")
+    if upload_with != {
+        "name": (
+            "native-interactive-${{ inputs.source_sha }}-"
+            "${{ github.run_attempt }}"
+        ),
+        "path": f"{EVIDENCE_ROOT}\n${{{{ env.NATIVE_ARTIFACT_ROOT }}}}\n",
+        "if-no-files-found": "error",
+        "retention-days": "14",
+        "overwrite": "true",
+    }:
+        raise AssertionError("native evidence artifact binding drifted")
+
+    enforcement = step_by_name(job, STEP_NAMES[10])
+    if (
+        enforcement.get("if") != "always()"
+        or enforcement.get("shell") != "pwsh"
+        or "continue-on-error" in enforcement
+        or enforcement.get("env") != ENFORCED_OUTCOMES
+    ):
+        raise AssertionError("final native lane enforcement contract drifted")
+    enforcement_run = enforcement.get("run", "")
+    require_fragments(
+        enforcement_run,
+        [
+            "$env:NATIVE_OUTCOME",
+            "$env:NATIVE_INVENTORY_OUTCOME",
+            "$env:EVIDENCE_UPLOAD_OUTCOME",
+            '$_.Value -ne "success"',
+            "native interactive lane is incomplete",
+        ],
+        label="final enforcement",
+    )
+
+
+class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        cls.workflow = parse_yaml(cls.workflow_text)
+
+    def assert_policy_rejects(
+        self,
+        mutation: Callable[[dict[str, Any]], None],
+    ) -> None:
+        workflow = copy.deepcopy(self.workflow)
+        mutation(workflow)
+        with self.assertRaises(AssertionError):
+            validate_native_interactive_workflow(workflow)
+
+    def job(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        return workflow["jobs"]["native_interactive"]
+
+    def mutate_step(
+        self,
+        workflow: dict[str, Any],
+        name: str,
+        mutation: Callable[[dict[str, Any]], None],
+    ) -> None:
+        mutation(step_by_name(self.job(workflow), name))
+
+    def test_checked_in_workflow_passes_policy(self) -> None:
+        validate_native_interactive_workflow(self.workflow)
+
+    def test_actionlint_declares_only_external_native_labels(self) -> None:
+        config = parse_yaml(ACTIONLINT_CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            config,
+            {
+                "self-hosted-runner": {
+                    "labels": [
+                        "sorotte-native-interactive",
+                        "sorotte-ephemeral",
+                    ]
+                }
+            },
+        )
+
+    def test_untrusted_or_automatic_trigger_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: workflow["on"].update({"pull_request": {}})
+        )
+
+    def test_missing_ephemeral_runner_label_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.job(workflow)["runs-on"].remove(
+                "sorotte-ephemeral"
+            )
+        )
+
+    def test_workflow_cannot_self_attest_runner_lifetime(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.job(workflow)["env"].update(
+                {"SOROTTE_NATIVE_RUNNER_MAX_JOBS": "1"}
+            )
+        )
+
+    def test_interactive_desktop_preflight_cannot_be_removed(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[0],
+                lambda step: step.update(
+                    {"run": step["run"].replace("OpenInputDesktop", "RemovedProbe")}
+                ),
+            )
+        )
+
+    def test_checkout_must_use_requested_full_sha(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[1],
+                lambda step: step["with"].update({"ref": "${{ github.sha }}"}),
+            )
+        )
+
+    def test_native_timeout_weakening_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[6],
+                lambda step: step.update(
+                    {"run": step["run"].replace("-TimeoutMs 80000", "-TimeoutMs 0")}
+                ),
+            )
+        )
+
+    def test_incomplete_native_scenario_inventory_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[6],
+                lambda step: step.update(
+                    {
+                        "run": step["run"].replace(
+                            "    --scenario transport\n", ""
+                        )
+                    }
+                ),
+            )
+        )
+
+    def test_native_stderr_allowlist_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[6],
+                lambda step: step.update(
+                    {"run": step["run"] + " --allow-stderr known-warning\n"}
+                ),
+            )
+        )
+
+    def test_missing_native_report_binding_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[7],
+                lambda step: step.update(
+                    {
+                        "run": step["run"].replace(
+                            '    "native-report.json",\n', ""
+                        )
+                    }
+                ),
+            )
+        )
+
+    def test_upload_cannot_warn_on_missing_evidence(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[9],
+                lambda step: step["with"].update({"if-no-files-found": "warn"}),
+            )
+        )
+
+    def test_upload_must_include_native_artifact_root(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[9],
+                lambda step: step["with"].update({"path": EVIDENCE_ROOT}),
+            )
+        )
+
+    def test_final_gate_must_enforce_native_inventory_outcome(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[10],
+                lambda step: step["env"].pop("NATIVE_INVENTORY_OUTCOME"),
+            )
+        )
+
+    def test_secret_reference_is_rejected(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.job(workflow)["env"].update(
+                {"PRODUCTION_TOKEN": "${{ secrets.PRODUCTION_TOKEN }}"}
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
