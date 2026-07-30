@@ -325,21 +325,27 @@ fn spawn_managed_mpv_and_attach(
         command.args(&config.extra_args);
     }
     let child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    let guard = ManagedMpvProcessGuard {
+    let mut guard = ManagedMpvProcessGuard {
         child,
         ipc_cleanup_path,
     };
-    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
-        .map_err(|err| {
-            anyhow!(
-                "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
-                mpv_bin.display(),
-                ipc_path
-            )
-        })?;
+    let adapter = connect_managed_mpv_adapter_with_retry(
+        &ipc_path,
+        connect_timeout,
+        connect_poll_interval,
+        &mut guard.child,
+    )
+    .map_err(|err| {
+        anyhow!(
+            "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
+            mpv_bin.display(),
+            ipc_path
+        )
+    })?;
 
     eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
@@ -364,6 +370,7 @@ fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(all(test, windows))]
 pub(crate) fn connect_mpv_adapter_with_retry(
     ipc_path: &str,
     timeout: Duration,
@@ -374,14 +381,58 @@ pub(crate) fn connect_mpv_adapter_with_retry(
     })
 }
 
+fn connect_managed_mpv_adapter_with_retry(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    child: &mut Child,
+) -> anyhow::Result<MpvAdapter> {
+    connect_mpv_adapter_with_retry_using_and_health_check(
+        ipc_path,
+        timeout,
+        poll_interval,
+        |path| MpvAdapter::with_json_ipc(path),
+        || match child.try_wait() {
+            Ok(Some(status)) => Err(anyhow!(
+                "managed mpv exited before JSON IPC became available (status={status})"
+            )),
+            Ok(None) => Ok(()),
+            Err(error) => Err(anyhow!(
+                "failed checking managed mpv process while waiting for JSON IPC: {error}"
+            )),
+        },
+    )
+}
+
+#[cfg(test)]
 fn connect_mpv_adapter_with_retry_using<F>(
     ipc_path: &str,
     timeout: Duration,
     poll_interval: Duration,
-    mut connect: F,
+    connect: F,
 ) -> anyhow::Result<MpvAdapter>
 where
     F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+{
+    connect_mpv_adapter_with_retry_using_and_health_check(
+        ipc_path,
+        timeout,
+        poll_interval,
+        connect,
+        || Ok(()),
+    )
+}
+
+fn connect_mpv_adapter_with_retry_using_and_health_check<F, H>(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut connect: F,
+    mut check_health: H,
+) -> anyhow::Result<MpvAdapter>
+where
+    F: FnMut(&str) -> Result<MpvAdapter, PlayerError>,
+    H: FnMut() -> anyhow::Result<()>,
 {
     let started = std::time::Instant::now();
     let mut last_error = None;
@@ -393,7 +444,12 @@ where
             }
             Err(err) => {
                 last_error = Some(err.to_string());
-                std::thread::sleep(poll_interval);
+                check_health()?;
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(poll_interval.min(remaining));
             }
         }
     }
@@ -662,8 +718,7 @@ mod process_supervision_tests {
     }
 
     #[test]
-    #[should_panic(expected = "managed attach must stop retrying when its child exits")]
-    fn known_defect_managed_attach_waits_full_deadline_after_child_exit() {
+    fn managed_attach_stops_retrying_when_its_child_exits() {
         let fixture = ProcessFixtureDirectory::new("attach-after-child-exit");
         let ipc_path = fixture.marker("never-created-ipc");
         let timeout = Duration::from_millis(300);
@@ -686,6 +741,11 @@ mod process_supervision_tests {
         assert!(
             error.contains("managed mpv launched but JSON IPC attach failed"),
             "failure should reach the managed attach boundary: {error}"
+        );
+        assert!(
+            error.contains("managed mpv exited before JSON IPC became available")
+                && error.contains("status="),
+            "failure should identify the exited child and preserve its status: {error}"
         );
         assert!(
             elapsed < Duration::from_millis(200),

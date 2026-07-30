@@ -1,12 +1,44 @@
 use super::*;
 
 impl ServerRuntime {
-    fn tls_certificate_bundle_observed_modified_time(&self, path: &Path) -> Option<SystemTime> {
+    fn observe_tls_certificate_bundle(
+        &self,
+        path: &Path,
+    ) -> Option<(
+        TlsCertificateBundleFingerprint,
+        Option<TlsCertificateBundleSnapshot>,
+    )> {
         #[cfg(test)]
         if let Some(clock) = self.tls_certificate_bundle_metadata_clock.as_ref() {
-            return Some(clock.modified_time());
+            return Some((clock.fingerprint(), None));
         }
-        tls_certificate_bundle_modified_time(path)
+        let snapshot = read_tls_certificate_bundle_snapshot(path).ok()?;
+        Some((snapshot.fingerprint(), Some(snapshot)))
+    }
+
+    fn apply_tls_certificate_bundle_observation(
+        &mut self,
+        path: &Path,
+        fingerprint: TlsCertificateBundleFingerprint,
+        snapshot: Option<TlsCertificateBundleSnapshot>,
+    ) {
+        self.tls_certificate_bundle_fingerprint = Some(fingerprint);
+        let loaded = match snapshot.as_ref() {
+            Some(snapshot) => load_tls_server_config_from_snapshot(path, snapshot),
+            None => load_tls_server_config(path),
+        };
+        match loaded {
+            Ok(server_config) => {
+                self.tls_server_config = Some(server_config);
+                self.tls_context_available = true;
+                self.server_accepts_tls = true;
+            }
+            Err(_) => {
+                self.tls_server_config = None;
+                self.tls_context_available = false;
+                self.server_accepts_tls = false;
+            }
+        }
     }
 
     pub(crate) fn current_time_seconds(&self) -> f64 {
@@ -40,47 +72,32 @@ impl ServerRuntime {
             self.tls_server_config = None;
             self.tls_context_available = false;
             self.server_accepts_tls = false;
-            self.tls_last_edit_cert_time = None;
+            self.tls_certificate_bundle_fingerprint = None;
             return;
         };
-        if !tls_certificate_bundle_is_available(path) {
+        let path = path.clone();
+        let Some((fingerprint, snapshot)) = self.observe_tls_certificate_bundle(&path) else {
             self.tls_server_config = None;
             self.tls_context_available = false;
             self.server_accepts_tls = false;
-            self.tls_last_edit_cert_time = None;
+            self.tls_certificate_bundle_fingerprint = None;
             return;
-        }
-        self.tls_last_edit_cert_time = self.tls_certificate_bundle_observed_modified_time(path);
-        match load_tls_server_config(path) {
-            Ok(server_config) => {
-                self.tls_server_config = Some(server_config);
-                self.tls_context_available = true;
-                self.server_accepts_tls = true;
-            }
-            Err(_) => {
-                self.tls_server_config = None;
-                self.tls_context_available = false;
-                self.server_accepts_tls = false;
-            }
-        }
+        };
+        self.apply_tls_certificate_bundle_observation(&path, fingerprint, snapshot);
     }
 
     pub(crate) fn refresh_tls_context_after_cert_rotation_if_needed(&mut self) {
         let Some(path) = self.tls_cert_path.as_ref() else {
             return;
         };
-        let Some(current_edit_time) = self.tls_certificate_bundle_observed_modified_time(path)
-        else {
+        let path = path.clone();
+        let Some((fingerprint, snapshot)) = self.observe_tls_certificate_bundle(&path) else {
             return;
         };
-        if Some(current_edit_time) == self.tls_last_edit_cert_time {
+        if Some(fingerprint) == self.tls_certificate_bundle_fingerprint {
             return;
         }
-        self.refresh_tls_context_after_rotation_attempt();
-    }
-
-    pub(crate) fn refresh_tls_context_after_rotation_attempt(&mut self) {
-        self.refresh_tls_context_from_cert_path();
+        self.apply_tls_certificate_bundle_observation(&path, fingerprint, snapshot);
         self.tls_rotation_attempts = self.tls_rotation_attempts.saturating_add(1);
         if self.tls_rotation_attempts < TLS_CERT_ROTATION_MAX_RETRIES {
             self.server_accepts_tls = true;

@@ -396,12 +396,16 @@ impl ClientSession {
         if !self.is_active() {
             return Vec::new();
         }
+        if !self.server_shared_playlists_supported() {
+            self.model.reconnect.playlist_restore_snapshot = None;
+            self.model.reconnect.playlist_restore_intent = None;
+            self.model.reconnect.playlist_restore_pending_ack = None;
+            return Vec::new();
+        }
         let Some(restore_intent) = self.model.reconnect.playlist_restore_intent.take() else {
             return Vec::new();
         };
-        if !self.server_shared_playlists_supported() {
-            return Vec::new();
-        }
+        self.model.reconnect.playlist_restore_pending_ack = Some(restore_intent.clone());
 
         let mut actions = vec![
             ClientRuntimeAction::NotifyReconnectTransition(

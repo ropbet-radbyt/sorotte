@@ -800,10 +800,7 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
 }
 
 #[test]
-#[should_panic(
-    expected = "rotating a required TLS bundle member must invalidate the cached context"
-)]
-fn known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem() {
+fn tls_rotation_detects_non_max_member_edit_on_filesystem() {
     let cert_path = temporary_directory_path("tls-rotation-max-mtime-collision");
     let _ = fs::remove_dir_all(&cert_path);
     fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
@@ -825,7 +822,7 @@ fn known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem() {
 
     let mut runtime = ServerRuntime::new();
     runtime.set_tls_cert_path(Some(cert_path.clone()));
-    let token_before = tls_certificate_bundle_modified_time(&cert_path);
+    let token_before = tls_certificate_bundle_fingerprint(&cert_path);
 
     fs::write(cert_path.join("privkey.pem"), "rotated-invalid-private-key")
         .expect("rotated private-key fixture should write");
@@ -833,26 +830,21 @@ fn known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem() {
         &cert_path.join("privkey.pem"),
         base_time + Duration::from_secs(90),
     );
-    let token_after = tls_certificate_bundle_modified_time(&cert_path);
-    assert_eq!(
+    let token_after = tls_certificate_bundle_fingerprint(&cert_path);
+    assert_ne!(
         token_after, token_before,
-        "the experiment requires an exact maximum-mtime collision"
+        "content replacement must change the bundle fingerprint even below the maximum mtime"
     );
 
-    let characterization = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let outbound_lines = runtime
-            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
-            .expect("TLS request should be handled");
-        assert_eq!(
-            tls_start_response(&outbound_lines).as_deref(),
-            Some("false"),
-            "rotating a required TLS bundle member must invalidate the cached context"
-        );
-    }));
+    let outbound_lines = runtime
+        .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("TLS request should be handled");
+    assert_eq!(
+        tls_start_response(&outbound_lines).as_deref(),
+        Some("false"),
+        "rotating a required TLS bundle member must invalidate the cached context"
+    );
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
-    if let Err(payload) = characterization {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

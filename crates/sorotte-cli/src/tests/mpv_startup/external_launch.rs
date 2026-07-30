@@ -267,8 +267,7 @@ fn external_launch_nulls_child_stdout_and_stderr() {
 }
 
 #[test]
-#[should_panic(expected = "external launch must not inherit the CLI stdin handle")]
-fn known_defect_external_launch_inherits_cli_stdin() {
+fn external_launch_nulls_child_stdin() {
     let (observed_stdin, _, _) = run_external_stdio_fixture();
     assert!(
         observed_stdin.is_empty(),

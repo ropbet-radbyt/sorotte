@@ -1663,16 +1663,6 @@ fn rollback_journal_entry(
     let temporary_digest = regular_file_digest_if_present(&temporary, "prepared replacement")?;
     let backup_digest = regular_file_digest_if_present(&backup, "rollback backup")?;
 
-    if let Some(actual) = temporary_digest.as_deref() {
-        let expected = entry.replacement_sha256.as_deref().ok_or_else(|| {
-            format!(
-                "unexpected prepared replacement exists for removed file {}",
-                entry.relative.display()
-            )
-        })?;
-        ensure_digest_matches(actual, expected, &temporary, "prepared replacement")?;
-    }
-
     if entry.target_existed {
         let original = entry.original_sha256.as_deref().ok_or_else(|| {
             format!(
@@ -2461,10 +2451,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "tampered prepared replacement must not prevent rollback of an unchanged install"
-    )]
-    fn known_defect_tampered_prepared_replacement_blocks_safe_rollback() {
+    fn tampered_prepared_replacement_is_discarded_during_safe_rollback() {
         let root = test_root("tampered-prepared-rollback");
         let target = root.join("target");
         write_relative(&target, "a.txt", b"old-a");
@@ -2482,9 +2469,42 @@ mod tests {
         assert!(
             error.contains("all changed files were rolled back")
                 && fs::read(target.join("a.txt")).unwrap() == b"old-a"
+                && !temporary.exists()
                 && !plan.journal_path.exists(),
             "tampered prepared replacement must not prevent rollback of an unchanged install"
         );
+    }
+
+    #[test]
+    fn tampered_later_replacement_does_not_block_rollback_of_prior_file() {
+        let root = test_root("tampered-later-prepared-rollback");
+        let target = root.join("target");
+        write_relative(&target, "a.txt", b"old-a");
+        write_relative(&target, "b.txt", b"old-b");
+        let plan = test_plan(
+            &root,
+            &[("a.txt", Some(b"new-a")), ("b.txt", Some(b"new-b"))],
+        );
+        let second_temporary = plan.files[1].temporary.clone();
+
+        let error = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(2) {
+                fs::write(&second_temporary, b"tampered-after-preparation").unwrap();
+            }
+            Ok(())
+        })
+        .expect_err("tampering must abort the replacement");
+
+        assert!(error.contains("all changed files were rolled back"));
+        assert_eq!(fs::read(target.join("a.txt")).unwrap(), b"old-a");
+        assert_eq!(fs::read(target.join("b.txt")).unwrap(), b"old-b");
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| !file.temporary.exists() && !file.backup.exists()),
+            "successful rollback should remove every transaction artifact"
+        );
+        assert!(!plan.journal_path.exists());
     }
 
     #[test]

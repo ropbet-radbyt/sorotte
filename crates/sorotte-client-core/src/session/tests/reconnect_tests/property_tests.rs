@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use proptest::{prelude::*, test_runner::Config as ProptestConfig};
 
 use super::*;
+use crate::ReconnectPlaylistRestoreIntent;
 
 const REFERENCE_MAX_RETRIES: u32 = 3;
 const REFERENCE_BASE_DELAY_SECONDS: f64 = 0.25;
@@ -54,6 +55,13 @@ impl PlaylistSpec {
             files: self.files.clone(),
             index,
         })
+    }
+}
+
+fn restore_intent_spec(intent: &ReconnectPlaylistRestoreIntent) -> PlaylistSpec {
+    PlaylistSpec {
+        files: intent.files.clone(),
+        index: intent.index,
     }
 }
 
@@ -135,6 +143,7 @@ struct ReconnectReferenceModel {
     file_intent: Option<FileSpec>,
     playlist_snapshot: Option<PlaylistSpec>,
     playlist_intent: Option<PlaylistSpec>,
+    playlist_pending_ack: Option<PlaylistSpec>,
 }
 
 impl ReconnectReferenceModel {
@@ -155,6 +164,7 @@ impl ReconnectReferenceModel {
             file_intent: None,
             playlist_snapshot: None,
             playlist_intent: None,
+            playlist_pending_ack: None,
         }
     }
 
@@ -173,6 +183,7 @@ impl ReconnectReferenceModel {
             .playlist_snapshot
             .take()
             .or(self.playlist_intent.take())
+            .or(self.playlist_pending_ack.take())
             .or_else(|| {
                 self.current_playlist
                     .as_ref()
@@ -267,6 +278,8 @@ impl ReconnectReferenceModel {
         );
         self.awaiting_server_playlist = false;
         self.playlist_snapshot = None;
+        self.playlist_intent = None;
+        self.playlist_pending_ack = None;
         self.current_playlist = Some(playlist);
     }
 
@@ -309,12 +322,16 @@ impl ReconnectReferenceModel {
         let ReferencePhase::Active { shared_playlists } = self.phase else {
             return Vec::new();
         };
+        if !shared_playlists {
+            self.playlist_snapshot = None;
+            self.playlist_intent = None;
+            self.playlist_pending_ack = None;
+            return Vec::new();
+        }
         let Some(restore_intent) = self.playlist_intent.take() else {
             return Vec::new();
         };
-        if !shared_playlists {
-            return Vec::new();
-        }
+        self.playlist_pending_ack = Some(restore_intent.clone());
 
         let mut actions = vec![
             ClientRuntimeAction::NotifyReconnectTransition(
@@ -357,6 +374,36 @@ impl ReconnectReferenceModel {
         assert_eq!(
             session.model.reconnect.connected_intent, self.connected_intent,
             "{context}: connected notification intent drift"
+        );
+        assert_eq!(
+            session
+                .model
+                .reconnect
+                .playlist_restore_snapshot
+                .as_ref()
+                .map(restore_intent_spec),
+            self.playlist_snapshot,
+            "{context}: playlist restore snapshot drift"
+        );
+        assert_eq!(
+            session
+                .model
+                .reconnect
+                .playlist_restore_intent
+                .as_ref()
+                .map(restore_intent_spec),
+            self.playlist_intent,
+            "{context}: armed playlist restore drift"
+        );
+        assert_eq!(
+            session
+                .model
+                .reconnect
+                .playlist_restore_pending_ack
+                .as_ref()
+                .map(restore_intent_spec),
+            self.playlist_pending_ack,
+            "{context}: acknowledgement-fenced playlist restore drift"
         );
         assert_eq!(
             session.user_ready("alice"),
@@ -846,8 +893,7 @@ fn reconnect_to_empty_shared_playlist(session: &mut ClientSession) {
 }
 
 #[test]
-#[should_panic(expected = "unacknowledged playlist restore must survive a second disconnect")]
-fn known_defect_unacknowledged_playlist_restore_is_lost_on_second_disconnect() {
+fn unacknowledged_playlist_restore_survives_a_second_disconnect() {
     let mut session = session_with_restorable_playlist();
     reconnect_to_empty_shared_playlist(&mut session);
     assert!(
@@ -867,8 +913,7 @@ fn known_defect_unacknowledged_playlist_restore_is_lost_on_second_disconnect() {
 }
 
 #[test]
-#[should_panic(expected = "authoritative playlist update must cancel an armed restore")]
-fn known_defect_authoritative_playlist_does_not_cancel_armed_restore() {
+fn authoritative_playlist_update_cancels_an_armed_restore() {
     let mut session = session_with_restorable_playlist();
     reconnect_to_empty_shared_playlist(&mut session);
     apply_json(

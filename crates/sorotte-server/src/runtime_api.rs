@@ -65,7 +65,7 @@ impl ServerRuntime {
             tls_server_config: None,
             tls_context_available: false,
             server_accepts_tls: false,
-            tls_last_edit_cert_time: None,
+            tls_certificate_bundle_fingerprint: None,
             #[cfg(test)]
             tls_certificate_bundle_metadata_clock: None,
             tls_rotation_attempts: 0,

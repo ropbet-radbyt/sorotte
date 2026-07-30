@@ -6,6 +6,7 @@ Merged-profile implementation update: 2026-07-29
 Compatibility-remediation update: 2026-07-29
 Deterministic clock implementation update: 2026-07-30
 Process-interruption persistence update: 2026-07-30
+Outstanding-defect closure update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -17,9 +18,11 @@ infrastructure. The original review deliberately left surfaced defects
 unchanged. The 2026-07-29 update implements the non-controversial lean
 solutions, applies the subsequently selected lifecycle and native-GUI
 decisions, and converts every product-defect characterization into a positive
-regression. Later reconnect and TLS-rotation experiments opened
-`TC-CLIENT-001` and `TC-SERVER-003`; both remain narrow executable
-`should_panic` characterizations and cannot count as positive evidence.
+regression. Later reconnect, TLS-rotation, protocol, process-supervision, and
+updater experiments opened six additional defects. The 2026-07-30 closure
+update implements all six, converts all eight expected-failure
+characterizations into positive regressions, and leaves the executable defect
+registry explicitly empty.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -45,9 +48,18 @@ Before the shrinkable suite was added:
 After the coverage tranche was integrated:
 
 - `cargo fmt --all --check` passed.
+- The outstanding-defect closure passed all complete owning-crate suites:
+  protocol 77/77, client-core 699/699, CLI 346 passing with its 8 declared
+  ignores, and updater 22/22; the complete server package also passed. The
+  exact locked all-feature workspace, including the real-Python release
+  verifier and every doctest, exited 0 in 229.110 seconds.
+- On that closure tree, all 354 Python policy/infrastructure tests passed in
+  13.920 seconds, the explicit zero-defect/zero-characterization registry
+  validated, and actionlint 1.7.12 reported no workflow error.
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
   passed on Windows before the rebase, on the rebased 0.2.4 tree in 27.2
   seconds, after the lean fixes in 8.54 seconds, and on the final tree in 7.33
+  seconds. The outstanding-defect closure passed the same gate in 13.23
   seconds.
 - After the lean fixes, the authoritative
   `cargo test --locked --workspace --all-features` run passed in 180 seconds,
@@ -91,10 +103,11 @@ After the coverage tranche was integrated:
   const-context mutation is explicitly matched and expires for review on
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
-- The behavior catalog now validates 17 behavior IDs, 40 exact proofs, and two
-  lanes. The executable known-defect registry contains two open defects and
-  four exact characterizations: two reconnect acknowledgement schedules and
-  two TLS max-mtime collisions. None can count as positive behavior evidence.
+- The behavior catalog validates 17 behavior IDs, 40 exact proofs, and two
+  lanes. Before the closure slice, the executable registry contained six open
+  defects and eight exact characterizations. It now validates as zero defects
+  and zero characterizations; each former expected failure is an ordinary
+  positive regression at its owning boundary.
 - The deterministic TLS model passed 10 consecutive runs: 2,430 generated
   histories and 12,150 checked transitions. Its in-flight real-network,
   restoration, and retry-cap selectors each passed 50/50 replays. The
@@ -112,9 +125,10 @@ After the coverage tranche was integrated:
 - The strengthened known-defect policy corrected the TLS identifier from the
   already-used `TC-SERVER-001` to `TC-SERVER-003`, rejects duplicate finding
   headings and title drift, and now inventories multiline Rust
-  `should_panic(expected = ...)` attributes. Its 21 focused policy tests and
-  the real two-defect/four-characterization registry both pass. The complete
-  infrastructure suite now passes 295/295 tests in 12.421 seconds.
+  `should_panic(expected = ...)` attributes. Its 21 focused policy tests pass;
+  the former populated registry and the current explicit zero-defect registry
+  both satisfy the same fail-closed contract. The complete infrastructure
+  suite at that checkpoint passed 295/295 tests in 12.421 seconds.
 - The ignored-test registry exactly classifies all 23 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
   capability tests. The two compatibility quarantines were retired after their
@@ -1530,12 +1544,12 @@ finding had reused `TC-SERVER-001`, already assigned to the resolved playlist
 migration defect, so it is now `TC-SERVER-003`. The Rust inventory scanner also
 ignored multiline `should_panic(expected = ...)` attributes. The validator now
 parses multiline attributes, rejects duplicate finding headings and
-case-insensitive title drift, and passes both its 21 focused tests and the
-actual two-defect/four-characterization registry.
+case-insensitive title drift. Its 21 focused tests pass, and the current
+registry validates explicitly as zero defects and zero characterizations.
 
 ## TC-CLIENT-001: reconnect playlist restore lacks acknowledgement fencing
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; both characterizations are positive regressions**
 
 Severity: **High (playlist intent can be lost or overwrite newer authority)**
 Detection: shrinkable reconnect reference-model design plus deterministic
@@ -1569,21 +1583,27 @@ non-empty authoritative playlist -> drain -> stale local restore emitted
 ```
 
 Both schedules reproduce in ordinary `sorotte-client-core` tests without
-sleep, sockets, or timing tolerance. The focused experiment ran five tests:
-the 128-case reference model, vocabulary coverage, budget enforcement, and the
-two expected-failure characterizations. All five completed in 0.15 seconds;
-the characterizations panicked only at their exact missing-invariant messages.
+sleep, sockets, or timing tolerance.
 
-The appropriate product fix is one acknowledgement-fenced desired-playlist
-record per reconnect generation: sending must not erase it; a matching echo
-retires it; any newer authoritative non-empty revision supersedes it; and a
-disconnect before either outcome re-arms it. This test-coverage slice records
-the defect without changing production behavior. The two characterizations
-expire on 2026-09-30 and cannot count as positive behavior evidence.
+The implemented state machine has a distinct
+`playlist_restore_pending_ack` record. Draining an armed intent moves a clone
+into that record rather than destroying the desired state. A transport reset
+moves it back into the reconnect snapshot; a non-empty server playlist clears
+the snapshot, armed intent, and acknowledgement fence; and a matching echo is
+therefore both canonical playlist state and acknowledgement. Capability
+disablement clears all three states rather than leaving an inert restore
+behind.
+
+The independent reference model now represents snapshot, armed, and
+awaiting-acknowledgement states separately and compares all three with
+production after every generated transition. The two former expected failures,
+the matching-echo retirement regression, all reconnect playlist tests, and the
+128-case generated history suite pass as ordinary positive tests. There is no
+retry, clock tolerance, or defect classifier in that proof.
 
 ## TC-SERVER-003: TLS rotation max-mtime token can miss bundle-member changes
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; content fingerprint and snapshot parsing implemented**
 
 Severity: **High (stale certificate or private-key material can remain active)**
 Detection: deterministic TLS metadata-clock extraction plus a pure
@@ -1604,34 +1624,38 @@ same collision class includes content replacement that preserves all observed
 mtimes. This can leave an intentionally rotated certificate or private key
 unused until another bundle member happens to acquire a later timestamp.
 
-The first executable characterization calls the production max-token reducer
-with the exact timestamps above and panics only at:
+The former first characterization called the production max-token reducer
+with the exact timestamps above and panicked only at:
 
 ```text
 changing any required TLS bundle member must change the rotation token
 ```
 
-The second writes a valid bundle, assigns explicit member timestamps on the
-real filesystem, loads the production runtime, replaces the older private-key
-member with invalid contents, and restores its timestamp below the unchanged
-certificate maximum. It proves the token collision and then observes the
-runtime still answer `startTLS=true`, panicking only at:
+The former second characterization wrote a valid bundle, assigned explicit
+member timestamps on the real filesystem, loaded the production runtime,
+replaced the older private-key member with invalid contents, and restored its
+timestamp below the unchanged certificate maximum. It proved the token
+collision and then observed the runtime still answer `startTLS=true`, panicking
+only at:
 
 ```text
 rotating a required TLS bundle member must invalidate the cached context
 ```
 
-This slice does not alter production rotation behavior. Its deterministic
-metadata clock removes filesystem waiting from the state-machine and
-real-network tests, but it deliberately remains a test seam rather than hiding
-the detector defect. The characterization expires on 2026-09-30 and cannot
-count as positive behavior evidence.
+A `(mtime, length)` tuple per member was rejected as incomplete because it
+still misses equal-mtime, equal-length replacement. Production now reads all
+three required members into one captured snapshot and computes a
+domain-separated, filename- and length-framed SHA-256 fingerprint. Rotation
+comparison uses that fingerprint, and rustls parses the exact bytes that were
+fingerprinted, eliminating the previous observation/load race. The injected
+test clock remains available only to drive deterministic revision histories;
+ordinary production and the real-filesystem regression use content identity.
 
-A minimal partial fix would retain one `(mtime, length)` tuple per required
-filename instead of taking the maximum. That still misses equal-mtime,
-equal-length replacement. The complete solution is a stable fingerprint of
-all three file contents, ideally loaded and parsed from one captured snapshot;
-only a fully valid new snapshot should replace the cached `ServerConfig`.
+Positive tests prove that an equal-length edit to each individual member
+changes the fingerprint, and that replacing the older private key while
+preserving its timestamp below the unchanged maximum invalidates the cached
+context. Missing members retain the prior legacy retry behavior, and an
+invalid captured snapshot is never installed as a `ServerConfig`.
 
 ## Local all-feature LCOV proof
 
@@ -1668,7 +1692,7 @@ policy evaluation fails.
 
 ## TC-PROTOCOL-001: Duplicate nested Set members retain collapsed execution entries
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; first-position/last-value semantics are uniform**
 
 Severity: **High (client and server can execute the same decoded line
 differently)**
@@ -1691,23 +1715,24 @@ order ledger and clones the collapsed payload for each retained occurrence,
 so it can apply the final ready and file values twice. The wire input,
 therefore, has no single execution meaning across consumers.
 
-The expected-failure characterization asserts that each collapsed nested
-member appears once in execution order and panics only at:
+The former expected-failure characterization asserted that each collapsed
+nested member appears once in execution order and panicked only at:
 
 ```text
 collapsed duplicate Set members must appear once in command order
 ```
 
-The lean compatible fix is to deduplicate nested `command_order` by first
-position while retaining the final decoded value, matching the established
-top-level rule. The safer protocol design is to reject duplicate keys before
-`serde_json` object construction, but that is a compatibility decision because
-existing peers may already emit duplicates. Production behavior remains
-unchanged in this coverage slice; the characterization expires on 2026-09-30.
+The compatible fix deduplicates nested `command_order` by decoded key in first
+source position while retaining serde's final decoded value, exactly matching
+the established top-level rule. Escaped spellings of the same JSON key share
+one execution position. Rejecting all duplicate keys remains a possible future
+protocol-hardening decision, but is not required to give current peers one
+deterministic meaning. Both duplicate-`Set` tests are now ordinary positive
+regressions.
 
 ## TC-CLI-001: Managed attach waits through its deadline after the child exits
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; managed retry observes child liveness**
 
 Severity: **Medium (failed player startup remains unnecessarily blocked)**
 Detection: exact child-process early-exit barrier and bounded parent clock
@@ -1720,22 +1745,23 @@ the production attach path is configured with a 300 ms deadline and still
 burns that deadline instead of returning within the characterization's 200 ms
 early-exit bound.
 
-The expected-failure oracle is:
+The former expected-failure oracle is:
 
 ```text
 managed attach must stop retrying when its child exits
 ```
 
-The proportional fix is to check `try_wait` before each retry sleep and return
-an error containing the exit status as soon as it is available. The child must
-remain owned by the existing guard so the same cleanup path still waits/reaps
-it and removes the IPC artifact. This does not require a new supervisor or
-async task. Production behavior remains unchanged in this slice; the
-characterization expires on 2026-09-30.
+The retry loop now checks `Child::try_wait` after every failed IPC connection
+attempt and before sleeping. An exited child returns immediately with a stable
+error prefix and the platform exit status; a live child retains the existing
+transient retry behavior, unsupported mpv versions still fail after one
+attempt, and the last sleep is capped by the remaining deadline. The existing
+guard retains ownership, reaping, and IPC cleanup. The 300 ms fixture now
+returns within the 200 ms bound as a positive regression.
 
 ## TC-CLI-002: Unmanaged external launch inherits CLI stdin
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; player subprocess stdio is isolated**
 
 Severity: **High (the player can consume commands or data intended for the
 interactive CLI)**
@@ -1749,22 +1775,22 @@ even though the child's stdout and stderr sentinels cannot leak back into the
 parent. In an interactive session, an external player can race the CLI for
 input or consume data intended for Sorotte.
 
-The expected-failure oracle is:
+The former expected-failure oracle is:
 
 ```text
 external launch must not inherit the CLI stdin handle
 ```
 
-The lean complete fix is `.stdin(Stdio::null())` on both unmanaged and managed
+The complete fix applies `.stdin(Stdio::null())` to both unmanaged and managed
 player `Command` construction. Sorotte does not use stdin as a player-control
 channel; mpv control is through IPC, so no supported behavior depends on
-inheritance. The positive stdout/stderr containment and detached ownership
-tests remain independent. Production behavior remains unchanged in this
-slice; the characterization expires on 2026-09-30.
+inheritance. The nested subprocess test now positively proves the sentinel
+cannot reach the child, independently of the existing stdout/stderr and
+detached-ownership proofs.
 
 ## TC-UPDATER-001: Tampered prepared file prevents safe update rollback cleanup
 
-Status: **Open; executable characterization added 2026-07-30**
+Status: **Resolved 2026-07-30; uncommitted scratch is safely disposable**
 
 Severity: **Medium (a detected staging fault can permanently block automatic
 updates until manual cleanup)**
@@ -1783,7 +1809,7 @@ needs the temporary file.
 
 The exact-package experiment reached this state after an earlier file had been
 replaced; the reverse rollback restored that earlier target but still retained
-the journal because the corrupt temporary entry failed. The minimized
+the journal because the corrupt temporary entry failed. The minimized former
 expected-failure characterization mutates a prepared file before its first
 replacement and asserts the stronger desired invariant:
 
@@ -1791,11 +1817,13 @@ replacement and asserts the stronger desired invariant:
 tampered prepared replacement must not prevent rollback of an unchanged install
 ```
 
-The proportional fix is to treat an uncommitted temporary as disposable
-scratch during rollback: retain link/reparse-point and regular-file checks, but
-do not require its replacement digest before removing it. Target and backup
-digests must remain strict because those files determine installed state.
-Quarantining corrupt temporaries for forensics is an alternative, but it adds
-state and cleanup complexity without improving recovery correctness for this
-local updater. Production behavior remains unchanged in this coverage slice;
-the characterization expires on 2026-09-30.
+Rollback now treats an uncommitted temporary as disposable scratch: it retains
+link/reparse-point and regular-file checks, but does not require the intended
+replacement digest before removal. Target and backup authentication remains
+strict because those files determine installed state, and committed-journal
+cleanup still authenticates residual artifacts. One positive regression proves
+an unchanged install, corrupt temporary, and journal are cleaned; a second
+mutates the second prepared file after the first target was replaced and proves
+both originals and every transaction artifact are restored. Quarantining
+corrupt scratch for forensics was rejected as unnecessary state for this local
+updater.

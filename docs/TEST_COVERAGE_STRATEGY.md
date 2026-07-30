@@ -6,6 +6,7 @@ Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
 GUI release artifact implementation update: 2026-07-30
+Outstanding-defect closure update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -19,7 +20,9 @@ Target audience: maintainers, reviewers, and release owners
 ## Implementation status on this branch
 
 This branch implements the highest-leverage part of the proposal, then applies
-the non-controversial lean fixes proven by that coverage:
+the production fixes proven by that coverage. The final closure slice resolves
+all six remaining registered defects, converts all eight expected failures
+into positive regressions, and validates an explicitly empty defect registry:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -55,11 +58,10 @@ the non-controversial lean fixes proven by that coverage:
   compatibility quarantines are now required passing tests;
 - a schema-validated expected-failure registry; previously resolved product
   defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
-  through `TC-COMPAT-007` all have positive regressions, while
-  `TC-CLIENT-001` reconnect acknowledgement fencing and `TC-SERVER-003` TLS
-  max-mtime collision, `TC-PROTOCOL-001` duplicate nested execution,
-  `TC-CLI-001`/`002` process supervision, and `TC-UPDATER-001` tampered-temp
-  rollback remain narrow expiring characterizations;
+  through `TC-COMPAT-007` all have positive regressions; the final
+  `TC-CLIENT-001`, `TC-SERVER-003`, `TC-PROTOCOL-001`, `TC-CLI-001`/`002`,
+  and `TC-UPDATER-001` characterizations have also been converted, leaving an
+  explicitly empty executable defect registry;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -154,9 +156,12 @@ Each executed step is compared with an independent semantic model, every
 history is driven to an active terminal observation, and two final drain passes
 prove one-shot behavior. `PROPTEST_CASES=2048` reuses the nightly depth budget.
 The model-design experiment also surfaced `TC-CLIENT-001`: playlist restore
-state is consumed before acknowledgement and is not cancelled after a newer
-authoritative update. Two deterministic expected-failure characterizations
-record those schedules without treating either as positive proof.
+state was consumed before acknowledgement and was not cancelled after a newer
+authoritative update. The resolution adds an explicit awaiting-acknowledgement
+state: send preserves desired state, disconnect re-arms it, and a non-empty
+authoritative update retires or supersedes it. The independent model compares
+snapshot, armed, and pending-ack state after every transition; both minimized
+schedules are now positive regressions.
 
 The subsequent clock experiment converts the CLI reconnect scheduler and
 STARTTLS phase timeout contract to paused Tokio time. It proves the exact
@@ -185,12 +190,14 @@ the same revision source to prove an accepted handshake keeps its captured
 context and a later valid bundle recovers before the retry cap. The first model
 run completed all 1,215 transitions in 5.85 seconds without a timestamp poll.
 The extraction experiment surfaced `TC-SERVER-003`: taking only the maximum of
-three member mtimes loses member identity and can miss a real rotation. Its
-exact collision is registered as an expected failure; production detection is
-unchanged. Stress validation passed the model 10/10 times (2,430 histories,
-12,150 transitions), both real-network proofs and the retry-cap proof 50/50
-times each, and the real-filesystem collision characterization 25/25 times.
-The complete server library suite passed 332/332.
+three member mtimes loses member identity and can miss a real rotation.
+Production now hashes filename- and length-framed contents for all three
+members and parses the exact captured snapshot used for that fingerprint.
+Equal-length replacement of each member and the real-filesystem below-maximum
+timestamp collision are positive regressions. Earlier stress validation passed
+the model 10/10 times (2,430 histories, 12,150 transitions), both real-network
+proofs and the retry-cap proof 50/50 times each, and the filesystem schedule
+25/25 times.
 
 The persistence process-interruption slice makes the old-or-new durability
 decision executable at the SQLite boundary. A test-only child role exits with
@@ -216,8 +223,9 @@ assigned `TC-SERVER-001` identifier and that multiline Rust
 `should_panic(expected = ...)` attributes escaped the executable inventory.
 The TLS finding is now `TC-SERVER-003`; the known-defect validator parses
 multiline attributes and rejects duplicate finding headings and title drift.
-Both its 21 focused tests and the real two-defect/four-characterization
-registry pass; the complete infrastructure suite passes 295/295.
+Its 21 focused tests pass against both populated fixtures and the real
+explicitly empty registry; the historical two-defect/four-characterization
+checkpoint therefore remains policy evidence rather than current inventory.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -234,12 +242,13 @@ publication job independently reconsumes the downloaded bytes without
 executing them again.
 
 Post-authentication mutation of a prepared temporary exposed
-`TC-UPDATER-001`: rejection is correct, but rollback authenticates the
-disposable corrupt temporary before removing it, retains the recovery journal,
-and blocks subsequent automatic recovery. A minimized expiring
-expected-failure test preserves that result. The positive release gate uses
-the independent read-only replacement fault and remains green; updater
-production behavior is unchanged in this slice.
+`TC-UPDATER-001`: rejection was correct, but rollback authenticated the
+disposable corrupt temporary before removing it, retained the recovery
+journal, and blocked subsequent automatic recovery. Rollback now preserves
+strict target/backup and link checks while deleting uncommitted regular-file
+scratch regardless of its digest. Positive one- and two-file regressions prove
+that both an unchanged install and an earlier replaced target recover without
+transaction artifacts.
 
 ## Contents
 
@@ -1688,8 +1697,8 @@ runner.
 First deterministic repairs:
 
 - replace file-mtime waiting in TLS rotation with explicit content/fingerprint
-  change and injected metadata clock (test clock and explicit content changes
-  implemented; production fingerprint remains `TC-SERVER-003`);
+  change and injected metadata clock (test clock, production content
+  fingerprint, exact-snapshot parsing, and collision regressions implemented);
 - replace CLI reconnect sleeps with paused time and protocol barriers
   (implemented for reconnect backoff, STARTTLS response/handshake, initial
   Hello, and retry);

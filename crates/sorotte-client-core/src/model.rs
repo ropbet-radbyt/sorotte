@@ -753,6 +753,7 @@ pub struct ReconnectState {
     pub(crate) controller_restore_snapshot: Option<bool>,
     pub(crate) playlist_restore_snapshot: Option<ReconnectPlaylistRestoreIntent>,
     pub(crate) playlist_restore_intent: Option<ReconnectPlaylistRestoreIntent>,
+    pub(crate) playlist_restore_pending_ack: Option<ReconnectPlaylistRestoreIntent>,
     pub(crate) state_restore_validation_pending: bool,
     pub(crate) state_restore_validation_retry_attempts: u32,
     pub(crate) state_restore_validation_retry_cooldown_ticks: u32,

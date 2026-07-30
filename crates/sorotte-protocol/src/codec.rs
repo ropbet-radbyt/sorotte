@@ -280,7 +280,11 @@ fn set_command_order(json_line: &str) -> Vec<String> {
     let Some((start, end)) = top_level_object_value_span(json_line, "Set") else {
         return Vec::new();
     };
+    let mut seen = BTreeSet::new();
     top_level_key_order(&json_line[start..end])
+        .into_iter()
+        .filter(|command| seen.insert(command.clone()))
+        .collect()
 }
 
 fn decode_protocol_message_with_command_order(

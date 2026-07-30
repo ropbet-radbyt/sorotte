@@ -1,27 +1,70 @@
 use super::*;
 
-pub(crate) fn tls_certificate_bundle_is_available(path: &Path) -> bool {
-    TLS_REQUIRED_CERT_FILENAMES
-        .iter()
-        .all(|filename| path.join(filename).is_file())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TlsCertificateBundleFingerprint([u8; 32]);
+
+pub(crate) struct TlsCertificateBundleSnapshot {
+    private_key_pem: Vec<u8>,
+    certificate_pem: Vec<u8>,
+    chain_pem: Vec<u8>,
+    fingerprint: TlsCertificateBundleFingerprint,
 }
 
-pub(crate) fn tls_certificate_bundle_modified_time(path: &Path) -> Option<SystemTime> {
-    tls_certificate_bundle_modified_time_with(path, |certificate_path| {
-        fs::metadata(certificate_path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
+impl TlsCertificateBundleSnapshot {
+    pub(crate) fn fingerprint(&self) -> TlsCertificateBundleFingerprint {
+        self.fingerprint
+    }
+}
+
+fn fingerprint_tls_certificate_bundle_members(
+    members: [(&str, &[u8]); 3],
+) -> TlsCertificateBundleFingerprint {
+    let mut digest = Sha256::new();
+    digest.update(b"sorotte-tls-certificate-bundle-v1\0");
+    for (filename, contents) in members {
+        digest.update(
+            u64::try_from(filename.len())
+                .expect("TLS bundle filename length must fit u64")
+                .to_be_bytes(),
+        );
+        digest.update(filename.as_bytes());
+        digest.update(
+            u64::try_from(contents.len())
+                .expect("TLS bundle member length must fit u64")
+                .to_be_bytes(),
+        );
+        digest.update(contents);
+    }
+    TlsCertificateBundleFingerprint(digest.finalize().into())
+}
+
+pub(crate) fn read_tls_certificate_bundle_snapshot(
+    path: &Path,
+) -> io::Result<TlsCertificateBundleSnapshot> {
+    let [private_key_filename, certificate_filename, chain_filename] = TLS_REQUIRED_CERT_FILENAMES;
+    let private_key_pem = fs::read(path.join(private_key_filename))?;
+    let certificate_pem = fs::read(path.join(certificate_filename))?;
+    let chain_pem = fs::read(path.join(chain_filename))?;
+    let fingerprint = fingerprint_tls_certificate_bundle_members([
+        (private_key_filename, &private_key_pem),
+        (certificate_filename, &certificate_pem),
+        (chain_filename, &chain_pem),
+    ]);
+    Ok(TlsCertificateBundleSnapshot {
+        private_key_pem,
+        certificate_pem,
+        chain_pem,
+        fingerprint,
     })
 }
 
-fn tls_certificate_bundle_modified_time_with(
+#[cfg(test)]
+pub(crate) fn tls_certificate_bundle_fingerprint(
     path: &Path,
-    mut modified_time: impl FnMut(&Path) -> Option<SystemTime>,
-) -> Option<SystemTime> {
-    TLS_REQUIRED_CERT_FILENAMES
-        .iter()
-        .filter_map(|filename| modified_time(&path.join(filename)))
-        .max()
+) -> Option<TlsCertificateBundleFingerprint> {
+    read_tls_certificate_bundle_snapshot(path)
+        .ok()
+        .map(|snapshot| snapshot.fingerprint())
 }
 
 #[cfg(test)]
@@ -38,8 +81,10 @@ impl TlsCertificateBundleMetadataClock {
         }
     }
 
-    pub(crate) fn modified_time(&self) -> SystemTime {
-        UNIX_EPOCH + std::time::Duration::from_secs(self.revision.load(Ordering::SeqCst))
+    pub(crate) fn fingerprint(&self) -> TlsCertificateBundleFingerprint {
+        let mut bytes = [0_u8; 32];
+        bytes[24..].copy_from_slice(&self.revision.load(Ordering::SeqCst).to_be_bytes());
+        TlsCertificateBundleFingerprint(bytes)
     }
 
     pub(crate) fn advance(&self) {
@@ -51,9 +96,8 @@ impl TlsCertificateBundleMetadataClock {
     }
 }
 
-fn tls_certificates_from_pem(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
-    let file = fs::File::open(path)?;
-    let mut reader = io::BufReader::new(file);
+fn tls_certificates_from_pem(pem: &[u8], path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
+    let mut reader = io::BufReader::new(pem);
     let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
         return Err(io::Error::new(
@@ -64,9 +108,8 @@ fn tls_certificates_from_pem(path: &Path) -> io::Result<Vec<CertificateDer<'stat
     Ok(certificates)
 }
 
-fn tls_private_key_from_pem(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
-    let file = fs::File::open(path)?;
-    let mut reader = io::BufReader::new(file);
+fn tls_private_key_from_pem(pem: &[u8], path: &Path) -> io::Result<PrivateKeyDer<'static>> {
+    let mut reader = io::BufReader::new(pem);
     rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -76,9 +119,21 @@ fn tls_private_key_from_pem(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
 }
 
 pub(crate) fn load_tls_server_config(path: &Path) -> io::Result<Arc<ServerConfig>> {
-    let mut certificate_chain = tls_certificates_from_pem(&path.join("cert.pem"))?;
-    certificate_chain.extend(tls_certificates_from_pem(&path.join("chain.pem"))?);
-    let private_key = tls_private_key_from_pem(&path.join("privkey.pem"))?;
+    load_tls_server_config_from_snapshot(path, &read_tls_certificate_bundle_snapshot(path)?)
+}
+
+pub(crate) fn load_tls_server_config_from_snapshot(
+    path: &Path,
+    snapshot: &TlsCertificateBundleSnapshot,
+) -> io::Result<Arc<ServerConfig>> {
+    let mut certificate_chain =
+        tls_certificates_from_pem(&snapshot.certificate_pem, &path.join("cert.pem"))?;
+    certificate_chain.extend(tls_certificates_from_pem(
+        &snapshot.chain_pem,
+        &path.join("chain.pem"),
+    )?);
+    let private_key =
+        tls_private_key_from_pem(&snapshot.private_key_pem, &path.join("privkey.pem"))?;
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificate_chain, private_key)
@@ -95,47 +150,26 @@ pub(crate) fn load_tls_server_config(path: &Path) -> io::Result<Arc<ServerConfig
 mod tests {
     use super::*;
 
-    fn bundle_modified_time_for_member_seconds(seconds: [u64; 3]) -> Option<SystemTime> {
-        tls_certificate_bundle_modified_time_with(Path::new("test-bundle"), |path| {
-            let filename = path
-                .file_name()
-                .and_then(|filename| filename.to_str())
-                .expect("test bundle member should have a UTF-8 filename");
-            let index = TLS_REQUIRED_CERT_FILENAMES
-                .iter()
-                .position(|candidate| *candidate == filename)
-                .expect("only required TLS bundle members should be inspected");
-            Some(UNIX_EPOCH + std::time::Duration::from_secs(seconds[index]))
-        })
+    fn bundle_fingerprint_for_members(members: [&[u8]; 3]) -> TlsCertificateBundleFingerprint {
+        fingerprint_tls_certificate_bundle_members([
+            ("privkey.pem", members[0]),
+            ("cert.pem", members[1]),
+            ("chain.pem", members[2]),
+        ])
     }
 
     #[test]
-    fn bundle_modified_time_uses_the_latest_required_member() {
-        assert_eq!(
-            bundle_modified_time_for_member_seconds([11, 37, 23]),
-            Some(UNIX_EPOCH + std::time::Duration::from_secs(37))
-        );
-        assert_eq!(
-            bundle_modified_time_for_member_seconds([41, 17, 29]),
-            Some(UNIX_EPOCH + std::time::Duration::from_secs(41))
-        );
-        assert_eq!(
-            bundle_modified_time_for_member_seconds([13, 19, 43]),
-            Some(UNIX_EPOCH + std::time::Duration::from_secs(43))
-        );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "changing any required TLS bundle member must change the rotation token"
-    )]
-    fn known_defect_tls_bundle_member_change_below_latest_mtime_is_not_detected() {
-        let before = bundle_modified_time_for_member_seconds([10, 30, 20]);
-        let after_privkey_edit = bundle_modified_time_for_member_seconds([11, 30, 20]);
-
-        assert_ne!(
-            before, after_privkey_edit,
-            "changing any required TLS bundle member must change the rotation token"
-        );
+    fn bundle_fingerprint_changes_for_every_required_member_and_equal_length_replacement() {
+        let before = bundle_fingerprint_for_members([b"key-1", b"cert-1", b"chain-1"]);
+        for after in [
+            bundle_fingerprint_for_members([b"key-2", b"cert-1", b"chain-1"]),
+            bundle_fingerprint_for_members([b"key-1", b"cert-2", b"chain-1"]),
+            bundle_fingerprint_for_members([b"key-1", b"cert-1", b"chain-2"]),
+        ] {
+            assert_ne!(
+                before, after,
+                "changing any required TLS bundle member must change the rotation token"
+            );
+        }
     }
 }

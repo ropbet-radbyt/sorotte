@@ -546,8 +546,10 @@ impl ClientSession {
                         self.model.reconnect.playlist_restore_intent = Some(restore_intent);
                         skip_playlist_change_apply = true;
                     }
-                } else {
+                } else if !playlist_change_files.is_empty() {
                     self.model.reconnect.playlist_restore_snapshot = None;
+                    self.model.reconnect.playlist_restore_intent = None;
+                    self.model.reconnect.playlist_restore_pending_ack = None;
                 }
 
                 if !skip_playlist_change_apply {

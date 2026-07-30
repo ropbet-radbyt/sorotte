@@ -95,9 +95,9 @@ transport action, context state, acceptability gate, and retry count is checked
 against an independent model. Real-network proofs retain the captured context
 for an already accepted handshake, deny later clients after invalid rotation,
 and recover after a valid pre-cap restoration. Retry exhaustion remains an
-explicit terminal legacy contract. The separate `TC-SERVER-003`
-characterization proves that production's maximum-mtime token can collide; it
-is not counted as positive `NET-TLS-001` evidence.
+explicit terminal legacy contract. The former `TC-SERVER-003` collision is now
+a positive production-filesystem proof: all three members contribute to a
+content fingerprint and rustls parses the exact captured snapshot.
 
 `SRV-PERSIST-001` makes process interruption an executable persistence
 contract. A dedicated child test process terminates without Rust destructors at

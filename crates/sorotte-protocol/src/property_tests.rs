@@ -483,7 +483,7 @@ fn duplicate_commands_have_first_position_and_last_value_semantics() {
 }
 
 #[test]
-fn duplicate_set_members_collapse_payloads_to_the_last_value() {
+fn duplicate_set_members_have_first_position_and_last_value_semantics() {
     let line = r#"{
         "Set":{
             "ready":{"isReady":true},
@@ -496,10 +496,7 @@ fn duplicate_set_members_collapse_payloads_to_the_last_value() {
     let ProtocolMessage::Set(message) = message else {
         panic!("expected Set message");
     };
-    assert_eq!(
-        message.set.command_order,
-        ["ready", "file", "ready", "file"]
-    );
+    assert_eq!(message.set.command_order, ["ready", "file"]);
     assert_eq!(
         message.set.ready.as_ref().and_then(|ready| ready.is_ready),
         Some(false)
@@ -515,8 +512,7 @@ fn duplicate_set_members_collapse_payloads_to_the_last_value() {
 }
 
 #[test]
-#[should_panic(expected = "collapsed duplicate Set members must appear once in command order")]
-fn known_defect_duplicate_set_members_retain_collapsed_execution_entries() {
+fn collapsed_duplicate_set_members_appear_once_in_command_order() {
     let line = r#"{
         "Set":{
             "ready":{"isReady":true},

@@ -31,7 +31,7 @@ use super::{
     ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, TlsCertificateBundleMetadataClock,
     default_motd_for_client_version, motd_for_client_context, motd_for_client_version,
     read_network_line_from_stream, run_server_network_loop_until_shutdown,
-    run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_modified_time,
+    run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_fingerprint,
 };
 use sorotte_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
