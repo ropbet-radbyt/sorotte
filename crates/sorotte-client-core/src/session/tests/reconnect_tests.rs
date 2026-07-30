@@ -1,5 +1,6 @@
 use super::*;
 
+mod playlist_ack_lifecycle_property_tests;
 mod playlist_restore_tests;
 mod property_tests;
 mod reset_tests;

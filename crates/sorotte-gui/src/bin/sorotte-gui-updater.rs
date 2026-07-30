@@ -132,6 +132,8 @@ struct JournalCommit {
 enum ApplyProgress {
     BeforePrepare(usize),
     BeforeReplace(usize),
+    #[cfg(test)]
+    AfterReplace(usize),
 }
 
 #[cfg(windows)]
@@ -1299,6 +1301,8 @@ where
             reject_reparse_parent(&plan.target_dir, &file.target)?;
             validate_replacement_target_unchanged(file)?;
             install_prepared_replacement(file)?;
+            #[cfg(test)]
+            before_progress(ApplyProgress::AfterReplace(index + 1))?;
         }
         append_journal_commit(&plan.journal_path)?;
         Ok(())
@@ -2146,12 +2150,278 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     fn prepare_test_plan(plan: &ReplacementPlan) {
         for file in &plan.files {
             if let Some(source) = file.source.as_ref() {
                 fs::copy(source, &file.temporary).unwrap();
             }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixFileKind {
+        Existing,
+        Added,
+        Removed,
+    }
+
+    impl MatrixFileKind {
+        const ALL: [Self; 3] = [Self::Existing, Self::Added, Self::Removed];
+
+        fn relative(self) -> &'static str {
+            match self {
+                Self::Existing => "existing.txt",
+                Self::Added => "added.txt",
+                Self::Removed => "removed.txt",
+            }
+        }
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Existing => "existing",
+                Self::Added => "added",
+                Self::Removed => "removed",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixArtifact {
+        Temporary,
+        Target,
+        Backup,
+    }
+
+    impl MatrixArtifact {
+        const ALL: [Self; 3] = [Self::Temporary, Self::Target, Self::Backup];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Temporary => "temporary",
+                Self::Target => "target",
+                Self::Backup => "backup",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixFault {
+        Missing,
+        Corrupt,
+        Substituted,
+    }
+
+    impl MatrixFault {
+        const ALL: [Self; 3] = [Self::Missing, Self::Corrupt, Self::Substituted];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Missing => "missing",
+                Self::Corrupt => "corrupt",
+                Self::Substituted => "substituted",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixRecoveryMode {
+        Uncommitted,
+        Committed,
+    }
+
+    impl MatrixRecoveryMode {
+        const ALL: [Self; 2] = [Self::Uncommitted, Self::Committed];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Uncommitted => "uncommitted",
+                Self::Committed => "committed",
+            }
+        }
+    }
+
+    fn recovery_matrix_plan(root: &Path) -> ReplacementPlan {
+        let target = root.join("target");
+        write_relative(
+            &target,
+            MatrixFileKind::Existing.relative(),
+            b"old-existing",
+        );
+        write_relative(&target, MatrixFileKind::Removed.relative(), b"old-removed");
+        test_plan(
+            root,
+            &[
+                (MatrixFileKind::Existing.relative(), Some(b"new-existing")),
+                (MatrixFileKind::Added.relative(), Some(b"new-added")),
+                (MatrixFileKind::Removed.relative(), None),
+            ],
+        )
+    }
+
+    fn matrix_file(plan: &ReplacementPlan, kind: MatrixFileKind) -> &ReplacementFile {
+        plan.files
+            .iter()
+            .find(|file| file.relative == Path::new(kind.relative()))
+            .unwrap()
+    }
+
+    fn matrix_artifact_path(
+        plan: &ReplacementPlan,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+    ) -> PathBuf {
+        let file = matrix_file(plan, kind);
+        match artifact {
+            MatrixArtifact::Temporary => file.temporary.clone(),
+            MatrixArtifact::Target => file.target.clone(),
+            MatrixArtifact::Backup => file.backup.clone(),
+        }
+    }
+
+    fn prepare_and_install_matrix(plan: &ReplacementPlan) {
+        prepare_test_plan(plan);
+        for file in &plan.files {
+            if file.source.is_some() || file.target_existed {
+                install_prepared_replacement(file).unwrap();
+            }
+        }
+    }
+
+    fn replacement_bytes(kind: MatrixFileKind) -> Option<&'static [u8]> {
+        match kind {
+            MatrixFileKind::Existing => Some(b"new-existing"),
+            MatrixFileKind::Added => Some(b"new-added"),
+            MatrixFileKind::Removed => None,
+        }
+    }
+
+    fn original_bytes(kind: MatrixFileKind) -> Option<&'static [u8]> {
+        match kind {
+            MatrixFileKind::Existing => Some(b"old-existing"),
+            MatrixFileKind::Added => None,
+            MatrixFileKind::Removed => Some(b"old-removed"),
+        }
+    }
+
+    fn assert_matrix_state(plan: &ReplacementPlan, committed: bool) {
+        for kind in MatrixFileKind::ALL {
+            let expected = if committed {
+                replacement_bytes(kind)
+            } else {
+                original_bytes(kind)
+            };
+            let target = &matrix_file(plan, kind).target;
+            match expected {
+                Some(expected) => assert_eq!(
+                    fs::read(target).unwrap(),
+                    expected,
+                    "unexpected {:?} target after recovery",
+                    kind
+                ),
+                None => assert!(
+                    !target.exists(),
+                    "{kind:?} target should be absent after recovery"
+                ),
+            }
+        }
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| !file.temporary.exists() && !file.backup.exists()),
+            "successful recovery must remove every temporary and backup"
+        );
+        assert!(
+            !plan.journal_path.exists(),
+            "successful recovery must remove its journal"
+        );
+    }
+
+    fn apply_matrix_fault(
+        plan: &ReplacementPlan,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+        fault: MatrixFault,
+    ) {
+        let path = matrix_artifact_path(plan, kind, artifact);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed clearing {}: {error}", path.display()),
+        }
+        match fault {
+            MatrixFault::Missing => {}
+            MatrixFault::Corrupt => {
+                fs::write(path, b"\0truncated-or-corrupt-artifact").unwrap();
+            }
+            MatrixFault::Substituted => {
+                let other_transaction_bytes: &[u8] = match kind {
+                    MatrixFileKind::Existing => b"new-added",
+                    MatrixFileKind::Added => b"old-removed",
+                    MatrixFileKind::Removed => b"new-existing",
+                };
+                fs::write(path, other_transaction_bytes).unwrap();
+            }
+        }
+    }
+
+    fn reference_recovery_accepts(
+        mode: MatrixRecoveryMode,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+        fault: MatrixFault,
+    ) -> bool {
+        match mode {
+            MatrixRecoveryMode::Uncommitted => match artifact {
+                MatrixArtifact::Temporary => true,
+                MatrixArtifact::Target => fault == MatrixFault::Missing,
+                MatrixArtifact::Backup => {
+                    kind == MatrixFileKind::Added && fault == MatrixFault::Missing
+                }
+            },
+            MatrixRecoveryMode::Committed => match artifact {
+                MatrixArtifact::Temporary | MatrixArtifact::Backup => fault == MatrixFault::Missing,
+                MatrixArtifact::Target => {
+                    kind == MatrixFileKind::Removed && fault == MatrixFault::Missing
+                }
+            },
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn replace_with_test_link(root: &Path, path: &Path, label: &str) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed clearing link path {}: {error}", path.display()),
+        }
+
+        #[cfg(unix)]
+        {
+            let link_target = write_relative(
+                root,
+                &format!("link-source-{label}.txt"),
+                b"link target must never be trusted",
+            );
+            std::os::unix::fs::symlink(link_target, path).unwrap();
+        }
+
+        #[cfg(windows)]
+        {
+            let link_target = root.join(format!("link-source-{label}"));
+            fs::create_dir(&link_target).unwrap();
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(path)
+                .arg(&link_target)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "test setup could not create a directory junction at {}",
+                path.display()
+            );
         }
     }
 
@@ -2508,6 +2778,194 @@ mod tests {
     }
 
     #[test]
+    fn every_before_and_after_replacement_failure_boundary_rolls_back_the_matrix() {
+        let schedules = [
+            ApplyProgress::BeforeReplace(1),
+            ApplyProgress::AfterReplace(1),
+            ApplyProgress::BeforeReplace(2),
+            ApplyProgress::AfterReplace(2),
+            ApplyProgress::BeforeReplace(3),
+            ApplyProgress::AfterReplace(3),
+        ];
+
+        for (case_index, injected_at) in schedules.into_iter().enumerate() {
+            let root = test_root(&format!("replacement-boundary-{case_index}"));
+            let plan = recovery_matrix_plan(&root);
+            let error = apply_replacement_plan_with_hook(&plan, |progress| {
+                if progress == injected_at {
+                    Err(format!("injected failure at {injected_at:?}"))
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("every injected replacement boundary must abort the update");
+
+            assert!(
+                error.contains("all changed files were rolled back"),
+                "{injected_at:?} did not report a complete rollback: {error}"
+            );
+            assert_matrix_state(&plan, false);
+            recover_pending_update(&plan.target_dir)
+                .expect("re-entering after a complete rollback must be a no-op");
+            assert_matrix_state(&plan, false);
+        }
+    }
+
+    #[test]
+    fn interrupted_prefix_recovery_is_idempotent_at_every_replacement_boundary() {
+        for installed_prefix in 0..=MatrixFileKind::ALL.len() {
+            let root = test_root(&format!("replacement-prefix-{installed_prefix}"));
+            let plan = recovery_matrix_plan(&root);
+            let journal = journal_for_plan(&plan).unwrap();
+            write_journal_header(&plan.journal_path, &journal).unwrap();
+            prepare_test_plan(&plan);
+            for file in plan.files.iter().take(installed_prefix) {
+                install_prepared_replacement(file).unwrap();
+            }
+
+            recover_pending_update(&plan.target_dir).unwrap();
+            assert_matrix_state(&plan, false);
+            recover_pending_update(&plan.target_dir)
+                .expect("a second uncommitted recovery must be a no-op");
+            assert_matrix_state(&plan, false);
+        }
+    }
+
+    #[test]
+    fn replacement_journal_artifact_fault_matrix_matches_the_reference_model() {
+        let mut schedules = 0;
+        for mode in MatrixRecoveryMode::ALL {
+            for kind in MatrixFileKind::ALL {
+                for artifact in MatrixArtifact::ALL {
+                    for fault in MatrixFault::ALL {
+                        schedules += 1;
+                        let root = test_root(&format!(
+                            "journal-matrix-{}-{}-{}-{}",
+                            mode.label(),
+                            kind.label(),
+                            artifact.label(),
+                            fault.label()
+                        ));
+                        let plan = recovery_matrix_plan(&root);
+                        let journal = journal_for_plan(&plan).unwrap();
+                        write_journal_header(&plan.journal_path, &journal).unwrap();
+                        prepare_and_install_matrix(&plan);
+                        if mode == MatrixRecoveryMode::Committed {
+                            append_journal_commit(&plan.journal_path).unwrap();
+                        }
+                        apply_matrix_fault(&plan, kind, artifact, fault);
+                        let fault_path = matrix_artifact_path(&plan, kind, artifact);
+                        let should_recover =
+                            reference_recovery_accepts(mode, kind, artifact, fault);
+
+                        let first = recover_pending_update(&plan.target_dir);
+                        if should_recover {
+                            first.unwrap_or_else(|error| {
+                                panic!(
+                                    "reference model accepted {mode:?}/{kind:?}/{artifact:?}/{fault:?}, \
+                                     but recovery rejected it: {error}"
+                                )
+                            });
+                            assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+                            recover_pending_update(&plan.target_dir)
+                                .expect("successful recovery must remain idempotent");
+                            assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+                        } else {
+                            let first_error = first.expect_err(&format!(
+                                "reference model rejects {mode:?}/{kind:?}/{artifact:?}/{fault:?}"
+                            ));
+                            assert!(
+                                plan.journal_path.is_file(),
+                                "failed recovery must retain its authenticated journal"
+                            );
+                            assert_eq!(
+                                fault_path.exists(),
+                                fault != MatrixFault::Missing,
+                                "recovery must not erase or synthesize the rejected artifact"
+                            );
+
+                            let second_error = recover_pending_update(&plan.target_dir)
+                                .expect_err("re-entering an ambiguous recovery must still fail");
+                            assert_eq!(
+                                first_error, second_error,
+                                "ambiguous recovery should converge on a stable diagnostic"
+                            );
+                            assert!(plan.journal_path.is_file());
+                            assert_eq!(
+                                fault_path.exists(),
+                                fault != MatrixFault::Missing,
+                                "re-entry must preserve the rejected artifact"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(schedules, 54);
+    }
+
+    #[test]
+    fn authenticated_prepared_replacements_are_disposable_or_cleanable_by_mode() {
+        for mode in MatrixRecoveryMode::ALL {
+            for kind in [MatrixFileKind::Existing, MatrixFileKind::Added] {
+                let root = test_root(&format!(
+                    "valid-temporary-{}-{}",
+                    mode.label(),
+                    kind.label()
+                ));
+                let plan = recovery_matrix_plan(&root);
+                let journal = journal_for_plan(&plan).unwrap();
+                write_journal_header(&plan.journal_path, &journal).unwrap();
+                prepare_and_install_matrix(&plan);
+                let file = matrix_file(&plan, kind);
+                fs::copy(file.source.as_ref().unwrap(), &file.temporary).unwrap();
+                if mode == MatrixRecoveryMode::Committed {
+                    append_journal_commit(&plan.journal_path).unwrap();
+                }
+
+                recover_pending_update(&plan.target_dir)
+                    .expect("an authenticated leftover temporary is safe to remove");
+                assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+            }
+        }
+    }
+
+    #[test]
+    fn uncommitted_rollback_processes_entries_in_reverse_order() {
+        let root = test_root("reverse-rollback-order");
+        let plan = recovery_matrix_plan(&root);
+        let journal = journal_for_plan(&plan).unwrap();
+        write_journal_header(&plan.journal_path, &journal).unwrap();
+        prepare_and_install_matrix(&plan);
+        apply_matrix_fault(
+            &plan,
+            MatrixFileKind::Existing,
+            MatrixArtifact::Target,
+            MatrixFault::Corrupt,
+        );
+
+        let error = recover_pending_update(&plan.target_dir)
+            .expect_err("the earliest entry's unrecognized target must fail closed");
+
+        assert!(error.contains("unrecognized digest"));
+        assert_eq!(
+            fs::read(matrix_file(&plan, MatrixFileKind::Removed).target.clone()).unwrap(),
+            b"old-removed",
+            "the last entry must be restored before the earlier failure is reported"
+        );
+        assert!(
+            !matrix_file(&plan, MatrixFileKind::Added).target.exists(),
+            "the middle entry must be removed before the earlier failure is reported"
+        );
+        assert_eq!(
+            fs::read(matrix_file(&plan, MatrixFileKind::Existing).target.clone()).unwrap(),
+            b"\0truncated-or-corrupt-artifact",
+            "the unauthenticated target must remain untouched"
+        );
+        assert!(plan.journal_path.is_file());
+    }
+
+    #[test]
     fn preparation_failure_simulating_disk_exhaustion_leaves_install_unchanged() {
         let root = test_root("prepare-exhaustion");
         let target = root.join("target");
@@ -2708,6 +3166,53 @@ mod tests {
         assert_eq!(fs::read(target.join("a.txt")).unwrap(), b"old-a");
         assert_eq!(fs::read(target.join("b.txt")).unwrap(), b"old-b");
         assert!(!plan.journal_path.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn recovery_rejects_links_for_every_artifact_in_both_journal_modes() {
+        let mut schedules = 0;
+        for mode in MatrixRecoveryMode::ALL {
+            for artifact in MatrixArtifact::ALL {
+                schedules += 1;
+                let root = test_root(&format!(
+                    "journal-link-{}-{}",
+                    mode.label(),
+                    artifact.label()
+                ));
+                let plan = recovery_matrix_plan(&root);
+                let journal = journal_for_plan(&plan).unwrap();
+                write_journal_header(&plan.journal_path, &journal).unwrap();
+                prepare_and_install_matrix(&plan);
+                if mode == MatrixRecoveryMode::Committed {
+                    append_journal_commit(&plan.journal_path).unwrap();
+                }
+                let artifact_path = matrix_artifact_path(&plan, MatrixFileKind::Existing, artifact);
+                replace_with_test_link(
+                    &root,
+                    &artifact_path,
+                    &format!("{}-{}", mode.label(), artifact.label()),
+                );
+
+                let first_error = recover_pending_update(&plan.target_dir)
+                    .expect_err("recovery must reject a linked transaction artifact");
+                assert!(
+                    first_error.contains("link or reparse point"),
+                    "unexpected link rejection for {mode:?}/{artifact:?}: {first_error}"
+                );
+                assert!(plan.journal_path.is_file());
+                assert!(
+                    metadata_is_reparse_or_symlink(&fs::symlink_metadata(&artifact_path).unwrap()),
+                    "the rejected link must remain untouched"
+                );
+
+                let second_error = recover_pending_update(&plan.target_dir)
+                    .expect_err("re-entry must continue rejecting the link");
+                assert_eq!(first_error, second_error);
+                assert!(plan.journal_path.is_file());
+            }
+        }
+        assert_eq!(schedules, 6);
     }
 
     #[test]

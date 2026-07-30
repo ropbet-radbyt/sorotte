@@ -56,6 +56,12 @@ fn exact_fixture_args() -> Vec<String> {
     ]
 }
 
+fn locked_process_fixture_role() -> (TestEnvGuard<'static>, Option<std::ffi::OsString>) {
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let role = std::env::var_os(PROCESS_FIXTURE_ROLE);
+    (env, role)
+}
+
 fn run_external_stdio_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     use std::io::Write as _;
     use std::process::Stdio;
@@ -107,7 +113,8 @@ fn run_external_stdio_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 fn external_player_process_fixture_entrypoint() {
     use std::io::Read as _;
 
-    let Some(role) = std::env::var_os(PROCESS_FIXTURE_ROLE) else {
+    let (env, role) = locked_process_fixture_role();
+    let Some(role) = role else {
         return;
     };
     let root = PathBuf::from(
@@ -128,11 +135,7 @@ fn external_player_process_fixture_entrypoint() {
             std::process::exit(23);
         }
         "stdio-coordinator" => {
-            // SAFETY: this exact test is the only test running in the coordinator
-            // subprocess, and the mutation is complete before it spawns the leaf.
-            unsafe {
-                std::env::set_var(PROCESS_FIXTURE_ROLE, "stdio-leaf");
-            }
+            env.set_var(PROCESS_FIXTURE_ROLE, "stdio-leaf");
             let spec = LegacyExternalPlayerLaunchSpec {
                 program: std::env::current_exe()
                     .expect("current test executable should be available"),
@@ -157,6 +160,41 @@ fn external_player_process_fixture_entrypoint() {
         }
         unexpected => panic!("unknown external process fixture role: {unexpected}"),
     }
+}
+
+#[test]
+fn process_fixture_entrypoint_waits_for_role_restoration_before_observation() {
+    let mutating_env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let original_role = std::env::var_os(PROCESS_FIXTURE_ROLE);
+    mutating_env.set_var(PROCESS_FIXTURE_ROLE, "early-exit-leaf");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let observer = std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .expect("role observer should publish its start");
+        let (_env, role) = locked_process_fixture_role();
+        observed_tx
+            .send(role)
+            .expect("role observer should publish its result");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("role observer should reach the lock boundary");
+    assert!(
+        observed_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "fixture role observation must not race a test-owned environment mutation"
+    );
+    drop(mutating_env);
+    assert_eq!(
+        observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("role observer should resume after restoration"),
+        original_role,
+        "the fixture entrypoint must observe the restored role, not the transient child role"
+    );
+    observer.join().expect("role observer should stop cleanly");
 }
 
 #[test]

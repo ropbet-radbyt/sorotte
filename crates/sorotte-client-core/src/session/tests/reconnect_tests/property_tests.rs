@@ -741,7 +741,7 @@ fn resolve_proptest_cases(raw: Option<&str>) -> Result<u32, String> {
     Ok(cases.min(MAX_PROPTEST_CASES))
 }
 
-fn configured_proptest() -> ProptestConfig {
+pub(super) fn configured_proptest() -> ProptestConfig {
     let raw_cases = std::env::var("PROPTEST_CASES").ok();
     ProptestConfig {
         cases: resolve_proptest_cases(raw_cases.as_deref())

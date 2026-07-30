@@ -105,6 +105,14 @@ impl MpvJsonIpcClient {
         transport: Box<dyn MpvJsonIpcTransport>,
         command_timeout: Duration,
     ) -> Self {
+        Self::new_with_command_timeout_and_initial_request_id(transport, command_timeout, 1)
+    }
+
+    fn new_with_command_timeout_and_initial_request_id(
+        transport: Box<dyn MpvJsonIpcTransport>,
+        command_timeout: Duration,
+        initial_request_id: u64,
+    ) -> Self {
         let generation = NEXT_MPV_IPC_GENERATION.fetch_add(1, Ordering::Relaxed);
         let runtime_queues = Arc::new(Mutex::new(MpvIpcRuntimeQueues::default()));
         let next_runtime_item_sequence = Arc::new(AtomicU64::new(1));
@@ -119,6 +127,7 @@ impl MpvJsonIpcClient {
                     transport,
                     worker_runtime_queues,
                     worker_next_runtime_item_sequence,
+                    initial_request_id,
                 );
                 let final_completion_tx = loop {
                     let Ok(message) = command_rx.recv() else {
@@ -201,6 +210,21 @@ impl MpvJsonIpcClient {
         Ok(Self::new_with_command_timeout(
             Box::new(transport),
             command_timeout,
+        ))
+    }
+
+    #[cfg(all(test, windows))]
+    pub(crate) fn connect_with_command_timeout_and_initial_request_id(
+        path: &Path,
+        command_timeout: Duration,
+        initial_request_id: u64,
+    ) -> Result<Self, String> {
+        let transport = MpvPipeTransport::connect(path)
+            .map_err(|err| format!("failed to connect mpv IPC at {}: {err}", path.display()))?;
+        Ok(Self::new_with_command_timeout_and_initial_request_id(
+            Box::new(transport),
+            command_timeout,
+            initial_request_id,
         ))
     }
 
@@ -898,10 +922,11 @@ impl MpvIpcWorker {
         transport: Box<dyn MpvJsonIpcTransport>,
         runtime_queues: Arc<Mutex<MpvIpcRuntimeQueues>>,
         next_runtime_item_sequence: Arc<AtomicU64>,
+        initial_request_id: u64,
     ) -> Self {
         Self {
             transport,
-            next_request_id: 1,
+            next_request_id: initial_request_id,
             runtime_queues,
             next_runtime_item_sequence,
         }

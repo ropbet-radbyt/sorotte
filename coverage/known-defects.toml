@@ -1,2 +1,15 @@
 schema_version = 1
-defect = []
+
+[[defect]]
+id = "TC-SERVER-004"
+title = "Sequential TLS bundle reads can install a cross-generation snapshot"
+severity = "high"
+owners = ["server", "security"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-server"
+source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
+test = "tests::tls_snapshot_fault_tests::known_defect_tls_snapshot_can_mix_members_replaced_during_observation"
+expected_panic = "rustls must never install a TLS bundle assembled from multiple observed generations"

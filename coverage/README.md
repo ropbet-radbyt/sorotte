@@ -70,11 +70,11 @@ proving reactivation clears stale logical-terminal state.
 Proptest seeds under each participating crate's `proptest-regressions/`
 directory are source-file and strategy-shape scoped. They improve replay while
 a strategy remains stable, while named deterministic regressions remain the
-durable behavior contract. `known-defects.toml` currently records the
-reconnect acknowledgement-fencing defect with two narrow executable
-characterizations and the TLS max-mtime collision with two. `TC-PLAYER-003`
-and `TC-COMPAT-001` through `TC-COMPAT-007` remain resolved by positive
-regressions at their owning boundaries.
+durable behavior contract. `known-defects.toml` currently records one narrow
+`TC-SERVER-004` characterization proving that sequential reads can assemble
+and install a cross-generation TLS bundle. The reconnect acknowledgement fence
+and TLS max-mtime collision are resolved by positive regressions, as are
+`TC-PLAYER-003` and `TC-COMPAT-001` through `TC-COMPAT-007`.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule

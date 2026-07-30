@@ -41,10 +41,17 @@ fn fingerprint_tls_certificate_bundle_members(
 pub(crate) fn read_tls_certificate_bundle_snapshot(
     path: &Path,
 ) -> io::Result<TlsCertificateBundleSnapshot> {
+    read_tls_certificate_bundle_snapshot_with(path, |member_path| fs::read(member_path))
+}
+
+fn read_tls_certificate_bundle_snapshot_with(
+    path: &Path,
+    mut read_member: impl FnMut(&Path) -> io::Result<Vec<u8>>,
+) -> io::Result<TlsCertificateBundleSnapshot> {
     let [private_key_filename, certificate_filename, chain_filename] = TLS_REQUIRED_CERT_FILENAMES;
-    let private_key_pem = fs::read(path.join(private_key_filename))?;
-    let certificate_pem = fs::read(path.join(certificate_filename))?;
-    let chain_pem = fs::read(path.join(chain_filename))?;
+    let private_key_pem = read_member(&path.join(private_key_filename))?;
+    let certificate_pem = read_member(&path.join(certificate_filename))?;
+    let chain_pem = read_member(&path.join(chain_filename))?;
     let fingerprint = fingerprint_tls_certificate_bundle_members([
         (private_key_filename, &private_key_pem),
         (certificate_filename, &certificate_pem),
@@ -56,6 +63,14 @@ pub(crate) fn read_tls_certificate_bundle_snapshot(
         chain_pem,
         fingerprint,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn read_tls_certificate_bundle_snapshot_with_test_reader(
+    path: &Path,
+    read_member: impl FnMut(&Path) -> io::Result<Vec<u8>>,
+) -> io::Result<TlsCertificateBundleSnapshot> {
+    read_tls_certificate_bundle_snapshot_with(path, read_member)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ Compatibility-remediation update: 2026-07-29
 Deterministic clock implementation update: 2026-07-30
 Process-interruption persistence update: 2026-07-30
 Outstanding-defect closure update: 2026-07-30
+Deep-boundary testing update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -22,7 +23,8 @@ regression. Later reconnect, TLS-rotation, protocol, process-supervision, and
 updater experiments opened six additional defects. The 2026-07-30 closure
 update implements all six, converts all eight expected-failure
 characterizations into positive regressions, and leaves the executable defect
-registry explicitly empty.
+registry explicitly empty at that checkpoint. The subsequent deep-boundary
+slice opened one new, deterministic characterization: `TC-SERVER-004`.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -48,6 +50,12 @@ Before the shrinkable suite was added:
 After the coverage tranche was integrated:
 
 - `cargo fmt --all --check` passed.
+- The deep-boundary tree passed the locked all-feature workspace in 205.1
+  seconds after resolving `TC-HARNESS-015`, warning-denied all-target/
+  all-feature workspace Clippy in 7.07 seconds, all 354 infrastructure/policy
+  tests in 13.910 seconds, actionlint, and the exact one-defect/
+  one-characterization known-defect policy. Ten complete all-feature CLI
+  library stress runs passed 10/10 after the harness repair.
 - The outstanding-defect closure passed all complete owning-crate suites:
   protocol 77/77, client-core 699/699, CLI 346 passing with its 8 declared
   ignores, and updater 22/22; the complete server package also passed. The
@@ -106,8 +114,10 @@ After the coverage tranche was integrated:
 - The behavior catalog validates 17 behavior IDs, 40 exact proofs, and two
   lanes. Before the closure slice, the executable registry contained six open
   defects and eight exact characterizations. It now validates as zero defects
-  and zero characterizations; each former expected failure is an ordinary
-  positive regression at its owning boundary.
+  and zero characterizations at the closure checkpoint; each former expected
+  failure is an ordinary positive regression at its owning boundary. The
+  current deep-boundary tree validates as one open defect and one exact
+  characterization for `TC-SERVER-004`.
 - The deterministic TLS model passed 10 consecutive runs: 2,430 generated
   histories and 12,150 checked transitions. Its in-flight real-network,
   restoration, and retry-cap selectors each passed 50/50 replays. The
@@ -126,9 +136,10 @@ After the coverage tranche was integrated:
   already-used `TC-SERVER-001` to `TC-SERVER-003`, rejects duplicate finding
   headings and title drift, and now inventories multiline Rust
   `should_panic(expected = ...)` attributes. Its 21 focused policy tests pass;
-  the former populated registry and the current explicit zero-defect registry
-  both satisfy the same fail-closed contract. The complete infrastructure
-  suite at that checkpoint passed 295/295 tests in 12.421 seconds.
+  the historical populated registry, the closure checkpoint's explicit
+  zero-defect registry, and the current single-defect registry all use the
+  same fail-closed contract. The complete infrastructure suite at that
+  checkpoint passed 295/295 tests in 12.421 seconds.
 - The ignored-test registry exactly classifies all 23 source attributes:
   4 required pull-request proofs, 7 fixture-maintenance commands, and 12 manual
   capability tests. The two compatibility quarantines were retired after their
@@ -543,6 +554,41 @@ nine in 88.98 seconds. The current required live-reference selector passes
 20/20 with no failures or ignores, while the full deterministic Python fanout
 lane passes 33/33. Commands and the preserved before/after evidence are in
 [`merged-profile-lanes-20260729.md`](evidence/test-coverage/merged-profile-lanes-20260729.md).
+
+## TC-HARNESS-015: external-player fixture roles can terminate the parent libtest (resolved)
+
+Status: **Resolved 2026-07-30; fixture-role observation is serialized**
+
+Severity: **Harness correctness (the required workspace gate can exit or hang
+without a product assertion failing)**
+Detection: first combined all-feature workspace run after the deep-boundary
+test slice
+
+The CLI external-player tests temporarily set a process-global fixture role
+before spawning the current test executable as an exact child test. The exact
+fixture entrypoint is also an ordinary test in the parent libtest. It read the
+role without taking the environment-domain mutex, so parallel scheduling could
+make the parent entrypoint impersonate a child role.
+
+The first combined run exited the entire CLI test binary with code `23`, the
+intentional status of `early-exit-leaf`. The same unchecked read could instead
+select the blocking `detached-leaf` role. Neither shape is a Rust assertion
+failure, so the libtest can end abnormally or lose the normal per-test
+diagnostic.
+
+The fixture entrypoint now acquires the same `TestEnvGuard` used by every role
+mutator before observing the role and retains it through dispatch. A child
+process has its own mutex and therefore proceeds normally. In the parent, the
+entrypoint either reads the original role before mutation or waits until the
+mutating test restores it. The stdio coordinator now also performs its leaf
+role change through that guard.
+
+A barrier-driven regression holds the mutator guard, starts a role observer,
+proves observation cannot complete during the transient role, releases the
+guard, and requires the observer to receive the restored value. The owning
+module passes 15/15, warning-denied CLI Clippy passes, and ten consecutive
+complete all-feature CLI library runs pass 10/10 in 111.7 seconds. No retry or
+test-thread serialization is needed.
 
 ## TC-SEC-001: structured credential aliases survive transcript sanitization (resolved)
 
@@ -1545,7 +1591,9 @@ migration defect, so it is now `TC-SERVER-003`. The Rust inventory scanner also
 ignored multiline `should_panic(expected = ...)` attributes. The validator now
 parses multiline attributes, rejects duplicate finding headings and
 case-insensitive title drift. Its 21 focused tests pass, and the current
-registry validates explicitly as zero defects and zero characterizations.
+registry at that closure checkpoint validates explicitly as zero defects and
+zero characterizations. The subsequent deep-boundary TLS slice is recorded
+below as one defect and one exact characterization.
 
 ## TC-CLIENT-001: reconnect playlist restore lacks acknowledgement fencing
 
@@ -1656,6 +1704,82 @@ changes the fingerprint, and that replacing the older private key while
 preserving its timestamp below the unchanged maximum invalidates the cached
 context. Missing members retain the prior legacy retry behavior, and an
 invalid captured snapshot is never installed as a `ServerConfig`.
+
+## TC-SERVER-004: Sequential TLS bundle reads can install a cross-generation snapshot
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **High (one installed TLS context can combine key, certificate, and
+chain material from different rotation generations)**
+Detection: per-member replacement scheduling through the production snapshot
+reader
+
+The content-fingerprint fix for `TC-SERVER-003` correctly fingerprints the
+exact bytes later parsed by rustls. It therefore closes the
+observation-versus-parse race, equal-length edits, and metadata collisions.
+The three bundle members are still read sequentially from independently
+mutable paths, however. The server has no generation boundary proving that all
+three reads came from one publication.
+
+The characterization builds two complete, distinct, independently
+rustls-loadable generations and injects replacement at both possible
+mid-capture boundaries:
+
+```text
+boundary 1: private key A | certificate B | chain B
+boundary 2: private key A | certificate A | chain B
+```
+
+At both boundaries, the captured fingerprint differs from the fingerprint of
+complete generation A and complete generation B, yet rustls accepts the mixed
+snapshot as a server configuration. The test executes both schedules before
+failing with the exact oracle:
+
+```text
+rustls must never install a TLS bundle assembled from multiple observed generations
+```
+
+This is not a fingerprint collision and cannot be solved by adding more file
+metadata to the fingerprint. It is a publication-atomicity problem. A reader
+cannot infer a common generation from three mutable loose files when a writer
+may pause or fail between replacements.
+
+The full solution is an immutable, versioned bundle publication protocol:
+
+1. The writer creates a fresh generation directory containing the private key,
+   certificate, chain, and a manifest with the generation identifier, member
+   names, lengths, and SHA-256 digests.
+2. It flushes and closes every staged member, validates the complete
+   generation, then publishes that directory without modifying it again.
+3. It atomically replaces a small `current` manifest or pointer naming the
+   immutable generation.
+4. The server captures the pointer, reads and authenticates only that
+   generation, constructs rustls from those captured bytes, and rechecks the
+   pointer before installation. Existing connections retain their already
+   captured context; later connections observe either the old or new complete
+   generation.
+5. Old generations are garbage-collected only after they are no longer
+   referenced, and interrupted staging directories are never eligible for
+   selection.
+
+For compatibility with existing loose-file deployments, a bounded
+double-capture can be added as a defensive fallback: read all members twice
+and accept only two identical framed fingerprints. That cheaply rejects
+ordinary replacements that overlap observation, but it is not the complete
+fix because a writer can leave a stable mixed directory between member
+operations. The fallback should therefore be documented as race reduction,
+not generation-atomic TLS rotation.
+
+The eventual positive regression must require both injected boundaries to be
+rejected, exercise interrupted publication before and after the atomic pointer
+switch, prove new connections see only complete A or B, and preserve the
+existing in-flight-context and retry semantics. Capture instability should be
+treated as a transient observation rather than consuming the terminal
+invalid-generation retry budget.
+
+The complete four-stream schedule inventory, owning-suite results, integrated
+validation, and `TC-HARNESS-015` reproduction are retained in
+[`deep-boundary-slice-20260730.md`](evidence/test-coverage/deep-boundary-slice-20260730.md).
 
 ## Local all-feature LCOV proof
 

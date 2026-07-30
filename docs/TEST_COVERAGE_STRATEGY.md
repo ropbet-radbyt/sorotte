@@ -7,6 +7,7 @@ Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
 GUI release artifact implementation update: 2026-07-30
 Outstanding-defect closure update: 2026-07-30
+Deep-boundary testing update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -22,7 +23,9 @@ Target audience: maintainers, reviewers, and release owners
 This branch implements the highest-leverage part of the proposal, then applies
 the production fixes proven by that coverage. The final closure slice resolves
 all six remaining registered defects, converts all eight expected failures
-into positive regressions, and validates an explicitly empty defect registry:
+into positive regressions, and validates an explicitly empty defect registry
+at that checkpoint. A later deep-boundary slice deterministically exposes and
+registers one new TLS publication-atomicity defect, `TC-SERVER-004`:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -60,8 +63,9 @@ into positive regressions, and validates an explicitly empty defect registry:
   defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
   through `TC-COMPAT-007` all have positive regressions; the final
   `TC-CLIENT-001`, `TC-SERVER-003`, `TC-PROTOCOL-001`, `TC-CLI-001`/`002`,
-  and `TC-UPDATER-001` characterizations have also been converted, leaving an
-  explicitly empty executable defect registry;
+  and `TC-UPDATER-001` characterizations have also been converted; the current
+  registry contains only the new `TC-SERVER-004` cross-generation TLS snapshot
+  characterization;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -224,8 +228,10 @@ assigned `TC-SERVER-001` identifier and that multiline Rust
 The TLS finding is now `TC-SERVER-003`; the known-defect validator parses
 multiline attributes and rejects duplicate finding headings and title drift.
 Its 21 focused tests pass against both populated fixtures and the real
-explicitly empty registry; the historical two-defect/four-characterization
-checkpoint therefore remains policy evidence rather than current inventory.
+closure checkpoint's explicitly empty registry; the historical
+two-defect/four-characterization checkpoint therefore remains policy evidence
+rather than current inventory. The same policy validates the current
+one-defect/one-characterization `TC-SERVER-004` inventory.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -642,18 +648,18 @@ boundaries rather than adding hundreds more nearby examples.
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
 | Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction | hand-written raw JSON scanners have example-only coverage | roundtrip/metamorphic properties, byte fuzzing, differential Python oracle |
-| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation now has a metadata clock, exhaustive model, and real-network proofs | locked all-feature Linux and Windows suites are required; live matrix remains limited; non-TLS wall-clock tests and the open max-mtime collision remain | deterministic network simulation, content-fingerprint rotation, strict live compatibility, load bounds |
+| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, deterministic and real-filesystem fault models, and real-network proofs | loose-file bundle publication is not generation-atomic (`TC-SERVER-004`); live matrix remains limited; non-TLS wall-clock tests remain | immutable versioned TLS publication, deterministic network simulation, strict live compatibility, load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, and atomic row-migration regressions; 15 process-interruption stages with integrity-checked reopen | power-loss, disk-full/permission/syscall faults, and pre-transaction actor-message durability remain unproven | filesystem/storage failpoints, a pure arbitration model, schedule exploration, and platform durability probes |
-| Client-core lifecycle | broad reducer/projection/reconnect examples, a required shrinkable reconnect restore model, and required all-feature execution | reset is a manual field list; transport-level reconnect timing and the open playlist acknowledgement fence remain | extend the stateful reference model through transport delivery/acknowledgement, then add clock-controlled adapter schedules |
+| Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, and required all-feature execution | reset is a manual field list; session-level acknowledgement is modeled but transport-level reconnect/echo timing remains | carry the acknowledgement oracle through actual transport delivery, then add clock-controlled adapter schedules |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
-| Player adapter | strong reducer/adapter tests, four real-mpv simulations, and production-worker framed split/coalesce/truncate/duplicate/reorder/half-close coverage | no bidirectional real-pipe fault injector; ignored real bridge | stateful framed duplex harness, min/latest mpv, real command/response traces |
+| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, and real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel-pipe matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | many direct state and projection tests plus bounded shutdown through the actual threaded pump | most behavior still bypasses the pump; delivery-mode/mixed-getter debt remains | poison adapter through real refresh path, deterministic executor/clock |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
 | Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, and pre-termination failure capture | the complete ten-scenario contract is locally green, but still needs an isolated interactive Windows CI lane and uses a deterministic player rather than real mpv | require the strict contract on an ephemeral interactive Windows lane, then add one real-mpv vertical slice |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
 | Media match/stream helper | extensive index and extraction examples | low line coverage, process/error paths, ignored ffmpeg harness | parser properties, generated media, ffmpeg CI lane, failure injection |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
-| Settings/storage/update | atomic replace and path safety are strong | only one pre-commit failure seam; OS crash/durability gaps | stage-by-stage filesystem faults, parent-dir sync, restart and adversarial links |
+| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, and a committed/uncommitted multi-file recovery model are strong | OS process-kill/power-loss, filesystem durability, disk-full, and permission gaps remain | process interruption, filesystem syscall faults, parent-dir sync, and restart proof |
 | Packaging/releases | strong path/publication scripts | package is not independently consumed before upload | extract, inspect, launch, update/rollback, provenance verification |
 | Server container | non-root runtime | workflow builds and pushes in one step without smoke | build/load, protocol/TLS/persistence smoke, scan/SBOM, then push exact digest |
 
@@ -1904,13 +1910,14 @@ integrity-checked idempotent reopen are also implemented. Generated transcript
 and `PlayerError` taint corpora cover
 hundreds of nested, escaped, encoded, and round-tripped cases; all three
 redaction families they found are now positive regressions backed by one
-shared classification policy. The reconnect model exposed one open
-acknowledgement-fencing defect with two exact schedules. Generated duplicate
-protocol inputs exposed one open nested-`Set` execution-order asymmetry. This
-is not yet coverage-guided fuzzing, raw socket-byte framing, a transport-level
-reconnect reference model, kernel named-pipe fragmentation/partial-write
-injection, filesystem/power-loss fault injection, or a durability contract for
-actor intent that has not entered a transaction.
+shared classification policy. The reconnect acknowledgement-fencing and
+nested-`Set` execution-order defects are now positive regressions. A second
+post-emission reconnect model and the real Windows named-pipe
+fragmentation/correlation/disconnect matrix are implemented. This is not yet
+coverage-guided fuzzing, generic client/server raw socket-byte framing, a
+transport-level reconnect acknowledgement model, a Unix-domain socket
+equivalent, filesystem/power-loss fault injection, or a durability contract
+for actor intent that has not entered a transaction.
 
 ### Tranche D — real system and deep analysis
 
@@ -1943,6 +1950,10 @@ clean-commit package digests are retained in
 The GUI archive threat model, adversarial matrix, exact-byte runtime proof, and
 surfaced updater defect are retained in
 [`gui-release-artifact-20260730.md`](evidence/test-coverage/gui-release-artifact-20260730.md).
+The subsequent reconnect acknowledgement, TLS snapshot, updater recovery, and
+real Windows named-pipe matrices, including `TC-SERVER-004` and the resolved
+`TC-HARNESS-015`, are retained in
+[`deep-boundary-slice-20260730.md`](evidence/test-coverage/deep-boundary-slice-20260730.md).
 
 Acceptance:
 
@@ -2038,10 +2049,10 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. resolve the reconnect acknowledgement fence and TLS content-fingerprint
-   decision, then extend the proven persistence crash boundary into
-   pre-transaction arbitration and filesystem faults while expanding
-   deterministic clock/schedule control into process supervision;
+3. implement immutable versioned TLS bundle publication for `TC-SERVER-004`,
+   then extend the proven persistence crash boundary into pre-transaction
+   arbitration and filesystem faults while expanding deterministic
+   clock/schedule control into process supervision;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated

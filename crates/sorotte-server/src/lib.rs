@@ -220,7 +220,10 @@ pub(crate) use tls::{
     load_tls_server_config_from_snapshot, read_tls_certificate_bundle_snapshot,
 };
 #[cfg(test)]
-pub(crate) use tls::{TlsCertificateBundleMetadataClock, tls_certificate_bundle_fingerprint};
+pub(crate) use tls::{
+    TlsCertificateBundleMetadataClock, read_tls_certificate_bundle_snapshot_with_test_reader,
+    tls_certificate_bundle_fingerprint,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerSession {
