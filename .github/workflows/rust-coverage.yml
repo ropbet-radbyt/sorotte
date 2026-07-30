@@ -93,3 +93,72 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           overwrite: true
+
+  windows-process-coverage:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CARGO_TARGET_DIR: target/llvm-cov-windows-process
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: llvm-tools-preview
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-llvm-cov@0.8.4
+
+      - name: Generate Windows process coverage profiles
+        run: >-
+          python scripts/coverage_windows_process_lanes.py run
+          --repo-root .
+          --output target/verification/coverage-windows-process-lanes.json
+
+      - name: Export Windows LLVM JSON
+        run: >-
+          cargo llvm-cov report --json --skip-functions
+          --output-path target/coverage-windows-process.json
+
+      - name: Export Windows LLVM source view
+        run: >-
+          cargo llvm-cov report --text
+          --output-path target/coverage-windows-process.txt
+
+      - name: Build Windows source-bound physical line map
+        run: >-
+          python scripts/llvm_cov_line_map.py
+          --repo-root .
+          --llvm-json target/coverage-windows-process.json
+          --llvm-text target/coverage-windows-process.txt
+          --output target/coverage-windows-process-line-map.json
+
+      - name: Upload Windows process coverage artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sorotte-windows-process-llvm-coverage
+          path: |
+            target/coverage-windows-process.json
+            target/coverage-windows-process.txt
+            target/coverage-windows-process-line-map.json
+            target/verification/coverage-windows-process-lanes.json
+            target/verification/coverage-windows-process-logs/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
