@@ -69,3 +69,31 @@ package = "sorotte-gui"
 source = "crates/sorotte-gui/src/app/media_match_support/process_fault_tests.rs"
 test = "app::media_match_support::process_fault_tests::known_defect_version_probe_deadlocks_on_finite_output_larger_than_pipe_capacity"
 expected_panic = "finite fake-tool output must be drained while the process runs"
+
+[[defect]]
+id = "TC-PLEX-001"
+title = "Plex playable-part selection ignores filename and size evidence"
+severity = "high"
+owners = ["plex", "media-resolution"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-plex"
+source = "crates/sorotte-plex/src/tests/part_selection_adversarial.rs"
+test = "tests::part_selection_adversarial::known_defect_resolver_ignores_filename_and_size_evidence"
+expected_panic = "TC-PLEX-001: Plex part selection must use filename and size evidence"
+
+[[defect]]
+id = "TC-GUI-003"
+title = "Permanent Plex ambiguity repeats as a transient miss"
+severity = "medium"
+owners = ["gui", "plex"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-gui"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/player_runtime_tests/plex_ambiguity_retry.rs"
+test = "app::runtime_owner::tests::player_runtime_tests::plex_ambiguity_retry::known_defect_permanent_plex_ambiguity_retries_and_repeats_warning"
+expected_panic = "TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry"

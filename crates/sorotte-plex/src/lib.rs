@@ -3625,6 +3625,8 @@ mod tests {
 
     use super::*;
 
+    mod part_selection_adversarial;
+
     fn plex_cache_test_path(label: &str) -> PathBuf {
         let sequence = PLEX_CACHE_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let directory = std::env::temp_dir().join(format!(

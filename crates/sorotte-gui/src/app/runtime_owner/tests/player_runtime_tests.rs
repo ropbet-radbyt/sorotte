@@ -73,6 +73,7 @@ mod offsets_and_recent_rewind;
 mod playlist_index_and_search_seed;
 mod playlist_reset_and_desync_seek;
 mod playlist_switch_and_offsets;
+mod plex_ambiguity_retry;
 mod readiness_and_unpause;
 mod room_playstate_matching;
 mod threaded_ordered_refresh;

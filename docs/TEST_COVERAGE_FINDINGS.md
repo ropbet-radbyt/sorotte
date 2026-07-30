@@ -29,7 +29,9 @@ slice opened `TC-SERVER-004`; the current slice resolves it with an atomic
 authenticated generation protocol and executable publisher proof. Parallel
 adversarial reset/protocol/media-process work opened five narrow
 characterizations: `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-`TC-GUI-001`/`002`.
+`TC-GUI-001`/`002`. The subsequent Plex selection/retry slice adds
+`TC-PLEX-001` and `TC-GUI-003`, bringing the current registry to seven exact
+characterizations.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -121,9 +123,9 @@ After the coverage tranche was integrated:
   defects and eight exact characterizations. It now validates as zero defects
   and zero characterizations at the closure checkpoint; each former expected
   failure is an ordinary positive regression at its owning boundary. The
-  that deep-boundary checkpoint validated as one open defect and one exact
+  deep-boundary checkpoint validated as one open defect and one exact
   characterization for `TC-SERVER-004`; the current registry removes it and
-  exactly matches five new reset/protocol/media-process characterizations.
+  exactly matches seven reset/protocol/media-process/Plex characterizations.
 - The deterministic TLS model passed 10 consecutive runs: 2,430 generated
   histories and 12,150 checked transitions. Its in-flight real-network,
   restoration, and retry-cap selectors each passed 50/50 replays. The
@@ -2012,6 +2014,82 @@ worker stores only a configured prefix while continuing to drain excess bytes,
 then both are joined after exit or kill. An async process runner is a viable
 alternative if this path later moves under Tokio, but introducing a runtime
 only for a version probe would be disproportionate.
+
+## TC-PLEX-001: Plex playable-part selection ignores filename and size evidence
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **High (a remotely shared file can remain unplayable or stream the
+wrong Plex version despite uniquely identifying metadata)**
+Detection: candidate-order-independent Plex part selection across exact
+filename, exact size, duration, and missing-metadata cases
+
+The Plex metadata item lookup succeeds, but `choose_playable_part` ranks every
+playable `Part` only by duration difference. Exact shared filename and byte
+size are already available on `PlexPlaylistUri`/part metadata and are ignored.
+The adversarial slice executes 20 forward/reverse cases: 16 return ambiguity
+despite unique filename or size evidence, and four select the wrong part
+because duration outranks stronger exact evidence.
+
+The exact expected-failure oracle is:
+
+```text
+TC-PLEX-001: Plex part selection must use filename and size evidence
+```
+
+The proportional repair is a hint-aware narrowing pipeline: exact basename,
+then unique ASCII-case-folded basename, then exact byte size, then nearest
+known duration. A stage with no matching candidate contributes no evidence,
+and Plex response order never breaks a tie. Only one remaining candidate may
+be streamed; candidates still tied under every available hint remain a typed
+ambiguity. Plain shared filenames and `plex://` URIs must both carry their
+available hints into this selector, and the selected part's identity must
+populate the logical file and published URI consistently.
+
+The stronger alternative is an explicit Plex version/part picker that stores a
+stable part identity. That is appropriate for genuinely indistinguishable
+cuts or multipart media, but is unnecessary for the reported uniquely named
+version.
+
+## TC-GUI-003: Permanent Plex ambiguity repeats as a transient miss
+
+Status: **Open 2026-07-30; deterministic characterization retained**
+
+Severity: **Medium (an unchanged deterministic failure repeats network work,
+notifications, and system-chat warnings indefinitely)**
+Detection: two fake-clock automatic resolution cycles for one unchanged
+playlist-resolution key
+
+The GUI collapses `PlexError` into a string and records every resolver error as
+a transient Plex miss. For a permanent ambiguous-part result, the 2/5/15/30
+second backoff therefore starts the same worker again and queues the same
+warning again. The deterministic characterization observes two attempts, two
+warning notifications, and two system-chat announcements; both messages are
+byte-identical.
+
+The exact expected-failure oracle is:
+
+```text
+TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry
+```
+
+The proportional repair is a typed `PermanentForContext` ambiguity outcome.
+The miss state retains that terminal disposition without a retry deadline,
+emits its redacted warning once, and projects `Failed` rather than promising
+another automatic retry. Row, playlist-generation, target, policy, Plex
+server/credential context, or an explicit retry clears the terminal state.
+Ordinary cache misses, network failures, and worker interruption retain the
+existing bounded backoff.
+
+Notification deduplication alone is rejected: it hides the repeated message
+but continues failed network and cache work and leaves the UI state false.
+
+The implementation-ready design for all seven open defects, including exact
+invariants, alternatives, and acceptance tests, is in
+[`OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md`](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md).
+The candidate-permutation matrix, independent oracle, GUI state-machine
+schedule, stress totals, and limitations are retained in
+[`plex-part-selection-retry-20260730.md`](evidence/test-coverage/plex-part-selection-retry-20260730.md).
 
 ## TC-CLI-001: Managed attach waits through its deadline after the child exits
 

@@ -28,7 +28,8 @@ into positive regressions, and validates an explicitly empty defect registry
 at that checkpoint. A later deep-boundary slice deterministically exposed
 `TC-SERVER-004`; the current slice resolves it with immutable authenticated
 generations and an atomic selector. Parallel adversarial reset, protocol, and
-media-process tests retain five newly discovered, narrowly registered defects:
+media-process tests retained five newly discovered defects; the subsequent
+Plex part-selection and retry slice brings the current exact registry to seven:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -69,7 +70,7 @@ media-process tests retain five newly discovered, narrowly registered defects:
   and `TC-UPDATER-001` characterizations have also been converted;
   `TC-SERVER-004` is now positive atomic-publication evidence, while the
   current registry contains `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-  `TC-GUI-001`/`002`;
+  `TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003`;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -255,9 +256,10 @@ multiline attributes and rejects duplicate finding headings and title drift.
 Its 21 focused tests pass against both populated fixtures and the real
 closure checkpoint's explicitly empty registry; the historical
 two-defect/four-characterization checkpoint therefore remains policy evidence
-rather than current inventory. The same policy now validates exactly five
-current characterizations for `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-`TC-GUI-001`/`002`; `TC-SERVER-004` has ordinary positive regressions.
+rather than current inventory. The same policy now validates exactly seven
+current characterizations for `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`,
+`TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003`; `TC-SERVER-004` has
+ordinary positive regressions.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -684,6 +686,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, and pre-termination failure capture | the complete ten-scenario contract is locally green, but still needs an isolated interactive Windows CI lane and uses a deterministic player rather than real mpv | require the strict contract on an ephemeral interactive Windows lane, then add one real-mpv vertical slice |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
 | Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap and unterminated-output proofs | version validation accepts unusable output (`TC-GUI-001`), finite large output deadlocks until timeout (`TC-GUI-002`), and the generated-media ffmpeg harness remains opt-in | fix bounded concurrent draining and strict banner validation, then require generated media in a capability CI lane |
+| Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, and candidate-order adversarial part tests | filename/size evidence is ignored during part selection (`TC-PLEX-001`), and permanent ambiguity is retried with repeated warnings (`TC-GUI-003`) | rank parts by filename, size, then duration; carry typed terminal ambiguity into the GUI and retain fail-closed genuine ties |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
 | Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, and 11 real forced-process-termination boundaries with two-process recovery are strong | kernel power-loss, filesystem durability, disk-full, and permission gaps remain | filesystem syscall faults, parent-dir sync, and platform restart proof |
 | Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability | public registry digest/SBOM/signature binding remains | verify the uploaded/public digest is the tested content and enforce provenance policy |
@@ -1987,6 +1990,9 @@ real Windows named-pipe matrices, including `TC-SERVER-004` and the resolved
 The atomic TLS resolution and the eleven-stream transport, reset, persistence,
 process, parser, GUI-pump, and package-consumer continuation are retained in
 [`atomic-tls-parallel-continuation-20260730.md`](evidence/test-coverage/atomic-tls-parallel-continuation-20260730.md).
+The Plex part-permutation oracle and permanent-miss GUI schedule are retained
+in
+[`plex-part-selection-retry-20260730.md`](evidence/test-coverage/plex-part-selection-retry-20260730.md).
 
 Acceptance:
 
@@ -2082,10 +2088,11 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. resolve `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-   `TC-GUI-001`/`002`, then extend the proven persistence
-   interruption/arbitration boundary into disk-full, permission, syscall, and
-   platform durability faults;
+3. resolve `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`,
+   `TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003` using
+   [the implementation-ready remediation design](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md),
+   then extend the proven persistence interruption/arbitration boundary into
+   disk-full, permission, syscall, and platform durability faults;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
    behavior catalog, retaining the deterministic adversarial corpus as the
    stable regression layer;
