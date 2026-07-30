@@ -366,6 +366,26 @@ not coverage-guided transport fuzzing. Its oracle, commands, hashes, and limits
 are retained in
 [`framed-transport-schedules-20260730.md`](../docs/evidence/test-coverage/framed-transport-schedules-20260730.md).
 
+## Coverage-guided framed transport/session evidence
+
+A second source-bound libFuzzer/AddressSanitizer target now drives the exact
+production CLI line accumulator and public `ClientApplication` entirely in
+memory. An independent byte-framing oracle covers coalesced, bytewise,
+fixed-width, and deterministic pseudo-random schedules; one first-frame
+cancellation; LF/CRLF, EOF, UTF-8, and MAX/MAX+1 seams; and complete
+schedule-independent session projections. Fourteen checked-in seeds cover
+every control mode and size seam. The target has no network API.
+
+A fresh 30-second smoke passed 52,492 executions. The clean-source canonical
+180-second campaign over commit
+`366fe28b18c50ebb5fb66eefae9a3f317ba9e75c` passed 292,528 executions,
+retained a stable 881-file source binding and stable 14-file seed binding,
+produced zero artifacts or evidence errors, and required no minimization. The
+scheduled/manual workflow retains the same fail-closed runner for 900 seconds.
+Exact commands, manifests, hashes, tool/resource pins, statistics, and
+limitations are retained in
+[`framed-session-coverage-guided-20260730.md`](../docs/evidence/test-coverage/framed-session-coverage-guided-20260730.md).
+
 ## Configuration composition property evidence
 
 A black-box `sorotte-client-app` integration suite generates all 30
@@ -381,6 +401,22 @@ The scheduled depth passed 6,144 generated cases and the stress depth passed
 field inventory, case budgets, commands, hashes, and limitations are retained
 in
 [`configuration-composition-properties-20260730.md`](../docs/evidence/test-coverage/configuration-composition-properties-20260730.md).
+
+## Controlled-room configuration property evidence
+
+A separate black-box client-app suite uses public normalization, command
+presentation, INI persistence, runtime resolution, and environment-aware
+startup composition boundaries with an independent legacy controlled-room
+model. Four fixed-seed properties cover canonical reconstruction and
+idempotence, malformed/passwordless inputs, explicit/history precedence,
+unrelated-environment noninterference, typed server/room credential isolation,
+TLS selection, and `Debug` redaction.
+
+The default, scheduled, and stress depths passed 2,048, 8,192, and 40,000
+generated cases respectively. Invalid case budgets fail closed. No production
+source changed and no product defect surfaced. Exact grammar, model, commands,
+hashes, and limitations are retained in
+[`controlled-room-configuration-properties-20260730.md`](../docs/evidence/test-coverage/controlled-room-configuration-properties-20260730.md).
 
 ## Configuration migration property evidence
 
@@ -432,6 +468,25 @@ failure branch. This is not an NTFS/POSIX ACL, kernel power-loss, torn-sector,
 are retained in
 [`persistence-worker-faults-20260730.md`](../docs/evidence/test-coverage/persistence-worker-faults-20260730.md).
 
+## Persistence platform syscall fault evidence
+
+Platform-specific server tests now impose real host-filesystem denial on a
+checkpointed production SQLite database. Windows holds a no-share kernel file
+handle, independently proves rename/delete error 32, and requires the
+production worker open to retain `SQLITE_CANTOPEN`. Unix displaces the database
+and places a directory at its production pathname, then requires the same
+classified worker failure. Both paths prove unchanged database bytes, all
+eight persisted columns, `PRAGMA integrity_check = ok`, removal of the host
+condition, normal worker write/flush, and close/reopen recovery.
+
+The Windows probe passed 50/50 serial stress executions and the Unix
+counterpart passed under Ubuntu WSL. No production behavior changed and no
+defect surfaced. This closes ordinary platform open/rename/delete denial; it
+does not claim parent-directory sync, device-cache persistence, torn-sector
+behavior, or physical power-loss durability. Exact construction, hashes,
+commands, and scope are retained in
+[`persistence-platform-syscall-faults-20260730.md`](../docs/evidence/test-coverage/persistence-platform-syscall-faults-20260730.md).
+
 ## Targeted mutation evidence
 
 The scheduled mutation matrix covers the pure privacy boundary in
@@ -442,7 +497,9 @@ runtime-configuration precedence in `sorotte-client-app`. Two additional
 ratchets cover room-persistence arbitration in `sorotte-server` and inbound
 `Set` command completion/order in `sorotte-client-core`. A ninth shard binds
 the CLI inbound framing accumulator and its package-level transport/session
-oracles. It deliberately does not mutate the whole workspace.
+oracles. A tenth shard binds client playlist snapshot, target-index, shuffle
+seed/PRNG, permutation, and undo decisions. It deliberately does not mutate
+the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
 namespace, all-feature locked Cargo execution, two workers, per-command
@@ -514,8 +571,14 @@ mutants through a 370-test package scope, with no timeout or exception. The
 earlier aggregate
 baseline is diagnostic only because its test oracle was strengthened while it
 finished; the fresh stable-source campaign is the canonical attestation.
-Across the nine scheduled shards, all 458 current viable mutations are caught
-with zero misses and zero timeouts. The policy contains 16 exact accepted
+The playlist-shuffle baseline caught only 12/26 viable mutants, missed 12, and
+timed out on two non-progress loop changes. Deterministic snapshot, index,
+seed-framing, PRNG, golden-permutation, and 512-seed invariant oracles plus a
+narrow test-only completion guard now catch 26/26 viable mutants with no miss
+or timeout. Two let-chain rewrites are represented by one exact expiring
+compiler-unviable identity.
+Across the ten scheduled shards, all 484 current viable mutations are caught
+with zero misses and zero timeouts. The policy contains 17 exact accepted
 compiler-unviable identities.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
@@ -528,7 +591,9 @@ Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-server-persistence-arbitration-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-server-persistence-arbitration-20260730.md),
 [`targeted-mutation-client-inbound-order-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md),
 and
-[`targeted-mutation-cli-framing-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-cli-framing-20260730.md).
+[`targeted-mutation-cli-framing-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-cli-framing-20260730.md),
+and
+[`targeted-mutation-client-playlist-shuffle-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-playlist-shuffle-20260730.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay

@@ -14,6 +14,7 @@ Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-
 Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
 Final CLI/protocol defect resolution update: 2026-07-30
 Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
+Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -72,6 +73,13 @@ independent product defect. The mutation baseline did expose
 `TC-HARNESS-017`, an unbounded test-helper loop and three adjacent
 payload-limit oracle gaps; the bounded frame/EOF and exact LF/CRLF seams close
 it in the same continuation.
+The latest additional four-slice continuation adds independent-model
+controlled-room configuration properties, real Windows and Unix SQLite
+pathname-denial/recovery probes, a zero-survivor playlist shuffle/undo mutation
+ratchet, and source-bound coverage-guided in-memory framed-session testing. The
+short and canonical randomized campaigns were green, no red artifact or
+independent product behavior surfaced, and no production fix was required.
+The current product-defect registry remains explicitly empty.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -96,14 +104,38 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The latest four completed slices add 50,240 controlled-room generated cases
+  across default/scheduled/stress depths; real Windows and Ubuntu WSL
+  production-path denial with 50/50 Windows stress; and a playlist
+  shuffle/undo mutation shard that improved from 12/26 viable caught, 12
+  missed, and 2 timed out to 26/26 caught with zero misses/timeouts. The
+  current scheduled policy therefore validates 10 shards, 484/484 viable
+  mutants caught, and 17 exact accepted compiler-unviable identities.
+  The fresh framed-session smoke passed 52,492 executions; the clean-source
+  canonical campaign over
+  `366fe28b18c50ebb5fb66eefae9a3f317ba9e75c` passed 292,528, retained stable
+  881-file source and 14-file seed bindings, and produced zero artifacts,
+  minimizations, or evidence errors. Focused CLI tests/Clippy, all three
+  owning regressions, the 16-test fuzz policy, both changed workflows under
+  actionlint, the pinned WSL ASan build, and formatting passed. Final
+  integration then passed all 403 Python policy/infrastructure tests,
+  warning-denied all-target/all-feature workspace Clippy in 8.56 seconds, and
+  the complete locked all-feature workspace on its first attempt in 238.5
+  seconds, including integration tests, real-Python release verification, and
+  doctests. Exact evidence is retained in
+  [`controlled-room-configuration-properties-20260730.md`](evidence/test-coverage/controlled-room-configuration-properties-20260730.md),
+  [`persistence-platform-syscall-faults-20260730.md`](evidence/test-coverage/persistence-platform-syscall-faults-20260730.md),
+  [`targeted-mutation-client-playlist-shuffle-20260730.md`](evidence/test-coverage/targeted-mutation-client-playlist-shuffle-20260730.md),
+  and
+  [`framed-session-coverage-guided-20260730.md`](evidence/test-coverage/framed-session-coverage-guided-20260730.md).
 - The framed-transport/configuration-migration/updater-handshake continuation
   passed 4/4 generated framing tests, 50/50 post-ratchet framing replays,
   6,144 scheduled migration cases, the exact updater process test 100/100
   times, and the complete updater binary 30/30. The stable CLI framing
   mutation campaign selected 370 package tests and caught 33/33 viable
-  mutants with zero misses, timeouts, or unviables. The scheduled policy now
-  validates nine shards with 458/458 viable mutations caught and the same 16
-  exact accepted compiler-unviable identities.
+  mutants with zero misses, timeouts, or unviables. At that checkpoint, the
+  scheduled policy validated nine shards with 458/458 viable mutations caught
+  and the same 16 exact accepted compiler-unviable identities.
 - Final integrated validation passed warning-denied all-target/all-feature
   workspace Clippy in 5.09 seconds, the complete locked all-feature workspace
   on its first attempt in 233.3 seconds, and all 399 Python
