@@ -1,4 +1,5 @@
 use super::*;
+use crate::inbound_order::ordered_set_commands;
 use serde_json::Number;
 use sorotte_media_match::{MediaMatchWireSignature, media_match_wire_signature_from_value};
 use sorotte_protocol::{
@@ -496,31 +497,6 @@ fn normalize_file_value(
         }
         _ => None,
     }
-}
-
-fn ordered_set_commands(set: SetPayload) -> Vec<(String, SetPayload)> {
-    let mut order = set.command_order.clone();
-    for command in [
-        "room",
-        "file",
-        "user",
-        "controllerAuth",
-        "newControlledRoom",
-        "ready",
-        "playlistChange",
-        "playlistIndex",
-        "features",
-        SOROTTE_PLAYBACK_BARRIER_V1,
-        SOROTTE_READINESS_V2,
-    ] {
-        if !order.iter().any(|candidate| candidate == command) {
-            order.push(command.to_owned());
-        }
-    }
-    order
-        .into_iter()
-        .map(|command| (command, set.clone()))
-        .collect()
 }
 
 pub(crate) fn normalize_client_protocol_message(

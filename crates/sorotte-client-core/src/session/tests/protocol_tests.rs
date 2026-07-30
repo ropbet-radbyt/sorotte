@@ -506,6 +506,105 @@ fn set_commands_apply_in_wire_order_after_normalization() {
 }
 
 #[test]
+fn set_command_order_completion_appends_only_missing_canonical_commands() {
+    let set = sorotte_protocol::SetPayload::new().with_command_order(vec![
+        "ready".to_owned(),
+        "vendorExtension".to_owned(),
+        "room".to_owned(),
+    ]);
+    let expected_snapshot = set.clone();
+
+    let ordered = crate::inbound_order::ordered_set_commands(set);
+    let command_names = ordered
+        .iter()
+        .map(|(command, _)| command.as_str())
+        .collect::<Vec<_>>();
+
+    // This explicit list is deliberately independent from the production
+    // canonical-order table. It proves that wire order is retained first,
+    // unknown commands keep their position, present canonical commands are
+    // not duplicated, and every missing canonical command is appended.
+    assert_eq!(
+        command_names,
+        [
+            "ready",
+            "vendorExtension",
+            "room",
+            "file",
+            "user",
+            "controllerAuth",
+            "newControlledRoom",
+            "playlistChange",
+            "playlistIndex",
+            "features",
+            "sorottePlaybackBarrierV1",
+            "sorotteReadinessV2",
+        ]
+    );
+    for (_, snapshot) in ordered {
+        assert_eq!(snapshot, expected_snapshot);
+        assert_eq!(snapshot.command_order, ["ready", "vendorExtension", "room"]);
+    }
+}
+
+#[test]
+fn set_command_order_completion_uses_canonical_order_without_wire_metadata() {
+    let ordered = crate::inbound_order::ordered_set_commands(sorotte_protocol::SetPayload::new());
+
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|(command, _)| command.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "room",
+            "file",
+            "user",
+            "controllerAuth",
+            "newControlledRoom",
+            "ready",
+            "playlistChange",
+            "playlistIndex",
+            "features",
+            "sorottePlaybackBarrierV1",
+            "sorotteReadinessV2",
+        ]
+    );
+}
+
+#[test]
+fn set_command_order_completion_preserves_complete_wire_permutation_exactly() {
+    let complete_wire_order = [
+        "vendorExtension",
+        "sorotteReadinessV2",
+        "features",
+        "playlistIndex",
+        "playlistChange",
+        "ready",
+        "newControlledRoom",
+        "controllerAuth",
+        "user",
+        "file",
+        "room",
+        "sorottePlaybackBarrierV1",
+    ];
+    let set = sorotte_protocol::SetPayload::new().with_command_order(
+        complete_wire_order
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect(),
+    );
+
+    assert_eq!(
+        crate::inbound_order::ordered_set_commands(set)
+            .into_iter()
+            .map(|(command, _)| command)
+            .collect::<Vec<_>>(),
+        complete_wire_order
+    );
+}
+
+#[test]
 fn invalid_file_extensions_become_typed_compatibility_fallbacks() {
     let mut session = ClientSession::default();
     session

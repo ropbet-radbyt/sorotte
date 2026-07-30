@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,6 +13,15 @@ use tokio::sync::broadcast;
 use crate::{
     PersistedRoomState, RoomPersistenceError, RoomPersistenceStore, StatsPersistenceError,
     StatsPersistenceStore,
+};
+
+mod persistence_arbitration;
+#[cfg(test)]
+mod persistence_arbitration_tests;
+
+use persistence_arbitration::{
+    DesiredRoomEffects, RoomEffectEnqueueDisposition, RoomPersistenceArbitration,
+    room_effect_key_and_version,
 };
 
 const PERSISTENCE_COMMAND_QUEUE_CAPACITY: usize = 256;
@@ -292,15 +300,6 @@ impl Drop for PersistenceWorkerService {
     }
 }
 
-#[derive(Debug, Default)]
-struct RoomPersistenceDesiredState {
-    highest_seen_version: u64,
-    desired_effect: Option<ServerPersistenceEffect>,
-    unresolved_failure_version: Option<u64>,
-}
-
-type DesiredRoomEffects = Arc<Mutex<BTreeMap<String, RoomPersistenceDesiredState>>>;
-
 #[cfg(test)]
 type BeforeRoomTransactionHook =
     Arc<dyn Fn(&Connection, &ServerPersistenceEffect) + Send + Sync + 'static>;
@@ -418,7 +417,7 @@ impl RoomPersistenceService {
         hooks: RoomPersistenceWorkerHooks,
     ) -> Result<Self, RoomPersistenceError> {
         let connection = store.connection("connect persistence worker")?;
-        let desired_effects = Arc::new(Mutex::new(BTreeMap::new()));
+        let desired_effects = Arc::new(Mutex::new(RoomPersistenceArbitration::default()));
         let worker_desired_effects = Arc::clone(&desired_effects);
         let worker = PersistenceWorkerService::spawn_with_capacity(
             ServerPersistenceWorkerKind::Rooms,
@@ -443,27 +442,26 @@ impl RoomPersistenceService {
     }
 
     pub(crate) fn enqueue(&self, effect: ServerPersistenceEffect) {
-        let Some((room_name, version)) = room_effect_key_and_version(&effect) else {
-            self.worker
-                .reporter
-                .failed(effect, "stats effect was routed to the room worker");
-            return;
-        };
-        let room_name = room_name.to_owned();
-        let mut states = self
+        let mut arbitration = self
             .desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = states.entry(room_name).or_default();
-        if version <= state.highest_seen_version {
-            drop(states);
-            self.worker.reporter.ignored_stale(effect);
-            return;
+        match arbitration.enqueue(effect.clone()) {
+            RoomEffectEnqueueDisposition::Accepted => {}
+            RoomEffectEnqueueDisposition::IgnoredStale => {
+                drop(arbitration);
+                self.worker.reporter.ignored_stale(effect);
+                return;
+            }
+            RoomEffectEnqueueDisposition::NotRoomEffect => {
+                drop(arbitration);
+                self.worker
+                    .reporter
+                    .failed(effect, "stats effect was routed to the room worker");
+                return;
+            }
         }
-        state.highest_seen_version = version;
-        state.desired_effect = Some(effect.clone());
-        state.unresolved_failure_version = None;
-        drop(states);
+        drop(arbitration);
 
         if !self.worker.wake() {
             self.worker
@@ -478,10 +476,7 @@ impl RoomPersistenceService {
                 .desired_effects
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .all(|state| {
-                    state.desired_effect.is_none() && state.unresolved_failure_version.is_none()
-                })
+                .is_settled()
     }
 }
 
@@ -574,18 +569,6 @@ fn run_room_worker(
     }
 }
 
-fn room_effect_key_and_version(effect: &ServerPersistenceEffect) -> Option<(&str, u64)> {
-    match effect {
-        ServerPersistenceEffect::SaveRoom {
-            room_name, version, ..
-        }
-        | ServerPersistenceEffect::DeleteRoom { room_name, version } => {
-            Some((room_name.as_str(), *version))
-        }
-        ServerPersistenceEffect::RecordStatsSnapshot { .. } => None,
-    }
-}
-
 fn apply_desired_room_effects(
     reporter: &PersistenceEventReporter,
     store: &RoomPersistenceStore,
@@ -595,13 +578,10 @@ fn apply_desired_room_effects(
 ) {
     hooks.before_scan();
     let effects = {
-        let states = desired_effects
+        let arbitration = desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        states
-            .values()
-            .filter_map(|state| state.desired_effect.clone())
-            .collect::<Vec<_>>()
+        arbitration.desired_effects()
     };
 
     let mut applied_any = false;
@@ -615,15 +595,7 @@ fn apply_desired_room_effects(
         let is_current = desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&room_name)
-            .is_some_and(|state| {
-                state.highest_seen_version == version
-                    && state
-                        .desired_effect
-                        .as_ref()
-                        .and_then(room_effect_key_and_version)
-                        .is_some_and(|(_, desired_version)| desired_version == version)
-            });
+            .is_effect_current(&effect);
         if !is_current {
             reporter.ignored_stale(effect);
             continue;
@@ -678,8 +650,7 @@ fn apply_desired_room_effects(
         let still_current = desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&room_name)
-            .is_some_and(|state| state.highest_seen_version == version);
+            .is_version_current(&room_name, version);
         let result = match (result, still_current) {
             (Ok(()), true) => transaction.commit().map_err(|error| error.to_string()),
             (Ok(()), false) => {
@@ -699,47 +670,29 @@ fn apply_desired_room_effects(
                     crate::persistence::test_crash::ROOM_EFFECT_AFTER_COMMIT,
                 );
                 let is_delete = matches!(effect, ServerPersistenceEffect::DeleteRoom { .. });
-                let mut states = desired_effects
+                let mut arbitration = desired_effects
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if states
-                    .get(&room_name)
-                    .is_some_and(|state| state.highest_seen_version == version)
-                {
-                    if is_delete {
-                        states.remove(&room_name);
-                    } else if let Some(state) = states.get_mut(&room_name) {
-                        state.desired_effect = None;
-                        state.unresolved_failure_version = None;
-                    }
-                }
-                drop(states);
+                arbitration.mark_applied(&room_name, version, is_delete);
+                drop(arbitration);
                 reporter.applied(effect);
                 applied_any = true;
             }
             Err(error) => {
-                let mut states = desired_effects
+                let mut arbitration = desired_effects
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(state) = states.get_mut(&room_name)
-                    && state.highest_seen_version == version
-                {
-                    state.unresolved_failure_version = Some(version);
-                }
-                drop(states);
+                arbitration.mark_failed(&room_name, version);
+                drop(arbitration);
                 reporter.failed(effect, error);
             }
         }
     }
 
-    if applied_any
-        && desired_effects
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .all(|state| {
-                state.desired_effect.is_none() && state.unresolved_failure_version.is_none()
-            })
+    if desired_effects
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .should_report_recovery(applied_any)
     {
         reporter.recover_if_needed();
     }

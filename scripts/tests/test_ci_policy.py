@@ -1385,6 +1385,8 @@ class CiPolicyTests(unittest.TestCase):
                         "client-reconnect-state",
                         "client-runtime-config",
                         "client-ping",
+                        "server-persistence-arbitration",
+                        "client-inbound-order",
                     ]
                 },
             },
@@ -1554,6 +1556,43 @@ class CiPolicyTests(unittest.TestCase):
                         ],
                         "test_target": "lib",
                         "test_filter": "session::tests::ping_tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "server-persistence-arbitration",
+                        "owner": "server-persistence",
+                        "package": "sorotte-server",
+                        "files": [
+                            "crates/sorotte-server/src/persistence_actor/"
+                            "persistence_arbitration.rs"
+                        ],
+                        "test_target": "lib",
+                        "test_filter": (
+                            "persistence_actor::persistence_arbitration_tests::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-inbound-order",
+                        "owner": "client-protocol",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/inbound_order.rs"
+                        ],
+                        "test_target": "lib",
+                        "test_filter": "session::tests::protocol_tests::",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -1825,6 +1864,48 @@ class CiPolicyTests(unittest.TestCase):
                             "with ||, but let expressions are only valid in "
                             "&& chains so the generated fallback mutant "
                             "cannot parse"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": (
+                            "server-persistence-arbitration-enqueue-default"
+                        ),
+                        "shard": "server-persistence-arbitration",
+                        "file": (
+                            "crates/sorotte-server/src/persistence_actor/"
+                            "persistence_arbitration.rs"
+                        ),
+                        "function": "RoomPersistenceArbitration::enqueue",
+                        "return_type": "-> RoomEffectEnqueueDisposition",
+                        "genre": "FnValue",
+                        "replacement": "Default::default()",
+                        "reason": (
+                            "cargo-mutants requests Default for a semantic "
+                            "three-way disposition enum that intentionally "
+                            "has no safe default"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
+                    {
+                        "id": (
+                            "server-persistence-arbitration-effect-default"
+                        ),
+                        "shard": "server-persistence-arbitration",
+                        "file": (
+                            "crates/sorotte-server/src/persistence_actor/"
+                            "persistence_arbitration.rs"
+                        ),
+                        "function": (
+                            "RoomPersistenceArbitration::desired_effects"
+                        ),
+                        "return_type": "-> Vec<ServerPersistenceEffect>",
+                        "genre": "FnValue",
+                        "replacement": "vec![Default::default()]",
+                        "reason": (
+                            "cargo-mutants requests Default for a persistence "
+                            "effect whose required room or snapshot identity "
+                            "has no valid default"
                         ),
                         "review_by": "2026-10-31",
                     },
