@@ -282,11 +282,22 @@ Packages intentionally exclude `target/release/deps`.
 Release-tag runs build and push immutable source tags:
 
 - `ghcr.io/ropbet-radbyt/sorotte-server:<git-tag>`
-- `ghcr.io/ropbet-radbyt/sorotte-server:sha-<short-sha>`
+- `ghcr.io/ropbet-radbyt/sorotte-server:sha-<full-40-character-sha>`
 
 The mutable `ghcr.io/ropbet-radbyt/sorotte-server:latest` tag is promoted only
 by an explicit manual workflow run with `push_latest` set to `true`. Re-running
 an older tag workflow cannot move `latest` backward.
+
+Publication is intentionally later than testing. The workflow builds and loads
+one local `linux/amd64` image, checks its source/config/RootFS identity, consumes
+it through non-root plaintext, TLS, graceful-shutdown, and persistence-restart
+smoke, and generates an SPDX SBOM from that exact daemon image. Registry login
+and tag pushes occur only after those checks. Every tag must produce one common
+manifest digest; that digest is then keylessly signed and attested before an
+anonymous GHCR client re-fetches every tag and the digest reference. The final
+gate rejects any mismatch among the local image-config identity, runtime and
+restart evidence, SBOM, pushed manifest, signature, attestation, or public
+manifest/config bytes.
 
 To publish manually:
 
@@ -295,12 +306,32 @@ To publish manually:
 3. Go to `Actions`.
 4. Run `publish sorotte-server container`; set `push_latest` to `true` only
    when intentionally promoting that selected revision.
-5. After the first successful push, open the package page for `sorotte-server`.
+5. After the first push (even if the later anonymous comparison correctly
+   fails for a private new package), open the package page for
+   `sorotte-server`.
 6. Go to `Package settings`.
 7. Change visibility to `Public` if the image should be anonymously pullable.
+8. If the first run stopped at anonymous public verification because a new
+   package was private, rerun the workflow after changing visibility and
+   require the uploaded `final-gate-report.json` to pass.
 
-GitHub Container Registry packages are private on first publish. Public container packages can be pulled anonymously after package visibility is changed.
+GitHub Container Registry packages are private on first publish. Public
+container packages can be pulled anonymously after package visibility is
+changed. A successful authenticated push is therefore not, by itself, a
+successful Sorotte container publication.
 
 ## Signing
 
-Artifacts are checksumed but unsigned. Add signing only after the project has a stable signing key and artifact publication process.
+Release archives are checksumed but remain unsigned.
+
+The server container has a separate keyless signing contract. Its workflow
+uses GitHub's OIDC identity to sign the exact tested registry manifest digest
+and attach the generated SPDX JSON as an in-toto attestation. Verification is
+restricted to this repository, the exact workflow URI, the GitHub Actions OIDC
+issuer, the source revision, and signed source/workflow-source annotations.
+The anonymous public digest comparison and the always-run final gate must pass
+before the signature or attestation is treated as publication evidence.
+
+This describes the repository workflow, not an already completed publication.
+Retain the workflow artifact containing runtime, SBOM, push, Cosign,
+anonymous-registry, and final-gate reports for each claimed release.

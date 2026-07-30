@@ -1,13 +1,13 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-FROM rust:1.97.1-bookworm AS builder
+FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 
 WORKDIR /src
 COPY . .
 
-RUN cargo build --release -p sorotte-server --bin sorotte-server
+RUN cargo build --release --locked -p sorotte-server --bin sorotte-server
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
 
 ARG BUILD_DATE
 ARG VCS_REF

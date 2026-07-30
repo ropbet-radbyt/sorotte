@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       push_latest:
-        description: "Also push the latest tag"
+        description: "Also promote this exact tested digest to latest"
         required: true
         default: "false"
         type: choice
@@ -18,58 +18,222 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   packages: write
+
+concurrency:
+  group: server-container-publication
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/sorotte-server
+  TEST_IMAGE: sorotte-server:test-${{ github.sha }}
+  EVIDENCE_DIR: target/server-container-verification
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 40
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-      - name: Build timestamp
+      - name: Setup pinned Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Capture immutable build metadata
         id: build_info
         shell: bash
-        run: echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          printf 'created=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
-      - name: Docker metadata
+      - name: Define publication tags and OCI labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.push_latest == 'true' }}
+            type=raw,value=sha-${{ github.sha }}
             type=ref,event=tag
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.push_latest == 'true' }}
           labels: |
             org.opencontainers.image.title=sorotte server
             org.opencontainers.image.description=Sorotte Syncplay-compatible server
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.build_info.outputs.created }}
             org.opencontainers.image.licenses=Apache-2.0
 
-      - name: Build and publish server image
-        uses: docker/build-push-action@v6
+      - name: Record closed publication tag inventory
+        shell: bash
+        env:
+          PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          printf '%s\n' "$PUBLISH_TAGS" > "$EVIDENCE_DIR/tags.txt"
+
+      - name: Build once and load the candidate image
+        id: build
+        uses: docker/build-push-action@ee4ca427a2f43b6a16632044ca514c076267da23 # v6.19.0
         with:
           context: .
           file: Dockerfile.server
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          load: true
+          push: false
+          tags: ${{ env.TEST_IMAGE }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_DATE=${{ steps.build_info.outputs.created }}
             VCS_REF=${{ github.sha }}
             SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          provenance: false
+          sbom: false
+
+      - name: Consume the loaded image through real server boundaries
+        run: >-
+          python scripts/verify_server_container.py smoke
+          --image "${{ env.TEST_IMAGE }}"
+          --expected-source-sha "${{ github.sha }}"
+          --expected-source-url "https://github.com/${{ github.repository }}"
+          --artifacts-dir "${{ env.EVIDENCE_DIR }}/runtime"
+          --report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
+
+      - name: Generate SPDX SBOM from the tested local image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.TEST_IMAGE }}
+          format: spdx-json
+          output-file: ${{ env.EVIDENCE_DIR }}/sbom.spdx.json
+          artifact-name: sorotte-server-${{ github.sha }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+          syft-version: v1.44.0
+
+      - name: Bind SBOM bytes to the tested local image ID
+        run: >-
+          python scripts/verify_server_container.py verify-sbom
+          --sbom "${{ env.EVIDENCE_DIR }}/sbom.spdx.json"
+          --runtime-report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
+          --report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
+
+      - name: Login only after local consumption passes
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push only tags of the already-tested daemon image
+        run: >-
+          python scripts/verify_server_container.py publish
+          --local-image "${{ env.TEST_IMAGE }}"
+          --image "${{ env.IMAGE_NAME }}"
+          --tags-file "${{ env.EVIDENCE_DIR }}/tags.txt"
+          --expected-source-sha "${{ github.sha }}"
+          --expected-source-url "https://github.com/${{ github.repository }}"
+          --report "${{ env.EVIDENCE_DIR }}/publish-report.json"
+
+      - name: Read the validated registry manifest digest
+        id: publish_identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(
+            python scripts/verify_server_container.py publication-digest \
+              --publish-report "$EVIDENCE_DIR/publish-report.json"
+          )"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Keylessly sign and attest the exact tested digest
+        shell: bash
+        env:
+          DIGEST_REF: ${{ env.IMAGE_NAME }}@${{ steps.publish_identity.outputs.digest }}
+          WORKFLOW_SOURCE_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes \
+            --annotation "sourceSha=$GITHUB_SHA" \
+            --annotation "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
+            "$DIGEST_REF"
+          cosign attest --yes \
+            --type spdxjson \
+            --predicate "$EVIDENCE_DIR/sbom.spdx.json" \
+            "$DIGEST_REF"
+
+      - name: Verify keyless identity and workflow claims
+        shell: bash
+        env:
+          DIGEST_REF: ${{ env.IMAGE_NAME }}@${{ steps.publish_identity.outputs.digest }}
+          EXPECTED_IDENTITY: https://github.com/${{ github.workflow_ref }}
+          WORKFLOW_SOURCE_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "$EXPECTED_IDENTITY" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --annotation "sourceSha=$GITHUB_SHA" \
+            --annotation "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
+            --output json \
+            "$DIGEST_REF" > "$EVIDENCE_DIR/signature-verification.json"
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity "$EXPECTED_IDENTITY" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --output json \
+            "$DIGEST_REF" > "$EVIDENCE_DIR/attestation-verification.json"
+
+      - name: Remove registry credentials before public comparison
+        if: always()
+        shell: bash
+        run: docker logout ghcr.io
+
+      - name: Compare every public tag, digest, config, SBOM, and signature subject
+        if: success()
+        run: >-
+          python scripts/verify_server_container.py verify-publication
+          --publish-report "${{ env.EVIDENCE_DIR }}/publish-report.json"
+          --sbom "${{ env.EVIDENCE_DIR }}/sbom.spdx.json"
+          --sbom-report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
+          --signature-verification "${{ env.EVIDENCE_DIR }}/signature-verification.json"
+          --attestation-verification "${{ env.EVIDENCE_DIR }}/attestation-verification.json"
+          --expected-workflow-identity "https://github.com/${{ github.workflow_ref }}"
+          --expected-workflow-sha "${{ github.workflow_sha }}"
+          --report "${{ env.EVIDENCE_DIR }}/publication-report.json"
+
+      - name: Enforce every container publication phase
+        if: always()
+        run: >-
+          python scripts/verify_server_container.py final-gate
+          --runtime-report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
+          --sbom "${{ env.EVIDENCE_DIR }}/sbom.spdx.json"
+          --sbom-report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
+          --publish-report "${{ env.EVIDENCE_DIR }}/publish-report.json"
+          --signature-verification "${{ env.EVIDENCE_DIR }}/signature-verification.json"
+          --attestation-verification "${{ env.EVIDENCE_DIR }}/attestation-verification.json"
+          --publication-report "${{ env.EVIDENCE_DIR }}/publication-report.json"
+          --report "${{ env.EVIDENCE_DIR }}/final-gate-report.json"
+
+      - name: Retain all container verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-container-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 30
