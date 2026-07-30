@@ -9,9 +9,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
+import sqlite3
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -26,6 +29,8 @@ MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
+SERVER_START_TIMEOUT_SECONDS = 10
+SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ARCHIVE_RE = re.compile(
     r"^sorotte-server-(?P<version>[0-9A-Za-z][0-9A-Za-z.+-]*)-"
@@ -490,15 +495,146 @@ def _wait_for_server(process: subprocess.Popen[bytes], port: int, deadline: floa
     raise VerificationError(f"packaged server did not listen before the deadline: {last_error}")
 
 
-def smoke_test_binary(binary_path: Path, version: str) -> dict[str, object]:
+def _isolated_server_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith("SOROTTE_")
+    }
+
+
+def _force_stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.kill()
+    try:
+        process.wait(timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise VerificationError(
+            "packaged server could not be reaped after forced termination"
+        ) from error
+
+
+def _send_windows_ctrl_c(process_id: int) -> None:
+    helper = r"""
+import ctypes
+import sys
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+process_id = int(sys.argv[1])
+kernel32.FreeConsole()
+if not kernel32.AttachConsole(process_id):
+    raise OSError(ctypes.get_last_error(), "AttachConsole failed")
+if not kernel32.SetConsoleCtrlHandler(None, True):
+    raise OSError(ctypes.get_last_error(), "SetConsoleCtrlHandler failed")
+if not kernel32.GenerateConsoleCtrlEvent(0, 0):
+    raise OSError(ctypes.get_last_error(), "GenerateConsoleCtrlEvent failed")
+kernel32.FreeConsole()
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", helper, str(process_id)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise VerificationError(
+            f"could not deliver CTRL_C_EVENT to packaged server process {process_id}: {error}"
+        ) from error
+    if result.returncode != 0:
+        output = result.stdout.decode("utf-8", errors="replace").strip()
+        raise VerificationError(
+            f"could not deliver CTRL_C_EVENT to packaged server process {process_id}: "
+            f"helper exited {result.returncode}: {output}"
+        )
+
+
+def _request_clean_shutdown(process: subprocess.Popen[bytes]) -> dict[str, object]:
+    if process.poll() is not None:
+        raise VerificationError(
+            f"packaged server exited before shutdown was requested (exit {process.returncode})"
+        )
+    if os.name == "nt":
+        signal_name = "CTRL_C_EVENT"
+    else:
+        shutdown_signal = signal.SIGINT
+        signal_name = "SIGINT"
+
+    started = time.monotonic()
+    try:
+        if os.name == "nt":
+            _send_windows_ctrl_c(process.pid)
+        else:
+            process.send_signal(shutdown_signal)
+        return_code = process.wait(timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _force_stop_process(process)
+        raise VerificationError(
+            f"packaged server did not shut down cleanly within "
+            f"{SERVER_SHUTDOWN_TIMEOUT_SECONDS} seconds after {signal_name}"
+        ) from error
+    if return_code != 0:
+        raise VerificationError(
+            f"packaged server clean shutdown exited {return_code} after {signal_name}"
+        )
+    return {
+        "signal": signal_name,
+        "clean": True,
+        "exitCode": return_code,
+        "elapsedMilliseconds": round((time.monotonic() - started) * 1000),
+    }
+
+
+def _verify_sqlite_integrity(path: Path, description: str) -> None:
+    _require_regular_file(path, description)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        result = connection.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.Error as error:
+        raise VerificationError(f"{description} could not be read after shutdown: {error}") from error
+    finally:
+        if connection is not None:
+            connection.close()
+    if result != ("ok",):
+        raise VerificationError(
+            f"{description} failed SQLite integrity_check: {result!r}"
+        )
+
+
+def smoke_test_binary(
+    binary_path: Path, version: str, runtime_root: Path
+) -> dict[str, object]:
     _require_regular_file(binary_path, "packaged server binary")
+    if runtime_root.exists():
+        raise VerificationError(
+            f"packaged server runtime root must be fresh: {runtime_root}"
+        )
+    runtime_root.mkdir(parents=True)
+    config_root = runtime_root / "config"
+    state_root = runtime_root / "state"
+    config_root.mkdir()
+    state_root.mkdir()
+    permanent_rooms = config_root / "permanent-rooms.txt"
+    motd = config_root / "motd.txt"
+    permanent_rooms.write_text("artifact-permanent-room\n", encoding="utf-8", newline="\n")
+    motd.write_text("archive consumer verification\n", encoding="utf-8", newline="\n")
+    rooms_db = state_root / "rooms.sqlite3"
+    stats_db = state_root / "stats.sqlite3"
+    isolated_environment = _isolated_server_environment()
+    binary_digest = sha256_file(binary_path)
     try:
         version_result = subprocess.run(
             [str(binary_path), "--version"],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=10,
+            timeout=SERVER_START_TIMEOUT_SECONDS,
+            cwd=runtime_root,
+            env=isolated_environment,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise VerificationError(f"packaged server --version failed: {error}") from error
@@ -520,14 +656,40 @@ def smoke_test_binary(binary_path: Path, version: str) -> dict[str, object]:
         "--ipv4-only",
         "--interface-ipv4",
         "127.0.0.1",
+        "--isolate-rooms",
+        "--motd-file",
+        str(motd),
+        "--rooms-db-file",
+        str(rooms_db),
+        "--permanent-rooms-file",
+        str(permanent_rooms),
+        "--stats-db-file",
+        str(stats_db),
     ]
     process: subprocess.Popen[bytes] | None = None
     hello_received = False
+    client_session_drained = False
+    shutdown: dict[str, object] | None = None
+    process_log_output = ""
     started = time.monotonic()
     with tempfile.TemporaryFile() as process_log:
         try:
-            process = subprocess.Popen(command, stdout=process_log, stderr=subprocess.STDOUT)
-            deadline = time.monotonic() + 10
+            process_options: dict[str, object] = {
+                "stdout": process_log,
+                "stderr": subprocess.STDOUT,
+                "cwd": runtime_root,
+                "env": isolated_environment,
+            }
+            if os.name == "nt":
+                startup_info = subprocess.STARTUPINFO()
+                startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startup_info.wShowWindow = subprocess.SW_HIDE
+                process_options["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+                process_options["startupinfo"] = startup_info
+            else:
+                process_options["start_new_session"] = True
+            process = subprocess.Popen(command, **process_options)
+            deadline = time.monotonic() + SERVER_START_TIMEOUT_SECONDS
             with _wait_for_server(process, port, deadline) as connection:
                 hello = {
                     "Hello": {
@@ -561,24 +723,56 @@ def smoke_test_binary(binary_path: Path, version: str) -> dict[str, object]:
                         break
                 if not hello_received:
                     raise VerificationError("packaged server did not return a protocol Hello response")
+                shutdown = _request_clean_shutdown(process)
+                drain_deadline = time.monotonic() + 1
+                while time.monotonic() < drain_deadline:
+                    try:
+                        trailing = connection.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not trailing:
+                        client_session_drained = True
+                        break
+                if not client_session_drained:
+                    raise VerificationError(
+                        "packaged server did not close the live verification session during shutdown"
+                    )
         except OSError as error:
             raise VerificationError(f"packaged server smoke test failed: {error}") from error
         finally:
             if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-            if process is not None and process.returncode is None:
-                process.kill()
-                process.wait(timeout=5)
+                _force_stop_process(process)
+            process_log.flush()
+            process_log.seek(0)
+            process_log_output = process_log.read().decode("utf-8", errors="replace")
+
+    if shutdown is None:
+        raise VerificationError("packaged server shutdown was not observed")
+    if "shutdown requested; draining client sessions" not in process_log_output:
+        raise VerificationError(
+            "packaged server exited without logging its graceful shutdown barrier"
+        )
+    for path, description in [
+        (rooms_db, "isolated persistent rooms database"),
+        (stats_db, "isolated stats database"),
+    ]:
+        _verify_sqlite_integrity(path, description)
+    if sha256_file(binary_path) != binary_digest:
+        raise VerificationError("packaged server binary changed while it was being executed")
     return {
         "performed": True,
         "versionOutput": version_output,
         "protocolHello": hello_received,
+        "clientSessionDrained": client_session_drained,
         "loopbackOnly": True,
+        "executable": binary_path.name,
+        "executableSha256": binary_digest,
+        "isolatedWorkingDirectory": True,
+        "stateFiles": [
+            rooms_db.relative_to(runtime_root).as_posix(),
+            stats_db.relative_to(runtime_root).as_posix(),
+        ],
+        "shutdown": shutdown,
         "elapsedMilliseconds": round((time.monotonic() - started) * 1000),
     }
 
@@ -680,10 +874,23 @@ def verify_release(
         _, verified_files = verify_manifest(package_root, identity, expected_source_sha)
         manifest_path = package_root / "manifest.json"
         runtime = (
-            smoke_test_binary(package_root / identity.binary_name, identity.version)
+            smoke_test_binary(
+                package_root / identity.binary_name,
+                identity.version,
+                extraction_parent / "runtime",
+            )
             if runtime_smoke
             else {"performed": False}
         )
+        _, post_runtime_files = verify_manifest(
+            package_root, identity, expected_source_sha
+        )
+        if post_runtime_files != verified_files:
+            raise VerificationError(
+                "packaged server payload inventory changed during runtime verification"
+            )
+        if runtime_smoke:
+            runtime["packageUnmodified"] = True
         symbols = _verify_optional_symbols(artifacts_dir, identity, extraction_parent)
         if (symbols is not None) != symbols_declared:
             raise VerificationError("symbols archive inventory changed while it was being verified")

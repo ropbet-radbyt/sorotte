@@ -75,4 +75,5 @@ mod playlist_reset_and_desync_seek;
 mod playlist_switch_and_offsets;
 mod readiness_and_unpause;
 mod room_playstate_matching;
+mod threaded_ordered_refresh;
 mod unresolved_playlist_retry;

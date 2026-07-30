@@ -136,6 +136,57 @@ enum ApplyProgress {
     AfterReplace(usize),
 }
 
+#[cfg(test)]
+const PROCESS_INTERRUPT_BOUNDARY_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_BOUNDARY";
+#[cfg(test)]
+const PROCESS_INTERRUPT_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_ROOT";
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessInterruptBoundary {
+    JournalHeader,
+    Prepared(usize),
+    Replaced(usize),
+    Committed,
+    Cleaned(usize),
+    JournalRemoved,
+}
+
+#[cfg(test)]
+impl ProcessInterruptBoundary {
+    fn label(self) -> String {
+        match self {
+            Self::JournalHeader => "journal-header".to_owned(),
+            Self::Prepared(index) => format!("prepared-{index}"),
+            Self::Replaced(index) => format!("replaced-{index}"),
+            Self::Committed => "committed".to_owned(),
+            Self::Cleaned(index) => format!("cleaned-{index}"),
+            Self::JournalRemoved => "journal-removed".to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+fn process_interrupt_barrier(boundary: ProcessInterruptBoundary) {
+    let Some(expected) = env::var_os(PROCESS_INTERRUPT_BOUNDARY_ENV) else {
+        return;
+    };
+    let label = boundary.label();
+    if expected != std::ffi::OsStr::new(&label) {
+        return;
+    }
+    let root = PathBuf::from(
+        env::var_os(PROCESS_INTERRUPT_ROOT_ENV)
+            .expect("an updater interruption boundary must include its fixture root"),
+    );
+    fs::write(root.join("boundary-reached"), label.as_bytes())
+        .expect("the updater child must publish its durable interruption boundary");
+    let release = root.join("release-boundary");
+    while !release.exists() {
+        std::thread::yield_now();
+    }
+}
+
 #[cfg(windows)]
 struct TargetUpdateLock {
     handle: windows_sys::Win32::Foundation::HANDLE,
@@ -1254,6 +1305,8 @@ where
     recover_pending_update(&plan.target_dir)?;
     let journal = journal_for_plan(plan)?;
     write_journal_header(&plan.journal_path, &journal)?;
+    #[cfg(test)]
+    process_interrupt_barrier(ProcessInterruptBoundary::JournalHeader);
 
     let result = (|| {
         for (index, file) in plan.files.iter().enumerate() {
@@ -1291,6 +1344,8 @@ where
                 .map_err(|error| {
                     format!("failed flushing {}: {error}", file.temporary.display())
                 })?;
+            #[cfg(test)]
+            process_interrupt_barrier(ProcessInterruptBoundary::Prepared(index + 1));
         }
 
         for (index, file) in plan.files.iter().enumerate() {
@@ -1302,9 +1357,14 @@ where
             validate_replacement_target_unchanged(file)?;
             install_prepared_replacement(file)?;
             #[cfg(test)]
-            before_progress(ApplyProgress::AfterReplace(index + 1))?;
+            {
+                before_progress(ApplyProgress::AfterReplace(index + 1))?;
+                process_interrupt_barrier(ProcessInterruptBoundary::Replaced(index + 1));
+            }
         }
         append_journal_commit(&plan.journal_path)?;
+        #[cfg(test)]
+        process_interrupt_barrier(ProcessInterruptBoundary::Committed);
         Ok(())
     })();
 
@@ -1872,11 +1932,21 @@ fn cleanup_committed_update(
     for entry in &journal.entries {
         validate_committed_entry(target_dir, entry)?;
     }
+    #[cfg(test)]
+    let mut cleanup_index = 0;
     for entry in &journal.entries {
         remove_file_if_exists(&target_dir.join(&entry.temporary))?;
         remove_file_if_exists(&target_dir.join(&entry.backup))?;
+        #[cfg(test)]
+        {
+            cleanup_index += 1;
+            process_interrupt_barrier(ProcessInterruptBoundary::Cleaned(cleanup_index));
+        }
     }
-    remove_file_if_exists(journal_path)
+    remove_file_if_exists(journal_path)?;
+    #[cfg(test)]
+    process_interrupt_barrier(ProcessInterruptBoundary::JournalRemoved);
+    Ok(())
 }
 
 fn create_relative_directories_without_reparse(root: &Path, relative: &Path) -> Result<(), String> {
@@ -3247,5 +3317,414 @@ mod tests {
         assert!(relative_path_is_safe(Path::new("resources/script.lua")));
         assert!(!relative_path_is_safe(Path::new("../sorotte-gui.exe")));
         assert!(!relative_path_is_safe(Path::new("/sorotte-gui.exe")));
+    }
+
+    #[cfg(windows)]
+    mod process_interruption_tests {
+        use super::*;
+        use std::{
+            process::{Child, Output},
+            sync::atomic::{AtomicU64, Ordering},
+            time::{Duration, Instant},
+        };
+
+        const PROCESS_FIXTURE_TEST: &str =
+            "tests::process_interruption_tests::updater_process_fixture_entrypoint";
+        const PROCESS_FIXTURE_ROLE_ENV: &str = "SOROTTE_TEST_UPDATER_PROCESS_FIXTURE_ROLE";
+        const PROCESS_FIXTURE_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_PROCESS_FIXTURE_ROOT";
+
+        static PROCESS_FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum CompleteInstallState {
+            Old,
+            New,
+        }
+
+        struct ProcessFixtureRoot {
+            path: PathBuf,
+        }
+
+        impl ProcessFixtureRoot {
+            fn new(case: &str) -> Self {
+                let sequence = PROCESS_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let path = env::temp_dir().join(format!(
+                    "sorotte-updater-process-{}-{sequence}-{case}",
+                    std::process::id()
+                ));
+                fs::create_dir(&path).expect("the updater process fixture root should be created");
+                Self { path }
+            }
+
+            fn marker(&self) -> PathBuf {
+                self.path.join("boundary-reached")
+            }
+        }
+
+        impl Drop for ProcessFixtureRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.path);
+            }
+        }
+
+        struct KillAndReapChild {
+            child: Option<Child>,
+        }
+
+        impl KillAndReapChild {
+            fn new(child: Child) -> Self {
+                Self { child: Some(child) }
+            }
+
+            fn child_mut(&mut self) -> &mut Child {
+                self.child
+                    .as_mut()
+                    .expect("the child should still be owned")
+            }
+
+            fn finish(mut self) -> Output {
+                self.child
+                    .take()
+                    .expect("the child should still be owned")
+                    .wait_with_output()
+                    .expect("the updater fixture child should be reaped")
+            }
+        }
+
+        impl Drop for KillAndReapChild {
+            fn drop(&mut self) {
+                if let Some(child) = self.child.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        struct ExpectedInstall {
+            old_manifest: Vec<u8>,
+            new_manifest: Vec<u8>,
+        }
+
+        fn create_install_fixture(root: &Path) -> ExpectedInstall {
+            let target = root.join("target");
+            let source = root.join("source");
+            write_v2_install_source(
+                &target,
+                &[
+                    (GUI_EXE, b"old-gui"),
+                    (UPDATER_EXE, b"old-updater"),
+                    ("kept.txt", b"old-kept"),
+                    ("removed.txt", b"old-removed"),
+                ],
+            );
+            let old_manifest =
+                fs::read(target.join(INSTALL_MANIFEST)).expect("old manifest should be readable");
+            write_v2_install_source(
+                &source,
+                &[
+                    (GUI_EXE, b"new-gui"),
+                    (UPDATER_EXE, b"new-updater"),
+                    ("kept.txt", b"new-kept"),
+                    ("added.txt", b"new-added"),
+                ],
+            );
+            let new_manifest =
+                fs::read(source.join(INSTALL_MANIFEST)).expect("new manifest should be readable");
+            fs::create_dir(root.join("unused-backup"))
+                .expect("the legacy backup placeholder should be created");
+            ExpectedInstall {
+                old_manifest,
+                new_manifest,
+            }
+        }
+
+        fn fixture_args(root: &Path, recover: bool) -> UpdaterArgs {
+            let mut args = vec![
+                "--pid".to_owned(),
+                u32::MAX.to_string(),
+                "--target-dir".to_owned(),
+                root.join("target").display().to_string(),
+                "--target-exe".to_owned(),
+                GUI_EXE.to_owned(),
+                "--log".to_owned(),
+                root.join("updater.log").display().to_string(),
+            ];
+            if recover {
+                args.push("--recover".to_owned());
+            } else {
+                args.extend([
+                    "--source-dir".to_owned(),
+                    root.join("source").display().to_string(),
+                    "--backup-dir".to_owned(),
+                    root.join("unused-backup").display().to_string(),
+                ]);
+            }
+            parse_args(args).expect("the updater process fixture arguments should parse")
+        }
+
+        fn run_fixture_role(root: &Path, recover: bool) {
+            run_update_with_checks(
+                fixture_args(root, recover),
+                || Ok(false),
+                |_| Ok(UpdaterExecutionLocation::DetachedHelper),
+            )
+            .unwrap_or_else(|error| panic!("the updater process fixture failed: {error}"));
+        }
+
+        #[test]
+        fn updater_process_fixture_entrypoint() {
+            let Some(role) = env::var_os(PROCESS_FIXTURE_ROLE_ENV) else {
+                return;
+            };
+            let root = PathBuf::from(
+                env::var_os(PROCESS_FIXTURE_ROOT_ENV)
+                    .expect("the updater process fixture role must include its root"),
+            );
+            match role.to_string_lossy().as_ref() {
+                "apply" => run_fixture_role(&root, false),
+                "recover" => run_fixture_role(&root, true),
+                unexpected => panic!("unknown updater process fixture role {unexpected:?}"),
+            }
+        }
+
+        fn spawn_fixture(root: &Path, role: &str, boundary: Option<&str>) -> KillAndReapChild {
+            let mut command =
+                Command::new(env::current_exe().expect("the updater test image should exist"));
+            command
+                .args(["--exact", PROCESS_FIXTURE_TEST, "--nocapture"])
+                .env(PROCESS_FIXTURE_ROLE_ENV, role)
+                .env(PROCESS_FIXTURE_ROOT_ENV, root)
+                .env(PROCESS_INTERRUPT_ROOT_ENV, root)
+                .env_remove(PROCESS_INTERRUPT_BOUNDARY_ENV)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(boundary) = boundary {
+                command.env(PROCESS_INTERRUPT_BOUNDARY_ENV, boundary);
+            }
+            KillAndReapChild::new(
+                command
+                    .spawn()
+                    .expect("the updater process fixture should spawn"),
+            )
+        }
+
+        fn child_diagnostic(output: &Output) -> String {
+            format!(
+                "status={:?}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        }
+
+        fn wait_for_boundary_and_terminate(fixture: &ProcessFixtureRoot, expected_boundary: &str) {
+            let mut child = spawn_fixture(&fixture.path, "apply", Some(expected_boundary));
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if fixture.marker().exists() {
+                    break;
+                }
+                if child
+                    .child_mut()
+                    .try_wait()
+                    .expect("the updater fixture child status should be observable")
+                    .is_some()
+                {
+                    let output = child.finish();
+                    panic!(
+                        "the updater child exited before boundary {expected_boundary}: {}",
+                        child_diagnostic(&output)
+                    );
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for updater boundary {expected_boundary}"
+                );
+                std::thread::yield_now();
+            }
+            let observed = fs::read_to_string(fixture.marker())
+                .expect("the boundary marker should be readable");
+            assert_eq!(observed, expected_boundary);
+            child
+                .child_mut()
+                .kill()
+                .expect("the updater child should terminate at the barrier");
+            let output = child.finish();
+            assert!(
+                !output.status.success(),
+                "a forcibly terminated updater must not report success: {}",
+                child_diagnostic(&output)
+            );
+        }
+
+        fn wait_for_success(mut child: KillAndReapChild, description: &str) {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if child
+                    .child_mut()
+                    .try_wait()
+                    .expect("the updater fixture child status should be observable")
+                    .is_some()
+                {
+                    let output = child.finish();
+                    assert!(
+                        output.status.success(),
+                        "{description} failed: {}",
+                        child_diagnostic(&output)
+                    );
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {description}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        fn assert_authenticated_journal(root: &Path, expected_state: CompleteInstallState) {
+            let contents = fs::read_to_string(root.join("target").join(JOURNAL_FILE))
+                .expect("an interrupted transaction should retain its journal");
+            let mut lines = contents.lines();
+            let journal: ReplacementJournal = serde_json::from_str(
+                lines
+                    .next()
+                    .expect("the interruption journal should have a header"),
+            )
+            .expect("the interruption journal header should parse");
+            validate_journal(&journal).expect("the interruption journal should authenticate");
+            assert_eq!(
+                journal.entries.len(),
+                6,
+                "the journal must authenticate the complete replacement/removal set"
+            );
+            let committed = lines.any(|line| {
+                serde_json::from_str::<JournalCommit>(line)
+                    .map(|commit| commit.committed)
+                    .unwrap_or(false)
+            });
+            assert_eq!(
+                committed,
+                expected_state == CompleteInstallState::New,
+                "only a durable commit marker may select forward cleanup"
+            );
+        }
+
+        fn assert_complete_install(
+            root: &Path,
+            expected: &ExpectedInstall,
+            state: CompleteInstallState,
+        ) {
+            let target = root.join("target");
+            let (gui, updater, kept, added, removed, expected_manifest) = match state {
+                CompleteInstallState::Old => (
+                    b"old-gui".as_slice(),
+                    b"old-updater".as_slice(),
+                    b"old-kept".as_slice(),
+                    None,
+                    Some(b"old-removed".as_slice()),
+                    expected.old_manifest.as_slice(),
+                ),
+                CompleteInstallState::New => (
+                    b"new-gui".as_slice(),
+                    b"new-updater".as_slice(),
+                    b"new-kept".as_slice(),
+                    Some(b"new-added".as_slice()),
+                    None,
+                    expected.new_manifest.as_slice(),
+                ),
+            };
+            assert_eq!(fs::read(target.join(GUI_EXE)).unwrap(), gui);
+            assert_eq!(fs::read(target.join(UPDATER_EXE)).unwrap(), updater);
+            assert_eq!(fs::read(target.join("kept.txt")).unwrap(), kept);
+            assert_eq!(
+                fs::read(target.join(INSTALL_MANIFEST)).unwrap(),
+                expected_manifest
+            );
+            match added {
+                Some(bytes) => assert_eq!(fs::read(target.join("added.txt")).unwrap(), bytes),
+                None => assert!(!target.join("added.txt").exists()),
+            }
+            match removed {
+                Some(bytes) => assert_eq!(fs::read(target.join("removed.txt")).unwrap(), bytes),
+                None => assert!(!target.join("removed.txt").exists()),
+            }
+        }
+
+        fn assert_no_transaction_artifacts(root: &Path) {
+            let target = root.join("target");
+            assert!(!target.join(JOURNAL_FILE).exists());
+            let mut pending = vec![target];
+            while let Some(directory) = pending.pop() {
+                for entry in fs::read_dir(&directory).unwrap() {
+                    let entry = entry.unwrap();
+                    if entry.file_type().unwrap().is_dir() {
+                        assert!(
+                            !entry
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(BOOTSTRAP_DIR_PREFIX),
+                            "recovery must not leave an updater helper directory"
+                        );
+                        pending.push(entry.path());
+                    } else {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        assert!(
+                            !name.contains(".sorotte-new-") && !name.contains(".sorotte-old-"),
+                            "recovery left transaction artifact {}",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn real_process_termination_recovers_every_durable_transaction_boundary() {
+            let schedules = [
+                ("journal-header", CompleteInstallState::Old),
+                ("prepared-1", CompleteInstallState::Old),
+                ("prepared-6", CompleteInstallState::Old),
+                ("replaced-1", CompleteInstallState::Old),
+                ("replaced-3", CompleteInstallState::Old),
+                ("replaced-6", CompleteInstallState::Old),
+                ("committed", CompleteInstallState::New),
+                ("cleaned-1", CompleteInstallState::New),
+                ("cleaned-3", CompleteInstallState::New),
+                ("cleaned-6", CompleteInstallState::New),
+                ("journal-removed", CompleteInstallState::New),
+            ];
+
+            for (boundary, final_state) in schedules {
+                let fixture = ProcessFixtureRoot::new(boundary);
+                let expected = create_install_fixture(&fixture.path);
+                wait_for_boundary_and_terminate(&fixture, boundary);
+                if boundary == "journal-removed" {
+                    assert!(
+                        !fixture.path.join("target").join(JOURNAL_FILE).exists(),
+                        "the final cleanup boundary should follow journal deletion"
+                    );
+                } else {
+                    assert_authenticated_journal(&fixture.path, final_state);
+                }
+
+                wait_for_success(
+                    spawn_fixture(&fixture.path, "recover", None),
+                    "first recovery child",
+                );
+                assert_complete_install(&fixture.path, &expected, final_state);
+                assert_no_transaction_artifacts(&fixture.path);
+
+                wait_for_success(
+                    spawn_fixture(&fixture.path, "recover", None),
+                    "idempotent recovery child",
+                );
+                assert_complete_install(&fixture.path, &expected, final_state);
+                assert_no_transaction_artifacts(&fixture.path);
+            }
+            assert_eq!(schedules.len(), 11);
+        }
     }
 }

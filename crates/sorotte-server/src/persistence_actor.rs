@@ -301,6 +301,67 @@ struct RoomPersistenceDesiredState {
 
 type DesiredRoomEffects = Arc<Mutex<BTreeMap<String, RoomPersistenceDesiredState>>>;
 
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RoomWorkerTestCheckpoint {
+    BeforeScan,
+    BeforeArbitration { room_name: String, version: u64 },
+    AfterArbitration { room_name: String, version: u64 },
+}
+
+#[derive(Clone, Default)]
+struct RoomPersistenceWorkerHooks {
+    #[cfg(test)]
+    on_checkpoint: Option<Arc<dyn Fn(RoomWorkerTestCheckpoint) + Send + Sync + 'static>>,
+    #[cfg(test)]
+    transaction_entries: Option<Arc<Mutex<Vec<ServerPersistenceEffect>>>>,
+}
+
+impl RoomPersistenceWorkerHooks {
+    fn before_scan(&self) {
+        #[cfg(test)]
+        if let Some(on_checkpoint) = self.on_checkpoint.as_ref() {
+            on_checkpoint(RoomWorkerTestCheckpoint::BeforeScan);
+        }
+    }
+
+    fn before_arbitration(&self, _effect: &ServerPersistenceEffect) {
+        #[cfg(test)]
+        if let (Some(on_checkpoint), Some((room_name, version))) = (
+            self.on_checkpoint.as_ref(),
+            room_effect_key_and_version(_effect),
+        ) {
+            on_checkpoint(RoomWorkerTestCheckpoint::BeforeArbitration {
+                room_name: room_name.to_owned(),
+                version,
+            });
+        }
+    }
+
+    fn after_arbitration(&self, _effect: &ServerPersistenceEffect) {
+        #[cfg(test)]
+        if let (Some(on_checkpoint), Some((room_name, version))) = (
+            self.on_checkpoint.as_ref(),
+            room_effect_key_and_version(_effect),
+        ) {
+            on_checkpoint(RoomWorkerTestCheckpoint::AfterArbitration {
+                room_name: room_name.to_owned(),
+                version,
+            });
+        }
+    }
+
+    fn record_transaction_entry(&self, _effect: &ServerPersistenceEffect) {
+        #[cfg(test)]
+        if let Some(entries) = self.transaction_entries.as_ref() {
+            entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(_effect.clone());
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct RoomPersistenceService {
     worker: PersistenceWorkerService,
@@ -327,6 +388,22 @@ impl RoomPersistenceService {
         degraded_worker_count: Arc<AtomicUsize>,
         queue_capacity: usize,
     ) -> Result<Self, RoomPersistenceError> {
+        Self::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            degraded_worker_count,
+            queue_capacity,
+            RoomPersistenceWorkerHooks::default(),
+        )
+    }
+
+    fn start_with_queue_capacity_and_hooks(
+        store: RoomPersistenceStore,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+        queue_capacity: usize,
+        hooks: RoomPersistenceWorkerHooks,
+    ) -> Result<Self, RoomPersistenceError> {
         let connection = store.connection("connect persistence worker")?;
         let desired_effects = Arc::new(Mutex::new(BTreeMap::new()));
         let worker_desired_effects = Arc::clone(&desired_effects);
@@ -342,6 +419,7 @@ impl RoomPersistenceService {
                     store,
                     connection,
                     worker_desired_effects,
+                    hooks,
                 )
             },
         );
@@ -419,6 +497,27 @@ impl StatsPersistenceService {
     pub(crate) fn flush(&self) -> bool {
         self.0.flush()
     }
+
+    #[cfg(test)]
+    fn start_with_queue_capacity_and_start_hook(
+        store: StatsPersistenceStore,
+        events: broadcast::Sender<ServerPersistenceEvent>,
+        degraded_worker_count: Arc<AtomicUsize>,
+        queue_capacity: usize,
+        start_hook: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, StatsPersistenceError> {
+        let connection = store.connection("connect persistence worker")?;
+        Ok(Self(PersistenceWorkerService::spawn_with_capacity(
+            ServerPersistenceWorkerKind::Stats,
+            events,
+            degraded_worker_count,
+            queue_capacity,
+            move |commands, reporter| {
+                start_hook();
+                run_stats_worker(commands, reporter, store, connection);
+            },
+        )))
+    }
 }
 
 fn run_room_worker(
@@ -427,6 +526,7 @@ fn run_room_worker(
     store: RoomPersistenceStore,
     connection: Connection,
     desired_effects: DesiredRoomEffects,
+    hooks: RoomPersistenceWorkerHooks,
 ) {
     while let Ok(command) = commands.recv() {
         match command {
@@ -435,14 +535,26 @@ fn run_room_worker(
                 "room persistence effects must be routed through the desired-state map",
             ),
             PersistenceWorkerCommand::Wake => {
-                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects)
+                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects, &hooks)
             }
             PersistenceWorkerCommand::Flush(acknowledge) => {
-                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects);
+                apply_desired_room_effects(
+                    &reporter,
+                    &store,
+                    &connection,
+                    &desired_effects,
+                    &hooks,
+                );
                 let _ = acknowledge.send(());
             }
             PersistenceWorkerCommand::Shutdown => {
-                apply_desired_room_effects(&reporter, &store, &connection, &desired_effects);
+                apply_desired_room_effects(
+                    &reporter,
+                    &store,
+                    &connection,
+                    &desired_effects,
+                    &hooks,
+                );
                 break;
             }
         }
@@ -466,7 +578,9 @@ fn apply_desired_room_effects(
     store: &RoomPersistenceStore,
     connection: &Connection,
     desired_effects: &DesiredRoomEffects,
+    hooks: &RoomPersistenceWorkerHooks,
 ) {
+    hooks.before_scan();
     let effects = {
         let states = desired_effects
             .lock()
@@ -484,6 +598,7 @@ fn apply_desired_room_effects(
             continue;
         };
         let room_name = room_name.to_owned();
+        hooks.before_arbitration(&effect);
         let is_current = desired_effects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -501,6 +616,8 @@ fn apply_desired_room_effects(
             continue;
         }
 
+        hooks.after_arbitration(&effect);
+        hooks.record_transaction_entry(&effect);
         let transaction = match connection.unchecked_transaction() {
             Ok(transaction) => transaction,
             Err(error) => {
@@ -665,23 +782,24 @@ fn apply_stats_effect(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeSet, VecDeque},
         fs,
         path::{Path, PathBuf},
         process::Command,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
+            mpsc,
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use rusqlite::{Connection, OptionalExtension, params};
     use tokio::sync::broadcast;
 
     use super::{
-        RoomPersistenceService, ServerPersistenceEffect, ServerPersistenceEvent,
-        StatsPersistenceService,
+        RoomPersistenceService, RoomPersistenceWorkerHooks, RoomWorkerTestCheckpoint,
+        ServerPersistenceEffect, ServerPersistenceEvent, StatsPersistenceService,
     };
     use crate::{
         PersistedRoomState, RoomPersistenceStore, StatsPersistenceStore, persistence::test_crash,
@@ -709,6 +827,179 @@ mod tests {
             created_at_seconds: 0.0,
             version,
         }
+    }
+
+    const SCHEDULE_WATCHDOG: Duration = Duration::from_secs(5);
+
+    struct RoomWorkerCheckpointController {
+        expected: Arc<Mutex<VecDeque<RoomWorkerTestCheckpoint>>>,
+        reached: mpsc::Receiver<RoomWorkerTestCheckpoint>,
+        release: mpsc::SyncSender<()>,
+    }
+
+    impl RoomWorkerCheckpointController {
+        fn arm(&self, checkpoint: RoomWorkerTestCheckpoint) {
+            self.expected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_back(checkpoint);
+        }
+
+        fn wait_for(&self, expected: &RoomWorkerTestCheckpoint) {
+            let actual = self
+                .reached
+                .recv_timeout(SCHEDULE_WATCHDOG)
+                .unwrap_or_else(|error| {
+                    panic!("persistence worker did not reach {expected:?}: {error}")
+                });
+            assert_eq!(
+                &actual, expected,
+                "persistence worker reached the wrong controlled checkpoint"
+            );
+        }
+
+        fn release(&self) {
+            self.release
+                .send(())
+                .expect("controlled persistence worker should still be waiting");
+        }
+    }
+
+    fn controlled_room_worker_hooks() -> (
+        RoomPersistenceWorkerHooks,
+        RoomWorkerCheckpointController,
+        Arc<Mutex<Vec<ServerPersistenceEffect>>>,
+    ) {
+        let expected = Arc::new(Mutex::new(VecDeque::new()));
+        let hook_expected = Arc::clone(&expected);
+        let (reached_tx, reached_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let hook_release_rx = Arc::clone(&release_rx);
+        let transaction_entries = Arc::new(Mutex::new(Vec::new()));
+        let hooks = RoomPersistenceWorkerHooks {
+            on_checkpoint: Some(Arc::new(move |checkpoint| {
+                let should_block = {
+                    let mut expected = hook_expected
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if expected.front() == Some(&checkpoint) {
+                        expected.pop_front();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !should_block {
+                    return;
+                }
+                reached_tx
+                    .send(checkpoint)
+                    .expect("checkpoint controller should still be listening");
+                hook_release_rx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv_timeout(SCHEDULE_WATCHDOG)
+                    .expect("checkpoint controller should release the persistence worker");
+            })),
+            transaction_entries: Some(Arc::clone(&transaction_entries)),
+        };
+        (
+            hooks,
+            RoomWorkerCheckpointController {
+                expected,
+                reached: reached_rx,
+                release: release_tx,
+            },
+            transaction_entries,
+        )
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ScheduledRoomMutation {
+        Save { version: u64 },
+        Delete { version: u64 },
+    }
+
+    impl ScheduledRoomMutation {
+        fn version(self) -> u64 {
+            match self {
+                Self::Save { version } | Self::Delete { version } => version,
+            }
+        }
+
+        fn effect(self, room_name: &str) -> ServerPersistenceEffect {
+            match self {
+                Self::Save { version } => save_room_effect(
+                    room_name,
+                    &format!("{room_name}-version-{version}.mkv"),
+                    version,
+                ),
+                Self::Delete { version } => ServerPersistenceEffect::DeleteRoom {
+                    room_name: room_name.to_owned(),
+                    version,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct RoomArbitrationModel {
+        desired: ScheduledRoomMutation,
+        ignored: Vec<ScheduledRoomMutation>,
+    }
+
+    impl RoomArbitrationModel {
+        fn new(initial: ScheduledRoomMutation) -> Self {
+            Self {
+                desired: initial,
+                ignored: Vec::new(),
+            }
+        }
+
+        fn enqueue(&mut self, effect: ScheduledRoomMutation) {
+            if effect.version() > self.desired.version() {
+                self.ignored.push(self.desired);
+                self.desired = effect;
+            } else {
+                self.ignored.push(effect);
+            }
+        }
+    }
+
+    fn seed_room_version_zero(store: &RoomPersistenceStore, room_name: &str) {
+        let connection = store
+            .connection("seed schedule baseline")
+            .expect("schedule baseline connection should open");
+        store
+            .save_room(
+                &connection,
+                room_name,
+                &PersistedRoomState {
+                    files: vec![format!("{room_name}-baseline.mkv")],
+                    index: Some(0),
+                    position: 0.0,
+                    last_activity_at_seconds: 0.0,
+                    version: 0,
+                    owner_bucket: None,
+                    created_at_seconds: 0.0,
+                },
+            )
+            .expect("schedule baseline should persist");
+    }
+
+    fn persisted_room_version_and_playlist(
+        connection: &Connection,
+        room_name: &str,
+    ) -> Option<(i64, String)> {
+        connection
+            .query_row(
+                "SELECT persistenceVersion, playlist FROM persistent_rooms WHERE name = ?1",
+                [room_name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("scheduled room row should be queryable")
     }
 
     const PERSISTENCE_CRASH_HELPER_TEST: &str =
@@ -1381,6 +1672,446 @@ mod tests {
         drop(service);
         drop(external);
         fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+    }
+
+    #[test]
+    fn room_worker_pre_transaction_arbitration_matches_reference_model_for_all_effect_pairs() {
+        let schedules = [
+            (
+                ScheduledRoomMutation::Save { version: 1 },
+                ScheduledRoomMutation::Save { version: 2 },
+            ),
+            (
+                ScheduledRoomMutation::Save { version: 1 },
+                ScheduledRoomMutation::Delete { version: 2 },
+            ),
+            (
+                ScheduledRoomMutation::Delete { version: 2 },
+                ScheduledRoomMutation::Save { version: 3 },
+            ),
+            (
+                ScheduledRoomMutation::Save { version: 2 },
+                ScheduledRoomMutation::Save { version: 1 },
+            ),
+            (
+                ScheduledRoomMutation::Delete { version: 2 },
+                ScheduledRoomMutation::Save { version: 1 },
+            ),
+            (
+                ScheduledRoomMutation::Save { version: 2 },
+                ScheduledRoomMutation::Delete { version: 2 },
+            ),
+        ];
+
+        for (schedule_index, (initial, concurrent)) in schedules.into_iter().enumerate() {
+            let db_path = temporary_sqlite_path(&format!("room-pre-transaction-{schedule_index}"));
+            remove_sqlite_artifacts(&db_path);
+            let store = RoomPersistenceStore::open(&db_path)
+                .expect("room schedule schema should initialize");
+            seed_room_version_zero(&store, "room");
+            let (events, _) = broadcast::channel(64);
+            let mut event_rx = events.subscribe();
+            let (hooks, controller, transaction_entries) = controlled_room_worker_hooks();
+            let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+                store,
+                events,
+                Arc::new(AtomicUsize::new(0)),
+                1,
+                hooks,
+            )
+            .expect("controlled room persistence worker should start");
+            let checkpoint = RoomWorkerTestCheckpoint::BeforeArbitration {
+                room_name: "room".to_owned(),
+                version: initial.version(),
+            };
+            controller.arm(checkpoint.clone());
+
+            service.enqueue(initial.effect("room"));
+            controller.wait_for(&checkpoint);
+            service.enqueue(concurrent.effect("room"));
+            controller.release();
+            assert!(
+                service.flush(),
+                "schedule {schedule_index} should settle its newest desired state"
+            );
+
+            let mut model = RoomArbitrationModel::new(initial);
+            model.enqueue(concurrent);
+            assert_eq!(
+                *transaction_entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                vec![model.desired.effect("room")],
+                "schedule {schedule_index}: only the reference-model winner may enter a transaction"
+            );
+            let connection =
+                Connection::open(&db_path).expect("scheduled room database should reopen");
+            let durable = persisted_room_version_and_playlist(&connection, "room");
+            match model.desired {
+                ScheduledRoomMutation::Save { version } => assert_eq!(
+                    durable,
+                    Some((
+                        i64::try_from(version).expect("test version should fit SQLite i64"),
+                        format!("room-version-{version}.mkv"),
+                    )),
+                    "schedule {schedule_index}: newest save should be durable"
+                ),
+                ScheduledRoomMutation::Delete { .. } => assert_eq!(
+                    durable, None,
+                    "schedule {schedule_index}: newest delete should be durable"
+                ),
+            }
+            let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+            for ignored in model.ignored {
+                assert!(
+                    events.iter().any(|event| matches!(
+                        event,
+                        ServerPersistenceEvent::IgnoredStale { effect, .. }
+                            if effect == &ignored.effect("room")
+                    )),
+                    "schedule {schedule_index}: the losing {ignored:?} effect should be reported stale"
+                );
+            }
+
+            drop(service);
+            drop(connection);
+            remove_sqlite_artifacts(&db_path);
+        }
+    }
+
+    #[test]
+    fn room_worker_bounded_wake_queue_coalesces_cross_room_updates_before_transaction_entry() {
+        let db_path = temporary_sqlite_path("room-global-pre-transaction");
+        remove_sqlite_artifacts(&db_path);
+        let store =
+            RoomPersistenceStore::open(&db_path).expect("room schedule schema should initialize");
+        seed_room_version_zero(&store, "room-a");
+        seed_room_version_zero(&store, "room-b");
+        let (events, _) = broadcast::channel(64);
+        let mut event_rx = events.subscribe();
+        let (hooks, controller, transaction_entries) = controlled_room_worker_hooks();
+        let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            Arc::new(AtomicUsize::new(0)),
+            1,
+            hooks,
+        )
+        .expect("bounded room persistence worker should start");
+
+        controller.arm(RoomWorkerTestCheckpoint::BeforeScan);
+        service.enqueue(save_room_effect("room-a", "room-a-v1.mkv", 1));
+        controller.wait_for(&RoomWorkerTestCheckpoint::BeforeScan);
+        service.enqueue(save_room_effect("room-b", "room-b-v1.mkv", 1));
+        let stale_scan_checkpoint = RoomWorkerTestCheckpoint::BeforeArbitration {
+            room_name: "room-a".to_owned(),
+            version: 1,
+        };
+        controller.arm(stale_scan_checkpoint.clone());
+        controller.release();
+
+        controller.wait_for(&stale_scan_checkpoint);
+        service.enqueue(save_room_effect("room-a", "room-a-v2.mkv", 2));
+        service.enqueue(ServerPersistenceEffect::DeleteRoom {
+            room_name: "room-b".to_owned(),
+            version: 2,
+        });
+        controller.release();
+        assert!(
+            service.flush(),
+            "coalesced cross-room desired state should flush"
+        );
+
+        assert_eq!(
+            *transaction_entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                save_room_effect("room-a", "room-a-v2.mkv", 2),
+                ServerPersistenceEffect::DeleteRoom {
+                    room_name: "room-b".to_owned(),
+                    version: 2,
+                },
+            ],
+            "the full wake queue must not force either stale snapshot into a transaction"
+        );
+        let connection =
+            Connection::open(&db_path).expect("cross-room schedule database should reopen");
+        assert_eq!(
+            persisted_room_version_and_playlist(&connection, "room-a"),
+            Some((2, "room-a-v2.mkv".to_owned()))
+        );
+        assert_eq!(
+            persisted_room_version_and_playlist(&connection, "room-b"),
+            None
+        );
+        let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        for (room_name, version) in [("room-a", 1), ("room-b", 1)] {
+            assert!(events.iter().any(|event| matches!(
+                event,
+                ServerPersistenceEvent::IgnoredStale { effect, .. }
+                    if super::room_effect_key_and_version(effect)
+                        == Some((room_name, version))
+            )));
+        }
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                ServerPersistenceEvent::Failed { .. } | ServerPersistenceEvent::Degraded { .. }
+            )),
+            "a full coalescible Wake queue is healthy while desired state remains retained"
+        );
+
+        drop(service);
+        drop(connection);
+        remove_sqlite_artifacts(&db_path);
+    }
+
+    #[test]
+    fn room_worker_post_arbitration_generation_change_rolls_back_before_stale_commit() {
+        let db_path = temporary_sqlite_path("room-post-arbitration-rollback");
+        remove_sqlite_artifacts(&db_path);
+        let store =
+            RoomPersistenceStore::open(&db_path).expect("room schedule schema should initialize");
+        seed_room_version_zero(&store, "room");
+        let (events, _) = broadcast::channel(32);
+        let mut event_rx = events.subscribe();
+        let (hooks, controller, transaction_entries) = controlled_room_worker_hooks();
+        let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            Arc::new(AtomicUsize::new(0)),
+            1,
+            hooks,
+        )
+        .expect("controlled room persistence worker should start");
+        let checkpoint = RoomWorkerTestCheckpoint::AfterArbitration {
+            room_name: "room".to_owned(),
+            version: 1,
+        };
+        controller.arm(checkpoint.clone());
+
+        service.enqueue(save_room_effect("room", "stale-v1.mkv", 1));
+        controller.wait_for(&checkpoint);
+        service.enqueue(save_room_effect("room", "current-v2.mkv", 2));
+        controller.release();
+        assert!(
+            service.flush(),
+            "new desired state should commit after stale transaction rollback"
+        );
+
+        assert_eq!(
+            *transaction_entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                save_room_effect("room", "stale-v1.mkv", 1),
+                save_room_effect("room", "current-v2.mkv", 2),
+            ],
+            "the post-arbitration race enters the old transaction but must retry the replacement"
+        );
+        let connection =
+            Connection::open(&db_path).expect("post-arbitration database should reopen");
+        assert_eq!(
+            persisted_room_version_and_playlist(&connection, "room"),
+            Some((2, "current-v2.mkv".to_owned())),
+            "the stale write must roll back before commit"
+        );
+        let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::IgnoredStale {
+                effect: ServerPersistenceEffect::SaveRoom { version: 1, .. },
+                ..
+            }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { version: 1, .. },
+                ..
+            }
+        )));
+
+        drop(service);
+        drop(connection);
+        remove_sqlite_artifacts(&db_path);
+    }
+
+    #[test]
+    fn room_worker_concurrent_replacement_of_failed_effect_recovers_without_retrying_stale_work() {
+        let db_path = temporary_sqlite_path("room-failure-concurrent-replacement");
+        remove_sqlite_artifacts(&db_path);
+        let store =
+            RoomPersistenceStore::open(&db_path).expect("room schedule schema should initialize");
+        let (events, _) = broadcast::channel(64);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let (hooks, controller, transaction_entries) = controlled_room_worker_hooks();
+        let service = RoomPersistenceService::start_with_queue_capacity_and_hooks(
+            store,
+            events,
+            Arc::clone(&degraded_worker_count),
+            1,
+            hooks,
+        )
+        .expect("controlled room persistence worker should start");
+        let external = Connection::open(&db_path).expect("failure injector should connect");
+        external
+            .execute_batch(
+                "CREATE TRIGGER fail_room_v1 \
+                 BEFORE INSERT ON persistent_rooms \
+                 WHEN NEW.name = 'room' AND NEW.persistenceVersion = 1 \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'injected version-1 failure'); \
+                 END",
+            )
+            .expect("version-1 failure trigger should install");
+
+        service.enqueue(save_room_effect("room", "failed-v1.mkv", 1));
+        assert!(!service.flush(), "the first desired effect should fail");
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 1);
+        external
+            .execute("DROP TRIGGER fail_room_v1", [])
+            .expect("version-1 failure trigger should be removable");
+        let checkpoint = RoomWorkerTestCheckpoint::BeforeArbitration {
+            room_name: "room".to_owned(),
+            version: 1,
+        };
+        controller.arm(checkpoint.clone());
+        assert!(service.worker.wake(), "failed desired state should wake");
+        controller.wait_for(&checkpoint);
+        service.enqueue(save_room_effect("room", "replacement-v2.mkv", 2));
+        controller.release();
+        assert!(
+            service.flush(),
+            "successful concurrent replacement should resolve degradation"
+        );
+
+        assert_eq!(
+            *transaction_entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                save_room_effect("room", "failed-v1.mkv", 1),
+                save_room_effect("room", "failed-v1.mkv", 1),
+                save_room_effect("room", "replacement-v2.mkv", 2),
+            ],
+            "enqueue and the first flush each attempt version 1, but the controlled stale retry must be rejected before transaction entry"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+        let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        let recovered_count = events
+            .iter()
+            .filter(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+            .count();
+        assert_eq!(
+            recovered_count, 1,
+            "the successful replacement should report exactly one recovery"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::IgnoredStale {
+                effect: ServerPersistenceEffect::SaveRoom { version: 1, .. },
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied {
+                effect: ServerPersistenceEffect::SaveRoom { version: 2, .. },
+                ..
+            }
+        )));
+
+        drop(service);
+        drop(external);
+        remove_sqlite_artifacts(&db_path);
+    }
+
+    #[test]
+    fn stats_worker_bounded_queue_degrades_before_transaction_and_recovers_after_drain() {
+        let db_path = temporary_sqlite_path("stats-bounded-pre-transaction");
+        remove_sqlite_artifacts(&db_path);
+        let store =
+            StatsPersistenceStore::open(&db_path).expect("stats schedule schema should initialize");
+        let (events, _) = broadcast::channel(32);
+        let mut event_rx = events.subscribe();
+        let degraded_worker_count = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let service = StatsPersistenceService::start_with_queue_capacity_and_start_hook(
+            store,
+            events,
+            Arc::clone(&degraded_worker_count),
+            1,
+            move || {
+                started_tx
+                    .send(())
+                    .expect("stats schedule controller should still be listening");
+                release_rx
+                    .recv_timeout(SCHEDULE_WATCHDOG)
+                    .expect("stats schedule controller should release the worker");
+            },
+        )
+        .expect("controlled stats persistence worker should start");
+        started_rx
+            .recv_timeout(SCHEDULE_WATCHDOG)
+            .expect("stats worker should reach its pre-receive checkpoint");
+
+        let retained = ServerPersistenceEffect::RecordStatsSnapshot {
+            snapshot_time: 11,
+            versions: vec!["retained".to_owned()],
+        };
+        let overflow = ServerPersistenceEffect::RecordStatsSnapshot {
+            snapshot_time: 12,
+            versions: vec!["overflow".to_owned()],
+        };
+        service.enqueue(retained.clone());
+        service.enqueue(overflow.clone());
+        assert_eq!(
+            degraded_worker_count.load(Ordering::Acquire),
+            1,
+            "overflow must degrade before the blocked worker can enter a transaction"
+        );
+        let overflow_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(overflow_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Failed { effect, error, .. }
+                if effect == &overflow && error == "persistence command queue is full"
+        )));
+        assert!(
+            overflow_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Degraded { .. }))
+        );
+
+        release_tx
+            .send(())
+            .expect("blocked stats worker should still be waiting");
+        assert!(
+            service.flush(),
+            "retained stats effect and flush should drain"
+        );
+        assert_eq!(degraded_worker_count.load(Ordering::Acquire), 0);
+        assert_eq!(persisted_stats_versions(&db_path, 11), vec!["retained"]);
+        assert!(
+            persisted_stats_versions(&db_path, 12).is_empty(),
+            "the rejected overflow effect must never enter a transaction"
+        );
+        let recovery_events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(recovery_events.iter().any(|event| matches!(
+            event,
+            ServerPersistenceEvent::Applied { effect, .. } if effect == &retained
+        )));
+        assert!(
+            recovery_events
+                .iter()
+                .any(|event| matches!(event, ServerPersistenceEvent::Recovered { .. }))
+        );
+
+        drop(service);
+        remove_sqlite_artifacts(&db_path);
     }
 
     #[test]

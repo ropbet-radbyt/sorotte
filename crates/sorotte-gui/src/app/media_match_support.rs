@@ -3145,6 +3145,9 @@ fn extract_zip_entry(zip_bytes: &[u8], suffix: &str, target: &Path) -> Result<()
 }
 
 #[cfg(test)]
+mod process_fault_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -199,6 +201,123 @@ class ReleaseArtifactHappyPathTests(unittest.TestCase):
         )
 
 
+class RuntimeConsumerContractTests(unittest.TestCase):
+    def test_runtime_smoke_receives_only_the_exact_freshly_extracted_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = ArtifactBuilder(Path(temporary))
+            builder.write()
+            observed: dict[str, Path] = {}
+
+            def smoke(binary_path: Path, version: str, runtime_root: Path) -> dict[str, object]:
+                self.assertEqual(version, VERSION)
+                self.assertEqual(binary_path.read_bytes(), builder.payloads[builder.binary_name])
+                self.assertEqual(binary_path.name, builder.binary_name)
+                self.assertEqual(binary_path.parent.name, builder.root_name)
+                self.assertFalse(runtime_root.exists())
+                self.assertNotEqual(binary_path.parent, runtime_root)
+                runtime_root.mkdir()
+                observed["binary"] = binary_path
+                observed["runtime"] = runtime_root
+                return {"performed": True, "protocolHello": True}
+
+            with mock.patch.object(artifact, "smoke_test_binary", side_effect=smoke):
+                report = artifact.verify_release(
+                    builder.artifacts_dir,
+                    SOURCE_SHA,
+                    runtime_smoke=True,
+                    work_dir=Path(temporary) / "fresh-consumer-work",
+                )
+
+            self.assertIn("binary", observed)
+            self.assertIn("runtime", observed)
+            self.assertTrue(report["runtimeSmoke"]["performed"])
+            self.assertTrue(report["runtimeSmoke"]["packageUnmodified"])
+
+    def test_runtime_environment_removes_all_sorotte_configuration_overrides(self) -> None:
+        override_names = [
+            "SOROTTE_PASSWORD",
+            "SOROTTE_SERVER_ROOMS_DB_FILE",
+            "SOROTTE_SERVER_TLS_CERT_PATH",
+            "SOROTTE_UNRECOGNIZED_FUTURE_OVERRIDE",
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {name: f"untrusted-{index}" for index, name in enumerate(override_names)},
+            clear=False,
+        ):
+            isolated = artifact._isolated_server_environment()
+
+        for name in override_names:
+            self.assertNotIn(name, isolated)
+        if "PATH" in os.environ:
+            self.assertEqual(isolated["PATH"], os.environ["PATH"])
+
+    def test_clean_shutdown_uses_a_bounded_platform_signal_and_requires_zero_exit(self) -> None:
+        class CleanProcess:
+            returncode: int | None = None
+            signal: int | None = None
+            pid = 4242
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def send_signal(self, requested: int) -> None:
+                self.signal = requested
+
+            def wait(self, timeout: int) -> int:
+                self.assert_timeout = timeout
+                self.returncode = 0
+                return 0
+
+        process = CleanProcess()
+        with mock.patch.object(artifact, "_send_windows_ctrl_c") as windows_ctrl_c:
+            shutdown = artifact._request_clean_shutdown(process)
+
+        self.assertTrue(shutdown["clean"])
+        self.assertEqual(shutdown["exitCode"], 0)
+        self.assertEqual(process.assert_timeout, artifact.SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+        if os.name == "nt":
+            windows_ctrl_c.assert_called_once_with(process.pid)
+            self.assertIsNone(process.signal)
+        else:
+            windows_ctrl_c.assert_not_called()
+            self.assertEqual(process.signal, artifact.signal.SIGINT)
+
+    def test_shutdown_timeout_forcibly_reaps_and_fails_verification(self) -> None:
+        class StalledProcess:
+            returncode: int | None = None
+            killed = False
+            waits = 0
+            pid = 4343
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def send_signal(self, _requested: int) -> None:
+                pass
+
+            def wait(self, timeout: int) -> int:
+                self.waits += 1
+                if not self.killed:
+                    raise subprocess.TimeoutExpired("sorotte-server", timeout)
+                self.returncode = 1
+                return 1
+
+            def kill(self) -> None:
+                self.killed = True
+
+        process = StalledProcess()
+        with mock.patch.object(artifact, "_send_windows_ctrl_c"):
+            with self.assertRaisesRegex(
+                artifact.VerificationError, "did not shut down cleanly"
+            ):
+                artifact._request_clean_shutdown(process)
+
+        self.assertTrue(process.killed)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(process.waits, 2)
+
+
 class ChecksumAndSelectionTests(unittest.TestCase):
     def test_checksum_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -335,6 +454,82 @@ class ArchiveBoundaryTests(unittest.TestCase):
             builder.write(entries=entries)
             with self.assertRaisesRegex(artifact.VerificationError, "must not be empty"):
                 builder.verify()
+
+    def test_missing_executable_and_extra_nested_path_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = ArtifactBuilder(Path(temporary))
+            entries = [
+                entry
+                for entry in builder.default_entries()
+                if not entry[0].endswith(f"/{builder.binary_name}")
+            ]
+            builder.write(entries=entries)
+            with self.assertRaisesRegex(
+                artifact.VerificationError, "inventory mismatch.*sorotte-server.exe"
+            ):
+                builder.verify()
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = ArtifactBuilder(Path(temporary))
+            entries = builder.default_entries()
+            entries.append(
+                (
+                    f"{builder.root_name}/nested/unmanifested.txt",
+                    b"extra nested payload",
+                    None,
+                )
+            )
+            builder.write(entries=entries)
+            with self.assertRaisesRegex(
+                artifact.VerificationError, "inventory mismatch.*nested/unmanifested.txt"
+            ):
+                builder.verify()
+
+    def test_corrupt_and_truncated_archives_fail_after_valid_checksum(self) -> None:
+        for label, mutate in [
+            ("corrupt", lambda _archive: b"not a ZIP archive"),
+            ("truncated", lambda archive: archive[:-17]),
+        ]:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                builder = ArtifactBuilder(Path(temporary))
+                builder.write()
+                corrupted = mutate(builder.archive_path.read_bytes())
+                builder.archive_path.write_bytes(corrupted)
+                checksum = builder.archive_path.with_name(
+                    f"{builder.archive_path.name}.sha256"
+                )
+                checksum.write_text(
+                    f"{artifact.sha256_file(builder.archive_path)}  "
+                    f"{builder.archive_path.name}\n",
+                    encoding="ascii",
+                )
+
+                with self.assertRaisesRegex(
+                    artifact.VerificationError, "could not safely read ZIP archive"
+                ):
+                    builder.verify()
+
+    def test_extraction_requires_a_fresh_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            builder = ArtifactBuilder(Path(temporary))
+            builder.write()
+            destination = Path(temporary) / "already-used"
+            destination.mkdir()
+
+            with self.assertRaisesRegex(
+                artifact.VerificationError, "destination must not already exist"
+            ):
+                artifact.safe_extract_archive(
+                    builder.archive_path,
+                    destination,
+                    root_name=builder.root_name,
+                    expected_relative_files={
+                        builder.binary_name,
+                        "README.md",
+                        "SERVER_RELEASE.md",
+                        "LICENSE",
+                        "manifest.json",
+                    },
+                )
 
     def test_declared_file_size_limit_is_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
