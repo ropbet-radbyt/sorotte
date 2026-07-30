@@ -29,9 +29,10 @@ slice opened `TC-SERVER-004`; the current slice resolves it with an atomic
 authenticated generation protocol and executable publisher proof. Parallel
 adversarial reset/protocol/media-process work opened five narrow
 characterizations: `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-`TC-GUI-001`/`002`. The subsequent Plex selection/retry slice adds
-`TC-PLEX-001` and `TC-GUI-003`, bringing the current registry to seven exact
-characterizations.
+`TC-GUI-001`/`002`. The subsequent Plex selection/retry slice added
+`TC-PLEX-001` and `TC-GUI-003`. This remediation slice fixes all seven,
+converts their characterizations to positive regressions, and restores an
+explicitly empty defect registry.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -1659,42 +1660,31 @@ retry, clock tolerance, or defect classifier in that proof.
 
 ## TC-CLIENT-002: Reconnect reset retains in-flight reducer transactions
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; reconnect transactions are invalidated**
 
 Severity: **High (a completion from the disconnected session can seek or pause the replacement session)**
 Detection: exhaustive fresh-reference reset projection plus stale completion
 injection
 
-`reset_sync_state_for_reconnect` resets most connection-scoped state but
-retains both in-flight pause transactions and
-`local_pause_change_health`. A completion that belongs to the disconnected
-player/session can therefore still match reducer state after reset. The
-characterization completes a stale pre-reset `SetPlayerPosition(391.0)` and
-observes the fresh session adopt position `391.0` and emit
-`SetPlayerPaused(true)`; later stale pause completions also mutate the new
-session's pause projection.
+`reset_sync_state_for_reconnect` previously retained both in-flight pause
+transactions and `local_pause_change_health`. A completion from the
+disconnected player/session could therefore still match reducer state after
+reset and mutate the replacement session.
 
-The exact expected-failure prefix is:
+The former expected-failure prefix was:
 
 ```text
 TC-CLIENT-002: reconnect reset retains in-flight reducer transactions
 ```
 
-The companion mechanical oracle seeds every top-level session/model aggregate
-with distinguishable state, performs the owning reconnect transition across
-24 generated seeds, and compares the complete result with a fresh reference
-that preserves only intentional configuration/identity. It normalizes exactly
-the two retained transactions and the retained health field so no adjacent
-reset omission is concealed. A second complete-projection test proves reset
-idempotence.
-
-The lean repair is to invalidate both reducer transactions and restore
-`local_pause_change_health` to `Healthy` in the same owning reset operation.
-If future player commands need to survive a transport reconnect, the stronger
-alternative is an explicit player-generation token on every effect and
-completion; generation mismatch would then reject stale completions
-mechanically. Current behavior treats these transactions as session-scoped,
-so clearing them is the proportional fix once that intent is confirmed.
+The owning reset now calls
+`cancel_connection_scoped_playback_transactions`, clearing both pending
+transactions and restoring `local_pause_change_health` to `Healthy` before
+fresh-session projection. The 24-seed complete reset oracle no longer
+normalizes any field: every result equals a fresh reference exactly. The
+positive `reconnect_reset_rejects_stale_reducer_completions` regression proves
+that stale position and pause completions emit no follow-up effects and cannot
+mutate the cleared player projection. Reset idempotence remains covered.
 
 ## TC-SERVER-003: TLS rotation max-mtime token can miss bundle-member changes
 
@@ -1905,7 +1895,7 @@ regressions.
 
 ## TC-PROTOCOL-002: Duplicate top-level Set uses discarded payload order
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; nested order follows the surviving payload**
 
 Severity: **High (the decoded payload and its execution ledger can describe
 different commands)**
@@ -1913,183 +1903,167 @@ Detection: escaped duplicate top-level command with disjoint nested `Set`
 members
 
 Top-level duplicate commands intentionally retain the first source position
-and the final serde payload value. The raw ordering scanner, however, attaches
-the nested `Set.command_order` captured from the first/discarded top-level
-payload to the final/surviving payload. The minimized line has
-`ready,file` in the first `Set` and `playlistIndex,room` in the escaped second
-`Set`. Its typed payload correctly retains only `playlistIndex,room`, while
-its command ledger incorrectly remains `ready,file`.
+and the final serde payload value. The raw ordering scanner previously
+attached the nested `Set.command_order` from the first/discarded payload to
+the final/surviving value.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 surviving duplicate Set payload must determine nested command execution order
 ```
 
-The lean compatible repair is to retain first position for the top-level
-envelope but replace the associated nested-order ledger whenever serde's
-surviving duplicate payload is replaced. That preserves the established
-first-position/last-value rule while making value and execution metadata come
-from the same occurrence. Rejecting duplicate top-level commands at the wire
-boundary is a cleaner future protocol rule, but would be a compatibility
-decision rather than a lean correction.
+The scanner now retains the last matching top-level object span, including
+escaped spellings of `Set`, while leaving the established top-level
+first-position/last-value rule intact. The positive
+`duplicate_top_level_set_uses_surviving_payload_order` regression proves that
+the surviving `playlistIndex,room` value and its execution ledger come from
+the same occurrence. Nested shadows, non-object values, and direct-member
+ordering remain covered independently.
 
 ## TC-PROTOCOL-003: Decoded item Debug exposes credential-bearing unknown command
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; unknown command names are non-reflective**
 
 Severity: **Medium (untrusted wire text can cross a diagnostic redaction boundary)**
 Detection: credential canary embedded in an unknown top-level command name
 
-`DecodedMessageLineItem` already wraps its raw payload in `RedactedJsonValue`
-and its typed errors avoid reflecting sensitive input. Its custom `Debug`
-implementation still renders the raw optional `command` string. An unknown
-command such as `Future?access_token=<canary>` therefore appears verbatim in a
-diagnostic dump even though a credential-bearing invalid typed payload is
-successfully redacted by the adjacent control test.
+`DecodedMessageLineItem` already wrapped its raw payload in
+`RedactedJsonValue`, but its custom `Debug` implementation previously rendered
+an unknown optional `command` string verbatim.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 credential-bearing unknown command must not appear in diagnostics
 ```
 
-The lean repair is diagnostic-only: known command names can render normally,
-while unknown names should render a fixed marker and, if useful, their byte
-length. The public field can retain the original value for protocol handling;
-only its `Debug` projection needs to become non-reflective. A broader
-alternative is a shared redacted string wrapper for every untrusted
-identifier, but that is unnecessary to close this demonstrated boundary.
+`Debug` now uses an exact allowlist for `Hello`, `Set`, `List`, `State`,
+`Chat`, `Error`, and `TLS`; every other command renders the fixed
+`<unknown-protocol-command>` marker. The public field remains unchanged for
+protocol handling. The positive canary regression proves that neither the
+unknown command nor its credential fragment crosses the diagnostic boundary.
 
 ## TC-GUI-001: Version probe accepts unusable successful output
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; tool-specific banners are validated**
 
 Severity: **Medium (an unusable or wrong executable is reported healthy and persisted as a media tool)**
 Detection: real exit-zero child processes with empty, invalid-UTF-8, and
 unrelated stdout
 
-The media-match version probe treats every exit-zero process as a healthy
-ffmpeg/ffprobe tool. Empty output becomes the successful literal
-`version output empty`, invalid UTF-8 is accepted after lossy replacement, and
-arbitrary unrelated text becomes the recorded version. These values feed tool
-health and imported managed-tool metadata, so a wrong executable can pass the
-readiness gate before later extraction fails.
+The media-match version probe previously treated every exit-zero process as a
+healthy ffmpeg/ffprobe tool, including empty, invalid-UTF-8, and unrelated
+output.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 successful process without a valid tool version must be rejected
 ```
 
-The lean repair is to decode stdout as strict UTF-8, require a nonempty first
-line, and validate a tool-specific anchored banner (`ffmpeg version ` or
-`ffprobe version `) before returning success. If distributor-specific banners
-make that contract too narrow, the stronger alternative is a tiny capability
-probe against generated media; it is more expensive and belongs in the
-install/CI tier rather than every health refresh.
+The probe now strictly decodes the first nonempty captured line, requires the
+anchored tool-specific prefix (`ffmpeg version ` or `ffprobe version `) and a
+nonempty version suffix, rejects the wrong tool, and rejects an incomplete
+truncated banner. Complete and unterminated valid banners remain supported.
+The real-process regression rejects empty, invalid-UTF-8, and unrelated
+exit-zero output while preserving nonzero exit status.
 
 ## TC-GUI-002: Version probe deadlocks on finite output larger than pipe capacity
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; both child pipes are drained concurrently**
 
 Severity: **Medium (a finite successful child is killed and falsely reported timed out)**
 Detection: real child writes 512 KiB to piped stdout and exits
 
-The timeout loop polls `try_wait` before calling `wait_with_output`. Because no
-reader drains stdout or stderr while the child runs, a finite producer can
-fill the kernel pipe, block before exit, and remain forever in the polling
-state. The timeout does bound the hang and correctly kills/reaps the child, but
-it converts valid completion into a false timeout.
+The timeout loop previously polled `try_wait` before draining either child
+pipe. A finite producer could fill a kernel pipe, block before exit, and be
+misreported as timed out.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 finite fake-tool output must be drained while the process runs
 ```
 
-The lean repair is two bounded drain workers, one per pipe, started immediately
-after spawn. The parent retains the current deadline/kill/reap loop; each
-worker stores only a configured prefix while continuing to drain excess bytes,
-then both are joined after exit or kill. An async process runner is a viable
-alternative if this path later moves under Tokio, but introducing a runtime
-only for a version probe would be disproportionate.
+Two drain workers now start immediately after spawn. Each retains at most
+64 KiB while continuing to drain all excess bytes; the parent preserves the
+deadline/kill/reap loop and joins both workers after exit or termination. The
+positive fixture writes 512 KiB to each of stdout and stderr, exits
+successfully, proves both captures are bounded and marked truncated, and
+deletes the executable afterward to prove the process was reaped.
 
 ## TC-PLEX-001: Plex playable-part selection ignores filename and size evidence
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; selection uses ranked identity evidence**
 
 Severity: **High (a remotely shared file can remain unplayable or stream the
 wrong Plex version despite uniquely identifying metadata)**
 Detection: candidate-order-independent Plex part selection across exact
 filename, exact size, duration, and missing-metadata cases
 
-The Plex metadata item lookup succeeds, but `choose_playable_part` ranks every
-playable `Part` only by duration difference. Exact shared filename and byte
-size are already available on `PlexPlaylistUri`/part metadata and are ignored.
-The adversarial slice executes 20 forward/reverse cases: 16 return ambiguity
-despite unique filename or size evidence, and four select the wrong part
-because duration outranks stronger exact evidence.
+The Plex metadata item lookup succeeded, but `choose_playable_part` previously
+ranked every playable `Part` only by duration difference. The discovery matrix
+executed 20 forward/reverse cases: 16 false ambiguities and four wrong-part
+selections.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 TC-PLEX-001: Plex part selection must use filename and size evidence
 ```
 
-The proportional repair is a hint-aware narrowing pipeline: exact basename,
-then unique ASCII-case-folded basename, then exact byte size, then nearest
-known duration. A stage with no matching candidate contributes no evidence,
-and Plex response order never breaks a tie. Only one remaining candidate may
-be streamed; candidates still tied under every available hint remain a typed
-ambiguity. Plain shared filenames and `plex://` URIs must both carry their
-available hints into this selector, and the selected part's identity must
-populate the logical file and published URI consistently.
-
-The stronger alternative is an explicit Plex version/part picker that stores a
-stable part identity. That is appropriate for genuinely indistinguishable
-cuts or multipart media, but is unnecessary for the reported uniquely named
-version.
+The selector now narrows by exact basename, ASCII-folded basename, exact byte
+size, and nearest known duration in that priority order. A stage with no match
+contributes no evidence, response order never breaks a tie, and only a single
+remaining candidate can be streamed. Plain shared filenames and `plex://`
+URIs both propagate their available hints. All 20 former mismatches now select
+the independent oracle's part; forward/reverse permutations agree. Genuine
+duplicates and unidentified multipart media still fail closed, and duration
+remains the final tie-break. The existing exhaustive public `PlexError` match
+contract also remains source-compatible.
 
 ## TC-GUI-003: Permanent Plex ambiguity repeats as a transient miss
 
-Status: **Open 2026-07-30; deterministic characterization retained**
+Status: **Resolved 2026-07-30; ambiguity is terminal for its context**
 
 Severity: **Medium (an unchanged deterministic failure repeats network work,
 notifications, and system-chat warnings indefinitely)**
 Detection: two fake-clock automatic resolution cycles for one unchanged
 playlist-resolution key
 
-The GUI collapses `PlexError` into a string and records every resolver error as
-a transient Plex miss. For a permanent ambiguous-part result, the 2/5/15/30
-second backoff therefore starts the same worker again and queues the same
-warning again. The deterministic characterization observes two attempts, two
-warning notifications, and two system-chat announcements; both messages are
-byte-identical.
+The GUI previously collapsed every `PlexError` into a string and recorded
+ambiguity as a transient miss, producing repeated work and identical
+notifications on the 2/5/15/30 second schedule.
 
-The exact expected-failure oracle is:
+The former expected-failure oracle was:
 
 ```text
 TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry
 ```
 
-The proportional repair is a typed `PermanentForContext` ambiguity outcome.
-The miss state retains that terminal disposition without a retry deadline,
-emits its redacted warning once, and projects `Failed` rather than promising
-another automatic retry. Row, playlist-generation, target, policy, Plex
-server/credential context, or an explicit retry clears the terminal state.
+Plex now exposes an ambiguity classifier without adding a source-breaking
+public error variant. The worker converts that classification into a typed GUI
+`PermanentForContext` failure. The miss state retains the disposition with no
+deadline, emits one redacted warning and one system-chat event, and projects
+`Failed` with actionable detail rather than promising another retry. Row,
+playlist generation, target, policy, or Plex operation-context changes clear
+the terminal state; explicit source selection therefore rearms resolution.
 Ordinary cache misses, network failures, and worker interruption retain the
-existing bounded backoff.
+existing bounded backoff and later-success behavior.
 
 Notification deduplication alone is rejected: it hides the repeated message
 but continues failed network and cache work and leaves the UI state false.
 
-The implementation-ready design for all seven open defects, including exact
-invariants, alternatives, and acceptance tests, is in
+The completed design for all seven defects, including exact invariants,
+alternatives, and acceptance tests, is in
 [`OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md`](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md).
 The candidate-permutation matrix, independent oracle, GUI state-machine
 schedule, stress totals, and limitations are retained in
 [`plex-part-selection-retry-20260730.md`](evidence/test-coverage/plex-part-selection-retry-20260730.md).
+The positive conversion, stress repetitions, broad gates, and preserved native
+retry evidence are recorded in
+[`outstanding-defect-remediation-20260730.md`](evidence/test-coverage/outstanding-defect-remediation-20260730.md).
 
 ## TC-CLI-001: Managed attach waits through its deadline after the child exits
 

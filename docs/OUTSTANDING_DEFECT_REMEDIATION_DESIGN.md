@@ -4,12 +4,14 @@ Date: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
-Status: implementation-ready proposal; this slice adds characterization
-coverage but intentionally does not change production behavior
+Status: implemented and converted to positive regression evidence
+
+Validation evidence:
+[`outstanding-defect-remediation-20260730.md`](evidence/test-coverage/outstanding-defect-remediation-20260730.md)
 
 ## Decision summary
 
-The current defect set contains seven independently testable contracts. The
+The remediated defect set contains seven independently testable contracts. The
 reported Plex symptom is split into two defects because candidate selection
 and retry/notification policy have different owners and failure modes.
 
@@ -23,10 +25,10 @@ and retry/notification policy have different owners and failure modes.
 | `TC-PLEX-001` | Filter playable parts lexicographically by filename, size, then duration and fail only on a remaining tie | Medium | Add an explicit Plex version/part picker |
 | `TC-GUI-003` | Carry typed retryability from Plex and make ambiguity terminal for the current resolution context | Medium | Deduplicate notifications while continuing retries |
 
-The recommended repairs are compatible with valid existing traffic and saved
-configuration. They should be implemented as four focused commits: client and
-protocol state correctness; bounded media-tool probing; Plex part selection;
-and GUI Plex failure classification.
+All recommended repairs were implemented without changing saved
+configuration or valid wire behavior. The expected-failure registry entries
+were removed and each characterization now passes as an ordinary positive
+regression.
 
 ## Shared implementation rules
 
@@ -349,12 +351,14 @@ system chat announcements = 2
 Both repeated messages are byte-identical. The 2/5/15/30-second backoff limits
 frequency but cannot make a deterministic ambiguity resolve.
 
-### Recommended implementation
+### Implemented design
 
-Add a distinct `PlexError::AmbiguousPlayableParts` (or an equally typed
-resolver outcome). At the GUI worker boundary, map it to
-`PermanentForContext`; do not parse `Display` text. Retain existing retryable
-classification for a cache miss or transport failure.
+The Plex crate retains its exhaustively matchable public `PlexError` enum for
+source compatibility and exposes an ambiguity classifier over the canonical
+resolver error. The GUI worker consumes that classifier before rendering the
+message and maps it to `PermanentForContext`; no GUI code parses `Display`
+text. Cache misses, transport failures, worker failures, and unclassified
+response failures remain retryable.
 
 Extend the existing Plex miss state with a typed disposition and optional
 deadline:
@@ -401,7 +405,7 @@ network requests, cache work, and failed resolution forever. It also leaves
 the UI claiming another automatic retry will occur. Typed terminal state is
 only slightly larger and fixes the behavior rather than its presentation.
 
-## Implementation order
+## Completed implementation order
 
 1. Land `TC-CLIENT-002`, `TC-PROTOCOL-002`, and `TC-PROTOCOL-003`. They are
    small, isolated state/codec corrections.

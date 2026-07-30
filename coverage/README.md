@@ -70,12 +70,10 @@ proving reactivation clears stale logical-terminal state.
 Proptest seeds under each participating crate's `proptest-regressions/`
 directory are source-file and strategy-shape scoped. They improve replay while
 a strategy remains stable, while named deterministic regressions remain the
-durable behavior contract. `known-defects.toml` currently records seven narrow
-characterizations: reconnect reset retaining stale reducer transactions,
-duplicate top-level `Set` order/value divergence, unknown-command diagnostic
-reflection, unusable exit-zero media-tool version output, undrained finite
-media-tool output, Plex playable-part selection ignoring filename/size
-evidence, and permanent Plex ambiguity repeating as a transient miss.
+durable behavior contract. `known-defects.toml` is currently empty. The seven
+2026-07-30 reconnect, protocol, media-tool process, Plex part-selection, and
+Plex retry characterizations were converted to ordinary positive regressions
+after their production fixes landed.
 `TC-SERVER-004` is now resolved by immutable authenticated TLS generations and
 an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime

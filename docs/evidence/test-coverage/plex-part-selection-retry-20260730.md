@@ -8,6 +8,9 @@ Starting commit: `e114e3afdfa4ce6417169aad4ccc88dd39f231bb`
 
 Platform: Windows, Rust 1.97.1 workspace toolchain
 
+Document status: historical discovery evidence. The remediation result is
+appended below so the original failing measurements remain auditable.
+
 ## Objective
 
 Determine whether a successful Plex metadata match can still fail automatic
@@ -140,9 +143,10 @@ registry policy also passed.
 
 ## Registry and solution
 
-`coverage/known-defects.toml` contains exactly one characterization for each
-new ID, with an expiry of 2026-09-30. The current registry validates as seven
-defects and seven exact characterizations.
+At this discovery checkpoint, `coverage/known-defects.toml` contained exactly
+one characterization for each new ID, with an expiry of 2026-09-30. That
+historical registry validated as seven defects and seven exact
+characterizations.
 
 The implementation-ready solution—including filename/size/duration priority,
 typed terminal ambiguity, rearm rules, alternatives, and positive acceptance
@@ -160,3 +164,26 @@ tests—is in `docs/OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md`.
   backoff for ordinary misses and transport failures.
 - Expected-failure tests prove the defects exist; they are not green product
   behavior. Both must become ordinary positive tests when the fixes land.
+
+## Remediation update
+
+Both defects were resolved on 2026-07-30.
+
+- The same 20 forward/reverse resolver cases now select the independent
+  oracle's part using exact basename, folded basename, exact size, and closest
+  known duration in priority order.
+- Genuine duplicates and unidentified multipart layouts still fail closed;
+  duration still breaks a remaining filename/size tie.
+- The public `PlexError` enum remains exhaustively matchable. Its canonical
+  ambiguity classifier is converted at the GUI worker boundary into a typed
+  `PermanentForContext` failure.
+- Permanent ambiguity now has no retry deadline, produces one warning and one
+  system-chat announcement, and projects a failed source state. Changing the
+  resolution key rearms it.
+- The existing transient-miss regression still proves bounded retry and later
+  successful activation.
+
+The former expected-failure tests are now
+`resolver_uses_filename_and_size_evidence` and
+`permanent_plex_ambiguity_warns_once_without_automatic_retry`. Their registry
+entries were removed; `coverage/known-defects.toml` is explicitly empty.

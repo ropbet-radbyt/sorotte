@@ -1,6 +1,6 @@
 # Sorotte Test Coverage and Verification Strategy
 
-Status: proposal with implementation tranche and lean-fix follow-through
+Status: implemented verification program with all registered defects resolved
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -29,7 +29,8 @@ at that checkpoint. A later deep-boundary slice deterministically exposed
 `TC-SERVER-004`; the current slice resolves it with immutable authenticated
 generations and an atomic selector. Parallel adversarial reset, protocol, and
 media-process tests retained five newly discovered defects; the subsequent
-Plex part-selection and retry slice brings the current exact registry to seven:
+Plex part-selection and retry slice added two more. The current remediation
+fixes all seven and returns the exact registry to zero:
 
 - a fail-closed behavior catalog with 17 behavior IDs and 40 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -68,9 +69,10 @@ Plex part-selection and retry slice brings the current exact registry to seven:
   through `TC-COMPAT-007` all have positive regressions; the final
   `TC-CLIENT-001`, `TC-SERVER-003`, `TC-PROTOCOL-001`, `TC-CLI-001`/`002`,
   and `TC-UPDATER-001` characterizations have also been converted;
-  `TC-SERVER-004` is now positive atomic-publication evidence, while the
-  current registry contains `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, and
-  `TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003`;
+  `TC-SERVER-004` is now positive atomic-publication evidence, and
+  `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
+  `TC-PLEX-001`, and `TC-GUI-003` are now positive regressions; the current
+  registry is empty;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -256,10 +258,10 @@ multiline attributes and rejects duplicate finding headings and title drift.
 Its 21 focused tests pass against both populated fixtures and the real
 closure checkpoint's explicitly empty registry; the historical
 two-defect/four-characterization checkpoint therefore remains policy evidence
-rather than current inventory. The same policy now validates exactly seven
-current characterizations for `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`,
-`TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003`; `TC-SERVER-004` has
-ordinary positive regressions.
+rather than current inventory. The same policy now validates the current
+zero-defect/zero-characterization registry after converting
+`TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`, `TC-GUI-001`/`002`,
+`TC-PLEX-001`, and `TC-GUI-003` to ordinary positive regressions.
 
 The GUI release artifact slice turns the Windows ZIP into an independently
 consumed contract rather than trusting the packaging step. Thirty-two
@@ -675,18 +677,18 @@ boundaries rather than adding hundreds more nearby examples.
 
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
-| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, and a 654-case raw-wire adversarial matrix | duplicate top-level `Set` can pair the surviving value with discarded order (`TC-PROTOCOL-002`); unknown command names remain reflective in `Debug` (`TC-PROTOCOL-003`) | resolve the two scanner/diagnostic defects, then add coverage-guided byte fuzzing and a differential Python oracle |
+| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, and a 654-case raw-wire adversarial matrix | surviving duplicate `Set` payload/order pairing and fixed-marker unknown-command diagnostics are positive regressions | add coverage-guided byte fuzzing and a differential Python oracle |
 | Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, and deterministic pre-transaction arbitration schedules | kernel power-loss, disk-full/permission/syscall faults, and actor messages not yet admitted to desired state remain unproven | filesystem/storage failpoints and platform durability probes |
-| Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, and a complete 24-seed reset projection/idempotence oracle | reset retains stale reducer transactions (`TC-CLIENT-002`); adapter clock schedules remain incomplete | clear or generation-fence reset-scoped transactions, then add clock-controlled adapter schedules |
+| Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, and a complete 24-seed reset projection/idempotence oracle | reset transaction invalidation and stale-completion rejection are positive; adapter clock schedules remain incomplete | add clock-controlled adapter schedules |
 | CLI connected session | extensive reconnect/desync scenarios | 142 test-path sleeps; scheduler-luck risk | injected clock/timer, paused time, barriers, small real-socket tier |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
 | Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, and pre-termination failure capture | the complete ten-scenario contract is locally green, but still needs an isolated interactive Windows CI lane and uses a deterministic player rather than real mpv | require the strict contract on an ephemeral interactive Windows lane, then add one real-mpv vertical slice |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
-| Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap and unterminated-output proofs | version validation accepts unusable output (`TC-GUI-001`), finite large output deadlocks until timeout (`TC-GUI-002`), and the generated-media ffmpeg harness remains opt-in | fix bounded concurrent draining and strict banner validation, then require generated media in a capability CI lane |
-| Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, and candidate-order adversarial part tests | filename/size evidence is ignored during part selection (`TC-PLEX-001`), and permanent ambiguity is retried with repeated warnings (`TC-GUI-003`) | rank parts by filename, size, then duration; carry typed terminal ambiguity into the GUI and retain fail-closed genuine ties |
+| Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap, strict banner, unterminated-output, and bounded dual-pipe large-output proofs | generated-media ffmpeg harness remains opt-in | require generated media in a capability CI lane |
+| Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, candidate-order adversarial part tests, evidence-ranked selection, genuine-tie controls, and terminal-context retry proofs | uniquely identified versions resolve; genuine ambiguity fails once and projects terminal state | add an explicit version/part picker for genuinely indistinguishable or multipart media |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
 | Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, and 11 real forced-process-termination boundaries with two-process recovery are strong | kernel power-loss, filesystem durability, disk-full, and permission gaps remain | filesystem syscall faults, parent-dir sync, and platform restart proof |
 | Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability | public registry digest/SBOM/signature binding remains | verify the uploaded/public digest is the tested content and enforce provenance policy |
@@ -2088,9 +2090,8 @@ The most valuable remaining next steps are:
    separate until a trustworthy runner exists;
 2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-3. resolve `TC-CLIENT-002`, `TC-PROTOCOL-002`/`003`,
-   `TC-GUI-001`/`002`, `TC-PLEX-001`, and `TC-GUI-003` using
-   [the implementation-ready remediation design](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md),
+3. retain the positive regressions from
+   [the completed remediation design](OUTSTANDING_DEFECT_REMEDIATION_DESIGN.md),
    then extend the proven persistence interruption/arbitration boundary into
    disk-full, permission, syscall, and platform durability faults;
 4. add coverage-guided parser fuzzing and mutation scoring for the critical
