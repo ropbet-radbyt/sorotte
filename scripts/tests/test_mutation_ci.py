@@ -718,6 +718,62 @@ review_by = "2099-01-01"
             command.index("--cargo-test-arg=--lib"),
             command.index("--cargo-test-arg=auth::tests::"),
         )
+        self.assertEqual(
+            mutation_ci.cargo_test_inventory_command(shard),
+            [
+                "cargo",
+                "test",
+                "--package",
+                "demo",
+                "--locked",
+                "--all-features",
+                "--lib",
+                "auth::tests::",
+                "--",
+                "--list",
+                "--format",
+                "terse",
+            ],
+        )
+
+    def test_test_inventory_rejects_empty_selection(self) -> None:
+        shard = self.load().shard("demo")
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "must contain at least one test",
+        ):
+            mutation_ci.parse_test_inventory("", shard=shard)
+
+    def test_focused_test_inventory_rejects_selector_escape(self) -> None:
+        self.write_policy(
+            self.policy_text()
+            .replace('test_target = "package"', 'test_target = "lib"')
+            .replace('test_filter = ""', 'test_filter = "auth::tests::"')
+        )
+        shard = self.load().shard("demo")
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "escaped the configured test namespace",
+        ):
+            mutation_ci.parse_test_inventory(
+                "other::auth::tests::collision: test\n",
+                shard=shard,
+            )
+
+    def test_mutation_inventory_rejects_empty_selection(self) -> None:
+        shard = self.load().shard("demo")
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "must contain at least one mutant",
+        ):
+            mutation_ci.parse_inventory(
+                [],
+                shard=shard,
+                label="pre-run cargo-mutants inventory",
+            )
 
 
 class MutationRunnerTests(unittest.TestCase):
@@ -780,6 +836,13 @@ class MutationRunnerTests(unittest.TestCase):
                     stdout="cargo-mutants 27.1.0\n",
                     stderr="",
                 )
+            if argv[:2] == ["cargo", "test"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="demo_test: test\n",
+                    stderr="cargo test progress\n",
+                )
             if "--list" in argv:
                 return subprocess.CompletedProcess(
                     argv,
@@ -827,12 +890,149 @@ class MutationRunnerTests(unittest.TestCase):
             {"target": "package", "filter": ""},
         )
         self.assertEqual(
+            report["test_inventory"],
+            {
+                "count": 1,
+                "canonical_sha256": mutation_ci.canonical_digest(["demo_test"]),
+                "tests": ["demo_test"],
+            },
+        )
+        self.assertEqual(
             report["source_bindings"]["before"],
             report["source_bindings"]["after"],
         )
         self.assertIn("--cargo-arg=--locked", report["command"])
         self.assertIn("--no-config", report["command"])
         self.assertIn("--no-shuffle", report["command"])
+        self.assertEqual(
+            calls[1],
+            [
+                "cargo",
+                "test",
+                "--package",
+                "demo",
+                "--locked",
+                "--all-features",
+                "--",
+                "--list",
+                "--format",
+                "terse",
+            ],
+        )
+        self.assertEqual(len(calls), 4)
+
+    def test_run_rejects_zero_selected_tests_before_mutant_inventory(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(
+            argv: list[str],
+            *,
+            cwd: pathlib.Path,
+        ) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(cwd, self.repo)
+            calls.append(list(argv))
+            if argv == ["cargo", "mutants", "--version"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="cargo-mutants 27.1.0\n",
+                    stderr="",
+                )
+            if argv[:2] == ["cargo", "test"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            self.fail(f"unexpected command after empty test inventory: {argv}")
+
+        report_path = self.repo / "target" / "verification" / "zero-tests.json"
+        with mock.patch.object(mutation_ci, "run_process", side_effect=fake_run):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                result = mutation_ci.main(
+                    [
+                        "run",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--results-root",
+                        "target/mutation-ci/zero-tests",
+                        "--output",
+                        "target/verification/zero-tests.json",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(
+            report["errors"],
+            ["cargo test inventory must contain at least one test"],
+        )
+        self.assertEqual(len(calls), 2)
+
+    def test_run_rejects_zero_mutants_before_mutation_execution(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(
+            argv: list[str],
+            *,
+            cwd: pathlib.Path,
+        ) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(cwd, self.repo)
+            calls.append(list(argv))
+            if argv == ["cargo", "mutants", "--version"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="cargo-mutants 27.1.0\n",
+                    stderr="",
+                )
+            if argv[:2] == ["cargo", "test"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="demo_test: test\n",
+                    stderr="",
+                )
+            if "--list" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    stdout="[]",
+                    stderr="",
+                )
+            self.fail(f"unexpected mutation execution after empty inventory: {argv}")
+
+        report_path = self.repo / "target" / "verification" / "zero-mutants.json"
+        with mock.patch.object(mutation_ci, "run_process", side_effect=fake_run):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                result = mutation_ci.main(
+                    [
+                        "run",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--results-root",
+                        "target/mutation-ci/zero-mutants",
+                        "--output",
+                        "target/verification/zero-mutants.json",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(
+            report["errors"],
+            ["pre-run cargo-mutants inventory must contain at least one mutant"],
+        )
         self.assertEqual(len(calls), 3)
 
     def test_version_drift_is_rejected_exactly(self) -> None:

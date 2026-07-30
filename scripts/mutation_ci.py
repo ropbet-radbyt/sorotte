@@ -3,9 +3,10 @@
 
 The wrapper owns the mutation command instead of accepting arbitrary shell
 fragments from policy. It pins the producer, disables repository-local
-cargo-mutants configuration, inventories mutations before execution, binds the
-run to source hashes before and after execution, and reconciles every outcome
-with both inventories and cargo-mutants' status files.
+cargo-mutants configuration, inventories the selected tests and mutations
+before execution, binds the run to source hashes before and after execution,
+and reconciles every outcome with both mutation inventories and cargo-mutants'
+status files.
 
 Mutation survivors and timeouts are policy failures, not parser failures.
 Malformed, incomplete, stale, or contradictory producer artifacts are rejected
@@ -801,6 +802,31 @@ def parse_inventory(value: Any, *, shard: ShardPolicy, label: str) -> list[dict[
     return inventory
 
 
+def parse_test_inventory(stdout: str, *, shard: ShardPolicy) -> list[str]:
+    if len(stdout.encode("utf-8")) > MAX_TEXT_BYTES:
+        raise MutationCiError("cargo test inventory output is too large")
+    tests: list[str] = []
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        if not line.endswith(": test"):
+            raise MutationCiError(
+                f"cargo test inventory line {line_number} is not a test selector"
+            )
+        selector = line.removesuffix(": test")
+        if not selector:
+            raise MutationCiError(
+                f"cargo test inventory line {line_number} has an empty selector"
+            )
+        if shard.test_filter and not selector.startswith(shard.test_filter):
+            raise MutationCiError(
+                "cargo test inventory escaped the configured test namespace: "
+                f"{selector!r}"
+            )
+        tests.append(selector)
+    if not tests:
+        raise MutationCiError("cargo test inventory must contain at least one test")
+    return tests
+
+
 def without_diff(mutant: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in mutant.items() if key != "diff"}
 
@@ -1368,6 +1394,22 @@ def cargo_test_scope_arguments(shard: ShardPolicy) -> list[str]:
     return arguments
 
 
+def cargo_test_inventory_command(shard: ShardPolicy) -> list[str]:
+    return [
+        "cargo",
+        "test",
+        "--package",
+        shard.package,
+        "--locked",
+        "--all-features",
+        *cargo_test_scope_arguments(shard),
+        "--",
+        "--list",
+        "--format",
+        "terse",
+    ]
+
+
 def cargo_mutants_base_command(shard: ShardPolicy) -> list[str]:
     command = [
         "cargo",
@@ -1453,6 +1495,7 @@ def report_template(
         "owner": None,
         "package": None,
         "test_scope": None,
+        "test_inventory": None,
         "cargo_mutants_version": None,
         "command": None,
         "producer_exit_code": None,
@@ -1541,6 +1584,28 @@ def run_shard(args: argparse.Namespace) -> int:
         results_root.mkdir(parents=True, exist_ok=True)
         source_before = source_bindings(repo_root, shard.files)
         report["source_bindings"]["before"] = source_before
+
+        test_inventory_command = cargo_test_inventory_command(shard)
+        test_listing = run_process(test_inventory_command, cwd=repo_root)
+        atomic_write_text(
+            results_root / "test-inventory.stdout.txt",
+            test_listing.stdout,
+        )
+        atomic_write_text(
+            results_root / "test-inventory.stderr.txt",
+            test_listing.stderr,
+        )
+        if test_listing.returncode != 0:
+            raise MutationCiError(
+                f"cargo test inventory failed with exit {test_listing.returncode}"
+            )
+        selected_tests = parse_test_inventory(test_listing.stdout, shard=shard)
+        atomic_write_json(results_root / "test-inventory.json", selected_tests)
+        report["test_inventory"] = {
+            "count": len(selected_tests),
+            "canonical_sha256": canonical_digest(selected_tests),
+            "tests": selected_tests,
+        }
 
         base_command = cargo_mutants_base_command(shard)
         list_command = [*base_command, "--list", "--json"]
