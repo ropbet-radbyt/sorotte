@@ -110,7 +110,24 @@ GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
+Consume the exact staged bytes, including a visible-window launch, installed
+updater self-replacement, and faulted rollback:
+
+```powershell
+$sourceSha = (git rev-parse HEAD).Trim()
+python scripts/verify_gui_release_artifact.py `
+  --artifacts-dir target/gui-release/artifacts `
+  --expected-source-sha $sourceSha `
+  --expected-channel stable `
+  --report target/gui-release/artifact-verification.json
+```
+
 The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; pushes to the current `main` tip update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks. Publication rechecks the remote `main` tip so rerunning an older workflow cannot roll dev clients backward.
+Both the build and publication jobs independently verify the downloaded
+archive, checksum, external update manifest, embedded install manifest, closed
+payload inventory, source SHA, and channel. Only the build job executes the
+Windows binaries; publication reconsumes the same bytes without repeating the
+runtime smoke.
 
 ## Server Release Checks
 

@@ -81,3 +81,17 @@ package = "sorotte-cli"
 source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
 test = "tests::mpv_startup::external_launch::known_defect_external_launch_inherits_cli_stdin"
 expected_panic = "external launch must not inherit the CLI stdin handle"
+
+[[defect]]
+id = "TC-UPDATER-001"
+title = "Tampered prepared file prevents safe update rollback cleanup"
+severity = "medium"
+owners = ["gui", "updater"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-gui"
+source = "crates/sorotte-gui/src/bin/sorotte-gui-updater.rs"
+test = "tests::known_defect_tampered_prepared_replacement_blocks_safe_rollback"
+expected_panic = "tampered prepared replacement must not prevent rollback of an unchanged install"

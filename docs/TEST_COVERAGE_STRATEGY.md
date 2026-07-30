@@ -5,6 +5,7 @@ Status: proposal with implementation tranche and lean-fix follow-through
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
 Merged-profile implementation update: 2026-07-29
+GUI release artifact implementation update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -56,7 +57,9 @@ the non-controversial lean fixes proven by that coverage:
   defects and the subsequently surfaced `TC-PLAYER-003` and `TC-COMPAT-001`
   through `TC-COMPAT-007` all have positive regressions, while
   `TC-CLIENT-001` reconnect acknowledgement fencing and `TC-SERVER-003` TLS
-  max-mtime collision remain narrow expiring characterizations;
+  max-mtime collision, `TC-PROTOCOL-001` duplicate nested execution,
+  `TC-CLI-001`/`002` process supervision, and `TC-UPDATER-001` tampered-temp
+  rollback remain narrow expiring characterizations;
 - pinned nextest execution with one diagnostic retry, fail-on-flaky and
   500 ms fail-on-subprocess-leak semantics, JUnit attempt retention, zero-test
   rejection, and always-uploaded evidence;
@@ -89,7 +92,12 @@ the non-controversial lean fixes proven by that coverage:
 - deterministic process-interruption persistence: 15 child-process crash
   points across schema, row migration, room save/delete, stats snapshots, and
   quota-secret creation, each followed by integrity-checked and idempotent
-  production reopen.
+  production reopen;
+- immutable server and GUI archive consumers that bind source identity,
+  checksums, closed inventories, manifests, and exact extracted bytes before
+  upload; the GUI consumer additionally proves an isolated visible window,
+  installed-updater self-replacement, and rollback after a real filesystem
+  replacement failure, then reconsumes downloaded bytes before publication.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
@@ -108,8 +116,8 @@ disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Mutation,
 remaining deterministic clocks/network scheduling outside the CLI and TLS
 rotation boundaries, power-loss and filesystem-syscall persistence faults,
-coverage-guided fuzzing, sanitizers, interactive native CI, and
-artifact-consumption tests remain proposed follow-on work.
+coverage-guided fuzzing, sanitizers, interactive native CI, server-container
+consumption, and public digest comparison remain proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
 defects, one server message-ordering defect, and four harness/oracle defects.
 All are resolved without a skip, retry, expected failure, or parity
@@ -210,6 +218,28 @@ The TLS finding is now `TC-SERVER-003`; the known-defect validator parses
 multiline attributes and rejects duplicate finding headings and title drift.
 Both its 21 focused tests and the real two-defect/four-characterization
 registry pass; the complete infrastructure suite passes 295/295.
+
+The GUI release artifact slice turns the Windows ZIP into an independently
+consumed contract rather than trusting the packaging step. Thirty-two
+synthetic adversarial cases close archive selection, checksum and upload
+inventory, path traversal/collision/link shape, duplicate JSON keys, both
+manifest schemas, source/channel/version/timestamp agreement, every payload
+digest, optional symbols, immutable action pins, and build-to-upload and
+download-to-publication ordering. The real-byte consumer then launches the
+extracted GUI in an isolated profile and requires a visible native window,
+runs the extracted installed updater through self-replacement with the exact
+ZIP, and forces a read-only later target after an earlier replacement so the
+original install and all transaction artifacts must be restored. The
+publication job independently reconsumes the downloaded bytes without
+executing them again.
+
+Post-authentication mutation of a prepared temporary exposed
+`TC-UPDATER-001`: rejection is correct, but rollback authenticates the
+disposable corrupt temporary before removing it, retains the recovery journal,
+and blocks subsequent automatic recovery. A minimized expiring
+expected-failure test preserves that result. The positive release gate uses
+the independent read-only replacement fault and remains green; updater
+production behavior is unchanged in this slice.
 
 ## Contents
 
@@ -1893,11 +1923,17 @@ the exact archive and optional symbols bundle before uploading those same
 files. The consumer rejects checksum drift, unsafe or colliding paths,
 links/special files, decompression bounds, inventory/schema/source drift, and
 unexpected upload-directory contents; then it requires the extracted binary's
-version and a loopback protocol Hello. GUI packages, server containers, SBOM/
-signature verification, and post-publication digest comparison remain.
+version and a loopback protocol Hello. The Windows GUI archive now has the
+same closed consumption plus cross-bound external/install manifests, isolated
+visible-window launch, installed-updater self-replacement, real rollback, and
+publisher-side reconsumption. Server containers, SBOM/signature verification,
+and post-publication digest comparison remain.
 The four-stream implementation, stress results, surfaced defects, and
 clean-commit package digests are retained in
 [`parallel-boundary-slice-20260730.md`](evidence/test-coverage/parallel-boundary-slice-20260730.md).
+The GUI archive threat model, adversarial matrix, exact-byte runtime proof, and
+surfaced updater defect are retained in
+[`gui-release-artifact-20260730.md`](evidence/test-coverage/gui-release-artifact-20260730.md).
 
 Acceptance:
 
@@ -2001,9 +2037,9 @@ The most valuable remaining next steps are:
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
-6. extend the proven server archive consumer to GUI packages and the server
-   container, then verify the public release/registry digest is the same tested
-   content.
+6. extend the proven server and GUI archive consumers to the server container,
+   then verify the public release/registry digest is the same tested content
+   and add SBOM/signature policy.
 
 That combination encodes behavior mechanically, searches the failure spaces
 that produced the post-report regressions, and makes future verification

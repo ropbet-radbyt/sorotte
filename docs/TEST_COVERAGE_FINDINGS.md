@@ -1761,3 +1761,41 @@ channel; mpv control is through IPC, so no supported behavior depends on
 inheritance. The positive stdout/stderr containment and detached ownership
 tests remain independent. Production behavior remains unchanged in this
 slice; the characterization expires on 2026-09-30.
+
+## TC-UPDATER-001: Tampered prepared file prevents safe update rollback cleanup
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **Medium (a detected staging fault can permanently block automatic
+updates until manual cleanup)**
+Detection: exact release-package updater experiment plus a minimized
+post-preparation mutation hook
+
+The release artifact consumer authenticated the exact GUI ZIP, launched its
+installed updater, and then changed the contents of the already-prepared
+`README.md` temporary file before replacement. The updater correctly rejected
+that file's digest. Rollback then revalidated the same untrusted temporary
+against the intended replacement digest before discarding it, returned
+`rollback was incomplete`, and retained both the recovery journal and corrupt
+temporary. A subsequent recovery repeats the same validation failure, even
+though the original target remains recognizable and no valid rollback step
+needs the temporary file.
+
+The exact-package experiment reached this state after an earlier file had been
+replaced; the reverse rollback restored that earlier target but still retained
+the journal because the corrupt temporary entry failed. The minimized
+expected-failure characterization mutates a prepared file before its first
+replacement and asserts the stronger desired invariant:
+
+```text
+tampered prepared replacement must not prevent rollback of an unchanged install
+```
+
+The proportional fix is to treat an uncommitted temporary as disposable
+scratch during rollback: retain link/reparse-point and regular-file checks, but
+do not require its replacement digest before removing it. Target and backup
+digests must remain strict because those files determine installed state.
+Quarantining corrupt temporaries for forensics is an alternative, but it adds
+state and cleanup complexity without improving recovery correctness for this
+local updater. Production behavior remains unchanged in this coverage slice;
+the characterization expires on 2026-09-30.

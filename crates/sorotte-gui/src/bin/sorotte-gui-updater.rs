@@ -2461,6 +2461,33 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(
+        expected = "tampered prepared replacement must not prevent rollback of an unchanged install"
+    )]
+    fn known_defect_tampered_prepared_replacement_blocks_safe_rollback() {
+        let root = test_root("tampered-prepared-rollback");
+        let target = root.join("target");
+        write_relative(&target, "a.txt", b"old-a");
+        let plan = test_plan(&root, &[("a.txt", Some(b"new-a"))]);
+        let temporary = plan.files[0].temporary.clone();
+
+        let error = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(1) {
+                fs::write(&temporary, b"tampered-after-preparation").unwrap();
+            }
+            Ok(())
+        })
+        .expect_err("tampering must abort the replacement");
+
+        assert!(
+            error.contains("all changed files were rolled back")
+                && fs::read(target.join("a.txt")).unwrap() == b"old-a"
+                && !plan.journal_path.exists(),
+            "tampered prepared replacement must not prevent rollback of an unchanged install"
+        );
+    }
+
+    #[test]
     fn preparation_failure_simulating_disk_exhaustion_leaves_install_unchanged() {
         let root = test_root("prepare-exhaustion");
         let target = root.join("target");
