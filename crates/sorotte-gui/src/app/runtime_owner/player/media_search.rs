@@ -9,7 +9,7 @@ use super::media_resolution::{
 };
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, cache::PlexMatchCache, http::PlexHttpClient,
-    is_plex_playlist_uri, library::PlexStreamTarget, parse_plex_playlist_uri, redact_plex_token,
+    is_plex_playlist_uri, library::PlexStreamTarget, parse_plex_playlist_uri,
     resolver::PlexMediaResolver,
 };
 
@@ -806,11 +806,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut resolver = PlexMediaResolver::new(config, client, cache);
         let result = resolver
             .resolve_stream_target(target, SystemTime::now())
-            .map_err(|error| {
-                redact_plex_token(&format!(
-                    "Resolving Plex stream target for '{target}' failed: {error}"
-                ))
-            });
+            .map_err(|error| GuiPlexStreamResolveFailure::from_plex_error(target, error));
         let (_, _, cache) = resolver.into_parts();
         GuiPlexStreamResolveOutcome {
             stream_target: result,
@@ -997,7 +993,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SorotteGuiShellAppState,
         target: &str,
         consume_ready: bool,
-    ) -> Result<GuiPlexStreamResolutionState, String> {
+    ) -> Result<GuiPlexStreamResolutionState, GuiPlexStreamResolveFailure> {
         let Some(config) = self.plex_stream_resolution_config_for_target(state, target) else {
             self.clear_plex_stream_resolution_state();
             return Ok(GuiPlexStreamResolutionState::Disabled);
@@ -1041,7 +1037,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             GuiPlexStreamResolutionState::Ready(target.clone().map(Box::new))
                         })
                         .map_err(Clone::clone),
-                    Err(error) => Err(error.clone()),
+                    Err(error) => Err(error.clone().into()),
                 };
             }
             let result = self
@@ -1108,7 +1104,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     staged_cache_write,
                 });
             })
-            .map_err(|error| format!("Failed to start Plex stream resolution worker: {error}"))?;
+            .map_err(|error| {
+                GuiPlexStreamResolveFailure::retryable(format!(
+                    "Failed to start Plex stream resolution worker: {error}"
+                ))
+            })?;
         self.plex_stream_resolve_rx = Some(rx);
         self.plex_stream_resolve_trigger_key = Some(trigger_key);
         self.plex_stream_resolve_context = Some(operation_context);
@@ -1497,27 +1497,31 @@ impl GuiPersistedConfigRuntimeOwner {
                         if let Some(key) = plex_miss_key.clone() {
                             self.record_plex_resolution_miss(key, Instant::now());
                         }
-                        if let Err(message) = consume_result {
-                            self.queue_stream_warning(message);
+                        if let Err(failure) = consume_result {
+                            self.queue_stream_warning(failure.into_message());
                         }
                     }
                     Ok(GuiPlexStreamResolutionState::Disabled) => {}
                     Ok(GuiPlexStreamResolutionState::Pending) => {
                         plan.record_pending_plex_stream();
                     }
-                    Err(message) => {
-                        let message = self
+                    Err(failure) => {
+                        let failure = self
                             .cached_or_queue_plex_stream_target_for_media_target(
                                 state,
                                 plan.target(),
                                 true,
                             )
                             .err()
-                            .unwrap_or(message);
+                            .unwrap_or(failure);
                         if let Some(key) = plex_miss_key {
-                            self.record_plex_resolution_miss(key, Instant::now());
+                            self.record_plex_resolution_failure(
+                                key,
+                                failure.disposition,
+                                Instant::now(),
+                            );
                         }
-                        self.queue_stream_warning(message);
+                        self.queue_stream_warning(failure.into_message());
                     }
                 }
             }
@@ -1559,11 +1563,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(
                     GuiPlexStreamResolutionState::Pending | GuiPlexStreamResolutionState::Disabled,
                 ) => return SelectedPlaylistMediaSyncOutcome::NoChange,
-                Err(message) => {
+                Err(failure) => {
                     if let Some(key) = plex_miss_key {
-                        self.record_plex_resolution_miss(key, Instant::now());
+                        self.record_plex_resolution_failure(
+                            key,
+                            failure.disposition,
+                            Instant::now(),
+                        );
                     }
-                    self.queue_stream_warning(message);
+                    self.queue_stream_warning(failure.into_message());
                     return SelectedPlaylistMediaSyncOutcome::NoChange;
                 }
             }
@@ -1734,8 +1742,8 @@ impl GuiPersistedConfigRuntimeOwner {
             ) => {
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
-            Err(message) => {
-                self.queue_stream_warning(message);
+            Err(failure) => {
+                self.queue_stream_warning(failure.into_message());
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
         }
@@ -2286,7 +2294,8 @@ impl GuiPersistedConfigRuntimeOwner {
                     },
                 );
             }
-            Err(message) => {
+            Err(failure) => {
+                let message = failure.into_message();
                 self.publish_playlist_source_state(
                     handle,
                     projected_state,
@@ -2441,8 +2450,8 @@ impl GuiPersistedConfigRuntimeOwner {
                         | Ok(GuiPlexStreamResolutionState::Pending) => {
                             return SelectedPlaylistMediaSyncOutcome::NoChange;
                         }
-                        Err(message) => {
-                            self.queue_stream_error(message);
+                        Err(failure) => {
+                            self.queue_stream_error(failure.into_message());
                             return SelectedPlaylistMediaSyncOutcome::NoChange;
                         }
                     };
@@ -2555,9 +2564,10 @@ mod plex_cache_coordination_tests {
         owner.plex_miss_state = Some(PlexMissState {
             key: miss_key.clone(),
             last_attempt_at: now,
-            next_retry_at: now,
+            next_retry_at: Some(now),
             attempt_count: 1,
             retry_in_flight: false,
+            disposition: GuiPlexStreamResolveFailureDisposition::Retryable,
         });
         assert!(owner.plex_resolution_allowed_now(&miss_key, now));
 
@@ -2627,9 +2637,10 @@ mod plex_cache_coordination_tests {
                 stream_trigger_key: "deferred".to_owned(),
             },
             last_attempt_at: now,
-            next_retry_at: now,
+            next_retry_at: Some(now),
             attempt_count: 1,
             retry_in_flight: true,
+            disposition: GuiPlexStreamResolveFailureDisposition::Retryable,
         });
 
         sync_tx
@@ -2779,9 +2790,9 @@ mod plex_cache_coordination_tests {
                 operation_context: operation_context.clone(),
                 trigger_key: trigger_key.clone(),
                 result: Ok(GuiPlexStreamResolveOutcome {
-                    stream_target: Err(
-                        "refreshed Plex rating key still returned missing metadata".to_owned()
-                    ),
+                    stream_target: Err("refreshed Plex rating key still returned missing metadata"
+                        .to_owned()
+                        .into()),
                     cache: evicted.clone(),
                 }),
                 staged_cache_write: Some(Ok(staged_cache_write)),
@@ -2798,7 +2809,7 @@ mod plex_cache_coordination_tests {
                 Err(error) => error,
             };
 
-        assert!(error.contains("missing metadata"));
+        assert!(error.message.contains("missing metadata"));
         assert_eq!(
             PlexMatchCache::load_from_path(&cache_path)
                 .expect("the accepted eviction must remain readable after the error"),

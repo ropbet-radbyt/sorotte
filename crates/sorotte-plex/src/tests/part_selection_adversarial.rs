@@ -221,8 +221,7 @@ fn record_mismatch(
 }
 
 #[test]
-#[should_panic(expected = "TC-PLEX-001: Plex part selection must use filename and size evidence")]
-fn known_defect_resolver_ignores_filename_and_size_evidence() {
+fn resolver_uses_filename_and_size_evidence() {
     let mut mismatches = Vec::new();
 
     let plain_parts = vec![

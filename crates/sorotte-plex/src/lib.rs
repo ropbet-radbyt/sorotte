@@ -33,6 +33,8 @@ const MATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const SEEK_REPORT_THRESHOLD_MILLIS: i64 = 15_000;
 const PLEX_CACHE_ABANDONED_TEMP_FILE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const PLEX_METADATA_NOT_FOUND_RESPONSE: &str = "Plex metadata was not found";
+const PLEX_AMBIGUOUS_PLAYABLE_PARTS_RESPONSE_PREFIX: &str =
+    "ambiguous playable parts for Plex metadata ";
 static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 static PLEX_CACHE_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -45,6 +47,16 @@ pub enum PlexError {
     InvalidResponse(String),
     MissingServer,
     MissingToken,
+}
+
+impl PlexError {
+    pub fn is_ambiguous_playable_parts(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidResponse(message)
+                if message.starts_with(PLEX_AMBIGUOUS_PLAYABLE_PARTS_RESPONSE_PREFIX)
+        )
+    }
 }
 
 impl fmt::Debug for PlexError {
@@ -92,6 +104,12 @@ fn metadata_not_found_error() -> PlexError {
 
 fn is_metadata_not_found_error(error: &PlexError) -> bool {
     matches!(error, PlexError::InvalidResponse(message) if message == PLEX_METADATA_NOT_FOUND_RESPONSE)
+}
+
+fn ambiguous_playable_parts_error(rating_key: &str, candidate_count: usize) -> PlexError {
+    PlexError::InvalidResponse(format!(
+        "{PLEX_AMBIGUOUS_PLAYABLE_PARTS_RESPONSE_PREFIX}{rating_key}; candidates={candidate_count}"
+    ))
 }
 
 impl From<reqwest::Error> for PlexError {
@@ -1753,10 +1771,18 @@ where
             &server_url,
             &token,
         )?;
-        let playlist_uri = playlist_uri_for_metadata(
+        let file_name_hint = media_file_name_for_file(&file);
+        let playlist_uri = playlist_uri_for_metadata_with_hint(
             &machine_identifier,
             &metadata,
-            matched_item.duration_millis,
+            PlexPartSelectionHint {
+                file_name: file_name_hint.as_deref(),
+                size_bytes: file.size_bytes,
+                duration_millis: file
+                    .duration_seconds
+                    .and_then(seconds_to_millis)
+                    .or(matched_item.duration_millis),
+            },
         )?;
         let stream_target = self.stream_target_from_metadata(
             &server_url,
@@ -1809,10 +1835,14 @@ where
     ) -> PlexResult<PlexStreamTarget> {
         let part = choose_playable_part(
             &metadata,
-            matched_item
-                .duration_millis
-                .or(playlist_uri.duration_millis)
-                .or(metadata.duration_millis),
+            PlexPartSelectionHint {
+                file_name: playlist_uri.file_name.as_deref(),
+                size_bytes: playlist_uri.size_bytes,
+                duration_millis: matched_item
+                    .duration_millis
+                    .or(playlist_uri.duration_millis)
+                    .or(metadata.duration_millis),
+            },
         )?;
         if playlist_uri.title.is_none() {
             playlist_uri.title = Some(metadata.title.clone());
@@ -2412,7 +2442,22 @@ pub fn playlist_uri_for_metadata(
     metadata: &PlexMediaMetadata,
     duration_hint_millis: Option<u64>,
 ) -> PlexResult<PlexPlaylistUri> {
-    let preferred_part = choose_playable_part(metadata, duration_hint_millis)?;
+    playlist_uri_for_metadata_with_hint(
+        machine_identifier,
+        metadata,
+        PlexPartSelectionHint {
+            duration_millis: duration_hint_millis,
+            ..PlexPartSelectionHint::default()
+        },
+    )
+}
+
+fn playlist_uri_for_metadata_with_hint(
+    machine_identifier: &str,
+    metadata: &PlexMediaMetadata,
+    hint: PlexPartSelectionHint<'_>,
+) -> PlexResult<PlexPlaylistUri> {
+    let preferred_part = choose_playable_part(metadata, hint)?;
     Ok(PlexPlaylistUri {
         machine_identifier: machine_identifier.to_owned(),
         rating_key: metadata.rating_key.clone(),
@@ -2424,9 +2469,16 @@ pub fn playlist_uri_for_metadata(
     })
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PlexPartSelectionHint<'a> {
+    file_name: Option<&'a str>,
+    size_bytes: Option<u64>,
+    duration_millis: Option<u64>,
+}
+
 fn choose_playable_part(
     metadata: &PlexMediaMetadata,
-    duration_hint_millis: Option<u64>,
+    hint: PlexPartSelectionHint<'_>,
 ) -> PlexResult<PlexPlayablePart> {
     if !metadata.media_type.is_video_watch_type() {
         return Err(PlexError::InvalidResponse(format!(
@@ -2434,44 +2486,87 @@ fn choose_playable_part(
             metadata.rating_key
         )));
     }
-    let parts = metadata
+    let mut candidates = metadata
         .parts
         .iter()
         .filter(|part| !part.key.trim().is_empty())
         .collect::<Vec<_>>();
-    if parts.is_empty() {
+    if candidates.is_empty() {
         return Err(PlexError::InvalidResponse(format!(
             "Plex metadata {} did not include a playable part",
             metadata.rating_key
         )));
     }
-    let scored = parts
-        .into_iter()
-        .map(|part| {
-            let score = match (duration_hint_millis, part.duration_millis) {
-                (Some(hint), Some(duration)) => duration.abs_diff(hint),
-                (Some(_), None) => u64::MAX,
-                (None, _) => 0,
-            };
-            (score, part)
-        })
-        .collect::<Vec<_>>();
-    let Some((best_score, best_part)) = scored.iter().min_by_key(|(score, _)| *score) else {
-        return Err(PlexError::InvalidResponse(
-            "Plex metadata did not include a playable part".to_owned(),
-        ));
-    };
-    let equal_best = scored
-        .iter()
-        .filter(|(score, _)| score == best_score)
-        .collect::<Vec<_>>();
-    if equal_best.len() > 1 {
-        return Err(PlexError::InvalidResponse(format!(
-            "Plex metadata {} contains ambiguous playable parts",
-            metadata.rating_key
-        )));
+
+    if let Some(file_name) = hint.file_name.and_then(part_selection_basename) {
+        let exact = candidates
+            .iter()
+            .copied()
+            .filter(|part| {
+                part.file_name.as_deref().and_then(part_selection_basename) == Some(file_name)
+            })
+            .collect::<Vec<_>>();
+        if exact.is_empty() {
+            let folded_file_name = file_name.to_ascii_lowercase();
+            let folded = candidates
+                .iter()
+                .copied()
+                .filter(|part| {
+                    part.file_name
+                        .as_deref()
+                        .and_then(part_selection_basename)
+                        .is_some_and(|name| name.to_ascii_lowercase() == folded_file_name)
+                })
+                .collect::<Vec<_>>();
+            if !folded.is_empty() {
+                candidates = folded;
+            }
+        } else {
+            candidates = exact;
+        }
     }
-    Ok((*best_part).clone())
+
+    if let Some(size_bytes) = hint.size_bytes {
+        let exact = candidates
+            .iter()
+            .copied()
+            .filter(|part| part.size_bytes == Some(size_bytes))
+            .collect::<Vec<_>>();
+        if !exact.is_empty() {
+            candidates = exact;
+        }
+    }
+
+    if let Some(duration_millis) = hint.duration_millis
+        && let Some(best_difference) = candidates
+            .iter()
+            .filter_map(|part| {
+                part.duration_millis
+                    .map(|part_duration| part_duration.abs_diff(duration_millis))
+            })
+            .min()
+    {
+        candidates.retain(|part| {
+            part.duration_millis.is_some_and(|part_duration| {
+                part_duration.abs_diff(duration_millis) == best_difference
+            })
+        });
+    }
+
+    if let [part] = candidates.as_slice() {
+        return Ok((*part).clone());
+    }
+    Err(ambiguous_playable_parts_error(
+        &metadata.rating_key,
+        candidates.len(),
+    ))
+}
+
+fn part_selection_basename(path: &str) -> Option<&str> {
+    path.rsplit(['/', '\\'])
+        .next()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 fn parse_metadata_response(
@@ -4381,9 +4476,15 @@ mod tests {
             }],
         };
 
-        let error = choose_playable_part(&metadata, Some(180_000))
-            .expect_err("non-video metadata should be rejected")
-            .to_string();
+        let error = choose_playable_part(
+            &metadata,
+            PlexPartSelectionHint {
+                duration_millis: Some(180_000),
+                ..PlexPartSelectionHint::default()
+            },
+        )
+        .expect_err("non-video metadata should be rejected")
+        .to_string();
 
         assert!(error.contains("not playable video"));
     }
@@ -4790,11 +4891,18 @@ mod tests {
             ],
         };
 
-        let error = choose_playable_part(&metadata, Some(7_200_000))
-            .expect_err("equal candidates should be ambiguous")
-            .to_string();
+        let error = choose_playable_part(
+            &metadata,
+            PlexPartSelectionHint {
+                duration_millis: Some(7_200_000),
+                ..PlexPartSelectionHint::default()
+            },
+        )
+        .expect_err("equal candidates should be ambiguous");
 
-        assert!(error.contains("ambiguous"));
+        assert!(matches!(error, PlexError::InvalidResponse(_)));
+        assert!(error.is_ambiguous_playable_parts());
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     #[test]

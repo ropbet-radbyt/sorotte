@@ -1029,17 +1029,24 @@ impl GuiPersistedConfigRuntimeOwner {
                     && miss.key.playlist_generation == attempt.playlist_generation
                     && miss.key.policy == attempt.policy
             });
+            let permanent_plex_failure = matching_plex_miss.is_some_and(|miss| {
+                miss.disposition == GuiPlexStreamResolveFailureDisposition::PermanentForContext
+            });
             let resolution_in_flight = self.attached_media_search_in_flight()
                 || self.media_match_remote_lookup_rx.is_some()
                 || self.plex_stream_resolution_owns_cache_snapshot()
                 || matching_plex_miss.is_some_and(|miss| miss.retry_in_flight);
             source_state.status = if resolution_in_flight {
                 GuiPlaylistSourceStatus::Resolving
+            } else if permanent_plex_failure {
+                GuiPlaylistSourceStatus::Failed
             } else {
                 GuiPlaylistSourceStatus::Missing
             };
             source_state.detail = Some(if resolution_in_flight {
                 "Searching the available media providers.".to_owned()
+            } else if permanent_plex_failure {
+                "Plex found multiple indistinguishable playable parts; choose a source or retry after changing Plex metadata.".to_owned()
             } else if matching_plex_miss.is_some() {
                 "No provider found a usable source; Plex will retry automatically.".to_owned()
             } else {

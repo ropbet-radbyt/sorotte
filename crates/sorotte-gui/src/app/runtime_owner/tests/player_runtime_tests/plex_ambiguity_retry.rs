@@ -1,16 +1,19 @@
 use super::*;
 use crate::app::runtime_owner::{
-    GuiPlexOperationContext, GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult,
+    GuiPlexOperationContext, GuiPlexStreamResolveFailure, GuiPlexStreamResolveFailureDisposition,
+    GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult,
 };
+use crate::app::shell_state::GuiPlaylistSourceStatus;
 
 const PERMANENT_MISS_INVARIANT: &str =
     "TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry";
 
-fn ambiguous_part_error() -> String {
+fn ambiguous_part_error() -> GuiPlexStreamResolveFailure {
     let error = sorotte_plex::PlexError::InvalidResponse(
-        "Plex metadata 599092 contains ambiguous playable parts".to_owned(),
+        "ambiguous playable parts for Plex metadata 599092; candidates=2".to_owned(),
     );
-    format!("Resolving Plex stream target for 'episode.mkv' failed: {error}")
+    assert!(error.is_ambiguous_playable_parts());
+    GuiPlexStreamResolveFailure::from_plex_error("episode.mkv", error)
 }
 
 fn automatic_plex_state() -> SorotteGuiShellAppState {
@@ -92,10 +95,7 @@ fn warning_and_chat_messages(owner: &GuiPersistedConfigRuntimeOwner) -> (Vec<Str
 }
 
 #[test]
-#[should_panic(
-    expected = "TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry"
-)]
-fn known_defect_permanent_plex_ambiguity_retries_and_repeats_warning() {
+fn permanent_plex_ambiguity_warns_once_without_automatic_retry() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
@@ -104,8 +104,29 @@ fn known_defect_permanent_plex_ambiguity_retries_and_repeats_warning() {
     let (first_trigger, first_context) = queue_automatic_plex_attempt(&mut owner, &state);
     finish_automatic_plex_ambiguity(&mut owner, &state, first_trigger, first_context);
 
+    let miss = owner
+        .plex_miss_state
+        .as_ref()
+        .expect("permanent ambiguity should retain terminal context");
+    assert_eq!(
+        miss.disposition,
+        GuiPlexStreamResolveFailureDisposition::PermanentForContext
+    );
+    assert!(miss.next_retry_at.is_none());
+    assert!(!miss.retry_in_flight);
+    let (_, projected_source) = owner
+        .playlist_resolution_source_state_for_projection(&state)
+        .expect("terminal ambiguity should project source status");
+    assert_eq!(projected_source.status, GuiPlaylistSourceStatus::Failed);
+    assert!(
+        projected_source
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("multiple indistinguishable playable parts"))
+    );
+
     if let Some(miss) = owner.plex_miss_state.as_mut() {
-        miss.next_retry_at = std::time::Instant::now();
+        miss.next_retry_at = Some(std::time::Instant::now());
     }
     if owner.active_plex_miss_retry_due(&state) {
         owner.last_attached_media_resolution_trigger = None;

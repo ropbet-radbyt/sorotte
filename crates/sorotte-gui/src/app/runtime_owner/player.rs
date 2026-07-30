@@ -74,6 +74,7 @@ use super::{
     GuiMediaMatchRemoteLookupResult, GuiPendingAttachedMediaResolution,
     GuiPendingAttachedPlayerPauseCommand, GuiPendingAttachedRoomUnpauseObservation,
     GuiPersistedConfigRuntimeOwner, GuiPlaylistLocalOriginBindingOutcome, GuiPlexOperationContext,
+    GuiPlexStreamResolveFailure, GuiPlexStreamResolveFailureDisposition,
     GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
     GuiUserMediaTargetResolutionSource,
 };
@@ -322,9 +323,10 @@ impl std::fmt::Debug for PlexResolutionMissKey {
 pub(super) struct PlexMissState {
     pub(super) key: PlexResolutionMissKey,
     pub(super) last_attempt_at: Instant,
-    pub(super) next_retry_at: Instant,
+    pub(super) next_retry_at: Option<Instant>,
     pub(super) attempt_count: u32,
     pub(super) retry_in_flight: bool,
+    pub(super) disposition: GuiPlexStreamResolveFailureDisposition,
 }
 
 impl std::fmt::Debug for PlexMissState {
@@ -336,6 +338,7 @@ impl std::fmt::Debug for PlexMissState {
             .field("next_retry_at", &self.next_retry_at)
             .field("attempt_count", &self.attempt_count)
             .field("retry_in_flight", &self.retry_in_flight)
+            .field("disposition", &self.disposition)
             .finish()
     }
 }
