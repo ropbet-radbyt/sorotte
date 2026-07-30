@@ -13,6 +13,7 @@ Raw-loopback framing update: 2026-07-30
 Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
 Final CLI/protocol defect resolution update: 2026-07-30
+Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 
 Branch: `codex/test-coverage-design`
 
@@ -62,9 +63,15 @@ parser. All four former characterizations are now positive regressions, the
 fuzz oracle is unconditional again, and the current registry is explicitly
 empty.
 The final workspace gate independently reproduced `TC-HARNESS-016`, a race in
-the updater test's boundary-marker handshake. It is characterized separately
-and left unchanged because the failure occurs before updater recovery is
-exercised and is outside the two authorized product corrections.
+the updater test's boundary-marker handshake. The subsequent continuation
+resolves it with atomic marker publication and exact content acknowledgement.
+That continuation also adds generated legacy-configuration migration
+properties, generated framed-transport/session schedules, and a source-bound
+CLI framing mutation ratchet. None of those coverage slices surfaced an
+independent product defect. The mutation baseline did expose
+`TC-HARNESS-017`, an unbounded test-helper loop and three adjacent
+payload-limit oracle gaps; the bounded frame/EOF and exact LF/CRLF seams close
+it in the same continuation.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -89,6 +96,20 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The framed-transport/configuration-migration/updater-handshake continuation
+  passed 4/4 generated framing tests, 50/50 post-ratchet framing replays,
+  6,144 scheduled migration cases, the exact updater process test 100/100
+  times, and the complete updater binary 30/30. The stable CLI framing
+  mutation campaign selected 370 package tests and caught 33/33 viable
+  mutants with zero misses, timeouts, or unviables. The scheduled policy now
+  validates nine shards with 458/458 viable mutations caught and the same 16
+  exact accepted compiler-unviable identities.
+- Final integrated validation passed warning-denied all-target/all-feature
+  workspace Clippy in 5.09 seconds, the complete locked all-feature workspace
+  on its first attempt in 233.3 seconds, and all 399 Python
+  policy/infrastructure tests in 21.203 seconds. Repository formatting,
+  whitespace, actionlint, the 20-behavior/51-proof catalog, all 23 ignored-test
+  dispositions, and the explicitly empty product-defect registry also passed.
 - `cargo fmt --all --check` passed.
 - The final provenance/mutation/property/fuzz continuation passed all 84
   combined mutation, CI, known-defect, and fuzz-policy tests. The shared
@@ -709,20 +730,27 @@ test-thread serialization is needed.
 
 ## TC-HARNESS-016: updater interruption marker can be observed before its payload is written
 
-Status: **Open 2026-07-30; independently reproduced and isolated from the
-CLI/protocol fixes**
+Status: **Resolved 2026-07-30; positive required process regression**
 
 Severity: **Harness correctness (the required workspace gate can fail before
 testing updater recovery)**
 Detection: full locked all-feature workspace gate followed by serial exact-test
 stress
 
-The updater process-interruption child publishes a boundary with
+The updater process-interruption child previously published a boundary with
 `fs::write(root.join("boundary-reached"), label)`. On Windows, creating the
 file and filling its payload are separately observable. The parent polls only
 `marker().exists()`, then immediately calls `read_to_string` and requires the
 complete label. It can therefore observe the newly created zero-length file
 before the child writes the boundary text.
+
+The corrected test-only handshake creates a same-directory pending marker with
+`create_new`, writes the complete label, flushes and syncs the file, closes it,
+and atomically renames it to the published path. The parent now proceeds only
+when reading that path returns the exact expected payload, while still failing
+on premature child exit or deadline expiry. A deterministic preflight rejects
+empty, partial, and incorrect contents and requires the pending path to be
+absent after publication.
 
 The first post-fix workspace run failed at that assertion:
 
@@ -737,12 +765,47 @@ iteration 5 of a bounded serial stress. A subsequent diagnostic capture passed
 the parent kills the child and before either recovery subprocess is started,
 so it is not evidence of an incomplete update or rollback.
 
-This task does not alter the unrelated updater harness. A future correction
-should publish the marker atomically or keep bounded polling until its content
-equals the expected boundary while still checking for premature child exit.
-The finding is not placed in `known-defects.toml`: that registry inventories
-deterministic Rust expected-failure characterizations, while this remains an
-ordinary intermittent required-test failure.
+After the correction, the exact 11-boundary process test passed 100/100 serial
+replays in 64.8 seconds, covering 1,100 durable interruption boundaries and
+2,200 recovery subprocesses. The complete updater binary passed 30/30 and the
+strict process-lane policy inventory remained unchanged. The correction does
+not claim parent-directory `fsync`, power-loss durability, or production
+updater behavior. Exact evidence is retained in
+[`updater-boundary-marker-handshake-20260730.md`](evidence/test-coverage/updater-boundary-marker-handshake-20260730.md).
+
+This finding was never placed in `known-defects.toml`: that registry
+inventories deterministic product expected-failure characterizations, while
+this was an ordinary intermittent harness failure.
+
+## TC-HARNESS-017: framed schedule helper did not bound non-consuming reads
+
+Status: **Resolved 2026-07-30; positive source-bound mutation regression**
+
+Severity: **Harness liveness (a scheduled mutation shard timed out instead of
+classifying a broken framing decision)**
+Detection: exploratory `cli-framing` cargo-mutants baseline
+
+The first generated schedule helper used an unbounded
+`while let Some(line) = read_line(...)` loop. Four mutants could therefore
+leave the delimiter unconsumed or return a constant frame forever, turning a
+clear contract violation into a per-mutant timeout. The same baseline exposed
+three ordinary misses in split accumulated-length and same-buffer framing-CR
+guards. None changed current production behavior; they identified missing
+test termination and payload-limit oracles.
+
+The corrected helper derives the exact maximum frame count from input LF
+delimiters plus any unterminated suffix, requires every expected frame, and
+performs one final EOF probe. Constant-frame and non-consuming readers now fail
+promptly. Four exact MAX/MAX+1 LF/CRLF cases independently retain additive
+split length and both same-buffer framing-CR decisions.
+
+The initial 33-mutant experiment recorded 26 caught, three missed, and four
+timed out outcomes, but its test source was strengthened while the remaining
+mutants finished, so that aggregate is diagnostic rather than canonical. A
+fresh campaign over the stable four-test oracle selected 370 package tests and
+caught 33/33 viable mutants with zero misses, timeouts, or unviables. Exact
+commands, hashes, the seven red cases, and both artifact roots are retained in
+[`targeted-mutation-cli-framing-20260730.md`](evidence/test-coverage/targeted-mutation-cli-framing-20260730.md).
 
 ## TC-SEC-001: structured credential aliases survive transcript sanitization (resolved)
 

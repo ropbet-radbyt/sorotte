@@ -1,6 +1,6 @@
 # Sorotte Test Coverage and Verification Strategy
 
-Status: implemented verification program with an explicitly empty product-defect registry and one characterized updater-harness race
+Status: implemented verification program with an explicitly empty product-defect registry and no open characterized harness defect
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -13,6 +13,7 @@ Raw framing, Windows process coverage, mutation, and SQLite-full update: 2026-07
 Parser property/corpus, worker fault, config, and ping mutation update: 2026-07-30
 Provenance-bound parser fuzz, configuration properties, and mutation-ratchet update: 2026-07-30
 Final CLI/protocol defect resolution update: 2026-07-30
+Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -52,8 +53,13 @@ cancellable read future and enables serde_json's exact float parser. All four
 characterizations are now positive regressions, the fuzz oracle is
 unconditional, and the current registry is explicitly empty. Final validation
 also exposed `TC-HARNESS-016`, an intermittent zero-length boundary-marker
-observation in the updater process test; it is outside the deterministic
-expected-failure registry and remains separately characterized:
+observation in the updater process test. The subsequent continuation resolves
+that harness race with atomic marker publication and exact content
+acknowledgement, then adds generated configuration-migration and
+framed-transport/session properties plus a source-bound CLI framing mutation
+ratchet. Its exploratory baseline exposes `TC-HARNESS-017`; an input-derived
+frame bound, required EOF probe, and exact payload-limit seams close that
+harness/oracle gap in the same continuation:
 
 - a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -133,6 +139,15 @@ expected-failure registry and remains separately characterized:
 - a black-box 30-field configuration-composition property suite crossing INI
   upsert/parse, runtime snapshot, and environment-aware startup planning, with
   6,144 scheduled and 30,000 stress cases;
+- a separate legacy-configuration migration property suite covering scalar
+  aliases, list/map/server containers, malformed typed values, canonical
+  idempotence, and runtime-snapshot equivalence across 6,144 scheduled cases;
+- deterministic framed-transport/session schedules covering 82
+  fragmentation/coalescing layouts, every first-frame cancellation offset,
+  every proper Ready truncation, valid EOF variants, and exact committed
+  session state, with 50/50 post-ratchet serial focused replays;
+- an atomic, content-acknowledged updater process boundary marker that closes
+  `TC-HARNESS-016` and passes 100/100 exact 11-boundary process replays;
 - a scheduled persisted-runtime-configuration mutation shard that improved
   from 52/101 to 98/98 viable mutations caught through whole-plan environment
   precedence, controlled-room, and blank-value contracts;
@@ -141,8 +156,12 @@ expected-failure registry and remains separately characterized:
   rejection, zero/equality boundaries, moving-average arithmetic, forward
   delay, and production wall-clock wrappers;
 - scheduled persistence-arbitration and client inbound-order mutation ratchets
-  that catch 25/25 and 5/5 viable mutations respectively, bringing all eight
-  shards to 425/425 with zero misses and zero timeouts;
+  that catch 25/25 and 5/5 viable mutations respectively, bringing the first
+  eight shards to 425/425 with zero misses and zero timeouts;
+- a source-bound CLI framing mutation ratchet whose 370-test package scope
+  catches 33/33 viable mutants after bounded-frame/EOF and exact MAX/MAX+1
+  LF/CRLF oracles, bringing all nine shards to 458/458 with zero misses or
+  timeouts and the same 16 exact compiler-unviable identities;
 - generated credential-taint coverage across transcript serialization,
   diagnostic dumps, parser errors, and player error display;
 - a strict ten-scenario native GUI contract with typed AccessKit menu
@@ -754,8 +773,8 @@ boundaries rather than adding hundreds more nearby examples.
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, a 25/25 viable arbitration mutation ratchet, store- and worker-owned `SQLITE_FULL`, worker write denial, and real VFS open-failure proofs | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, and integrity are proven; OS ACL/syscall semantics, kernel power loss, and physical durability remain unproven | retain worker fault and mutation regressions; add disposable-platform ACL/syscall and durability probes without broadening the claim |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, a 30/30 viable reconnect mutation ratchet, and a 5/5 inbound `Set` ordering ratchet | reset transaction invalidation, stale-completion rejection, and command-order completion are positive; adapter clock schedules remain incomplete | retain both zero-survivor shards and add clock-controlled adapter schedules |
 | Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, bracketed wall-clock wrappers, and a 47/47 viable mutation ratchet | arithmetic and public clock delegation are mechanically encoded; clock monotonicity, cross-host authenticity, jitter, scheduler latency, and playback outcomes are not | retain the zero-survivor shard; add deterministic jitter/drift simulation and real synchronization telemetry |
-| Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet plus a black-box 30-field INI/runtime/environment composition property suite | mutation covers all 31 persisted runtime overrides in both precedence directions, while generated composition covers all 30 environment-overridable fields; controlled-room composition, CLI parsing, and migration remain separate | retain the mutation and composition proofs; add controlled-room and configuration-migration properties |
-| CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, and deterministic partial-read cancellation matrices | session-owned framing state and two positive forced-cancellation regressions close `TC-CLI-003`; 142 older test-path sleeps retain scheduler-luck risk | retain the cancellation barriers and continue clock/barrier replacement |
+| Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet, a black-box 30-field INI/runtime/environment composition property suite, and generated legacy scalar/container/malformed-value migration properties | mutation covers all 31 persisted runtime overrides in both precedence directions, generated composition covers all 30 environment-overridable fields, and migration is canonical/idempotent; controlled-room composition and CLI parsing remain separate | retain the mutation, composition, and migration proofs; add controlled-room properties and CLI-layer composition |
+| CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, deterministic partial-read cancellation matrices, generated byte schedules through committed session state, and a 33/33 viable framing mutation ratchet | session-owned framing state and positive cancellation regressions close `TC-CLI-003`; 82 chunk layouts, every first-frame cancellation offset, every proper Ready truncation, valid EOF variants, and exact payload-limit seams are deterministic, while coverage-guided transport/session fuzzing and 142 older test-path sleeps remain gaps | retain the cancellation barriers, generated schedules, and zero-survivor shard; extend the libFuzzer lane through framed transport/session state and continue clock/barrier replacement |
 | Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, and real child-process large-pipe/exit/hang/handle-release proofs | the faulting peer is deterministic rather than real mpv; Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix, add the Unix-socket equivalent, min/latest mpv, and real command/response traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
@@ -764,7 +783,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap, strict banner, unterminated-output, and bounded dual-pipe large-output proofs | generated-media ffmpeg harness remains opt-in | require generated media in a capability CI lane |
 | Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, candidate-order adversarial part tests, evidence-ranked selection, genuine-tie controls, and terminal-context retry proofs | uniquely identified versions resolve; genuine ambiguity fails once and projects terminal state | add an explicit version/part picker for genuinely indistinguishable or multipart media |
 | Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
-| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, and a separate 50-test Windows/MSVC coverage domain are strong | kernel power-loss, filesystem durability, updater disk-full, and permission gaps remain | filesystem syscall faults, parent-dir sync, and platform restart proof |
+| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, an atomic content-acknowledged boundary marker, and a separate 50-test Windows/MSVC coverage domain are strong | `TC-HARNESS-016` is closed by 100/100 exact process replays; kernel power-loss, filesystem durability, updater disk-full, and permission gaps remain | retain the exact handshake regression; add filesystem syscall faults, parent-dir sync, and platform restart proof |
 | Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability | public registry digest/SBOM/signature binding remains | verify the uploaded/public digest is the tested content and enforce provenance policy |
 | Server container | non-root runtime | workflow builds and pushes in one step without smoke | build/load, protocol/TLS/persistence smoke, scan/SBOM, then push exact digest |
 
@@ -1531,7 +1550,7 @@ Targets:
 
 Reference: [cargo-mutants](https://mutants.rs/getting-started.html).
 
-Implementation status (updated 2026-07-30): the scheduled matrix covers eight critical
+Implementation status (updated 2026-07-30): the scheduled matrix covers nine critical
 boundaries with pinned cargo-mutants 27.1.0. The original `sorotte-secret`
 privacy shard moved from 22/43 to 43/43 viable mutations caught against an
 identical 44-mutant inventory. Credential-classifier expansion later caused a
@@ -1568,15 +1587,22 @@ earlier shards caught all 395 viable mutations. The persistence-arbitration
 baseline caught only 3/25; seven deterministic state-machine tests now catch
 25/25, with two exact expiring compiler-unviable identities. The inbound
 `Set` ordering baseline caught 4/5; three independent completion/order oracles
-now catch 5/5 without an exception. All eight current shards therefore catch
-425/425 viable mutations with zero misses and zero timeouts; 16 exact
-accepted-unviable policy identities fail closed on drift or expiry. See
+now catch 5/5 without an exception. The first eight shards therefore catch
+425/425 viable mutations with zero misses and zero timeouts. The CLI framing
+baseline captured three missed length/CRLF decisions and four timed-out
+non-consuming/constant-frame mutants. Input-derived frame bounds, a required
+EOF probe, and exact MAX/MAX+1 LF/CRLF seams now catch 33/33 through a stable
+370-test package scope. All nine current shards therefore catch 458/458 viable
+mutations with zero misses and zero timeouts; 16 exact accepted-unviable policy
+identities fail closed on drift or expiry. See
 [`targeted-mutation-client-reconnect-20260730.md`](evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md),
 [`targeted-mutation-config-20260730.md`](evidence/test-coverage/targeted-mutation-config-20260730.md),
 [`targeted-mutation-client-ping-20260730.md`](evidence/test-coverage/targeted-mutation-client-ping-20260730.md),
 [`targeted-mutation-server-persistence-arbitration-20260730.md`](evidence/test-coverage/targeted-mutation-server-persistence-arbitration-20260730.md),
 and
-[`targeted-mutation-client-inbound-order-20260730.md`](evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md).
+[`targeted-mutation-client-inbound-order-20260730.md`](evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md),
+and
+[`targeted-mutation-cli-framing-20260730.md`](evidence/test-coverage/targeted-mutation-cli-framing-20260730.md).
 This is bounded critical-module assurance, not workspace-wide mutation proof.
 
 ### 9.6 Genuine vertical player system harness
@@ -2091,12 +2117,13 @@ for actor intent that has not entered desired state.
 5. Add immutable package/container consumer tests.
 6. Add nightly soak and weekly chaos/performance trends.
 
-Item 2 is now partially implemented: six weekly bounded privacy, server
+Item 2 is now partially implemented: nine weekly bounded privacy, server
 controlled-room authorization, protocol codec/redaction, reconnect,
-persisted-runtime-configuration, and ping/RTT shards have 100% viable kill
-ratchets and fail-closed evidence. Protocol transport/session state,
-persistence arbitration, broader lifecycle, and configuration migration/layer
-composition shards remain outstanding. Item 5 is implemented for the
+persisted-runtime-configuration, ping/RTT, persistence-arbitration, inbound
+ordering, and CLI framing shards have 100% viable kill ratchets and fail-closed
+evidence. Broader lifecycle/session state and configuration-layer mutation
+remain outstanding; legacy configuration migration and layer composition now
+have deterministic generated properties. Item 5 is implemented for the
 standalone server archive:
 the package contains a source-SHA-bound manifest with an exact payload
 inventory, and the release workflow safely extracts, verifies, and executes
@@ -2245,22 +2272,22 @@ turns those failures green.
 
 The most valuable remaining next steps are:
 
-1. replace `TC-HARNESS-016`'s existence-only updater boundary marker with an
-   atomic or content-acknowledged handshake, then stress the exact process test;
-2. extend the protocol-line fuzz lane to framed transport and session state
-   while retaining the cancellation-safe accumulator and real one-byte and
-   split-CRLF loopback schedules;
-3. promote the locally proven strict native inventory to an ephemeral,
+1. extend the protocol-line libFuzzer lane through framed transport and
+   session state while retaining the cancellation-safe accumulator, generated
+   82-schedule/every-cancellation matrix, exact payload-limit seams, and real
+   one-byte and split-CRLF loopback schedules;
+2. promote the locally proven strict native inventory to an ephemeral,
    interactive Windows required lane and retain its zero-stderr policy;
-4. extend the proven store- and worker-owned `SQLITE_FULL`, deterministic
+3. extend the proven store- and worker-owned `SQLITE_FULL`, deterministic
    write-denial, and VFS-open failures into disposable-platform ACL/syscall and
    durability probes without overclaiming kernel power-loss behavior;
-5. add configuration-migration properties and transport/session mutation
-   shards, retaining the deterministic parser corpus, 30-field composition
-   suite, and all eight zero-survivor ratchets;
-6. add one genuine native GUI-to-real-mpv vertical harness with isolated
+4. add controlled-room configuration properties and broader session-state
+   mutation shards, retaining the deterministic parser corpus, 30-field
+   composition suite, legacy-migration properties, and the source-bound
+   zero-survivor ratchets;
+5. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
-7. extend the proven server and GUI archive consumers to a build-and-load
+6. extend the proven server and GUI archive consumers to a build-and-load
    server-container smoke, then verify the public release/registry digest is
    the same tested content and add SBOM/signature policy.
 

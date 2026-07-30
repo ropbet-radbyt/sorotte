@@ -84,10 +84,12 @@ feature now preserves both minimized cases exactly, and the fuzz target no
 longer has a one-ULP allowance. The current registry is explicitly empty; all
 four former characterizations are ordinary positive regressions.
 Final validation independently exposed `TC-HARNESS-016`: the updater
-process-interruption parent can observe its marker file before the child has
-written the boundary label. That ordinary required-test race is tracked in the
-findings ledger rather than `known-defects.toml`, which is reserved for exact
-expected-failure characterizations.
+process-interruption parent could observe its marker file before the child had
+written the boundary label. The child now atomically renames a flushed,
+synced, complete pending marker and the parent acknowledges only the exact
+expected payload. The process regression passed 100/100 serial replays. This
+resolved harness defect remains outside `known-defects.toml`, which is
+reserved for exact product expected-failure characterizations.
 `TC-SERVER-004` is now resolved by immutable authenticated TLS generations and
 an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime
@@ -345,6 +347,25 @@ are retained in
 The combined CLI/protocol correction and empty-registry proof are retained in
 [`outstanding-defect-resolution-20260730.md`](../docs/evidence/test-coverage/outstanding-defect-resolution-20260730.md).
 
+## Framed transport schedule evidence
+
+Four ordinary CLI tests extend the cancellation-safe line accumulator through
+the real application/session boundary. A test-owned reader supplies 82 exact
+fragmentation and coalescing schedules; a Tokio duplex cancels at every byte
+offset before the first frame's CRLF; and generated EOF schedules cover every
+proper Ready-frame truncation plus valid unterminated, lone-CR, and
+CRLF-terminated frames. Exact/MAX+1 LF and CRLF seams retain accumulated-length
+and framing-CR decisions. An input-derived frame-count bound plus a final EOF
+probe fails promptly if a reader does not consume input. Exact line bytes and
+final username, room, active phase, and readiness state are required.
+
+The suite passed 4/4, the existing real-loopback framing family passed 5/5,
+and the final selector passed 50/50 serial replays after its mutation-driven
+liveness and payload-limit additions. This deterministic schedule matrix is
+not coverage-guided transport fuzzing. Its oracle, commands, hashes, and limits
+are retained in
+[`framed-transport-schedules-20260730.md`](../docs/evidence/test-coverage/framed-transport-schedules-20260730.md).
+
 ## Configuration composition property evidence
 
 A black-box `sorotte-client-app` integration suite generates all 30
@@ -360,6 +381,36 @@ The scheduled depth passed 6,144 generated cases and the stress depth passed
 field inventory, case budgets, commands, hashes, and limitations are retained
 in
 [`configuration-composition-properties-20260730.md`](../docs/evidence/test-coverage/configuration-composition-properties-20260730.md).
+
+## Configuration migration property evidence
+
+A separate black-box suite begins with legacy INI spellings rather than
+canonical DTOs. It covers mixed casing and whitespace, BOM and CRLF,
+boolean/language/enum aliases, absent post-legacy start policy, legacy
+list/map/server containers, and malformed typed values. Every case crosses
+parse, in-place update, fresh canonical rewrite, reparse, and runtime snapshot.
+The expected DTO is independently constructed, rewrites must be idempotent,
+and a valid sentinel proves malformed values do not discard unrelated state.
+
+The default and scheduled depths passed 1,536 and 6,144 generated cases. No
+production source changed and no defect surfaced. The fixed seed, grammar,
+oracles, commands, source hash, and limitations are retained in
+[`configuration-migration-properties-20260730.md`](../docs/evidence/test-coverage/configuration-migration-properties-20260730.md).
+
+## Updater boundary-marker handshake evidence
+
+The test-only updater child publishes its process-interruption boundary through
+a same-directory pending file, complete write, flush, file sync, close, and
+rename. The parent requires the exact expected payload while retaining its
+premature-exit and timeout checks. A deterministic preflight rejects empty,
+partial, and incorrect markers. The exact 11-boundary process regression passed
+100/100 serial replays, covering 2,200 recovery subprocesses; the complete
+updater binary passed 30/30.
+
+This resolves `TC-HARNESS-016` without changing production updater behavior or
+claiming parent-directory sync or power-loss durability. Root cause, commands,
+hashes, and limits are retained in
+[`updater-boundary-marker-handshake-20260730.md`](../docs/evidence/test-coverage/updater-boundary-marker-handshake-20260730.md).
 
 ## Persistence worker fault evidence
 
@@ -389,8 +440,9 @@ command-order/error/redaction behavior in `sorotte-protocol`, reconnect/state-
 acknowledgement and ping/RTT decisions in `sorotte-client-core`, and persisted
 runtime-configuration precedence in `sorotte-client-app`. Two additional
 ratchets cover room-persistence arbitration in `sorotte-server` and inbound
-`Set` command completion/order in `sorotte-client-core`. It deliberately does
-not mutate the whole workspace.
+`Set` command completion/order in `sorotte-client-core`. A ninth shard binds
+the CLI inbound framing accumulator and its package-level transport/session
+oracles. It deliberately does not mutate the whole workspace.
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
 namespace, all-feature locked Cargo execution, two workers, per-command
@@ -454,9 +506,17 @@ exception. The persistence-arbitration baseline caught only 3/25 viable
 mutants; seven deterministic state-machine tests now catch 25/25, with two
 exact expiring compiler-unviable identities. The inbound-order baseline caught
 4/5; three independent command-order oracles now catch 5/5 without an
-exception. Across the eight scheduled shards, all 425 current viable
-mutations are caught with zero misses and zero timeouts. The policy contains
-16 exact accepted compiler-unviable identities.
+exception. The exploratory CLI framing baseline captured three missed
+payload-length/CRLF decisions and four timed-out non-consuming/constant-frame
+mutants (`TC-HARNESS-017`). An input-derived frame bound, required EOF probe,
+and four exact MAX/MAX+1 LF/CRLF seams now catch all 33/33 viable framing
+mutants through a 370-test package scope, with no timeout or exception. The
+earlier aggregate
+baseline is diagnostic only because its test oracle was strengthened while it
+finished; the fresh stable-source campaign is the canonical attestation.
+Across the nine scheduled shards, all 458 current viable mutations are caught
+with zero misses and zero timeouts. The policy contains 16 exact accepted
+compiler-unviable identities.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
@@ -466,8 +526,9 @@ Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-config-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-config-20260730.md),
 [`targeted-mutation-client-ping-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-ping-20260730.md),
 [`targeted-mutation-server-persistence-arbitration-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-server-persistence-arbitration-20260730.md),
+[`targeted-mutation-client-inbound-order-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md),
 and
-[`targeted-mutation-client-inbound-order-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-client-inbound-order-20260730.md).
+[`targeted-mutation-cli-framing-20260730.md`](../docs/evidence/test-coverage/targeted-mutation-cli-framing-20260730.md).
 
 Local generation requires both the pinned cargo subcommand and the Rust LLVM
 tools component, the legacy Python requirements, and the pinned Syncplay
