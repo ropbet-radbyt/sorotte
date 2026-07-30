@@ -1387,6 +1387,7 @@ class CiPolicyTests(unittest.TestCase):
                         "client-ping",
                         "server-persistence-arbitration",
                         "client-inbound-order",
+                        "cli-framing",
                     ]
                 },
             },
@@ -1593,6 +1594,23 @@ class CiPolicyTests(unittest.TestCase):
                         ],
                         "test_target": "lib",
                         "test_filter": "session::tests::protocol_tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "cli-framing",
+                        "owner": "cli-transport",
+                        "package": "sorotte-cli",
+                        "files": [
+                            "crates/sorotte-cli/src/protocol_io.rs"
+                        ],
+                        "test_target": "package",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
