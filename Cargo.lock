@@ -3668,6 +3668,7 @@ name = "sorotte-client-app"
 version = "0.2.4"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde_json",
  "sorotte-client-core",
  "sorotte-player-api",
