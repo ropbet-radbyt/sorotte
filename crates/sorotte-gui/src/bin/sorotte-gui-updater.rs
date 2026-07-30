@@ -137,6 +137,112 @@ enum ApplyProgress {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestStorageOperation {
+    Write,
+    Flush,
+    Replace,
+    Remove,
+    ParentDirectorySync,
+}
+
+#[cfg(test)]
+impl TestStorageOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Write => "write",
+            Self::Flush => "flush",
+            Self::Replace => "replace",
+            Self::Remove => "remove",
+            Self::ParentDirectorySync => "parent-directory-sync",
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestStorageFaultKind {
+    DeterministicDiskFull,
+    DeterministicAccessDenied,
+}
+
+#[cfg(test)]
+impl TestStorageFaultKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DeterministicDiskFull => "deterministic injected disk-full analogue",
+            Self::DeterministicAccessDenied => "deterministic injected access-denied analogue",
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestStorageFault {
+    operation: TestStorageOperation,
+    remaining_matches: usize,
+    kind: TestStorageFaultKind,
+    fired: bool,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_STORAGE_FAULT: std::cell::RefCell<Option<TestStorageFault>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn arm_test_storage_fault(
+    operation: TestStorageOperation,
+    occurrence: usize,
+    kind: TestStorageFaultKind,
+) {
+    assert!(occurrence > 0, "a storage fault occurrence is one-based");
+    TEST_STORAGE_FAULT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "only one storage fault may be armed per thread"
+        );
+        *slot = Some(TestStorageFault {
+            operation,
+            remaining_matches: occurrence,
+            kind,
+            fired: false,
+        });
+    });
+}
+
+#[cfg(test)]
+fn take_test_storage_fault() -> Option<TestStorageFault> {
+    TEST_STORAGE_FAULT.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+fn test_storage_operation(operation: TestStorageOperation, path: &Path) -> Result<(), String> {
+    TEST_STORAGE_FAULT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(fault) = slot.as_mut() else {
+            return Ok(());
+        };
+        if fault.operation != operation || fault.fired {
+            return Ok(());
+        }
+        fault.remaining_matches -= 1;
+        if fault.remaining_matches > 0 {
+            return Ok(());
+        }
+        fault.fired = true;
+        Err(format!(
+            "{} during updater {} at {}",
+            fault.kind.label(),
+            operation.label(),
+            path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
 const PROCESS_INTERRUPT_BOUNDARY_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_BOUNDARY";
 #[cfg(test)]
 const PROCESS_INTERRUPT_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_ROOT";
@@ -199,7 +305,8 @@ fn publish_process_interrupt_boundary(root: &Path, label: &str) -> Result<(), St
             "failed atomically publishing updater interruption boundary {}: {error}",
             marker.display()
         )
-    })
+    })?;
+    sync_parent_directory(&marker)
 }
 
 #[cfg(test)]
@@ -727,6 +834,10 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
     if let Err(error) =
         require_file_digest(&detached_path, &expected_sha256, "detached update helper")
     {
+        let _ = remove_directory_if_exists(&bootstrap_dir);
+        return Err(error);
+    }
+    if let Err(error) = sync_parent_directory(&detached_path) {
         let _ = remove_directory_if_exists(&bootstrap_dir);
         return Err(error);
     }
@@ -1373,13 +1484,21 @@ where
                 .map_err(|error| {
                     format!("failed creating {}: {error}", file.temporary.display())
                 })?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Write, &file.temporary)?;
             output
                 .write_all(&bytes)
-                .and_then(|()| output.flush())
+                .map_err(|error| format!("failed writing {}: {error}", file.temporary.display()))?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Flush, &file.temporary)?;
+            output
+                .flush()
                 .and_then(|()| output.sync_all())
                 .map_err(|error| {
                     format!("failed flushing {}: {error}", file.temporary.display())
                 })?;
+            drop(output);
+            sync_parent_directory(&file.temporary)?;
             #[cfg(test)]
             process_interrupt_barrier(ProcessInterruptBoundary::Prepared(index + 1));
         }
@@ -1450,6 +1569,8 @@ fn install_prepared_replacement(file: &ReplacementFile) -> Result<(), String> {
             atomic_replace_with_backup(&file.target, &file.temporary, &file.backup)?;
         }
         (true, None) => {
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Replace, &file.target)?;
             fs::rename(&file.target, &file.backup).map_err(|error| {
                 format!(
                     "failed moving obsolete target {} to rollback backup {}: {error}",
@@ -1457,15 +1578,19 @@ fn install_prepared_replacement(file: &ReplacementFile) -> Result<(), String> {
                     file.backup.display()
                 )
             })?;
+            sync_parent_directory(&file.target)?;
         }
         (false, Some(expected)) => {
             require_file_digest(&file.temporary, expected, "prepared replacement")?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Replace, &file.target)?;
             fs::rename(&file.temporary, &file.target).map_err(|error| {
                 format!(
                     "failed atomically installing new file {}: {error}",
                     file.target.display()
                 )
             })?;
+            sync_parent_directory(&file.target)?;
         }
         (false, None) => return Ok(()),
     }
@@ -1486,6 +1611,8 @@ fn atomic_replace_with_backup(
     replacement: &Path,
     backup: &Path,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     windows_replace_file(target, replacement, Some(backup)).map_err(|error| {
         format!(
             "failed atomically replacing {} with {} and backup {}: {error}",
@@ -1493,7 +1620,8 @@ fn atomic_replace_with_backup(
             replacement.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(not(windows))]
@@ -1502,6 +1630,8 @@ fn atomic_replace_with_backup(
     replacement: &Path,
     backup: &Path,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     fs::rename(target, backup).map_err(|error| {
         format!(
             "failed moving {} to rollback backup {}: {error}",
@@ -1509,35 +1639,43 @@ fn atomic_replace_with_backup(
             backup.display()
         )
     })?;
+    sync_parent_directory(target)?;
     fs::rename(replacement, target).map_err(|error| {
         format!(
             "failed installing replacement {} at {}: {error}",
             replacement.display(),
             target.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(windows)]
 fn atomic_restore_backup(target: &Path, backup: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     windows_replace_file(target, backup, None).map_err(|error| {
         format!(
             "failed atomically restoring {} from {}: {error}",
             target.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(not(windows))]
 fn atomic_restore_backup(target: &Path, backup: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     fs::rename(backup, target).map_err(|error| {
         format!(
             "failed atomically restoring {} from {}: {error}",
             target.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(windows)]
@@ -1624,17 +1762,38 @@ fn write_journal_header(path: &Path, journal: &ReplacementJournal) -> Result<(),
                 path.display()
             )
         })?;
-    serde_json::to_writer(&mut file, journal)
-        .map_err(|error| format!("failed serializing replacement journal: {error}"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.flush())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| {
+    let write_result = (|| {
+        #[cfg(test)]
+        test_storage_operation(TestStorageOperation::Write, path)?;
+        serde_json::to_writer(&mut file, journal)
+            .map_err(|error| format!("failed serializing replacement journal: {error}"))?;
+        file.write_all(b"\n").map_err(|error| {
             format!(
-                "failed flushing replacement journal {}: {error}",
+                "failed writing replacement journal {}: {error}",
                 path.display()
             )
-        })
+        })?;
+        #[cfg(test)]
+        test_storage_operation(TestStorageOperation::Flush, path)?;
+        file.flush()
+            .and_then(|()| file.sync_all())
+            .map_err(|error| {
+                format!(
+                    "failed flushing replacement journal {}: {error}",
+                    path.display()
+                )
+            })
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        return match remove_file_if_exists(path) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; additionally failed removing incomplete replacement journal: {cleanup_error}"
+            )),
+        };
+    }
+    sync_parent_directory(path)
 }
 
 fn append_journal_commit(path: &Path) -> Result<(), String> {
@@ -1647,10 +1806,19 @@ fn append_journal_commit(path: &Path) -> Result<(), String> {
                 path.display()
             )
         })?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Write, path)?;
     serde_json::to_writer(&mut file, &JournalCommit { committed: true })
         .map_err(|error| format!("failed serializing replacement commit: {error}"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.flush())
+    file.write_all(b"\n").map_err(|error| {
+        format!(
+            "failed writing replacement commit {}: {error}",
+            path.display()
+        )
+    })?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Flush, path)?;
+    file.flush()
         .and_then(|()| file.sync_all())
         .map_err(|error| {
             format!(
@@ -1784,6 +1952,8 @@ fn rollback_journal_entry(
             if target_digest.is_some() {
                 atomic_restore_backup(&target, &backup)?;
             } else {
+                #[cfg(test)]
+                test_storage_operation(TestStorageOperation::Replace, &target)?;
                 fs::rename(&backup, &target).map_err(|error| {
                     format!(
                         "failed restoring missing target {} from {}: {error}",
@@ -1791,6 +1961,7 @@ fn rollback_journal_entry(
                         backup.display()
                     )
                 })?;
+                sync_parent_directory(&target)?;
             }
         } else {
             match target_digest.as_deref() {
@@ -2015,6 +2186,7 @@ fn create_relative_directories_without_reparse(root: &Path, relative: &Path) -> 
                         current.display()
                     )
                 })?;
+                sync_parent_directory(&current)?;
                 ensure_directory_is_not_reparse_point(&current)?;
             }
             Err(error) => return Err(format!("failed inspecting {}: {error}", current.display())),
@@ -2083,11 +2255,79 @@ fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Remove, path)?;
     match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => sync_parent_directory(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            sync_parent_directory_if_present(path)
+        }
         Err(error) => Err(format!("failed removing {}: {error}", path.display())),
     }
+}
+
+fn sync_parent_directory_if_present(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("updater path has no parent directory: {}", path.display()))?;
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.is_dir() && !metadata_is_reparse_or_symlink(&metadata) => {
+            sync_parent_directory(path)
+        }
+        Ok(_) => Err(format!(
+            "updater parent is not a regular directory: {}",
+            parent.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed inspecting updater parent directory {}: {error}",
+            parent.display()
+        )),
+    }
+}
+
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("updater path has no parent directory: {}", path.display()))?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::ParentDirectorySync, parent)?;
+    sync_directory(parent)
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed synchronizing updater directory {}: {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed synchronizing updater directory {}: {error}",
+                path.display()
+            )
+        })
 }
 
 fn remove_directory_if_exists(path: &Path) -> Result<(), String> {
@@ -2153,6 +2393,68 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    struct ArmedTestStorageFault {
+        active: bool,
+    }
+
+    impl ArmedTestStorageFault {
+        fn new(
+            operation: TestStorageOperation,
+            occurrence: usize,
+            kind: TestStorageFaultKind,
+        ) -> Self {
+            arm_test_storage_fault(operation, occurrence, kind);
+            Self { active: true }
+        }
+
+        fn finish(mut self) -> TestStorageFault {
+            let fault =
+                take_test_storage_fault().expect("the test storage fault should remain armed");
+            self.active = false;
+            fault
+        }
+    }
+
+    impl Drop for ArmedTestStorageFault {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = take_test_storage_fault();
+            }
+        }
+    }
+
+    static DURABILITY_FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+
+    struct DurabilityFixtureRoot {
+        path: PathBuf,
+    }
+
+    impl DurabilityFixtureRoot {
+        fn new(case: &str) -> Self {
+            use std::sync::atomic::Ordering;
+
+            let sequence = DURABILITY_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let path = env::temp_dir().join(format!(
+                "sorotte-updater-durability-{}-{nonce}-{sequence}-{case}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)
+                .expect("the nonce-owned durability fixture root should be created");
+            Self { path }
+        }
+    }
+
+    impl Drop for DurabilityFixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 
     #[cfg(windows)]
@@ -2409,7 +2711,7 @@ mod tests {
         }
     }
 
-    fn assert_matrix_state(plan: &ReplacementPlan, committed: bool) {
+    fn assert_matrix_target_state(plan: &ReplacementPlan, committed: bool) {
         for kind in MatrixFileKind::ALL {
             let expected = if committed {
                 replacement_bytes(kind)
@@ -2430,6 +2732,10 @@ mod tests {
                 ),
             }
         }
+    }
+
+    fn assert_matrix_state(plan: &ReplacementPlan, committed: bool) {
+        assert_matrix_target_state(plan, committed);
         assert!(
             plan.files
                 .iter()
@@ -2440,6 +2746,66 @@ mod tests {
             !plan.journal_path.exists(),
             "successful recovery must remove its journal"
         );
+    }
+
+    fn assert_authenticated_journal_selection(plan: &ReplacementPlan, committed: bool) {
+        let contents = fs::read_to_string(&plan.journal_path)
+            .expect("the retained recovery journal should be readable");
+        let mut lines = contents.lines();
+        let journal: ReplacementJournal = serde_json::from_str(
+            lines
+                .next()
+                .expect("the retained recovery journal should have a header"),
+        )
+        .expect("the retained recovery journal header should parse");
+        validate_journal(&journal).expect("the retained recovery journal should authenticate");
+        assert_eq!(
+            journal.entries.len(),
+            plan.files.len(),
+            "the journal must authenticate the complete transaction"
+        );
+        assert_eq!(
+            lines.any(|line| {
+                serde_json::from_str::<JournalCommit>(line)
+                    .map(|commit| commit.committed)
+                    .unwrap_or(false)
+            }),
+            committed,
+            "only the authenticated commit marker may select forward cleanup"
+        );
+    }
+
+    fn assert_durability_fixture_scope(
+        fixture: &DurabilityFixtureRoot,
+        transaction_root: &Path,
+        outside_sentinel: &Path,
+        expected_sentinel: &[u8],
+        plan: &ReplacementPlan,
+    ) {
+        assert_eq!(
+            fs::read(outside_sentinel).unwrap(),
+            expected_sentinel,
+            "the updater transaction must not mutate the sibling sentinel"
+        );
+        assert!(transaction_root.starts_with(&fixture.path));
+        assert!(plan.target_dir.starts_with(transaction_root));
+        assert!(plan.journal_path.starts_with(&plan.target_dir));
+        for file in &plan.files {
+            for path in [&file.target, &file.temporary, &file.backup] {
+                assert!(
+                    path.starts_with(transaction_root),
+                    "transaction path escaped the nonce-owned fixture: {}",
+                    path.display()
+                );
+            }
+            if let Some(source) = file.source.as_ref() {
+                assert!(
+                    source.starts_with(transaction_root),
+                    "transaction source escaped the nonce-owned fixture: {}",
+                    source.display()
+                );
+            }
+        }
     }
 
     fn apply_matrix_fault(
@@ -2491,6 +2857,298 @@ mod tests {
                 }
             },
         }
+    }
+
+    #[test]
+    fn tc_updater_002_parent_directory_sync_failure_retains_authenticated_recovery() {
+        let fixture = DurabilityFixtureRoot::new("tc-updater-002");
+        let transaction_root = fixture.path.join("transaction");
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        let plan = recovery_matrix_plan(&transaction_root);
+        let injected = ArmedTestStorageFault::new(
+            TestStorageOperation::ParentDirectorySync,
+            1,
+            TestStorageFaultKind::DeterministicAccessDenied,
+        );
+
+        let result = apply_replacement_plan(&plan);
+        let fault = injected.finish();
+
+        assert!(
+            fault.fired,
+            "TC-UPDATER-002: updater transaction completed without reaching a parent-directory sync boundary"
+        );
+        assert_eq!(fault.remaining_matches, 0);
+        assert!(
+            result.is_err(),
+            "the characterized parent-directory sync failure must abort or defer the transaction"
+        );
+        assert_authenticated_journal_selection(&plan, false);
+        assert_matrix_target_state(&plan, false);
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+
+        recover_pending_update(&plan.target_dir)
+            .expect("the authenticated uncommitted journal should recover the old install");
+        assert_matrix_state(&plan, false);
+        recover_pending_update(&plan.target_dir)
+            .expect("a second recovery after the directory-sync fault should be a no-op");
+        assert_matrix_state(&plan, false);
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+    }
+
+    #[test]
+    fn deterministic_updater_storage_fault_matrix_recovers_complete_old_or_new_installs() {
+        #[derive(Clone, Copy)]
+        struct Case {
+            label: &'static str,
+            operation: TestStorageOperation,
+            occurrence: usize,
+            kind: TestStorageFaultKind,
+            apply_succeeds: bool,
+            committed: bool,
+            retained_journal_selection: Option<bool>,
+        }
+
+        let cases = [
+            Case {
+                label: "journal-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "commit-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "journal-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "commit-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "first-replace-access-denied",
+                operation: TestStorageOperation::Replace,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "second-replace-access-denied",
+                operation: TestStorageOperation::Replace,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "replace-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "committed-backup-remove-access-denied",
+                operation: TestStorageOperation::Remove,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+            Case {
+                label: "committed-journal-remove-access-denied",
+                operation: TestStorageOperation::Remove,
+                occurrence: 7,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+            Case {
+                label: "committed-cleanup-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 8,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+        ];
+
+        for case in cases {
+            let fixture = DurabilityFixtureRoot::new(case.label);
+            let transaction_root = fixture.path.join("transaction");
+            let outside_sentinel = write_relative(
+                &fixture.path,
+                "outside/sentinel.bin",
+                b"outside-must-not-change",
+            );
+            let plan = recovery_matrix_plan(&transaction_root);
+            let injected = ArmedTestStorageFault::new(case.operation, case.occurrence, case.kind);
+
+            let result = apply_replacement_plan(&plan);
+            let fault = injected.finish();
+
+            assert!(
+                fault.fired,
+                "{} did not reach {:?} occurrence {}",
+                case.label, case.operation, case.occurrence
+            );
+            assert_eq!(fault.remaining_matches, 0);
+            assert_eq!(
+                result.is_ok(),
+                case.apply_succeeds,
+                "{} produced an unexpected apply result: {result:?}",
+                case.label
+            );
+            if let Err(error) = result.as_ref() {
+                assert!(
+                    error.contains(case.kind.label()),
+                    "{} lost the deterministic fault identity: {error}",
+                    case.label
+                );
+            }
+            assert_matrix_target_state(&plan, case.committed);
+            assert_durability_fixture_scope(
+                &fixture,
+                &transaction_root,
+                &outside_sentinel,
+                b"outside-must-not-change",
+                &plan,
+            );
+            match case.retained_journal_selection {
+                Some(committed) => assert_authenticated_journal_selection(&plan, committed),
+                None => assert!(
+                    !plan.journal_path.exists(),
+                    "{} unexpectedly retained its journal",
+                    case.label
+                ),
+            }
+
+            recover_pending_update(&plan.target_dir)
+                .unwrap_or_else(|error| panic!("{} failed first recovery: {error}", case.label));
+            assert_matrix_state(&plan, case.committed);
+            recover_pending_update(&plan.target_dir).unwrap_or_else(|error| {
+                panic!("{} failed idempotent recovery: {error}", case.label)
+            });
+            assert_matrix_state(&plan, case.committed);
+            assert_durability_fixture_scope(
+                &fixture,
+                &transaction_root,
+                &outside_sentinel,
+                b"outside-must-not-change",
+                &plan,
+            );
+        }
+        assert_eq!(cases.len(), 13);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_parent_directory_sync_reports_reversible_share_denial() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+        let fixture = DurabilityFixtureRoot::new("windows-directory-share-denial");
+        let target = fixture.path.join("target");
+        fs::create_dir(&target).unwrap();
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        sync_directory(&target).expect("the test-owned directory should initially synchronize");
+        let exclusive = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&target)
+            .expect("the test should acquire an exclusive directory handle");
+
+        let error = sync_directory(&target)
+            .expect_err("the exclusive test-owned handle should deny directory synchronization");
+
+        assert!(
+            error.contains("failed synchronizing updater directory"),
+            "unexpected directory share-denial diagnostic: {error}"
+        );
+        drop(exclusive);
+        sync_directory(&target)
+            .expect("directory synchronization should recover after releasing the owned handle");
+        assert_eq!(
+            fs::read(outside_sentinel).unwrap(),
+            b"outside-must-not-change"
+        );
     }
 
     #[cfg(any(unix, windows))]
