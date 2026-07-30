@@ -687,3 +687,170 @@ source = "crates/sorotte-player-api/src/lib.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-CODEC-001"
+title = "Protocol decoding is total and preserves supported, composite, and duplicate semantics"
+risk = "high"
+owners = ["protocol", "client-core", "server"]
+invariants = [
+    "arbitrary bounded byte-derived strings and recursive JSON cannot panic or hang any public decoding entrypoint",
+    "all supported envelopes roundtrip through wire JSON with their command and extraction identities intact",
+    "composite decoding matches an independent structural oracle across whitespace, malformed, unknown, and mixed items",
+    "top-level duplicate commands retain first position and last value without inventing extra items",
+]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.bytes"
+kind = "rust-test"
+oracle = "generated-totality-and-cross-entrypoint"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::arbitrary_byte_strings_are_total_across_public_decode_entrypoints"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.json"
+kind = "rust-test"
+oracle = "generated-structural-metamorphic"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::arbitrary_json_matches_structural_and_whitespace_oracles"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.roundtrip"
+kind = "rust-test"
+oracle = "generated-wire-roundtrip"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::supported_messages_roundtrip_with_wire_and_extraction_invariants"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.duplicates"
+kind = "rust-test"
+oracle = "generated-independent-duplicate-oracle"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::generated_duplicate_composites_match_first_position_last_value_oracle"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-IPC-003"
+title = "Duplex IPC faults preserve correlation, ordering, at-most-once delivery, and terminal fencing"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "split and coalesced responses, events, recoverable errors, stale duplicates, future reordering, and half-closes match an independent command-correlation model",
+    "a delayed response cannot let a later nonblocking command overtake or duplicate events and completion",
+    "a withheld response produces one bounded timeout, closes the connection, and prevents all later writes",
+]
+
+[[behavior.proof]]
+id = "PL-IPC-003.model"
+kind = "rust-test"
+oracle = "exhaustive-duplex-reference-model"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::duplex_fault_histories_match_independent_correlation_and_terminal_model"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-003.delay"
+kind = "rust-test"
+oracle = "condition-variable-order-and-at-most-once"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::delayed_duplex_response_preserves_event_completion_order_and_at_most_once_delivery"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-003.deadline"
+kind = "rust-test"
+oracle = "bounded-deadline-terminal-fence"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::withheld_duplex_response_times_out_once_and_terminally_fences_later_writes"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-PROC-001"
+title = "Player subprocess ownership and cleanup are explicit, bounded, and observable"
+risk = "high"
+owners = ["cli", "player"]
+invariants = [
+    "managed ownership kills, waits, reaps, and removes its IPC artifact within a deterministic parent-side deadline",
+    "cleanup remains safe and complete when the managed child has already exited",
+    "an unmanaged launch transfers lifetime ownership to the child while an owned early-exit handle retains its exact status",
+    "external spawn failures retain program context without exposing argument values and child stdout or stderr cannot contaminate CLI output",
+]
+
+[[behavior.proof]]
+id = "PL-PROC-001.managed-cleanup"
+kind = "rust-test"
+oracle = "exact-child-barrier-and-reap"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "mpv_startup::managed_process::process_supervision_tests::managed_guard_drop_kills_waits_reaps_and_removes_ipc_artifact"
+source = "crates/sorotte-cli/src/mpv_startup/managed_process.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.already-exited"
+kind = "rust-test"
+oracle = "exact-child-idempotent-cleanup"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "mpv_startup::managed_process::process_supervision_tests::managed_guard_cleanup_is_idempotent_after_child_already_exited"
+source = "crates/sorotte-cli/src/mpv_startup/managed_process.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.external-ownership"
+kind = "rust-test"
+oracle = "exact-child-lifetime-handoff"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::mpv_startup::external_launch::unmanaged_external_launch_hands_process_ownership_to_the_child"
+source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.spawn-redaction"
+kind = "rust-test"
+oracle = "exact-process-spawn-diagnostic"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::mpv_startup::external_launch::external_spawn_failure_is_contextual_and_redacts_arguments"
+source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]

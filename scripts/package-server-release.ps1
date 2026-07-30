@@ -153,6 +153,17 @@ function Get-ReleasePlatform {
     throw "Server release packaging currently supports Windows and Linux only"
 }
 
+function Get-SourceSha {
+    $sourceSha = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0) {
+        throw "git rev-parse HEAD failed with exit code $LASTEXITCODE"
+    }
+    if ($sourceSha -notmatch '^[0-9a-f]{40}$') {
+        throw "git rev-parse HEAD returned an invalid commit SHA: $sourceSha"
+    }
+    return $sourceSha
+}
+
 function Copy-ReleaseFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -176,6 +187,7 @@ if (-not $SkipBuild) {
 $version = Get-SorotteServerVersion
 $platform = Get-ReleasePlatform
 $packageForWindows = $platform.StartsWith("windows")
+$platformName = if ($packageForWindows) { "windows" } else { "linux" }
 $binaryName = if ($packageForWindows) { "sorotte-server.exe" } else { "sorotte-server" }
 $packageName = "sorotte-server-$version-$platform"
 $symbolsPackageName = "$packageName-symbols"
@@ -203,6 +215,31 @@ Copy-ReleaseFile $binarySource (Join-Path $packageRoot $binaryName)
 Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "README.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $packageRoot "SERVER_RELEASE.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
+
+$manifestFiles = @()
+foreach ($relativePath in @($binaryName, "README.md", "SERVER_RELEASE.md", "LICENSE")) {
+    $payloadPath = Join-Path $packageRoot $relativePath
+    $payloadItem = Get-Item -LiteralPath $payloadPath
+    $payloadHash = Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256
+    $manifestFiles += [ordered]@{
+        path = $relativePath
+        size = [long]$payloadItem.Length
+        sha256 = $payloadHash.Hash.ToLowerInvariant()
+    }
+}
+$manifest = [ordered]@{
+    schemaVersion = 1
+    package = "sorotte-server"
+    version = $version
+    platform = $platformName
+    architecture = "x86_64"
+    sourceSha = Get-SourceSha
+    files = $manifestFiles
+}
+$manifestJson = $manifest | ConvertTo-Json -Depth 4
+Write-Utf8ArtifactFile `
+    -Path (Join-Path $packageRoot "manifest.json") `
+    -Content $manifestJson
 
 $pdbPath = $null
 if ($packageForWindows) {

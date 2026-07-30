@@ -33,6 +33,7 @@ use std::{
 
 mod command_tests;
 mod event_tests;
+mod ipc_duplex_fault_tests;
 mod ipc_tests;
 mod legacy_ui_tests;
 mod network_options_lua_tests;

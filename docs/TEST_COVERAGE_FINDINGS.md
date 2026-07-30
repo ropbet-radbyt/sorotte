@@ -1665,3 +1665,99 @@ and source-bound production changed-line denominator, rejects structurally
 inconsistent or unmapped executable lines, and publishes phase-aware JSON even
 when base resolution, profile generation, either native export, conversion, or
 policy evaluation fails.
+
+## TC-PROTOCOL-001: Duplicate nested Set members retain collapsed execution entries
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **High (client and server can execute the same decoded line
+differently)**
+Detection: generated duplicate-command composites plus a minimized
+deterministic nested-`Set` reproduction
+
+The protocol codec intentionally gives duplicate top-level commands
+first-position/last-value semantics. Nested `Set` decoding also collapses a
+duplicate field to its final payload value, but its separate `command_order`
+ledger retains every source occurrence. For an input shaped like:
+
+```text
+Set: ready(false), file(A), ready(true), file(B)
+```
+
+the decoded payload contains only `ready(true)` and `file(B)`, while
+`command_order` still contains `ready,file,ready,file`. Server normalization
+consumes each optional field once. Client normalization instead follows the
+order ledger and clones the collapsed payload for each retained occurrence,
+so it can apply the final ready and file values twice. The wire input,
+therefore, has no single execution meaning across consumers.
+
+The expected-failure characterization asserts that each collapsed nested
+member appears once in execution order and panics only at:
+
+```text
+collapsed duplicate Set members must appear once in command order
+```
+
+The lean compatible fix is to deduplicate nested `command_order` by first
+position while retaining the final decoded value, matching the established
+top-level rule. The safer protocol design is to reject duplicate keys before
+`serde_json` object construction, but that is a compatibility decision because
+existing peers may already emit duplicates. Production behavior remains
+unchanged in this coverage slice; the characterization expires on 2026-09-30.
+
+## TC-CLI-001: Managed attach waits through its deadline after the child exits
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **Medium (failed player startup remains unnecessarily blocked)**
+Detection: exact child-process early-exit barrier and bounded parent clock
+
+Managed launch starts an owned child and polls for its IPC endpoint. The retry
+loop does not inspect `Child::try_wait`, so an immediately exited player is
+indistinguishable from a still-starting player until the full connection
+deadline expires. The deterministic fixture publishes its start and exits;
+the production attach path is configured with a 300 ms deadline and still
+burns that deadline instead of returning within the characterization's 200 ms
+early-exit bound.
+
+The expected-failure oracle is:
+
+```text
+managed attach must stop retrying when its child exits
+```
+
+The proportional fix is to check `try_wait` before each retry sleep and return
+an error containing the exit status as soon as it is available. The child must
+remain owned by the existing guard so the same cleanup path still waits/reaps
+it and removes the IPC artifact. This does not require a new supervisor or
+async task. Production behavior remains unchanged in this slice; the
+characterization expires on 2026-09-30.
+
+## TC-CLI-002: Unmanaged external launch inherits CLI stdin
+
+Status: **Open; executable characterization added 2026-07-30**
+
+Severity: **High (the player can consume commands or data intended for the
+interactive CLI)**
+Detection: nested exact-process coordinator with separate stdin, stdout, and
+stderr sentinels
+
+The unmanaged external-player path explicitly sends child stdout and stderr to
+the null device but leaves stdin unspecified. `Command` therefore inherits the
+CLI's stdin handle. The fixture proves a parent stdin token reaches the child
+even though the child's stdout and stderr sentinels cannot leak back into the
+parent. In an interactive session, an external player can race the CLI for
+input or consume data intended for Sorotte.
+
+The expected-failure oracle is:
+
+```text
+external launch must not inherit the CLI stdin handle
+```
+
+The lean complete fix is `.stdin(Stdio::null())` on both unmanaged and managed
+player `Command` construction. Sorotte does not use stdin as a player-control
+channel; mpv control is through IPC, so no supported behavior depends on
+inheritance. The positive stdout/stderr containment and detached ownership
+tests remain independent. Production behavior remains unchanged in this
+slice; the characterization expires on 2026-09-30.

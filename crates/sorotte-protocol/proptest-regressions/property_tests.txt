@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# Seeds are scoped to src/property_tests.rs and the exact strategy shapes in
+# that file. Named deterministic examples remain readable specifications;
+# minimized generated failures are added here automatically for durable replay.
+cc 7e60698abf1868ad3ad0ef4f4e56c9e1b48a1a235525441ae3cf3a4a5ba7dc4b # shrinks to entries = [RawCommandEntry { command_index: 1, ordinal: 0, escape_key: false }, RawCommandEntry { command_index: 4, ordinal: 0, escape_key: false }]

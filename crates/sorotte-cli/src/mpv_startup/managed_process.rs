@@ -485,6 +485,215 @@ mod version_requirement_tests {
     }
 }
 
+#[cfg(test)]
+mod process_supervision_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const MANAGED_PROCESS_FIXTURE_TEST: &str = "mpv_startup::managed_process::process_supervision_tests::managed_process_fixture_entrypoint";
+    const MANAGED_PROCESS_FIXTURE_ROLE: &str = "SOROTTE_TEST_MANAGED_PROCESS_FIXTURE_ROLE";
+    const MANAGED_PROCESS_FIXTURE_ROOT: &str = "SOROTTE_TEST_MANAGED_PROCESS_FIXTURE_ROOT";
+
+    static PROCESS_FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct ProcessFixtureDirectory {
+        path: PathBuf,
+    }
+
+    impl ProcessFixtureDirectory {
+        fn new(case: &str) -> Self {
+            let sequence = PROCESS_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sorotte-cli-managed-process-{}-{sequence}-{case}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("process fixture directory should be created");
+            Self { path }
+        }
+
+        fn marker(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for ProcessFixtureDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn wait_for_process_marker(path: &Path, description: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {description}: {}",
+                path.display()
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn spawn_managed_process_fixture(role: &str, fixture: &ProcessFixtureDirectory) -> Child {
+        Command::new(std::env::current_exe().expect("current test executable should be available"))
+            .args(["--exact", MANAGED_PROCESS_FIXTURE_TEST, "--nocapture"])
+            .env(MANAGED_PROCESS_FIXTURE_ROLE, role)
+            .env(MANAGED_PROCESS_FIXTURE_ROOT, &fixture.path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("managed process fixture should spawn")
+    }
+
+    fn drop_guard_with_deadline(guard: ManagedMpvProcessGuard) {
+        let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(1);
+        let drop_thread = std::thread::spawn(move || {
+            drop(guard);
+            let _ = finished_tx.send(());
+        });
+        finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("managed process termination and reap should be bounded");
+        drop_thread
+            .join()
+            .expect("managed process drop thread should not panic");
+    }
+
+    #[test]
+    fn managed_process_fixture_entrypoint() {
+        let Some(role) = std::env::var_os(MANAGED_PROCESS_FIXTURE_ROLE) else {
+            return;
+        };
+        let root = PathBuf::from(
+            std::env::var_os(MANAGED_PROCESS_FIXTURE_ROOT)
+                .expect("process fixture root should accompany fixture role"),
+        );
+        match role.to_string_lossy().as_ref() {
+            "wait-for-release" => {
+                std::fs::write(root.join("child-started"), b"started")
+                    .expect("managed child should publish its start barrier");
+                wait_for_process_marker(&root.join("release-child"), "managed child release");
+                std::fs::write(root.join("child-finished"), b"finished")
+                    .expect("managed child should publish voluntary completion");
+            }
+            "exit-immediately" => {
+                std::fs::write(root.join("child-started"), b"started")
+                    .expect("early-exit child should publish its start barrier");
+            }
+            unexpected => panic!("unknown managed process fixture role: {unexpected}"),
+        }
+    }
+
+    #[test]
+    fn managed_guard_drop_kills_waits_reaps_and_removes_ipc_artifact() {
+        let fixture = ProcessFixtureDirectory::new("guard-drop");
+        let child = spawn_managed_process_fixture("wait-for-release", &fixture);
+        wait_for_process_marker(&fixture.marker("child-started"), "managed child start");
+        let ipc_artifact = fixture.marker("managed-ipc.sock");
+        std::fs::write(&ipc_artifact, b"stale endpoint")
+            .expect("test IPC artifact should be created");
+        let guard = ManagedMpvProcessGuard {
+            child,
+            ipc_cleanup_path: Some(ipc_artifact.clone()),
+        };
+
+        assert!(
+            !fixture.marker("child-finished").exists(),
+            "managed child should remain owned and running before guard shutdown"
+        );
+        drop_guard_with_deadline(guard);
+
+        assert!(
+            !fixture.marker("child-finished").exists(),
+            "managed shutdown should kill the child instead of releasing it voluntarily"
+        );
+        assert!(
+            !ipc_artifact.exists(),
+            "managed shutdown should remove the owned IPC artifact"
+        );
+    }
+
+    #[test]
+    fn managed_guard_cleanup_is_idempotent_after_child_already_exited() {
+        let fixture = ProcessFixtureDirectory::new("early-exit-cleanup");
+        let mut child = spawn_managed_process_fixture("exit-immediately", &fixture);
+        wait_for_process_marker(&fixture.marker("child-started"), "early-exit child start");
+        let status = child
+            .wait()
+            .expect("early-exit child should be deterministically reaped");
+        assert!(status.success(), "fixture child should exit successfully");
+        let ipc_artifact = fixture.marker("managed-ipc.sock");
+        std::fs::write(&ipc_artifact, b"stale endpoint")
+            .expect("test IPC artifact should be created");
+
+        drop_guard_with_deadline(ManagedMpvProcessGuard {
+            child,
+            ipc_cleanup_path: Some(ipc_artifact.clone()),
+        });
+
+        assert!(
+            !ipc_artifact.exists(),
+            "cleanup should still remove IPC state after the child has exited"
+        );
+    }
+
+    #[test]
+    fn managed_launch_missing_binary_fails_before_process_ownership_is_created() {
+        let fixture = ProcessFixtureDirectory::new("missing-binary");
+        let missing_binary = fixture.marker("missing-mpv");
+        let error = spawn_managed_mpv_and_attach(ManagedMpvLaunchEnvConfig {
+            enabled: true,
+            mpv_bin: Some(missing_binary.clone()),
+            ipc_path: Some(fixture.marker("unused-ipc").to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .expect_err("missing managed mpv binary must fail")
+        .to_string();
+
+        assert!(
+            error.contains("managed mpv binary does not exist"),
+            "missing-binary failure should identify the validation boundary: {error}"
+        );
+        assert!(
+            error.contains(missing_binary.to_string_lossy().as_ref()),
+            "missing-binary failure should identify the requested program: {error}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "managed attach must stop retrying when its child exits")]
+    fn known_defect_managed_attach_waits_full_deadline_after_child_exit() {
+        let fixture = ProcessFixtureDirectory::new("attach-after-child-exit");
+        let ipc_path = fixture.marker("never-created-ipc");
+        let timeout = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let error = spawn_managed_mpv_and_attach(ManagedMpvLaunchEnvConfig {
+            enabled: true,
+            mpv_bin: Some(
+                std::env::current_exe().expect("current test executable should be available"),
+            ),
+            ipc_path: Some(ipc_path.to_string_lossy().into_owned()),
+            connect_timeout_ms: Some(
+                u32::try_from(timeout.as_millis()).expect("test timeout should fit u32"),
+            ),
+            connect_poll_interval_ms: Some(1),
+            ..Default::default()
+        })
+        .expect_err("test harness child cannot create mpv JSON IPC")
+        .to_string();
+        let elapsed = started.elapsed();
+        assert!(
+            error.contains("managed mpv launched but JSON IPC attach failed"),
+            "failure should reach the managed attach boundary: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "managed attach must stop retrying when its child exits"
+        );
+    }
+}
+
 fn generate_managed_mpv_ipc_path() -> anyhow::Result<(String, Option<PathBuf>)> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

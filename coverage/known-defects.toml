@@ -39,3 +39,45 @@ package = "sorotte-server"
 source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
 test = "tests::runtime_config_tests::known_defect_tls_rotation_ignores_non_max_member_edit_on_filesystem"
 expected_panic = "rotating a required TLS bundle member must invalidate the cached context"
+
+[[defect]]
+id = "TC-PROTOCOL-001"
+title = "Duplicate nested Set members retain collapsed execution entries"
+severity = "high"
+owners = ["protocol", "client-core", "server"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-protocol"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+test = "property_tests::known_defect_duplicate_set_members_retain_collapsed_execution_entries"
+expected_panic = "collapsed duplicate Set members must appear once in command order"
+
+[[defect]]
+id = "TC-CLI-001"
+title = "Managed attach waits through its deadline after the child exits"
+severity = "medium"
+owners = ["cli", "player"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-cli"
+source = "crates/sorotte-cli/src/mpv_startup/managed_process.rs"
+test = "mpv_startup::managed_process::process_supervision_tests::known_defect_managed_attach_waits_full_deadline_after_child_exit"
+expected_panic = "managed attach must stop retrying when its child exits"
+
+[[defect]]
+id = "TC-CLI-002"
+title = "Unmanaged external launch inherits CLI stdin"
+severity = "high"
+owners = ["cli", "player"]
+finding = "docs/TEST_COVERAGE_FINDINGS.md"
+expires = "2026-09-30"
+
+[[defect.characterization]]
+package = "sorotte-cli"
+source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
+test = "tests::mpv_startup::external_launch::known_defect_external_launch_inherits_cli_stdin"
+expected_panic = "external launch must not inherit the CLI stdin handle"

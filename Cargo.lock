@@ -3803,6 +3803,7 @@ dependencies = [
 name = "sorotte-protocol"
 version = "0.2.4"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
  "sorotte-secret",

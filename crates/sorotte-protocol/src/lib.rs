@@ -62,4 +62,6 @@ pub use set::{
 pub use state::{IgnoringOnTheFlyPayload, PingPayload, PlaystatePayload, StatePayload};
 
 #[cfg(test)]
+mod property_tests;
+#[cfg(test)]
 mod tests;

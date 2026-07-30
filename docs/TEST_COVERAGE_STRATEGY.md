@@ -1827,8 +1827,12 @@ producer, artifact hashes, line-model delta, adversarial inventory, and
 six-phase proof are retained in
 [`llvm-native-line-map-20260728.md`](evidence/test-coverage/llvm-native-line-map-20260728.md).
 Deterministic clock seams now cover the first CLI connection-phase and server
-TLS-rotation boundaries; broader CLI, persistence scheduling, process
-supervision, and native GUI timing remain.
+TLS-rotation boundaries. Exact subprocess fixtures now cover managed
+kill/wait/reap and IPC cleanup, already-exited cleanup, unmanaged lifetime
+handoff, early-exit status, spawn diagnostics, and stdout/stderr containment.
+They exposed open early-exit-deadline and inherited-stdin defects. Broader CLI
+and persistence scheduling, OS hard-kill/permission faults, successful
+managed-IPC attachment without real mpv, and native GUI timing remain.
 
 ### Tranche C — property, parser, and persistence faults
 
@@ -1847,22 +1851,27 @@ Acceptance:
 - generated secrets never enter diagnostic artifacts.
 
 Branch progress: reducer-input Proptest, exhaustive stale-epoch coverage, a
-shrinkable reconnect restore reference model, protocol order permutations,
-split/coalesced/invalid IPC framing through the production command worker,
-response/event interleaving, stale duplicate and future-response rejection,
-truncation/half-close handling, corrupt quota-secret preservation, a
-deterministic concurrent-secret schedule, a SQLite migration failpoint, and 15
-child-process persistence interruption points with integrity-checked
-idempotent reopen are implemented. Generated transcript and `PlayerError`
-taint corpora cover
+shrinkable reconnect restore reference model, shrinkable protocol byte/JSON/
+supported-envelope/duplicate-composite properties, protocol order
+permutations, split/coalesced/invalid IPC framing through the production
+command worker, and a request-reactive duplex IPC model are implemented. The
+duplex model exhausts 343 three-command histories over split/coalesced
+success, recoverable rejection, stale duplicate, future reorder, read
+half-close, and write disconnect, then separately proves gated delayed
+ordering and a withheld-response terminal deadline. Corrupt quota-secret
+preservation, a deterministic concurrent-secret schedule, a SQLite migration
+failpoint, and 15 child-process persistence interruption points with
+integrity-checked idempotent reopen are also implemented. Generated transcript
+and `PlayerError` taint corpora cover
 hundreds of nested, escaped, encoded, and round-tripped cases; all three
 redaction families they found are now positive regressions backed by one
 shared classification policy. The reconnect model exposed one open
-acknowledgement-fencing defect with two exact schedules. This is not yet
-coverage-guided fuzzing, a transport-level reconnect reference model, a
-bidirectional real-pipe drop/delay harness, filesystem/power-loss fault
-injection, or a durability contract for actor intent that has not entered a
-transaction.
+acknowledgement-fencing defect with two exact schedules. Generated duplicate
+protocol inputs exposed one open nested-`Set` execution-order asymmetry. This
+is not yet coverage-guided fuzzing, raw socket-byte framing, a transport-level
+reconnect reference model, kernel named-pipe fragmentation/partial-write
+injection, filesystem/power-loss fault injection, or a durability contract for
+actor intent that has not entered a transaction.
 
 ### Tranche D — real system and deep analysis
 
@@ -1877,7 +1886,15 @@ Item 2 is now partially implemented: weekly bounded privacy, server
 controlled-room authorization, and protocol codec/redaction shards have 100%
 viable kill ratchets and fail-closed evidence. Protocol transport/session
 state, persistence arbitration, lifecycle, and configuration decision shards
-remain outstanding.
+remain outstanding. Item 5 is implemented for the standalone server archive:
+the package contains a source-SHA-bound manifest with an exact payload
+inventory, and the release workflow safely extracts, verifies, and executes
+the exact archive and optional symbols bundle before uploading those same
+files. The consumer rejects checksum drift, unsafe or colliding paths,
+links/special files, decompression bounds, inventory/schema/source drift, and
+unexpected upload-directory contents; then it requires the extracted binary's
+version and a loopback protocol Hello. GUI packages, server containers, SBOM/
+signature verification, and post-publication digest comparison remain.
 
 Acceptance:
 
@@ -1981,7 +1998,9 @@ The most valuable remaining next steps are:
    behavior catalog;
 5. add one genuine native GUI-to-real-mpv vertical harness with isolated
    configuration and complete failure artifacts;
-6. test and publish the same immutable release artifact.
+6. extend the proven server archive consumer to GUI packages and the server
+   container, then verify the public release/registry digest is the same tested
+   content.
 
 That combination encodes behavior mechanically, searches the failure spaces
 that produced the post-report regressions, and makes future verification
