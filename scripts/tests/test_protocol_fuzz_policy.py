@@ -24,9 +24,17 @@ CLI_LIB_PATH = REPO_ROOT / "crates" / "sorotte-cli" / "src" / "lib.rs"
 CLI_PROTOCOL_IO_PATH = (
     REPO_ROOT / "crates" / "sorotte-cli" / "src" / "protocol_io.rs"
 )
+PLAYER_MPV_MANIFEST_PATH = (
+    REPO_ROOT / "crates" / "sorotte-player-mpv" / "Cargo.toml"
+)
+PLAYER_MPV_LIB_PATH = REPO_ROOT / "crates" / "sorotte-player-mpv" / "src" / "lib.rs"
+PLAYER_MPV_IPC_PATH = REPO_ROOT / "crates" / "sorotte-player-mpv" / "src" / "ipc.rs"
 FUZZ_TARGET_PATH = REPO_ROOT / "fuzz" / "fuzz_targets" / "protocol_line.rs"
 FRAMED_SESSION_TARGET_PATH = (
     REPO_ROOT / "fuzz" / "fuzz_targets" / "framed_session.rs"
+)
+MPV_FRAMED_TRANSCRIPT_TARGET_PATH = (
+    REPO_ROOT / "fuzz" / "fuzz_targets" / "mpv_framed_transcript.rs"
 )
 FUZZ_RUNNER_PATH = REPO_ROOT / "fuzz" / "run_protocol_fuzz.py"
 FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
@@ -36,6 +44,13 @@ CORPUS_FILE_COUNT = 16
 FRAMED_SESSION_CORPUS_PATH = "crates/sorotte-cli/tests/corpus/framed_session"
 FRAMED_SESSION_CORPUS_FILE_COUNT = 14
 FRAMED_SESSION_CORPUS_DIRECTORY = REPO_ROOT / FRAMED_SESSION_CORPUS_PATH
+MPV_FRAMED_TRANSCRIPT_CORPUS_PATH = (
+    "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript"
+)
+MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT = 12
+MPV_FRAMED_TRANSCRIPT_CORPUS_DIRECTORY = (
+    REPO_ROOT / MPV_FRAMED_TRANSCRIPT_CORPUS_PATH
+)
 FUZZ_TOOLCHAIN = "nightly-2026-07-29"
 FUZZ_SECONDS_EXPRESSION = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'push') "
@@ -45,6 +60,8 @@ FUZZ_OUTPUT_PATH = "target/fuzz-ci/protocol-line"
 FUZZ_TARGET = "protocol_line"
 FRAMED_SESSION_OUTPUT_PATH = "target/fuzz-ci/framed-session"
 FRAMED_SESSION_TARGET = "framed_session"
+MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH = "target/fuzz-ci/mpv-framed-transcript"
+MPV_FRAMED_TRANSCRIPT_TARGET = "mpv_framed_transcript"
 
 PINNED_USES = {
     "Checkout": (
@@ -86,6 +103,18 @@ EXPECTED_FRAMED_SESSION_STEP_NAMES = [
     "Build framed-session fuzz target",
     "Run bounded framed-session fuzz target",
     "Upload framed-session fuzz evidence",
+]
+EXPECTED_MPV_FRAMED_TRANSCRIPT_STEP_NAMES = [
+    "Checkout",
+    "Setup pinned nightly Rust",
+    "Setup Python",
+    "Install CI policy prerequisites",
+    "Install pinned cargo-fuzz",
+    "Verify exact fuzz toolchain",
+    "Validate protocol fuzz policy",
+    "Build mpv framed-transcript fuzz target",
+    "Run bounded mpv framed-transcript fuzz target",
+    "Upload mpv framed-transcript fuzz evidence",
 ]
 EXPECTED_PATHS = [
     "Cargo.toml",
@@ -182,7 +211,12 @@ def assert_workflow_contract(text: str) -> None:
     )
 
     require(
-        set(workflow["jobs"]) == {"protocol-fuzz", "framed-session-fuzz"},
+        set(workflow["jobs"])
+        == {
+            "protocol-fuzz",
+            "framed-session-fuzz",
+            "mpv-framed-transcript-fuzz",
+        },
         "unexpected fuzz jobs",
     )
     job = workflow["jobs"]["protocol-fuzz"]
@@ -199,8 +233,8 @@ def assert_workflow_contract(text: str) -> None:
 
     uses_matches = USES_LINE.findall(text)
     require(
-        len(uses_matches) == len(PINNED_USES) * 2,
-        "every action in both fuzz jobs must be commit-pinned",
+        len(uses_matches) == len(PINNED_USES) * 3,
+        "every action in all fuzz jobs must be commit-pinned",
     )
     for step_name, expected_uses in PINNED_USES.items():
         step = named_step(job, step_name)
@@ -453,6 +487,153 @@ def assert_workflow_contract(text: str) -> None:
         },
         "framed-session evidence retention contract changed",
     )
+
+    mpv_job = workflow["jobs"]["mpv-framed-transcript-fuzz"]
+    require(
+        mpv_job.get("runs-on") == "ubuntu-latest",
+        "mpv framed-transcript testing must run on Linux",
+    )
+    require(
+        mpv_job.get("timeout-minutes") == "25",
+        "mpv framed-transcript job timeout must remain bounded",
+    )
+    require(
+        mpv_job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
+        "mpv framed-transcript event-specific duration changed",
+    )
+    require(
+        [step.get("name") for step in mpv_job.get("steps", [])]
+        == EXPECTED_MPV_FRAMED_TRANSCRIPT_STEP_NAMES,
+        "mpv framed-transcript step order changed",
+    )
+    for step_name in (
+        "Checkout",
+        "Setup pinned nightly Rust",
+        "Setup Python",
+        "Install pinned cargo-fuzz",
+    ):
+        require(
+            named_step(mpv_job, step_name).get("uses")
+            == PINNED_USES[step_name],
+            f"mpv framed-transcript {step_name} action pin changed",
+        )
+    mpv_upload = named_step(
+        mpv_job,
+        "Upload mpv framed-transcript fuzz evidence",
+    )
+    require(
+        mpv_upload.get("uses") == PINNED_USES["Upload protocol fuzz evidence"],
+        "mpv framed-transcript upload action pin changed",
+    )
+    require(
+        named_step(mpv_job, "Checkout").get("with")
+        == {"persist-credentials": "false"},
+        "mpv framed-transcript checkout credentials must not persist",
+    )
+    require(
+        named_step(mpv_job, "Setup pinned nightly Rust").get("with")
+        == {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"},
+        "mpv framed-transcript nightly toolchain contract changed",
+    )
+    require(
+        named_step(mpv_job, "Setup Python").get("with")
+        == {"python-version": "3.11"},
+        "mpv framed-transcript Python pin changed",
+    )
+    require(
+        named_step(mpv_job, "Install pinned cargo-fuzz").get("with")
+        == {"tool": "cargo-fuzz@0.13.2", "fallback": "none"},
+        "mpv framed-transcript cargo-fuzz installation changed",
+    )
+    require(
+        command_tokens(named_step(mpv_job, "Install CI policy prerequisites"))
+        == [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-r",
+            "requirements/ci-policy.txt",
+        ],
+        "mpv framed-transcript policy prerequisite command changed",
+    )
+    mpv_verify = named_step(mpv_job, "Verify exact fuzz toolchain").get("run", "")
+    require(
+        'test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"' in mpv_verify,
+        "mpv framed-transcript cargo-fuzz runtime check missing",
+    )
+    require(
+        f"rustc +{FUZZ_TOOLCHAIN} -vV" in mpv_verify,
+        "mpv framed-transcript nightly runtime identity check missing",
+    )
+    require(
+        command_tokens(named_step(mpv_job, "Validate protocol fuzz policy"))
+        == [
+            "python",
+            "-m",
+            "unittest",
+            "scripts.tests.test_protocol_fuzz_policy",
+            "-v",
+        ],
+        "mpv framed-transcript policy check changed",
+    )
+    require(
+        command_tokens(
+            named_step(mpv_job, "Build mpv framed-transcript fuzz target")
+        )
+        == [
+            "cargo",
+            f"+{FUZZ_TOOLCHAIN}",
+            "fuzz",
+            "build",
+            "--fuzz-dir",
+            "fuzz",
+            "--sanitizer",
+            "address",
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+        ],
+        "mpv framed-transcript build contract changed",
+    )
+    require(
+        command_tokens(
+            named_step(mpv_job, "Run bounded mpv framed-transcript fuzz target")
+        )
+        == [
+            "python",
+            "fuzz/run_protocol_fuzz.py",
+            "--target",
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+            "--toolchain",
+            FUZZ_TOOLCHAIN,
+            "--source-sha",
+            "${{ github.sha }}",
+            "--seconds",
+            "${FUZZ_SECONDS}",
+            "--seed-corpus",
+            MPV_FRAMED_TRANSCRIPT_CORPUS_PATH,
+            "--expected-seed-count",
+            str(MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT),
+            "--output-root",
+            MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH,
+        ],
+        "bounded mpv framed-transcript runner command changed",
+    )
+    require(
+        mpv_upload.get("if") == "always()",
+        "mpv framed-transcript evidence must upload on failure",
+    )
+    require(
+        mpv_upload.get("with")
+        == {
+            "name": "sorotte-mpv-framed-transcript-fuzz",
+            "path": MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH,
+            "if-no-files-found": "error",
+            "retention-days": "14",
+            "overwrite": "true",
+        },
+        "mpv framed-transcript evidence retention contract changed",
+    )
     require("continue-on-error" not in text, "fuzz failures must never be tolerated")
     require("|| true" not in text, "workflow must not mask a failing command")
 
@@ -492,6 +673,18 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "target/fuzz-ci/framed-session",
                 "target/fuzz-ci/protocol-line",
             ),
+            original.replace(
+                "--target mpv_framed_transcript",
+                "--target framed_session",
+            ),
+            original.replace(
+                "--expected-seed-count 12",
+                "--expected-seed-count 11",
+            ),
+            original.replace(
+                "target/fuzz-ci/mpv-framed-transcript",
+                "target/fuzz-ci/framed-session",
+            ),
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -525,6 +718,10 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "sorotte-player-api": {
                     "path": "../crates/sorotte-player-api",
                 },
+                "sorotte-player-mpv": {
+                    "path": "../crates/sorotte-player-mpv",
+                    "features": ["fuzz-support"],
+                },
                 "sorotte-protocol": {"path": "../crates/sorotte-protocol"},
                 "tokio": {
                     "version": "=1.53.1",
@@ -545,6 +742,13 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 {
                     "name": FRAMED_SESSION_TARGET,
                     "path": "fuzz_targets/framed_session.rs",
+                    "test": False,
+                    "doc": False,
+                    "bench": False,
+                },
+                {
+                    "name": MPV_FRAMED_TRANSCRIPT_TARGET,
+                    "path": "fuzz_targets/mpv_framed_transcript.rs",
                     "test": False,
                     "doc": False,
                     "bench": False,
@@ -619,6 +823,57 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertIn("pub struct InboundProtocolLineReader", protocol_io)
         self.assertNotIn("cfg(feature = \"fuzz-support\")", protocol_io)
 
+    def test_mpv_target_uses_only_the_feature_gated_in_memory_worker_seam(self) -> None:
+        target = MPV_FRAMED_TRANSCRIPT_TARGET_PATH.read_text(encoding="utf-8")
+        self.assertIn("#![no_main]", target)
+        self.assertIn("fuzz_target!(|bytes: &[u8]|", target)
+        self.assertIn("run_in_memory_mpv_ipc_fuzz_case", target)
+        self.assertIn("reference_run(&payload, end)", target)
+        self.assertIn("MpvTranscript::new(records)", target)
+        self.assertIn("replay_partitioned", target)
+        self.assertIn("MpvLifecycleVerificationHarness::new()", target)
+        self.assertIn("attachment replacement must fence the prior attempt", target)
+        self.assertIn("successive logical loads must use distinct media generations", target)
+        for forbidden in (
+            "TcpStream",
+            "UdpSocket",
+            "std::net",
+            "Command::new",
+            "with_json_ipc",
+            "connect_json_ipc",
+        ):
+            self.assertNotIn(forbidden, target)
+
+    def test_mpv_worker_seam_is_exact_feature_gated_and_not_normally_exported(
+        self,
+    ) -> None:
+        manifest = tomllib.loads(PLAYER_MPV_MANIFEST_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["features"]["fuzz-support"], ["test-support"])
+        library = PLAYER_MPV_LIB_PATH.read_text(encoding="utf-8")
+        self.assertIn('#[cfg(feature = "fuzz-support")]', library)
+        self.assertIn("pub mod fuzz_support", library)
+        self.assertIn("run_in_memory_mpv_ipc_fuzz_case", library)
+        ipc = PLAYER_MPV_IPC_PATH.read_text(encoding="utf-8")
+        self.assertIn("read_line_with(&mut self.read_buffer, line", ipc)
+        self.assertIn("worker.send_command(", ipc)
+        self.assertIn('json!(["get_property", "pause"])', ipc)
+        self.assertIn("This deliberately narrow seam", ipc)
+        self.assertNotIn("pub mod ipc", library)
+
+    def test_mpv_seed_corpus_is_exact_direct_and_covers_script_end_modes(self) -> None:
+        entries = sorted(MPV_FRAMED_TRANSCRIPT_CORPUS_DIRECTORY.iterdir())
+        self.assertEqual(len(entries), MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT)
+        self.assertTrue(
+            all(entry.is_file() and not entry.is_symlink() for entry in entries)
+        )
+        payloads = [entry.read_bytes() for entry in entries]
+        self.assertTrue(all(len(payload) >= 4 for payload in payloads))
+        self.assertEqual({payload[0] % 4 for payload in payloads}, {0, 1, 2, 3})
+        self.assertEqual({payload[1] % 5 for payload in payloads}, {0, 1, 2, 3, 4})
+        self.assertTrue(any(b'"event"' in payload for payload in payloads))
+        self.assertTrue(any(b'"request_id":2' in payload for payload in payloads))
+        self.assertTrue(any(payload.rstrip().endswith(b'{"event":') for payload in payloads))
+
     def test_framed_session_seed_corpus_is_direct_and_covers_control_modes(self) -> None:
         entries = sorted(FRAMED_SESSION_CORPUS_DIRECTORY.iterdir())
         self.assertEqual(len(entries), FRAMED_SESSION_CORPUS_FILE_COUNT)
@@ -651,14 +906,26 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             FRAMED_SESSION_TARGET,
         )
         self.assertEqual(
+            runner.MPV_FRAMED_TRANSCRIPT_TARGET_NAME,
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+        )
+        self.assertEqual(
             runner.SUPPORTED_TARGETS,
-            (FUZZ_TARGET, FRAMED_SESSION_TARGET),
+            (
+                FUZZ_TARGET,
+                FRAMED_SESSION_TARGET,
+                MPV_FRAMED_TRANSCRIPT_TARGET,
+            ),
         )
         self.assertEqual(runner.MAX_TOTAL_SECONDS, 900)
         self.assertEqual(runner.MAX_INPUT_BYTES, 65_536)
         self.assertEqual(runner.PER_INPUT_TIMEOUT_SECONDS, 5)
         self.assertEqual(runner.RSS_LIMIT_MB, 2_048)
         self.assertEqual(runner.REPORT_SCHEMA, "sorotte-protocol-fuzz-v1")
+        self.assertEqual(
+            runner.MPV_FRAMED_TRANSCRIPT_REPORT_SCHEMA,
+            "sorotte-mpv-framed-transcript-fuzz-v1",
+        )
         self.assertEqual(runner.EXPECTED_CARGO_FUZZ_VERSION, "cargo-fuzz 0.13.2")
         self.assertIsNotNone(runner.SOURCE_SHA_PATTERN.fullmatch("0" * 40))
         for malformed in ("", "0" * 39, "0" * 41, "G" * 40, "A" * 40):
@@ -694,6 +961,15 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         )
         self.assertIn(FRAMED_SESSION_TARGET, framed_command)
         self.assertNotIn(FUZZ_TARGET, framed_command)
+        mpv_command = runner.fuzz_command(
+            FUZZ_TOOLCHAIN,
+            corpus,
+            artifacts,
+            45,
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+        )
+        self.assertIn(MPV_FRAMED_TRANSCRIPT_TARGET, mpv_command)
+        self.assertNotIn(FRAMED_SESSION_TARGET, mpv_command)
 
         minimize = runner.minimization_command(
             FUZZ_TOOLCHAIN,
@@ -711,6 +987,13 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             FRAMED_SESSION_TARGET,
         )
         self.assertIn(FRAMED_SESSION_TARGET, framed_minimize)
+        mpv_minimize = runner.minimization_command(
+            FUZZ_TOOLCHAIN,
+            pathlib.Path("crash-input"),
+            pathlib.Path("minimized-input"),
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+        )
+        self.assertIn(MPV_FRAMED_TRANSCRIPT_TARGET, mpv_minimize)
 
     def test_runner_rejects_untrusted_source_identity_before_writing_evidence(
         self,
@@ -782,6 +1065,38 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertTrue(
             all(workflow_path_covers(path) for path in expected_paths),
             "every framed-session source-bound input must trigger the workflow",
+        )
+        self.assertEqual(manifest["file_count"], len(expected_paths))
+        self.assertEqual(
+            manifest["total_bytes"],
+            sum(entry["bytes"] for entry in manifest["files"]),
+        )
+        self.assertEqual(
+            manifest["aggregate_sha256"],
+            runner.manifest_digest(manifest["files"]),
+        )
+
+    def test_runner_binds_exact_player_mpv_target_and_crate_inventories(self) -> None:
+        runner = load_runner()
+        manifest = runner.bound_source_manifest(
+            REPO_ROOT,
+            MPV_FRAMED_TRANSCRIPT_TARGET,
+        )
+        actual_paths = {entry["path"] for entry in manifest["files"]}
+        expected_paths = set(
+            runner.MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS
+        )
+        for source_directory in runner.MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES:
+            expected_paths.update(
+                path.relative_to(REPO_ROOT).as_posix()
+                for path in (REPO_ROOT / source_directory).rglob("*")
+                if path.is_file()
+            )
+
+        self.assertEqual(actual_paths, expected_paths)
+        self.assertTrue(
+            all(workflow_path_covers(path) for path in expected_paths),
+            "every player-mpv source-bound input must trigger the workflow",
         )
         self.assertEqual(manifest["file_count"], len(expected_paths))
         self.assertEqual(

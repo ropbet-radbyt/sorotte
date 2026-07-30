@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 TARGET_NAME = "protocol_line"
 FRAMED_SESSION_TARGET_NAME = "framed_session"
+MPV_FRAMED_TRANSCRIPT_TARGET_NAME = "mpv_framed_transcript"
 MAX_TOTAL_SECONDS = 900
 MAX_INPUT_BYTES = 65_536
 PER_INPUT_TIMEOUT_SECONDS = 5
@@ -23,6 +24,7 @@ RSS_LIMIT_MB = 2_048
 MINIMIZE_TIMEOUT_SECONDS = 120
 REPORT_SCHEMA = "sorotte-protocol-fuzz-v1"
 FRAMED_SESSION_REPORT_SCHEMA = "sorotte-framed-session-fuzz-v1"
+MPV_FRAMED_TRANSCRIPT_REPORT_SCHEMA = "sorotte-mpv-framed-transcript-fuzz-v1"
 EXPECTED_CARGO_FUZZ_VERSION = "cargo-fuzz 0.13.2"
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BOUND_FIXED_SOURCE_PATHS = (
@@ -58,7 +60,31 @@ FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS = (
     "scripts/tests/test_protocol_fuzz_policy.py",
 )
 FRAMED_SESSION_SOURCE_DIRECTORY = "crates"
-SUPPORTED_TARGETS = (TARGET_NAME, FRAMED_SESSION_TARGET_NAME)
+MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS = (
+    ".github/workflows/rust-fuzz.yml",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "coverage/behaviors.toml",
+    "coverage/known-defects.toml",
+    "fuzz/Cargo.toml",
+    "fuzz/Cargo.lock",
+    "fuzz/fuzz_targets/mpv_framed_transcript.rs",
+    "fuzz/run_protocol_fuzz.py",
+    "requirements/ci-policy.txt",
+    "scripts/known_defect_policy.py",
+    "scripts/tests/test_known_defect_policy.py",
+    "scripts/tests/test_protocol_fuzz_policy.py",
+)
+MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES = (
+    "crates/sorotte-player-api",
+    "crates/sorotte-player-mpv",
+)
+SUPPORTED_TARGETS = (
+    TARGET_NAME,
+    FRAMED_SESSION_TARGET_NAME,
+    MPV_FRAMED_TRANSCRIPT_TARGET_NAME,
+)
 REQUIRED_FINAL_STATISTICS = (
     "number_of_executed_units",
     "average_exec_per_sec",
@@ -117,33 +143,39 @@ def bound_source_manifest(
     repository_root = repository_root.resolve()
     if target_name == TARGET_NAME:
         fixed_paths = BOUND_FIXED_SOURCE_PATHS
-        source_directory = PROTOCOL_SOURCE_DIRECTORY
+        source_directories = (PROTOCOL_SOURCE_DIRECTORY,)
         source_label = "protocol"
         source_filter = lambda path: path.suffix == ".rs"
     elif target_name == FRAMED_SESSION_TARGET_NAME:
         fixed_paths = FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS
-        source_directory = FRAMED_SESSION_SOURCE_DIRECTORY
+        source_directories = (FRAMED_SESSION_SOURCE_DIRECTORY,)
         source_label = "workspace"
+        source_filter = lambda path: path.is_file()
+    elif target_name == MPV_FRAMED_TRANSCRIPT_TARGET_NAME:
+        fixed_paths = MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS
+        source_directories = MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES
+        source_label = "player mpv and player API"
         source_filter = lambda path: path.is_file()
     else:
         raise ValueError(f"unsupported fuzz target: {target_name}")
 
     paths = [repository_root / path for path in fixed_paths]
-    source_root = repository_root / source_directory
-    if source_root.is_symlink() or not source_root.is_dir():
-        raise ValueError(
-            f"{source_label} source directory must be a direct directory: "
-            f"{source_root}"
+    for source_directory in source_directories:
+        source_root = repository_root / source_directory
+        if source_root.is_symlink() or not source_root.is_dir():
+            raise ValueError(
+                f"{source_label} source directory must be a direct directory: "
+                f"{source_root}"
+            )
+        sources = sorted(
+            (path for path in source_root.rglob("*") if source_filter(path)),
+            key=lambda path: path.relative_to(repository_root).as_posix(),
         )
-    sources = sorted(
-        (path for path in source_root.rglob("*") if source_filter(path)),
-        key=lambda path: path.relative_to(repository_root).as_posix(),
-    )
-    if not sources:
-        raise ValueError(
-            f"{source_label} source binding must contain at least one source file"
-        )
-    paths.extend(sources)
+        if not sources:
+            raise ValueError(
+                f"{source_label} source binding must contain at least one source file"
+            )
+        paths.extend(sources)
 
     entries = [
         file_manifest_entry(path, repository_root)
@@ -404,11 +436,11 @@ def tool_identities(toolchain: str, repository_root: pathlib.Path) -> dict[str, 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    report_schema = (
-        REPORT_SCHEMA
-        if args.target == TARGET_NAME
-        else FRAMED_SESSION_REPORT_SCHEMA
-    )
+    report_schema = {
+        TARGET_NAME: REPORT_SCHEMA,
+        FRAMED_SESSION_TARGET_NAME: FRAMED_SESSION_REPORT_SCHEMA,
+        MPV_FRAMED_TRANSCRIPT_TARGET_NAME: MPV_FRAMED_TRANSCRIPT_REPORT_SCHEMA,
+    }[args.target]
     if SOURCE_SHA_PATTERN.fullmatch(args.source_sha) is None:
         raise ValueError(
             "source SHA must be exactly 40 lowercase hexadecimal characters"

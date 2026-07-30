@@ -15,6 +15,7 @@ serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 sorotte-cli = { path = "../crates/sorotte-cli", features = ["fuzz-support"] }
 sorotte-client-app = { path = "../crates/sorotte-client-app" }
 sorotte-player-api = { path = "../crates/sorotte-player-api" }
+sorotte-player-mpv = { path = "../crates/sorotte-player-mpv", features = ["fuzz-support"] }
 sorotte-protocol = { path = "../crates/sorotte-protocol" }
 tokio = { version = "=1.53.1", features = ["io-util", "rt", "sync"] }
 
@@ -28,6 +29,13 @@ bench = false
 [[bin]]
 name = "framed_session"
 path = "fuzz_targets/framed_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpv_framed_transcript"
+path = "fuzz_targets/mpv_framed_transcript.rs"
 test = false
 doc = false
 bench = false

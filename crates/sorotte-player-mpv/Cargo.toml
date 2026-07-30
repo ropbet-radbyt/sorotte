@@ -10,6 +10,7 @@ workspace = true
 
 [features]
 default = []
+fuzz-support = ["test-support"]
 test-support = ["sorotte-player-api/test-support"]
 
 [dependencies]

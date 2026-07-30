@@ -1095,6 +1095,163 @@ impl MpvIpcWorker {
     }
 }
 
+/// Terminal behavior for the feature-gated, in-memory mpv IPC fuzz seam.
+#[cfg(feature = "fuzz-support")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum FuzzMpvIpcScriptEnd {
+    Eof,
+    ReadTimedOut,
+    ReadDisconnected,
+    WriteTimedOut,
+    WriteDisconnected,
+}
+
+/// Production command/response classification returned by the in-memory fuzz seam.
+#[cfg(feature = "fuzz-support")]
+#[derive(Clone, Debug, PartialEq)]
+#[doc(hidden)]
+pub enum FuzzMpvIpcOutcome {
+    Succeeded(Value),
+    CommandFailed,
+    ServerRejected,
+    TimedOut,
+    Disconnected,
+    ProtocolCorruption,
+}
+
+/// Complete observation from one fixed-command in-memory worker run.
+#[cfg(feature = "fuzz-support")]
+#[derive(Clone, Debug, PartialEq)]
+#[doc(hidden)]
+pub struct FuzzMpvIpcRun {
+    pub request_lines: Vec<String>,
+    pub outcome: FuzzMpvIpcOutcome,
+    pub queued_events: Vec<Value>,
+}
+
+#[cfg(feature = "fuzz-support")]
+struct FuzzMpvIpcScriptTransport {
+    chunks: VecDeque<Vec<u8>>,
+    read_buffer: Vec<u8>,
+    script_end: FuzzMpvIpcScriptEnd,
+    request_lines: Arc<Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "fuzz-support")]
+impl MpvJsonIpcTransport for FuzzMpvIpcScriptTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.request_lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(line.to_owned());
+        match self.script_end {
+            FuzzMpvIpcScriptEnd::WriteTimedOut => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "in-memory scripted write timeout",
+            )),
+            FuzzMpvIpcScriptEnd::WriteDisconnected => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "in-memory scripted write disconnect",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        let chunks = &mut self.chunks;
+        let script_end = self.script_end;
+        read_line_with(&mut self.read_buffer, line, |destination| {
+            while let Some(mut chunk) = chunks.pop_front() {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let copied = chunk.len().min(destination.len());
+                destination[..copied].copy_from_slice(&chunk[..copied]);
+                if copied < chunk.len() {
+                    let remainder = chunk.split_off(copied);
+                    chunks.push_front(remainder);
+                }
+                return Ok(copied);
+            }
+            match script_end {
+                FuzzMpvIpcScriptEnd::Eof => Ok(0),
+                FuzzMpvIpcScriptEnd::ReadTimedOut => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "in-memory scripted read timeout",
+                )),
+                FuzzMpvIpcScriptEnd::ReadDisconnected => Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "in-memory scripted read disconnect",
+                )),
+                FuzzMpvIpcScriptEnd::WriteTimedOut | FuzzMpvIpcScriptEnd::WriteDisconnected => {
+                    unreachable!("write failures stop the worker before a read")
+                }
+            }
+        })
+    }
+}
+
+/// Runs one fixed, serializable command through the real mpv IPC worker using only supplied
+/// in-memory byte chunks.
+///
+/// This deliberately narrow seam exists only for bounded coverage-guided QA. It never opens an
+/// IPC endpoint, launches a process, sleeps, or accepts an arbitrary production command.
+#[cfg(feature = "fuzz-support")]
+#[doc(hidden)]
+pub fn run_in_memory_mpv_ipc_fuzz_case(
+    chunks: Vec<Vec<u8>>,
+    script_end: FuzzMpvIpcScriptEnd,
+    initial_request_id: u64,
+) -> FuzzMpvIpcRun {
+    let request_lines = Arc::new(Mutex::new(Vec::new()));
+    let transport = FuzzMpvIpcScriptTransport {
+        chunks: chunks.into(),
+        read_buffer: Vec::new(),
+        script_end,
+        request_lines: Arc::clone(&request_lines),
+    };
+    let runtime_queues = Arc::new(Mutex::new(MpvIpcRuntimeQueues::default()));
+    let next_runtime_item_sequence = Arc::new(AtomicU64::new(1));
+    let mut worker = MpvIpcWorker::new(
+        Box::new(transport),
+        Arc::clone(&runtime_queues),
+        next_runtime_item_sequence,
+        initial_request_id,
+    );
+    let timeout = Duration::from_secs(1);
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .expect("the bounded in-memory fuzz deadline must fit");
+    let outcome = worker.send_command(json!(["get_property", "pause"]), deadline, timeout);
+    let queued_events = runtime_queues
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take_pending_timed_events()
+        .into_iter()
+        .map(|event| event.value)
+        .collect();
+    let request_lines = request_lines
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let outcome = match outcome.result {
+        Ok(response) => FuzzMpvIpcOutcome::Succeeded(response),
+        Err(failure) => match failure.kind {
+            MpvIpcCommandFailureKind::CommandFailed => FuzzMpvIpcOutcome::CommandFailed,
+            MpvIpcCommandFailureKind::ServerRejected { .. } => FuzzMpvIpcOutcome::ServerRejected,
+            MpvIpcCommandFailureKind::TimedOut => FuzzMpvIpcOutcome::TimedOut,
+            MpvIpcCommandFailureKind::Disconnected => FuzzMpvIpcOutcome::Disconnected,
+            MpvIpcCommandFailureKind::ProtocolCorruption => FuzzMpvIpcOutcome::ProtocolCorruption,
+        },
+    };
+    FuzzMpvIpcRun {
+        request_lines,
+        outcome,
+        queued_events,
+    }
+}
+
 struct PendingMpvIpcCommand {
     command_id: u64,
     token: u64,

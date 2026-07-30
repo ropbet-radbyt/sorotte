@@ -1194,6 +1194,7 @@ dependencies = [
  "sorotte-cli",
  "sorotte-client-app",
  "sorotte-player-api",
+ "sorotte-player-mpv",
  "sorotte-protocol",
  "tokio",
 ]

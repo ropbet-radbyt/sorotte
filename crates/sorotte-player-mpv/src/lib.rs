@@ -10,6 +10,14 @@ mod players;
 mod test_support;
 pub mod transcript;
 
+#[cfg(feature = "fuzz-support")]
+#[doc(hidden)]
+pub mod fuzz_support {
+    pub use crate::ipc::{
+        FuzzMpvIpcOutcome, FuzzMpvIpcRun, FuzzMpvIpcScriptEnd, run_in_memory_mpv_ipc_fuzz_case,
+    };
+}
+
 use sorotte_player_api::PlayerError;
 
 /// Oldest mpv release supported by Sorotte's JSON IPC adapter.
