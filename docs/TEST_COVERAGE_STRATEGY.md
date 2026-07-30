@@ -1895,6 +1895,9 @@ links/special files, decompression bounds, inventory/schema/source drift, and
 unexpected upload-directory contents; then it requires the extracted binary's
 version and a loopback protocol Hello. GUI packages, server containers, SBOM/
 signature verification, and post-publication digest comparison remain.
+The four-stream implementation, stress results, surfaced defects, and
+clean-commit package digests are retained in
+[`parallel-boundary-slice-20260730.md`](evidence/test-coverage/parallel-boundary-slice-20260730.md).
 
 Acceptance:
 
