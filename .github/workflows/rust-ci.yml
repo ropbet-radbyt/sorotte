@@ -561,6 +561,7 @@ jobs:
           overwrite: true
 
   compat-live-tls:
+    name: Complete live Python compatibility
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -594,18 +595,37 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install legacy TLS parity prerequisites
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements/legacy-python-interop.txt
-
-      - name: Strict live legacy compatibility
-        env:
-          SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
-          SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
+      - name: Install pinned live Python prerequisites
         run: >-
-          cargo test --locked -p sorotte-compat --all-features
-          legacy_server_ -- --nocapture
+          python -m pip install --disable-pip-version-check
+          -r requirements/legacy-python-interop.txt
+
+      - name: Strict complete live Python compatibility
+        env:
+          SYNCPLAY_REQUIRE_LIVE_INTEROP: "1"
+        run: >-
+          python scripts/compat_live_interop.py run
+          --repo-root .
+          --output target/verification/compat-live-interop.json
+
+      - name: Validate live compatibility evidence schema
+        if: always()
+        run: >-
+          python scripts/compat_live_interop.py validate
+          --report target/verification/compat-live-interop.json
+
+      - name: Upload live compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verification-compat-live-interop
+          path: |
+            target/verification/compat-live-interop.json
+            target/verification/compat-live-interop.stdout.log
+            target/verification/compat-live-interop.stderr.log
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
 
   mpv-pr-semantics:
     if: github.event_name != 'schedule'
@@ -834,10 +854,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install legacy parity prerequisites
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements/legacy-python-interop.txt
+      - name: Install pinned live Python prerequisites
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements/legacy-python-interop.txt
 
       - name: Cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -852,13 +872,32 @@ jobs:
           cargo test --locked -p sorotte-player-mpv --all-features
           --test repro_acknowledged_cache_pause
 
-      - name: Strict live legacy compatibility
+      - name: Strict complete live Python compatibility
         env:
-          SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
-          SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
+          SYNCPLAY_REQUIRE_LIVE_INTEROP: "1"
         run: >-
-          cargo test --locked -p sorotte-compat --all-features
-          legacy_server_ -- --nocapture
+          python scripts/compat_live_interop.py run
+          --repo-root .
+          --output target/verification/compat-live-interop.json
+
+      - name: Validate nightly live compatibility evidence schema
+        if: always()
+        run: >-
+          python scripts/compat_live_interop.py validate
+          --report target/verification/compat-live-interop.json
+
+      - name: Upload nightly live compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verification-compat-live-interop-${{ matrix.runner }}
+          path: |
+            target/verification/compat-live-interop.json
+            target/verification/compat-live-interop.stdout.log
+            target/verification/compat-live-interop.stderr.log
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
 
   server-release-verify:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

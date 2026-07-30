@@ -503,6 +503,9 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
 }
 
 pub(in crate::tests) fn legacy_server_tls_prerequisites_missing(error: &InteropError) -> bool {
+    if required_live_interop_enabled() {
+        return false;
+    }
     if legacy_server_prerequisites_missing(error) {
         return true;
     }

@@ -186,6 +186,11 @@ struct LegacyServerClientConnection {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InteropError {
+    #[error("required live interoperability prerequisite failed: {source}")]
+    RequiredLivePrerequisite {
+        #[source]
+        source: Box<InteropError>,
+    },
     #[error("legacy syncplay checkout not found at {0}")]
     LegacySyncplayCheckoutMissing(PathBuf),
     #[error("python handshake probe script not found at {0}")]
@@ -300,7 +305,7 @@ pub use self::fixtures::{
 pub use self::legacy_process::{
     interop_prerequisites_missing, legacy_syncplay_checkout_dir,
     legacy_syncplay_server_entry_script_path, python_handshake_probe_script_path,
-    python_live_peer_probe_script_path,
+    python_live_peer_probe_script_path, required_live_interop_enabled,
 };
 pub use self::legacy_server::{
     run_legacy_server_fanout_roundtrip, run_legacy_server_fanout_roundtrip_with_overrides,

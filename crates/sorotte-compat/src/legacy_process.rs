@@ -371,6 +371,34 @@ pub(crate) fn configured_legacy_syncplay_checkout_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn live_interop_required_from_value(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+/// Returns whether optional live Python interoperability prerequisites are
+/// required for this process.
+///
+/// Ordinary developer runs retain the historical optional behavior. Strict CI
+/// and release lanes set this exact switch to make every shared prerequisite
+/// classifier fail closed.
+pub fn required_live_interop_enabled() -> bool {
+    live_interop_required_from_value(env::var_os("SYNCPLAY_REQUIRE_LIVE_INTEROP").as_deref())
+}
+
+fn required_live_prerequisite_from_mode(required: bool, error: InteropError) -> InteropError {
+    if required {
+        InteropError::RequiredLivePrerequisite {
+            source: Box::new(error),
+        }
+    } else {
+        error
+    }
+}
+
+pub(crate) fn required_live_prerequisite_error(error: InteropError) -> InteropError {
+    required_live_prerequisite_from_mode(required_live_interop_enabled(), error)
+}
+
 pub(crate) fn legacy_syncplay_checkout_bootstrap_lock() -> &'static Mutex<()> {
     LEGACY_SYNCPLAY_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -428,9 +456,17 @@ pub(crate) fn bootstrap_repo_local_legacy_syncplay_checkout(
 }
 
 pub(crate) fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, InteropError> {
-    if let Some(legacy_checkout) = configured_legacy_syncplay_checkout_dir() {
+    let configured_checkout = configured_legacy_syncplay_checkout_dir();
+    if required_live_interop_enabled() && configured_checkout.is_none() {
+        return Err(required_live_prerequisite_error(
+            InteropError::LegacySyncplayCheckoutMissing(repo_local_legacy_syncplay_checkout_dir()),
+        ));
+    }
+    if let Some(legacy_checkout) = configured_checkout {
         if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+            return Err(required_live_prerequisite_error(
+                InteropError::LegacySyncplayCheckoutMissing(legacy_checkout),
+            ));
         }
         return Ok(legacy_checkout);
     }
@@ -442,7 +478,8 @@ pub(crate) fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, Int
     if legacy_syncplay_checkout_is_ready(&legacy_checkout) {
         return Ok(legacy_checkout);
     }
-    bootstrap_repo_local_legacy_syncplay_checkout(&legacy_checkout)?;
+    bootstrap_repo_local_legacy_syncplay_checkout(&legacy_checkout)
+        .map_err(required_live_prerequisite_error)?;
     Ok(legacy_checkout)
 }
 
@@ -477,6 +514,9 @@ pub(crate) fn stderr_indicates_missing_legacy_prerequisites(stderr: &str) -> boo
 }
 
 pub fn interop_prerequisites_missing(error: &InteropError) -> bool {
+    if required_live_interop_enabled() {
+        return false;
+    }
     match error {
         InteropError::LegacySyncplayCheckoutMissing(_)
         | InteropError::PythonHandshakeProbeMissing(_)
@@ -490,5 +530,41 @@ pub fn interop_prerequisites_missing(error: &InteropError) -> bool {
             stderr_indicates_missing_legacy_prerequisites(stderr)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod required_live_tests {
+    use super::{
+        InteropError, live_interop_required_from_value, required_live_prerequisite_from_mode,
+    };
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    #[test]
+    fn required_live_interop_switch_accepts_only_exact_one() {
+        assert!(live_interop_required_from_value(Some(OsStr::new("1"))));
+        for value in [
+            None,
+            Some(OsStr::new("")),
+            Some(OsStr::new("0")),
+            Some(OsStr::new("true")),
+        ] {
+            assert!(!live_interop_required_from_value(value));
+        }
+    }
+
+    #[test]
+    fn required_live_mode_wraps_optional_prerequisite_errors() {
+        let missing =
+            || InteropError::LegacySyncplayCheckoutMissing(PathBuf::from("missing-oracle"));
+        assert!(matches!(
+            required_live_prerequisite_from_mode(false, missing()),
+            InteropError::LegacySyncplayCheckoutMissing(_)
+        ));
+        assert!(matches!(
+            required_live_prerequisite_from_mode(true, missing()),
+            InteropError::RequiredLivePrerequisite { .. }
+        ));
     }
 }

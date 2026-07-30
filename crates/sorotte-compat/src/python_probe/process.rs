@@ -50,12 +50,12 @@ pub(crate) fn run_python_probe_raw_with_overrides(
         command.arg(arg);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|source| InteropError::PythonSpawn {
+    let mut child = command.spawn().map_err(|source| {
+        required_live_prerequisite_error(InteropError::PythonSpawn {
             python: python_bin_display,
             source,
-        })?;
+        })
+    })?;
 
     let mut stdin = child.stdin.take().ok_or(InteropError::PythonStdinMissing)?;
     stdin

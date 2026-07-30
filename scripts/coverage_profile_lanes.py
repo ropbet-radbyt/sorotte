@@ -143,7 +143,7 @@ EXPECTED_COMPAT_TESTS = (
     "legacy_server_state_latency_metrics_matches_runtime_core_behavior",
     "legacy_server_state_propagation_matches_runtime_core_behavior",
 )
-EXPECTED_COMPAT_FILTERED_OUT = 121
+EXPECTED_COMPAT_FILTERED_OUT = 123
 COMPAT_SKIP_MARKERS = (
     "assertion skipped",
     "test skipped",
@@ -171,6 +171,7 @@ LANE_ENVIRONMENT_OVERRIDES = {
     "compat-live-tls": (
         "CARGO_TARGET_DIR",
         "SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY",
+        "SYNCPLAY_REQUIRE_LIVE_INTEROP",
         "SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY",
     ),
     "merge-check": (),
@@ -1433,6 +1434,7 @@ def run_collection(args: argparse.Namespace) -> int:
         compatibility_environment.update(
             {
                 "SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY": "1",
+                "SYNCPLAY_REQUIRE_LIVE_INTEROP": "1",
                 "SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY": "1",
             }
         )

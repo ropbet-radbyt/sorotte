@@ -867,16 +867,27 @@ class CiPolicyTests(unittest.TestCase):
         compatibility = self.assert_exact_run(
             self.jobs,
             "compat-live-tls",
-            "Strict live legacy compatibility",
-            "cargo test --locked -p sorotte-compat --all-features "
-            "legacy_server_ -- --nocapture",
+            "Strict complete live Python compatibility",
+            "python scripts/compat_live_interop.py run --repo-root . "
+            "--output target/verification/compat-live-interop.json",
         )
         self.assertEqual(
             compatibility.get("env"),
-            {
-                "SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY": "1",
-                "SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY": "1",
-            },
+            {"SYNCPLAY_REQUIRE_LIVE_INTEROP": "1"},
+        )
+        compatibility_upload = named_step(
+            self.jobs,
+            "compat-live-tls",
+            "Upload live compatibility evidence",
+        )
+        self.assertEqual(
+            compatibility_upload.get("uses"),
+            PINNED_USES["actions/upload-artifact"],
+        )
+        self.assertEqual(compatibility_upload.get("if"), "always()")
+        self.assertEqual(
+            compatibility_upload.get("with", {}).get("if-no-files-found"),
+            "error",
         )
 
         mpv_checkout = named_step(

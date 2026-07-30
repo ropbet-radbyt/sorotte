@@ -1,6 +1,9 @@
 use super::*;
 
 pub(in crate::tests) fn legacy_client_protocol_prerequisites_missing(error: &InteropError) -> bool {
+    if required_live_interop_enabled() {
+        return false;
+    }
     match error {
         InteropError::LegacySyncplayCheckoutMissing(_) | InteropError::PythonSpawn { .. } => true,
         InteropError::PythonProbeFailed { stdout, stderr, .. } => {
