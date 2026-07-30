@@ -152,6 +152,12 @@ enum RoomPauseSyncStage {
 }
 
 impl ClientModel {
+    pub(crate) fn cancel_connection_scoped_playback_transactions(&mut self) {
+        self.playback.pending_local_pause_change = None;
+        self.playback.pending_room_pause_sync = None;
+        self.playback.local_pause_change_health = LocalPauseChangeHealth::Healthy;
+    }
+
     pub fn apply(&mut self, event: ClientEvent) -> Vec<ClientEffect> {
         match event {
             ClientEvent::LocalPauseChangeRequested {

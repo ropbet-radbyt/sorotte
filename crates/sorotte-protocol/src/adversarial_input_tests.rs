@@ -314,10 +314,7 @@ fn nested_extension_depth_has_one_monotonic_public_decode_boundary() {
 }
 
 #[test]
-#[should_panic(
-    expected = "surviving duplicate Set payload must determine nested command execution order"
-)]
-fn known_defect_duplicate_top_level_set_uses_discarded_payload_order() {
+fn duplicate_top_level_set_uses_surviving_payload_order() {
     let line = r#"{
         "Set":{
             "ready":{"isReady":true},
@@ -349,8 +346,7 @@ fn known_defect_duplicate_top_level_set_uses_discarded_payload_order() {
 }
 
 #[test]
-#[should_panic(expected = "credential-bearing unknown command must not appear in diagnostics")]
-fn known_defect_decoded_item_debug_exposes_credential_bearing_unknown_command() {
+fn decoded_item_debug_redacts_credential_bearing_unknown_command() {
     const MARKER: &str = "unknown-command-token-canary-2a71";
     let line = format!(r#"{{"Future?access_token={MARKER}":null}}"#);
     let items =
@@ -361,6 +357,28 @@ fn known_defect_decoded_item_debug_exposes_credential_bearing_unknown_command() 
         !debug.contains(MARKER),
         "credential-bearing unknown command must not appear in diagnostics"
     );
+    assert!(debug.contains("<unknown-protocol-command>"));
+}
+
+#[test]
+fn decoded_item_debug_preserves_supported_command_names() {
+    for command in ["Hello", "Set", "List", "State", "Chat", "Error", "TLS"] {
+        let item = DecodedMessageLineItem {
+            command: Some(command.to_owned()),
+            payload: Value::Null,
+            message: Err(ProtocolError::UnexpectedMessageKind {
+                expected: "test",
+                found: "test",
+            }),
+        };
+        let debug = format!("{item:?}");
+
+        assert!(
+            debug.contains(&format!("Some(\"{command}\")")),
+            "supported command {command} should remain diagnosable: {debug}"
+        );
+        assert!(!debug.contains("<unknown-protocol-command>"));
+    }
 }
 
 #[test]

@@ -67,12 +67,6 @@ impl PlaybackResetProjection {
             local_pause_change_health: playback.local_pause_change_health,
         }
     }
-
-    fn normalize_known_reset_defect_from(&mut self, expected: &Self) {
-        self.pending_room_pause_sync = expected.pending_room_pause_sync;
-        self.pending_local_pause_change = expected.pending_local_pause_change;
-        self.local_pause_change_health = expected.local_pause_change_health;
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,15 +365,10 @@ impl SessionResetProjection {
             playback_barrier: format!("{playback_barrier:#?}"),
         }
     }
-
-    fn normalize_known_reset_defect_from(&mut self, expected: &Self) {
-        self.playback
-            .normalize_known_reset_defect_from(&expected.playback);
-    }
 }
 
 #[test]
-fn reconnect_reset_matches_a_fresh_reference_except_for_characterized_reducer_defect() {
+fn reconnect_reset_matches_a_fresh_reference() {
     // Different attempts and generated seeds exercise the same contract over
     // bounded, distinguishable pre-reset states without relying on timing.
     for generated_seed in 1_u64..=24 {
@@ -394,9 +383,8 @@ fn reconnect_reset_matches_a_fresh_reference_except_for_characterized_reducer_de
             "generated seed {generated_seed} changed the owning reconnect transition"
         );
 
-        let mut actual_projection = SessionResetProjection::from_session(&actual);
+        let actual_projection = SessionResetProjection::from_session(&actual);
         let expected_projection = SessionResetProjection::from_session(&expected);
-        actual_projection.normalize_known_reset_defect_from(&expected_projection);
         assert_eq!(
             actual_projection, expected_projection,
             "generated seed {generated_seed} leaked mutable session state across reconnect reset"
@@ -420,8 +408,7 @@ fn reconnect_reset_is_idempotent_for_the_complete_projection() {
 }
 
 #[test]
-#[should_panic(expected = "TC-CLIENT-002: reconnect reset retains in-flight reducer transactions")]
-fn known_defect_reconnect_reset_rejects_stale_reducer_completions() {
+fn reconnect_reset_rejects_stale_reducer_completions() {
     let mut session = fully_seeded_session(91);
     let _ = session.plan_reconnect_retry(4);
 
@@ -445,6 +432,18 @@ fn known_defect_reconnect_reset_rejects_stale_reducer_completions() {
             .apply(ClientEvent::EffectSucceeded(ClientEffect::SetPlayerPaused(
                 true,
             )));
+    let stale_room_failure =
+        session
+            .model
+            .apply(ClientEvent::EffectFailed(ClientEffect::SetPlayerPosition(
+                391.0,
+            )));
+    let stale_local_failure =
+        session
+            .model
+            .apply(ClientEvent::EffectFailed(ClientEffect::SetPlayerPaused(
+                false,
+            )));
 
     assert!(
         !retained_local_transaction
@@ -453,15 +452,33 @@ fn known_defect_reconnect_reset_rejects_stale_reducer_completions() {
             && room_follow_up.is_empty()
             && local_follow_up.is_empty()
             && room_completion.is_empty()
+            && stale_room_failure.is_empty()
+            && stale_local_failure.is_empty()
             && session.model.playback.local_position.is_none()
             && session.model.playback.local_paused.is_none(),
         "{RESET_DEFECT_ID}; retained_local={retained_local_transaction}; \
          retained_room={retained_room_transaction}; retained_health={retained_degraded_health}; \
          stale_room_follow_up={room_follow_up:?}; stale_local_follow_up={local_follow_up:?}; \
-         stale_room_completion={room_completion:?}; local_position={:?}; local_paused={:?}",
+         stale_room_completion={room_completion:?}; stale_room_failure={stale_room_failure:?}; \
+         stale_local_failure={stale_local_failure:?}; local_position={:?}; local_paused={:?}",
         session.model.playback.local_position,
         session.model.playback.local_paused,
     );
+
+    assert_eq!(
+        session.model.apply(ClientEvent::LocalPauseChangeRequested {
+            original_paused: None,
+            original_ready: None,
+            original_last_paused_on_leave_at_seconds: None,
+            planned_paused: Some(true),
+            planned_ready: None,
+            planned_last_paused_on_leave_at_seconds: None,
+            effects: vec![ClientEffect::SetPlayerPaused(true)],
+        }),
+        vec![ClientEffect::SetPlayerPaused(true)],
+        "a post-reconnect transaction must start after stale completions are rejected"
+    );
+    assert!(session.model.local_pause_change_in_flight());
 }
 
 fn fully_seeded_session(seed: u64) -> ClientSession {

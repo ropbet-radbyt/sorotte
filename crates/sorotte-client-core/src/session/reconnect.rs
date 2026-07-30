@@ -7,6 +7,7 @@ impl ClientSession {
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
         self.reset_playback_barrier();
+        self.model.cancel_connection_scoped_playback_transactions();
         self.mark_readiness_v2_reconnect_pending();
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model

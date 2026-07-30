@@ -10,11 +10,33 @@ pub struct DecodedMessageLineItem {
     pub message: Result<ProtocolMessage, ProtocolError>,
 }
 
+struct RedactedCommandName<'a>(&'a Option<String>);
+
+impl std::fmt::Debug for RedactedCommandName<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_deref() {
+            None => formatter.write_str("None"),
+            Some(command)
+                if matches!(
+                    command,
+                    "Hello" | "Set" | "List" | "State" | "Chat" | "Error" | "TLS"
+                ) =>
+            {
+                formatter.debug_tuple("Some").field(&command).finish()
+            }
+            Some(_) => formatter
+                .debug_tuple("Some")
+                .field(&"<unknown-protocol-command>")
+                .finish(),
+        }
+    }
+}
+
 impl std::fmt::Debug for DecodedMessageLineItem {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DecodedMessageLineItem")
-            .field("command", &self.command)
+            .field("command", &RedactedCommandName(&self.command))
             .field("payload", &RedactedJsonValue(&self.payload))
             .field("message", &self.message)
             .finish()
@@ -221,6 +243,7 @@ fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usi
     let mut escaped = false;
     let mut expect_key = false;
     let mut string_start = 0usize;
+    let mut matched_span = None;
 
     for (index, byte) in bytes.iter().enumerate() {
         if in_string {
@@ -239,8 +262,8 @@ fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usi
                             .is_ok_and(|key| key == wanted_key);
                         if key_matches {
                             let value_start = next_non_whitespace_index(bytes, after_string + 1);
-                            let value_end = matching_object_end(bytes, value_start)?;
-                            return Some((value_start, value_end));
+                            matched_span = matching_object_end(bytes, value_start)
+                                .map(|value_end| (value_start, value_end));
                         }
                         expect_key = false;
                     }
@@ -273,7 +296,7 @@ fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usi
         }
     }
 
-    None
+    matched_span
 }
 
 fn set_command_order(json_line: &str) -> Vec<String> {
