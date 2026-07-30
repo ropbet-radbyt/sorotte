@@ -31,6 +31,7 @@ use super::{
     ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, TlsCertificateBundleMetadataClock,
     default_motd_for_client_version, load_tls_server_config_from_snapshot, motd_for_client_context,
     motd_for_client_version, read_network_line_from_stream, read_tls_certificate_bundle_snapshot,
+    read_tls_certificate_bundle_snapshot_with_test_hook,
     read_tls_certificate_bundle_snapshot_with_test_reader, run_server_network_loop_until_shutdown,
     run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_fingerprint,
 };

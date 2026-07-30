@@ -26,7 +26,8 @@ Requirements:
 - SWAG publishing TCP port `8999`.
 - Router/firewall forwarding public TCP `8999` to SWAG.
 - SWAG and Sorotte on the same Docker network, or SWAG able to reach Sorotte by a stable LAN address.
-- Sorotte able to read a certificate bundle containing `cert.pem`, `chain.pem`, and `privkey.pem`.
+- Sorotte able to read an atomic certificate bundle containing `current.json`
+  plus immutable `generations/<id>/cert.pem`, `chain.pem`, and `privkey.pem`.
 
 ## SWAG Certificate
 
@@ -87,12 +88,15 @@ Then set:
 SOROTTE_SERVER_TLS_CERT_PATH=/tls
 ```
 
-The mounted directory must contain:
+The mounted directory should contain:
 
 ```text
-cert.pem
-chain.pem
-privkey.pem
+current.json
+generations/
+  <generation-id>/
+    cert.pem
+    chain.pem
+    privkey.pem
 ```
 
 On the Docker host, copy the bundle from SWAG to the Sorotte TLS directory and make it readable by the default Sorotte container user, UID/GID `10001:10001`:
@@ -113,9 +117,30 @@ SOROTTE_GID=10001
 
 If your paths differ, override those environment variables when running the script.
 
-For renewal automation, run the same copy command from a host scheduler after SWAG has renewed certificates. A daily schedule is usually sufficient because Let's Encrypt renewals happen well before expiry. The server refreshes the TLS bundle on later STARTTLS attempts when the copied files change.
+The source must be a normal Certbot lineage: `cert.pem`, `chain.pem`, and
+`privkey.pem` resolve to `cert<number>.pem`, `chain<number>.pem`, and
+`privkey<number>.pem` in one archive directory. The publisher rejects a mixed
+number or directory instead of guessing through an in-progress renewal. It
+requires the host's `readlink -f`, `sha256sum`, `mktemp`, and `sync`
+utilities.
 
-Directly mounting SWAG's live certificate tree into Sorotte also works, but it broadens what Sorotte can read. Use it only as a fallback:
+The script copies all three members into a new immutable generation, records
+their byte lengths and SHA-256 digests, makes the generation durable, and then
+atomically switches `current.json`. It deliberately retains older generations
+so a reader that observed the previous selector cannot race with cleanup.
+
+For renewal automation, run the same copy command from a host scheduler after
+SWAG has renewed certificates. A daily schedule is usually sufficient because
+Let's Encrypt renewals happen well before expiry. The server refreshes the TLS
+bundle on later STARTTLS attempts when `current.json` changes. Old generations
+are certificate-sized and may be pruned during a maintenance window, but never
+modify a selected generation in place.
+
+Directly mounting SWAG's live certificate tree into Sorotte remains a
+compatibility fallback, but it broadens what Sorotte can read and exposes three
+independently updated paths. Sorotte requires two matching loose-file captures,
+which reduces renewal races but cannot prove generation identity. Prefer the
+atomic copied bundle:
 
 ```text
 Host path: /path/to/swag/appdata/etc
@@ -182,17 +207,17 @@ From inside the Sorotte container:
 ```sh
 printenv SOROTTE_SERVER_TLS_CERT_PATH
 ls -l "$SOROTTE_SERVER_TLS_CERT_PATH"
-test -r "$SOROTTE_SERVER_TLS_CERT_PATH/cert.pem" && echo cert-ok
-test -r "$SOROTTE_SERVER_TLS_CERT_PATH/chain.pem" && echo chain-ok
-test -r "$SOROTTE_SERVER_TLS_CERT_PATH/privkey.pem" && echo key-ok
+test -r "$SOROTTE_SERVER_TLS_CERT_PATH/current.json" && echo selector-ok
+test -x "$SOROTTE_SERVER_TLS_CERT_PATH/generations" && echo generations-ok
+cat "$SOROTTE_SERVER_TLS_CERT_PATH/current.json"
+find "$SOROTTE_SERVER_TLS_CERT_PATH/generations" -maxdepth 2 -type f -print
 ```
 
 Expected:
 
 ```text
-cert-ok
-chain-ok
-key-ok
+selector-ok
+generations-ok
 ```
 
 ## External Verification

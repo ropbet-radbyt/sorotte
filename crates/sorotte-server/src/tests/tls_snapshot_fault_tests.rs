@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest as _, Sha256};
 
 const TLS_FAULT_HISTORY_LENGTH: usize = 3;
 const TLS_FAULT_STEP_COUNT: usize = 6;
@@ -408,11 +409,59 @@ fn snapshot_from_generation(
     .expect("scheduled TLS generation should be readable")
 }
 
+fn test_sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn generation_manifest_bytes(generation_id: &str, generation: &[Vec<u8>; 3]) -> Vec<u8> {
+    let members = super::super::TLS_REQUIRED_CERT_FILENAMES
+        .into_iter()
+        .zip(generation)
+        .map(|(filename, contents)| {
+            (
+                filename.to_owned(),
+                json!({
+                    "length": contents.len(),
+                    "sha256": test_sha256(contents),
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::to_vec(&json!({
+        "schema": "sorotte-tls-bundle-v1",
+        "generation": generation_id,
+        "members": members,
+    }))
+    .expect("TLS generation manifest should serialize")
+}
+
+fn write_immutable_generation(
+    root: &Path,
+    generation_id: &str,
+    generation: &[Vec<u8>; 3],
+) -> Vec<u8> {
+    let generation_root = root.join("generations").join(generation_id);
+    fs::create_dir_all(&generation_root).expect("TLS generation directory should be creatable");
+    for (filename, contents) in super::super::TLS_REQUIRED_CERT_FILENAMES
+        .into_iter()
+        .zip(generation)
+    {
+        fs::write(generation_root.join(filename), contents)
+            .expect("TLS generation member should be writable");
+    }
+    generation_manifest_bytes(generation_id, generation)
+}
+
+fn select_generation(root: &Path, manifest: &[u8]) {
+    fs::write(root.join("current.json"), manifest)
+        .expect("TLS current-generation manifest should be replaceable");
+}
+
 #[test]
-#[should_panic(
-    expected = "rustls must never install a TLS bundle assembled from multiple observed generations"
-)]
-fn known_defect_tls_snapshot_can_mix_members_replaced_during_observation() {
+fn loose_snapshot_double_capture_rejects_cross_generation_read_boundaries() {
     let virtual_path = Path::new("scheduled-tls-bundle");
     let generation_a = tls_generation_a();
     let generation_b = tls_generation_b();
@@ -427,11 +476,10 @@ fn known_defect_tls_snapshot_can_mix_members_replaced_during_observation() {
         complete_fingerprints[0], complete_fingerprints[1],
         "the injected generations must have distinct byte identities"
     );
-    let mut accepted_mixed_boundaries = Vec::new();
 
     for replacement_after_read in 1..=2 {
         let mut reads = 0;
-        let mixed_snapshot =
+        let stable_snapshot =
             read_tls_certificate_bundle_snapshot_with_test_reader(virtual_path, |member_path| {
                 let filename = member_path
                     .file_name()
@@ -449,16 +497,220 @@ fn known_defect_tls_snapshot_can_mix_members_replaced_during_observation() {
                 };
                 Ok(generation[index].clone())
             })
-            .expect("cross-generation read schedule should return all members");
+            .expect("a later stable generation should be captured after the mixed observation");
 
-        let mixed_load = load_tls_server_config_from_snapshot(virtual_path, &mixed_snapshot);
-        if mixed_load.is_ok() && !complete_fingerprints.contains(&mixed_snapshot.fingerprint()) {
-            accepted_mixed_boundaries.push(replacement_after_read);
-        }
+        assert_eq!(
+            stable_snapshot.fingerprint(),
+            snapshot_b.fingerprint(),
+            "boundary {replacement_after_read} must converge on complete generation B"
+        );
+        assert!(
+            complete_fingerprints.contains(&stable_snapshot.fingerprint()),
+            "boundary {replacement_after_read} installed a cross-generation fingerprint"
+        );
+        assert!(
+            reads >= 12,
+            "boundary {replacement_after_read} must reject the first mixed capture before accepting two stable captures"
+        );
+        load_tls_server_config_from_snapshot(virtual_path, &stable_snapshot)
+            .expect("the stable complete generation must remain rustls-loadable");
+    }
+}
+
+#[test]
+fn atomic_manifest_switch_at_every_read_boundary_installs_only_complete_generation() {
+    let root = temporary_directory_path("tls-atomic-selector-boundaries");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("generations")).expect("TLS generations root should be creatable");
+    let generation_a = tls_generation_a();
+    let generation_b = tls_generation_b();
+    let manifest_a = write_immutable_generation(&root, "generation-A", &generation_a);
+    let manifest_b = write_immutable_generation(&root, "generation-B", &generation_b);
+    select_generation(&root, &manifest_a);
+    let snapshot_a = read_tls_certificate_bundle_snapshot(&root).expect("generation A should load");
+    select_generation(&root, &manifest_b);
+    let snapshot_b = read_tls_certificate_bundle_snapshot(&root).expect("generation B should load");
+    let complete_fingerprints = [snapshot_a.fingerprint(), snapshot_b.fingerprint()];
+    assert_ne!(complete_fingerprints[0], complete_fingerprints[1]);
+
+    for replacement_after_read in 1..=3 {
+        select_generation(&root, &manifest_a);
+        let mut switched = false;
+        let snapshot =
+            read_tls_certificate_bundle_snapshot_with_test_hook(&root, |member_index, _| {
+                if !switched && member_index == replacement_after_read {
+                    select_generation(&root, &manifest_b);
+                    switched = true;
+                }
+            })
+            .expect("selector replacement should converge on one immutable generation");
+
+        assert!(switched, "boundary hook {replacement_after_read} must run");
+        assert_eq!(
+            snapshot.fingerprint(),
+            snapshot_b.fingerprint(),
+            "selector replacement after member {replacement_after_read} must retry generation B"
+        );
+        assert!(
+            complete_fingerprints.contains(&snapshot.fingerprint()),
+            "selector replacement after member {replacement_after_read} installed mixed bytes"
+        );
+        load_tls_server_config_from_snapshot(&root, &snapshot)
+            .expect("the selected complete generation must remain rustls-loadable");
     }
 
-    assert!(
-        accepted_mixed_boundaries.is_empty(),
-        "rustls must never install a TLS bundle assembled from multiple observed generations: accepted replacement boundaries {accepted_mixed_boundaries:?}"
+    fs::remove_dir_all(&root).expect("TLS atomic-selector directory should be removable");
+}
+
+#[test]
+fn interrupted_atomic_publication_keeps_old_generation_until_selector_switch() {
+    let root = temporary_directory_path("tls-atomic-publication-interruption");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("generations")).expect("TLS generations root should be creatable");
+    let generation_a = tls_generation_a();
+    let generation_b = tls_generation_b();
+    let manifest_a = write_immutable_generation(&root, "generation-A", &generation_a);
+    select_generation(&root, &manifest_a);
+    let snapshot_a = read_tls_certificate_bundle_snapshot(&root).expect("generation A should load");
+
+    let staged_root = root.join("generations").join("unpublished-B");
+    fs::create_dir(&staged_root).expect("unpublished generation should be staged");
+    fs::write(staged_root.join("privkey.pem"), &generation_b[0])
+        .expect("partial generation should write");
+    assert_eq!(
+        read_tls_certificate_bundle_snapshot(&root)
+            .expect("an unreferenced partial generation must be invisible")
+            .fingerprint(),
+        snapshot_a.fingerprint()
     );
+
+    fs::remove_dir_all(&staged_root).expect("partial staging directory should be removable");
+    let manifest_b = write_immutable_generation(&root, "generation-B", &generation_b);
+    assert_eq!(
+        read_tls_certificate_bundle_snapshot(&root)
+            .expect("complete but unselected generation B must remain invisible")
+            .fingerprint(),
+        snapshot_a.fingerprint()
+    );
+
+    select_generation(&root, &manifest_b);
+    let snapshot_b =
+        read_tls_certificate_bundle_snapshot(&root).expect("selected generation B should load");
+    assert_ne!(snapshot_b.fingerprint(), snapshot_a.fingerprint());
+    load_tls_server_config_from_snapshot(&root, &snapshot_b)
+        .expect("selected generation B should be rustls-loadable");
+
+    fs::remove_dir_all(&root).expect("TLS publication-interruption directory should be removable");
+}
+
+#[test]
+fn unavailable_selected_generation_retains_active_context_without_consuming_rotation_retry() {
+    let root = temporary_directory_path("tls-atomic-unavailable-selected-generation");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("generations")).expect("TLS generations root should be creatable");
+    let generation_a = tls_generation_a();
+    let generation_b = tls_generation_b();
+    let manifest_a = write_immutable_generation(&root, "generation-A", &generation_a);
+    let manifest_b = write_immutable_generation(&root, "generation-B", &generation_b);
+    select_generation(&root, &manifest_a);
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(root.clone()));
+    let fingerprint_a = runtime
+        .tls_certificate_bundle_fingerprint
+        .expect("generation A should initialize the TLS context");
+    assert!(runtime.tls_context_available);
+    assert!(runtime.server_accepts_tls);
+    assert_eq!(runtime.tls_rotation_attempts, 0);
+
+    let unavailable_member = root
+        .join("generations")
+        .join("generation-B")
+        .join("cert.pem");
+    fs::remove_file(&unavailable_member)
+        .expect("generation B certificate should be removable for the fault");
+    select_generation(&root, &manifest_b);
+
+    let outbound = runtime
+        .handle_line("unavailable-generation", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("an unavailable selected generation should retain the active context");
+    assert_eq!(tls_start_response(&outbound).as_deref(), Some("true"));
+    assert!(has_start_tls_transport_action(
+        &runtime.drain_transport_actions(),
+        "unavailable-generation"
+    ));
+    assert_eq!(
+        runtime.tls_certificate_bundle_fingerprint,
+        Some(fingerprint_a),
+        "an incomplete selected generation must not replace the active identity"
+    );
+    assert!(runtime.tls_context_available);
+    assert!(runtime.server_accepts_tls);
+    assert_eq!(
+        runtime.tls_rotation_attempts, 0,
+        "capture instability must not consume the invalid-generation retry budget"
+    );
+
+    fs::write(&unavailable_member, &generation_b[1])
+        .expect("the immutable generation member should be restored for recovery");
+    let outbound = runtime
+        .handle_line("recovered-generation", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("the complete selected generation should become active");
+    assert_eq!(tls_start_response(&outbound).as_deref(), Some("true"));
+    assert!(has_start_tls_transport_action(
+        &runtime.drain_transport_actions(),
+        "recovered-generation"
+    ));
+    assert_ne!(
+        runtime.tls_certificate_bundle_fingerprint,
+        Some(fingerprint_a)
+    );
+    assert!(runtime.tls_context_available);
+    assert!(runtime.server_accepts_tls);
+    assert_eq!(runtime.tls_rotation_attempts, 1);
+
+    fs::remove_dir_all(&root).expect("TLS unavailable-generation directory should be removable");
+}
+
+#[test]
+fn atomic_manifest_rejects_path_escape_digest_drift_and_duplicate_fields() {
+    let root = temporary_directory_path("tls-atomic-manifest-adversarial");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("generations")).expect("TLS generations root should be creatable");
+    let generation = tls_generation_a();
+    let valid_manifest = write_immutable_generation(&root, "generation-A", &generation);
+
+    let mut path_escape: Value =
+        serde_json::from_slice(&valid_manifest).expect("valid manifest should parse in test");
+    path_escape["generation"] = json!("../outside");
+    select_generation(
+        &root,
+        &serde_json::to_vec(&path_escape).expect("path-escape manifest should serialize"),
+    );
+    let error = read_tls_certificate_bundle_snapshot(&root)
+        .expect_err("generation traversal must fail closed");
+    assert!(error.to_string().contains("generation"));
+
+    let mut digest_drift: Value =
+        serde_json::from_slice(&valid_manifest).expect("valid manifest should parse in test");
+    digest_drift["members"]["cert.pem"]["sha256"] = json!("0".repeat(64));
+    select_generation(
+        &root,
+        &serde_json::to_vec(&digest_drift).expect("digest-drift manifest should serialize"),
+    );
+    let error = read_tls_certificate_bundle_snapshot(&root)
+        .expect_err("member digest drift must fail closed");
+    assert!(error.to_string().contains("SHA-256 mismatch"));
+
+    let members = &serde_json::from_slice::<Value>(&valid_manifest)
+        .expect("valid manifest should parse in test")["members"];
+    let duplicate = format!(
+        r#"{{"schema":"sorotte-tls-bundle-v1","schema":"sorotte-tls-bundle-v1","generation":"generation-A","members":{members}}}"#
+    );
+    select_generation(&root, duplicate.as_bytes());
+    let error = read_tls_certificate_bundle_snapshot(&root)
+        .expect_err("duplicate manifest fields must fail closed");
+    assert!(error.to_string().contains("duplicate field"));
+
+    fs::remove_dir_all(&root).expect("TLS adversarial-manifest directory should be removable");
 }

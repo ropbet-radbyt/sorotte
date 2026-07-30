@@ -112,11 +112,41 @@ Room isolation:
 
 ## TLS
 
-The `--tls` option points at a directory containing:
+The `--tls` option points at a TLS bundle root. The recommended layout uses an
+atomically replaced selector and immutable generations:
 
-- `cert.pem`
-- `chain.pem`
-- `privkey.pem`
+```text
+tls/
+  current.json
+  generations/
+    20260730T120000Z-1234-AbCdEf/
+      cert.pem
+      chain.pem
+      privkey.pem
+```
+
+`current.json` uses schema `sorotte-tls-bundle-v1`, names the selected
+generation, and records the exact byte length and lowercase SHA-256 digest of
+all three members. The server reads only that generation, authenticates every
+member, and verifies that the selector did not change during capture. A
+publisher must fully write a new generation and atomically rename a temporary
+selector to `current.json`; it must never modify a selected generation in
+place. [`copy-swag-sorotte-certs.sh`](../scripts/copy-swag-sorotte-certs.sh)
+implements this contract for SWAG/Let's Encrypt lineages.
+
+The schema is deliberately closed. A generation ID is at most 128 ASCII bytes,
+uses only letters, digits, `-`, and `_`, and begins/ends with a letter or
+digit. `current.json` is limited to 16 KiB and each member to 4 MiB. The atomic
+bundle root, `generations` directory, selected generation directory, selector,
+and members must be ordinary directories/files rather than symbolic links or
+Windows reparse points.
+
+For compatibility, a directory containing loose `cert.pem`, `chain.pem`, and
+`privkey.pem` files is still accepted when `current.json` is absent. The server
+requires two matching captures before installing loose files, but no reader can
+prove that three independently replaced paths came from one certificate
+generation. Use loose files only when they are static or publication is
+externally serialized.
 
 Example:
 

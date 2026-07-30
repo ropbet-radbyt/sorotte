@@ -221,8 +221,8 @@ pub(crate) use tls::{
 };
 #[cfg(test)]
 pub(crate) use tls::{
-    TlsCertificateBundleMetadataClock, read_tls_certificate_bundle_snapshot_with_test_reader,
-    tls_certificate_bundle_fingerprint,
+    TlsCertificateBundleMetadataClock, read_tls_certificate_bundle_snapshot_with_test_hook,
+    read_tls_certificate_bundle_snapshot_with_test_reader, tls_certificate_bundle_fingerprint,
 };
 
 #[derive(Debug, Clone, PartialEq)]
