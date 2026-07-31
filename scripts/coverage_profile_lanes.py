@@ -127,6 +127,7 @@ EXPECTED_COMPAT_TESTS = (
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
+    "tests::legacy_server_port_lease_serializes_startup_allocation",
     "tests::legacy_server_request_shim_preserves_explicit_features",
     "tests::legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features",
     "tests::legacy_tls_tests::legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
