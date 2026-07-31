@@ -5,9 +5,8 @@
 This slice adds the Unix-domain-socket kernel equivalent of the existing Windows
 named-pipe mpv IPC fault coverage. The audit began on
 `codex/test-coverage-design` at
-`c594c290308bf3c0b381a255d75179c7cb177c10`. The implementation remained
-uncommitted while this draft was written so the parent test-coverage pass can
-review and commit the four slices independently.
+`c594c290308bf3c0b381a255d75179c7cb177c10`. The focused implementation commit
+is `997a62835eafbcb8a9bd98db9f5a81da85dedd1c`.
 
 Files in this slice:
 

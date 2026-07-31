@@ -185,6 +185,35 @@ same `b805d7745e43245fd0941aa33170df710cfa048d13810d5d40f7d34e6ce0e279`
 digest before and after execution, and completed its runner in 16,503 ms
 (16,480 ms inside the report).
 
+## Final post-gate confirmation
+
+After the later generated-compatibility, Unix-kernel, and faulting-HTTP
+coverage slices completed every build-producing validation gate, the
+owned-process inventory was executed again:
+
+```text
+target/verification/gui-real-mpv-owned-process-recovery/20260731T045019794Z-49868
+```
+
+It passed all 20 assertions with all 13 exact artifacts in 25,435 ms. GUI PID
+`22372` initially owned exact mpv PID `61396` through
+`\\.\pipe\sorotte-gui-mpv-22372-1785473424694`. The harness terminated only
+that attested child. Sorotte automatically launched exact mpv PID `48892`
+through the distinct endpoint
+`\\.\pipe\sorotte-gui-mpv-22372-1785473433357`, without a manual retry.
+Replacement observations proved file load, Play, and Pause; the old process
+remained terminated. Native Exit reaped the replacement and GUI and released
+the loopback session fixture.
+
+```text
+673dda5226c433950d3074cb4f1b2b6d222802eda6e30cc8a9b5d6e0ef12271c  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  initial/replacement mpv
+2791765b6d120cb3f7c3dc640e7125b67726d398899478461e54d2d44262ba41  harness-report.json
+b9e038fed7004237e8e9faef74bf911ab7e51c686d7ddc0fccb4b280439760df  contract-summary.json
+198746e33f13666cd0a8d280afae437a963701751190d44bc57dec990baf47df  invocation.json
+258ff056a100baf347b00a6a4db96b01ce604cde4a5e1d6482757369fe3bb18  owned-mpv-recovery.json
+```
+
 ## Focused validation
 
 Environment:

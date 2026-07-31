@@ -95,6 +95,43 @@ cargo clippy --locked -p sorotte-compat --all-targets --all-features -- -D warni
 `cargo fmt --all -- --check`, Python bytecode compilation for all changed
 Python files, and compatibility-only `git diff --check` also passed.
 
+## Canonical committed-source matrix
+
+The focused implementation was committed as
+`e3d8554a61aea9dc1fe8252540e22aff5b134bb6`, then the complete required-live
+matrix was rerun from that exact clean source:
+
+```text
+SYNCPLAY_REQUIRE_LIVE_INTEROP=1
+SYNCPLAY_LEGACY_ROOT=.interop-cache/syncplay-legacy
+SYNCPLAY_PYTHON_BIN=C:\Python313\python.exe
+C:\Python313\python.exe scripts/compat_live_interop.py run --repo-root . \
+  --output target/verification/compat-live-committed-e3d8554-v1.json
+C:\Python313\python.exe scripts/compat_live_interop.py validate \
+  --report target/verification/compat-live-committed-e3d8554-v1.json
+```
+
+The run and independent validator passed. The closed report recorded:
+
+- source and expected source:
+  `e3d8554a61aea9dc1fe8252540e22aff5b134bb6`;
+- listed: 144;
+- executed/passed: 137/137;
+- failed/skipped/ignored: 0/0/7;
+- complete accounting: `true`;
+- execution return code: 0;
+- runtime: 47.920239 seconds;
+- fixture inventory: 89 files with manifest
+  `c6965b679ece27107201b420b398f1bf9e19ef8a54e056165b84fc902ab2a76d`;
+- pinned oracle:
+  `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`;
+- report SHA-256:
+  `ee74f619e51321a775ad9f6b656e1a6e2275d4b629f700ee4086ba41379834ba`;
+- stdout SHA-256:
+  `cac0dd832092cd253f5dbe29cb5db7b92d1dfe53f27661a77f4dbd64549dbfc1`;
+- stderr SHA-256:
+  `96d63126df9b96f39864a6a7b322f70bc7014ad9eab9ee5114f26ce458a417a7`.
+
 ## Defect outcome and limitations
 
 The generated campaign found no Rust/Python parity defect: all 256 cases
@@ -105,5 +142,4 @@ This is a line-level framing differential, not a network stream segmentation
 test. It intentionally excludes non-standard JSON numbers and invalid
 top-level protocol shapes, and it does not exercise stateful server behavior;
 those concerns remain owned by existing adversarial codec, raw-loopback, and
-live session suites. A committed-source complete required-live matrix remains
-the canonical follow-up after this uncommitted slice is integrated.
+live session suites.

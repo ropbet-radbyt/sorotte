@@ -2,8 +2,8 @@
 
 Date: 2026-07-31
 
-Source base before this uncommitted slice:
-`c594c290308bf3c0b381a255d75179c7cb177c10`
+Implementation commit:
+`e8f24a70a090052dedc6d59b500c4fbd2564c5a4`
 
 ## Scope and safety
 

@@ -17,6 +17,7 @@ Framed transport, migration, updater handshake, and CLI mutation update: 2026-07
 Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
 Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
 Required-live, owned-process recovery, updater durability, and framed-mpv update: 2026-07-31
+Generated compatibility, Unix kernel IPC/durability, and faulting-HTTP update: 2026-07-31
 
 Branch: `codex/test-coverage-design`
 
@@ -100,6 +101,17 @@ characterization surfaced `TC-UPDATER-002`, which is fixed and positive in the
 same tranche. The preserved framed-target and committed-run compatibility REDs
 were independent oracle/wrapper defects, not product defects. The registry
 remains explicitly empty.
+The next bounded continuation adds a 256-case generated Rust/Python
+JSON-framing differential, a real Linux updater directory-sync denial, 14
+real-kernel Unix-domain-socket mpv IPC schedules, and a strict
+faulting-loopback-HTTP real-mpv vertical. The first three slices found no
+product defect. The native vertical exposed `TC-GUI-004`, `TC-GUI-005`, and
+`TC-PLAYER-004`.
+Production now admits trusted direct HTTP(S) media as an automatic player
+candidate and fences an accepted same-target load across command completion,
+pre-activation path observations, and GUI row-identity reprojection. Both
+findings are positive regressions and the current product registry remains
+explicitly empty.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -209,6 +221,52 @@ in:
 - [`updater-transaction-storage-durability-20260731.md`](evidence/test-coverage/updater-transaction-storage-durability-20260731.md)
 - [`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md)
 
+## 2026-07-31 generated compatibility, Unix kernel, and faulting-HTTP tranche
+
+Status: **Implemented and source-bound; two GUI product defects found and
+fixed**
+
+The four independently bounded slices are:
+
+- A fixed-seed 256-case Rust/Python differential drives accepted,
+  malformed-JSON, and malformed-UTF-8 byte lines through Sorotte and the actual
+  pinned Syncplay `JSONCommandProtocol`. All cases matched. Its implementation-
+  commit required-live report lists 144 tests, executes/passes 137, skips zero,
+  and accounts for seven fixture writers.
+- A Linux-only updater regression reaches the production directory
+  read-open/`sync_all` path after a real rename under mode `0300`. It receives
+  `EACCES`, retains authenticated old-state recovery, restores exact
+  permissions, cleans every transaction artifact, and re-enters idempotently.
+- Nine Linux tests execute 14 real Unix-domain-socket schedules through the
+  production mpv client and worker: fragmentation, coalescing, correlation
+  errors, malformed/truncated/EOF frames, half-close, timeout, path
+  replacement, request-ID wraparound, worker shutdown, and namespace cleanup.
+- The native real-mpv inventory serves generated PCM from an ephemeral strict
+  IPv4-loopback HTTP endpoint, faults one paced chunked response with an
+  invalid chunk-size boundary, requires mpv's early keep-open EOF signal and
+  one complete recovery response, and retains exact
+  GUI/mpv/session/IPC/media identity and resource release. It exposed
+  `TC-GUI-004`, `TC-GUI-005`, and `TC-PLAYER-004`; all three are production
+  fixes with ordinary positive regressions.
+
+The native iteration retained every RED. Early failures hardened default
+session-command allowlisting, dynamic-ping shape checks, exact four-frame
+playlist exchange, endpoint rebind proof, integer-vs-boolean JSON schema
+checks, partial HTTP-write evidence, and method/range/status accounting.
+Product REDs separately proved the missing direct-URL candidate, repeated
+same-target `loadfile` behavior, and the absence of `end-file` under
+`keep-open=always` after an early malformed-transfer EOF. Healthy and
+owned-process real-mpv contracts remain unchanged, and the current
+known-defect registry remains empty.
+
+Exact reports, hashes, commands, preserved REDs, and limitations are retained
+in:
+
+- [`compat-generated-json-framing-differential-20260731.md`](evidence/test-coverage/compat-generated-json-framing-differential-20260731.md)
+- [`updater-linux-parent-directory-sync-real-syscall-20260731.md`](evidence/test-coverage/updater-linux-parent-directory-sync-real-syscall-20260731.md)
+- [`player-unix-socket-ipc-kernel-20260731.md`](evidence/test-coverage/player-unix-socket-ipc-kernel-20260731.md)
+- [`native-gui-real-mpv-faulting-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md)
+
 ## Experimental baseline
 
 Before the shrinkable suite was added:
@@ -226,6 +284,31 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The generated-compatibility/Unix-durability/Unix-IPC/faulting-HTTP
+  continuation passed its fixed-seed 256-case Rust/Python differential with
+  zero mismatches; the committed-source required-live report over `e3d8554`
+  listed 144 tests, passed all 137 executable tests, accounted for the seven
+  fixture writers, and skipped none. The real Linux updater denial and all
+  nine Unix-domain-socket tests covering 14 production IPC schedules passed.
+  Focused keep-open recovery passed 15/15 player tests, 16/16 native-harness
+  tests, and 19/19 Python contract tests. Final integration passed 504/504
+  Python policy/infrastructure tests in 26.328 seconds and the same 504/504
+  documentation-sensitive suite again in 27.397 seconds after evidence
+  finalization, plus formatting, whitespace, both changed workflows under
+  actionlint, the 20-behavior/51-proof catalog, all 23 ignored-test
+  dispositions, the ten-shard mutation policy with 17 exact accepted
+  compiler-unviable identities, and the explicitly empty
+  0-defect/0-characterization registry. Warning-denied locked
+  all-target/all-feature workspace Clippy passed in 7.28 seconds; the complete
+  locked all-feature workspace passed in 220.1 seconds with only registered
+  ignores. After every build-producing gate, the final GUI digest
+  `673dda5226c433950d3074cb4f1b2b6d222802eda6e30cc8a9b5d6e0ef12271c`
+  passed the healthy 13-assertion/10-artifact bundle
+  `20260731T044916649Z-67112`, the owned-process 20-assertion/13-artifact
+  bundle `20260731T045019794Z-49868`, and, last, the faulting-HTTP
+  18-assertion/11-artifact bundle `20260731T045105652Z-43360`. The last run
+  retained the malformed transfer, one complete recovery request,
+  same-PID/same-IPC recovery, and complete player/server/socket release.
 - The 2026-07-31 required-live/recovery/updater/framed-mpv continuation passed
   all 496 Python policy and infrastructure tests in 22.380 seconds,
   repository formatting and diff checks, both changed workflows under
@@ -2705,3 +2788,136 @@ kernel panic, physical power loss, or filesystems/storage stacks not executed
 here. Exact schedules, commands, Microsoft API references, and limitations are
 retained in
 [`updater-transaction-storage-durability-20260731.md`](evidence/test-coverage/updater-transaction-storage-durability-20260731.md).
+
+## TC-GUI-004: Automatic direct HTTP media had no player candidate
+
+Status: **Resolved 2026-07-31; trusted direct HTTP(S) media enters automatic
+resolution**
+
+Severity: **High for remote-media usability (a session playlist accepted the
+URL but never asked the attached player to load it)**
+
+Detection: physical native Open Media through the strict
+GUI/session/real-mpv/faulting-HTTP vertical
+
+The first native RED retained the selected HTTP URL in the shared playlist and
+completed its strict session exchange, but the loopback media server received
+no request and mpv received no `loadfile`. Automatic resolution treated every
+playlist string without a local origin as a local/media-search target. A
+direct HTTP(S) media URL therefore produced no candidate, even after URL trust
+preflight had accepted it.
+
+Production now parses the target and admits only `http` or `https` URLs with a
+host whose existing stream classifier identifies them as
+`DirectMediaUrl`. The candidate remains behind the existing room trust check
+and uses the ordinary synchronous core load path. Extractor pages such as a
+YouTube watch URL still use Stream Support; `ftp`, custom schemes, malformed
+URLs, and untrusted hosts remain unresolved.
+
+Positive owner-level regressions cover direct HTTP and HTTPS acceptance,
+unsupported-scheme rejection, trust rejection, and extractor-page
+non-bypass. The strict native vertical then reaches the loopback server and
+the real mpv process. The initial RED is retained at:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T005239395Z-31476
+```
+
+## TC-GUI-005: Same in-flight remote load could be submitted repeatedly
+
+Status: **Resolved 2026-07-31; command acceptance, media activation, and row
+reprojection are independently fenced**
+
+Severity: **High for recovery correctness (duplicate `loadfile` commands abort
+the predecessor before it can establish media identity)**
+
+Detection: strict session fixture plus real-mpv log and deterministic
+stable-generation row-identity regression
+
+After `TC-GUI-004` was fixed, one strict native RED showed four identical
+`loadfile` commands within 37 milliseconds. Each later command aborted the
+predecessor while mpv was still opening the same URL. Two adjacent lifecycle
+assumptions enabled the loop:
+
+- a completed JSON-IPC command reply could be treated as media activation even
+  though it proves only that mpv accepted `loadfile`; and
+- a fresh `GuiPlaylistEntryId` projection could replace the row-scoped
+  `Loading` attempt even while the physical player placeholder still
+  represented the same target.
+
+Production now retires command correlation on `Completed` but keeps the
+attempt `Loading` behind an explicit media-confirmation fence. A matching path
+observation while mpv is merely opening cannot substitute for
+`file-loaded`; an authoritative physical-file-loaded snapshot or matching
+media-success event clears the fence. Same-target row reprojection migrates
+the new row-scoped attempt onto the already in-flight physical load instead of
+issuing another command. A real terminal media failure still permits a
+same-target retry, and a genuinely different remote target still supersedes
+the old attempt.
+
+The deterministic integration regression holds playlist generation and remote
+revision stable while forcing four distinct row IDs. It requires exactly one
+player open, then proves confirmed activation, terminal same-target retry, and
+different-target supersession. Focused lifecycle tests separately cover
+command-before-media and media-before-command order, pre-activation matching
+path telemetry, superseded late completion, and authoritative snapshot
+reacquisition. The duplicate-load RED is retained at:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T024225197Z-15772
+```
+
+## TC-PLAYER-004: Keep-open premature EOF never reached network recovery
+
+Status: **Resolved 2026-07-31; an active-attempt keep-open EOF can start the
+existing bounded same-generation recovery**
+
+Severity: **High for interrupted remote VOD recovery (playback stopped early
+while Sorotte remained attached and never requested the complete response)**
+
+Detection: malformed chunked loopback HTTP response through the real native
+GUI and exact installed mpv
+
+The recovery adapter already subscribed to mpv's `eof-reached` property and
+retained coherent attachment, generation, attempt, network path, duration, and
+position evidence. It deliberately treated that property as provisional and
+waited for `end-file` before starting the same-generation reload. Sorotte also
+launches mpv with `--keep-open=always --keep-open-pause=yes`.
+
+The final native RED transferred 720,000 valid bytes from a declared
+45-second AU stream and then injected an invalid HTTP chunk-size line. mpv
+logged a curl receive failure and libavformat EOF, played the available bytes,
+published `eof-reached=true` around 7.5 seconds, and paused. Under keep-open it
+did not publish `end-file`, so Sorotte's recovery transaction never ran. A
+preceding valid finite-response RED was retained separately and rejected as a
+transport oracle: a deliberately complete 720,000-byte HTTP response ending
+normally is not evidence of a broken transfer.
+
+Production now lets the exact active-attempt provisional EOF invoke the
+existing recovery transaction. The same guards remain authoritative:
+
+- network VOD only, with live and local media excluded;
+- coherent non-seeking duration and position evidence;
+- more than 15 seconds remaining;
+- exact attachment, generation, and load-attempt identity;
+- two consecutive and five total attempts at most; and
+- progress, seek, restart, replacement, and late-event fencing.
+
+The successor retains the logical generation, does not publish an early
+terminal phase, and uses the retained position as its resume target. Positive
+tests cover the keep-open property without any `end-file`, near-tail and local
+exclusions, contradictory provisional evidence, retry budgets, and ordinary
+`end-file` recovery. The strict real-mpv GREEN additionally requires exactly
+one malformed first GET, one complete recovery GET, stable PID/IPC/URL/media
+identity, resumed progress, native pause/exit, and complete socket/process
+release.
+
+The decisive RED is retained at:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T041125117Z-34960
+```
+
+The exact native fault/recovery outcome, strict request/session/process
+oracles, intermediate harness REDs, and limitations are retained in
+[`native-gui-real-mpv-faulting-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md).

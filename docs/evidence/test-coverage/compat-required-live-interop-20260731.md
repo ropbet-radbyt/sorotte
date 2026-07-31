@@ -263,6 +263,31 @@ distinct `compat-live-local-final` bundle retained the first post-parser-fix
 136-test green run; the committed `3cd64ce` bundle above supersedes it as the
 canonical campaign.
 
+### Generated framing differential extension
+
+The later generated Rust/Python framing slice added one required-live test
+without changing the seven fixture-writer dispositions. Its focused
+implementation commit
+`e3d8554a61aea9dc1fe8252540e22aff5b134bb6` was then exercised from exact
+committed source:
+
+```text
+C:\Python313\python.exe scripts/compat_live_interop.py run --repo-root . \
+  --output target/verification/compat-live-committed-e3d8554-v1.json
+C:\Python313\python.exe scripts/compat_live_interop.py validate \
+  --report target/verification/compat-live-committed-e3d8554-v1.json
+```
+
+The independently validated report listed 144 tests, executed and passed all
+137 non-writing tests, skipped zero, and accounted for the same seven ignored
+fixture writers. Its source and expected source both equal `e3d8554`; complete
+accounting is `true`, the execution return code is zero, and runtime was
+47.920239 seconds. The report SHA-256 is
+`ee74f619e51321a775ad9f6b656e1a6e2275d4b629f700ee4086ba41379834ba`.
+The exact generated campaign, oracle, stdout/stderr identities, and limitations
+are retained in
+[`compat-generated-json-framing-differential-20260731.md`](compat-generated-json-framing-differential-20260731.md).
+
 ### Final integrated gates
 
 After the committed matrix and evidence integration, repository formatting,

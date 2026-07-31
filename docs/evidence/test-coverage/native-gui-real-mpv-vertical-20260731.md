@@ -61,6 +61,30 @@ earlier pre-gate build.
 
 The earlier producer-complete bundle at `target\verification\gui-real-mpv-vertical\20260730T213424802Z-42412` was preserved unchanged. Its producer passed the same substantive vertical; the original validator rejected only equivalent Windows extended-length versus ordinary path spelling. After the documented-path normalization regression fix, that unchanged bundle revalidated with 13 assertions and 10 artifacts; the revalidation summary is outside the bundle at `target\verification\gui-real-mpv-vertical-revalidation-20260731.json`.
 
+## Final post-gate confirmation
+
+After the later generated-compatibility, Unix-kernel, and faulting-HTTP
+coverage slices completed every build-producing validation gate, the unchanged
+healthy inventory was executed again:
+
+```text
+target/verification/gui-real-mpv-vertical/20260731T044916649Z-67112
+```
+
+It passed all 13 assertions with all 10 exact artifacts in 16,713 ms. GUI PID
+`57104` owned mpv PID `64968` through
+`\\.\pipe\sorotte-gui-mpv-57104-1785473377045`; the loopback session endpoints
+were `127.0.0.1:58072` and `127.0.0.1:58073`. Native Exit reaped the owned mpv
+and GUI and released the session fixture.
+
+```text
+673dda5226c433950d3074cb4f1b2b6d222802eda6e30cc8a9b5d6e0ef12271c  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  mpv v0.41.0-877-ge5486b96d
+2735324df56ca5476780341a2d08237ba2a57050b8e218624e265fcd32528ab6  harness-report.json
+6de31c5042d2d76ccb81cbb9227dd30c24752c73200daeb7463df300d5056c96  contract-summary.json
+9cb240c153b201db3a713f7285c33ff4941e7a4be5e7703e25e37c26b74366c9  invocation.json
+```
+
 ## Fail-closed prerequisite evidence
 
 Command:

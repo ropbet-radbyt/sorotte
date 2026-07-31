@@ -102,6 +102,14 @@ and coverage-guided framed-mpv testing. It exposed and fixed
 The two randomized/committed-run REDs were test-oracle or wrapper defects and
 were corrected without changing compatible product behavior. The product
 registry remains explicitly empty.
+The next bounded continuation adds generated Rust/Python framing differential
+coverage, a real Linux updater directory-sync denial, real Unix-domain-socket
+mpv IPC schedules, and a faulting-loopback-HTTP real-mpv vertical. The first
+three slices found no product defect. The native HTTP slice exposed and fixes
+two GUI media-resolution defects plus the player recovery gap where
+`keep-open=always` publishes a premature `eof-reached` without `end-file`.
+All three are ordinary positive regressions, so the current product registry
+remains explicitly empty.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
@@ -414,6 +422,25 @@ and produced zero artifacts or evidence errors. Exact RED/GREEN identities,
 commands, hashes, limits, and limitations are retained in
 [`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](../docs/evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md).
 
+## Unix-domain-socket mpv IPC kernel evidence
+
+Nine Linux-only tests now cross the production `MpvJsonIpcClient`, Unix stream
+deadlines, line reader, worker thread, response correlation, event queues, and
+drop path through real kernel Unix-domain sockets. Fourteen deterministic
+schedules cover bytewise fragmentation, coalesced event/response order,
+stale/future/duplicate IDs, malformed and truncated frames, EOF, pre-request
+disconnect, write-half-close, timeout, same-path replacement, request-ID
+wraparound, worker shutdown, and owned fixture cleanup.
+
+The Ubuntu WSL2 focused suite passed 9/9. The complete player crate passed 418
+unit tests with its one explicit real-mpv opt-in ignored, followed by both
+integration tests; Windows and Ubuntu warning-denied Clippy passed. No product
+or harness defect surfaced. This is Linux WSL2 kernel evidence with a synthetic
+mpv peer, not macOS/BSD coverage or a substitute for real-mpv lifecycle
+testing. Exact schedules, commands, environment, and limitations are retained
+in
+[`player-unix-socket-ipc-kernel-20260731.md`](../docs/evidence/test-coverage/player-unix-socket-ipc-kernel-20260731.md).
+
 ## Configuration composition property evidence
 
 A black-box `sorotte-client-app` integration suite generates all 30
@@ -494,6 +521,24 @@ boundaries, and the installed-updater integration still passed its two exact
 tests. This proves requested OS flush boundaries, not physical power-loss or
 device-cache persistence. Exact commands and limitations are retained in
 [`updater-transaction-storage-durability-20260731.md`](../docs/evidence/test-coverage/updater-transaction-storage-durability-20260731.md).
+
+## Linux updater parent-directory sync real-syscall evidence
+
+A Linux-only regression applies mode `0300` to a nonce-owned updater target
+directory after the first production rename. Write/search permission allows
+the rename, while the production read-open and `sync_all()` directory boundary
+fails with `EACCES` (`os error 13`). The test requires an authenticated
+uncommitted journal, a complete old install, exact unmanaged sentinels,
+permission restoration, artifact-free recovery, and an idempotent second
+recovery.
+
+The focused Ubuntu WSL2 syscall test passed as UID 1000, the complete updater
+binary passed 28/28, and Linux plus Windows warning-denied checks passed. No
+product defect surfaced: the test executes the already-fixed Unix
+`TC-UPDATER-002` boundary with a real reversible host denial. It does not claim
+physical power-loss, device-cache, torn-write, real disk-full, or privileged
+behavior. Exact construction and limits are retained in
+[`updater-linux-parent-directory-sync-real-syscall-20260731.md`](../docs/evidence/test-coverage/updater-linux-parent-directory-sync-real-syscall-20260731.md).
 
 ## Persistence worker fault evidence
 
@@ -702,10 +747,11 @@ The opt-in `scripts/gui-real-mpv-vertical.ps1` lane crosses the actual native
 GUI and managed-player boundary with an exact digest-bound mpv binary,
 generated local WAV, isolated configuration, IPv4-loopback session fixture,
 physical Open Media and Exit leaves, and real mpv Play/Pause observations. A
-fresh canonical local run passed its exact 13-assertion, 10-artifact contract;
-the missing-mpv preflight failed closed before build or launch. This is local
-Windows evidence, not a new CI gate. The pass, retained red bundles, strict
-path/Hello/process identity, and limitations are recorded in
+final post-gate local run passed its exact 13-assertion, 10-artifact contract
+in bundle `20260731T044916649Z-67112`; the missing-mpv preflight failed closed
+before build or launch. This is local Windows evidence, not a new CI gate. The
+pass, retained red bundles, strict path/Hello/process identity, and limitations
+are recorded in
 [`native-gui-real-mpv-vertical-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-vertical-20260731.md).
 
 The separate recovery inventory terminates only an mpv PID already attested as
@@ -720,6 +766,29 @@ generations and the GUI. The healthy default remains its original
 oracle because production automatically relaunched the managed player. Exact
 final bundle identities and limitations are retained in
 [`native-gui-real-mpv-owned-process-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-owned-process-recovery-20260731.md).
+The final post-gate bundle `20260731T045019794Z-49868` replaced exact attested
+PID `61396` with PID `48892`, used distinct managed IPC endpoints, and released
+both generations.
+
+The faulting-HTTP inventory serves generated PCM AU media bytes from a strict
+ephemeral IPv4-loopback listener. The AU header declares the complete
+45-second stream. The first paced HTTP GET has no `Content-Length`, uses
+chunked transfer, emits exactly 720,000 valid AU body bytes, and then injects
+an invalid chunk-size boundary; one subsequent GET must transfer the complete
+AU body with its exact length. The same attested GUI-owned mpv process,
+executable, IPC endpoint, URL, media identity, and duration must progress
+before the fault, publish `eof-reached=true` with more than the bounded
+15-second recovery threshold remaining, reload, progress beyond the retained
+pre-fault position, pause, retain complete evidence, and release the GUI,
+player, session, HTTP listener, and IPC resources. The opt-in contract is
+closed at 18 assertions and 11 artifacts; healthy and owned-process modes
+remain unchanged. The preserved REDs and all three resolved findings are
+retained in
+[`native-gui-real-mpv-faulting-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md).
+The final post-gate bundle `20260731T045105652Z-43360` ran last and passed with
+the same GUI digest as the healthy and owned-process campaigns. It retained
+exactly two requests, same-PID/same-IPC recovery, no manual retry, and complete
+player/server/socket release.
 
 ## Required live Python compatibility evidence
 
@@ -731,14 +800,36 @@ hashes probes and all 89 fixtures, discovers the complete/ignored inventory,
 executes every non-writing all-feature test serially, and validates exhaustive
 disjoint accounting plus exact-key JSON.
 
-The canonical committed-source local report over `3cd64ce` listed 143 tests,
+The historical committed-source local report over `3cd64ce` listed 143 tests,
 passed all 136 executable tests, skipped zero, and matched the seven exact
 fixture writers. A preserved committed-run RED found that an attested relative
 oracle path was passed unchanged to Cargo and resolved from the crate working
-directory; the wrapper now passes the absolute already-attested path. The
-report/log hashes, prerequisite identities, missing-prerequisite proof, RED,
-and local-vs-hosted limitations are retained in
+directory; the wrapper now passes the absolute already-attested path. After
+adding the generated differential below, the current committed-source report
+over `e3d8554` lists 144 tests, passes all 137 executable tests, skips zero,
+and retains the same seven fixture writers. The report/log hashes,
+prerequisite identities, missing-prerequisite proof, RED, and local-vs-hosted
+limitations are retained in
 [`compat-required-live-interop-20260731.md`](../docs/evidence/test-coverage/compat-required-live-interop-20260731.md).
+
+## Generated Rust/Python JSON framing differential evidence
+
+A fixed-seed, 256-case required-live test drives generated byte lines through
+Sorotte's production UTF-8 and protocol decoder and the actual pinned
+Syncplay `JSONCommandProtocol`. It covers all seven commands, escaped keys,
+surrounding whitespace, multi-command objects, more than 100 duplicate-key
+cases, 16 malformed-JSON cases, and 16 malformed-UTF-8 cases. Closed request
+and response schemas require exact unique-ID and accepted/rejected accounting;
+rejected inputs may dispatch no partial commands.
+
+All 256 cases matched. The implementation-commit matrix over
+`e3d8554a61aea9dc1fe8252540e22aff5b134bb6` listed 144 tests, executed and
+passed 137, skipped none, and accounted for seven exact fixture writers in
+47.920239 seconds. Generated input remains in process-owned memory; this is a
+line-level differential, not a socket segmentation or stateful server test.
+Exact seed, report and manifest hashes, command, and limitations are retained
+in
+[`compat-generated-json-framing-differential-20260731.md`](../docs/evidence/test-coverage/compat-generated-json-framing-differential-20260731.md).
 
 ## Disposable persistence replay capability
 
