@@ -322,6 +322,37 @@ class CiPolicyTests(unittest.TestCase):
                     self.assertEqual(comment, expected_comment)
                     self.assertIn(f"{action}@{revision}", parsed_uses)
 
+    def test_required_jobs_install_repository_rust_components_eagerly(self) -> None:
+        setup_by_job = {
+            "checks": ("Setup Rust", "rustfmt, clippy"),
+            "lifecycle_contract": ("Setup Rust", "rustfmt, clippy"),
+            "gui_semantic": ("Setup Rust", "rustfmt, clippy"),
+            "rust_windows": ("Setup Rust", "rustfmt, clippy"),
+            "coverage_diff": (
+                "Setup Rust coverage toolchain",
+                "rustfmt, clippy, llvm-tools-preview",
+            ),
+            "compat-live-tls": ("Setup Rust", "rustfmt, clippy"),
+            "media-match-generated-media": ("Setup Rust", "rustfmt, clippy"),
+            "mpv-pr-semantics": ("Setup Rust", "rustfmt, clippy"),
+            "nightly-deep": ("Setup Rust", "rustfmt, clippy"),
+            "server-release-verify": ("Setup Rust", "rustfmt, clippy"),
+        }
+        for job_id, (step_name, components) in setup_by_job.items():
+            with self.subTest(job_id=job_id):
+                step = named_step(self.jobs, job_id, step_name)
+                self.assertEqual(
+                    step.get("uses"),
+                    PINNED_USES["dtolnay/rust-toolchain"],
+                )
+                self.assertEqual(
+                    step.get("with"),
+                    {
+                        "toolchain": "1.97.1",
+                        "components": components,
+                    },
+                )
+
     def test_package_freshness_compares_timestamp_instants(self) -> None:
         script = PACKAGE_PATH_BOUNDARY_TEST_PATH.read_text(encoding="utf-8")
 
@@ -944,7 +975,7 @@ class CiPolicyTests(unittest.TestCase):
             self.jobs,
             "mpv-pr-semantics",
             "Verify supported mpv source revision",
-            f'test "$(git rev-parse HEAD^{{commit}})" = "{MPV_SUPPORTED_SHA}"',
+            f"test \"$(git rev-parse 'HEAD^{{commit}}')\" = \"{MPV_SUPPORTED_SHA}\"",
         )
         self.assertEqual(
             verify_mpv_source.get("working-directory"),
@@ -1324,6 +1355,34 @@ class CiPolicyTests(unittest.TestCase):
                 "persist-credentials": "false",
             },
         )
+        coverage_rust = named_step(coverage_jobs, "coverage", "Setup Rust")
+        self.assertEqual(
+            coverage_rust.get("uses"),
+            PINNED_USES["dtolnay/rust-toolchain"],
+        )
+        self.assertEqual(
+            coverage_rust.get("with"),
+            {
+                "toolchain": "1.97.1",
+                "components": "rustfmt, clippy, llvm-tools-preview",
+            },
+        )
+        windows_rust = named_step(
+            coverage_jobs,
+            "windows-process-coverage",
+            "Setup Rust",
+        )
+        self.assertEqual(
+            windows_rust.get("uses"),
+            PINNED_USES["dtolnay/rust-toolchain"],
+        )
+        self.assertEqual(
+            windows_rust.get("with"),
+            {
+                "toolchain": "1.97.1",
+                "components": "rustfmt, clippy, llvm-tools-preview",
+            },
+        )
         python_setup = named_step(
             coverage_jobs,
             "coverage",
@@ -1460,7 +1519,13 @@ class CiPolicyTests(unittest.TestCase):
         )
         rust = named_step(jobs, "mutation", "Setup Rust")
         self.assertEqual(rust.get("uses"), PINNED_USES["dtolnay/rust-toolchain"])
-        self.assertEqual(rust.get("with"), {"toolchain": "1.97.1"})
+        self.assertEqual(
+            rust.get("with"),
+            {
+                "toolchain": "1.97.1",
+                "components": "rustfmt, clippy",
+            },
+        )
         python = named_step(jobs, "mutation", "Setup Python")
         self.assertEqual(python.get("uses"), PINNED_USES["actions/setup-python"])
         self.assertEqual(python.get("with"), {"python-version": "3.11"})
