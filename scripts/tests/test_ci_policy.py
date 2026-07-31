@@ -392,6 +392,8 @@ class CiPolicyTests(unittest.TestCase):
             "checks",
             "Checkout pinned legacy reference for Linux tests",
         )
+        self.assertNotIn("if", linux_legacy_checkout)
+        self.assertNotIn("continue-on-error", linux_legacy_checkout)
         self.assertEqual(
             linux_legacy_checkout.get("uses"),
             PINNED_USES["actions/checkout"],
@@ -406,6 +408,10 @@ class CiPolicyTests(unittest.TestCase):
             },
         )
         linux_step_names = [step.get("name") for step in linux_job["steps"]]
+        self.assertLess(
+            linux_step_names.index("Checkout"),
+            linux_step_names.index("Checkout pinned legacy reference for Linux tests"),
+        )
         self.assertLess(
             linux_step_names.index("Checkout pinned legacy reference for Linux tests"),
             linux_step_names.index("Nextest fail-on-flaky workspace tests"),

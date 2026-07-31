@@ -25,12 +25,13 @@ use super::trace_capture::{
 };
 use super::{
     DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LEGACY_SERVER_STEP_IDLE_WAIT,
-    LegacyClientChatSendContractCase, LegacyServerClientConnection, ServerRuntimeScenarioEvent,
-    ServerRuntimeScenarioStep, acquire_legacy_syncplay_checkout_process_lock,
+    LEGACY_SERVER_STEP_MAX_WAIT, LEGACY_SERVER_STEP_MIN_WAIT, LegacyClientChatSendContractCase,
+    LegacyServerClientConnection, ServerRuntimeScenarioEvent, ServerRuntimeScenarioStep,
     all_protocol_fixture_names, collect_legacy_server_step_outputs, connect_legacy_client_stream,
     decode_fixture, decode_protocol_file, default_rust_client_hello_for_interop,
     default_rust_client_hello_for_legacy_live_tls, ensure_legacy_server_is_running,
-    ensure_legacy_syncplay_checkout_available, fixture_decodes, fixture_path,
+    ensure_legacy_syncplay_checkout_available, ensure_repo_local_legacy_syncplay_checkout_with,
+    fixture_decodes, fixture_path, legacy_server_step_collection_is_complete,
     legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
     load_server_runtime_scenario_fixture, parse_server_runtime_scenario_steps,
     prepare_legacy_server_request_line, python_bin_from_env, python_live_peer_probe_script_path,
@@ -70,80 +71,203 @@ mod assertions;
 use self::assertions::*;
 
 #[test]
-fn legacy_server_step_collector_waits_for_a_delayed_first_frame() {
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).expect("loopback listener should be available");
-    let address = listener
-        .local_addr()
-        .expect("loopback listener address should resolve");
-    let mut writer = TcpStream::connect(address).expect("loopback writer should connect");
-    let (reader, _) = listener
-        .accept()
-        .expect("loopback collector stream should connect");
-    reader
-        .set_nonblocking(true)
-        .expect("collector stream should become nonblocking");
-    let mut clients = BTreeMap::from([(
-        "late-client".to_owned(),
-        LegacyServerClientConnection {
-            stream: reader,
-            pending_bytes: Vec::new(),
-        },
-    )]);
+fn step_collector_waits_for_a_delayed_required_first_frame() {
+    assert!(
+        !legacy_server_step_collection_is_complete(
+            true,
+            false,
+            LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
+            LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
+        ),
+        "required first output must not be declared idle before any frame"
+    );
+    assert!(
+        legacy_server_step_collection_is_complete(
+            false,
+            false,
+            LEGACY_SERVER_STEP_MIN_WAIT + LEGACY_SERVER_STEP_IDLE_WAIT,
+            LEGACY_SERVER_STEP_IDLE_WAIT,
+        ),
+        "an intentionally silent step must retain its short quiescence boundary"
+    );
+    assert!(
+        legacy_server_step_collection_is_complete(
+            true,
+            false,
+            LEGACY_SERVER_STEP_MAX_WAIT,
+            LEGACY_SERVER_STEP_MAX_WAIT,
+        ),
+        "missing required output must remain bounded by the hard deadline"
+    );
+
+    let connect_pair = || {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("loopback listener should be available");
+        let address = listener
+            .local_addr()
+            .expect("loopback listener address should resolve");
+        let writer = TcpStream::connect(address).expect("loopback writer should connect");
+        let (reader, _) = listener
+            .accept()
+            .expect("loopback collector stream should connect");
+        reader
+            .set_nonblocking(true)
+            .expect("collector stream should become nonblocking");
+        (reader, writer)
+    };
+    let (required_reader, mut required_writer) = connect_pair();
+    let (unrelated_reader, mut unrelated_writer) = connect_pair();
+    let mut clients = BTreeMap::from([
+        (
+            "late-client".to_owned(),
+            LegacyServerClientConnection {
+                stream: required_reader,
+                pending_bytes: Vec::new(),
+            },
+        ),
+        (
+            "other-client".to_owned(),
+            LegacyServerClientConnection {
+                stream: unrelated_reader,
+                pending_bytes: Vec::new(),
+            },
+        ),
+    ]);
+    unrelated_writer
+        .write_all(b"{\"List\":null}\n")
+        .expect("unrelated immediate framed output should be written");
 
     let delayed_writer = thread::spawn(move || {
         thread::sleep(LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(40));
-        writer
+        required_writer
             .write_all(b"{\"List\":null}\n")
             .expect("delayed framed output should be written");
     });
-    let outputs = collect_legacy_server_step_outputs(&mut clients)
+    let outputs = collect_legacy_server_step_outputs(&mut clients, Some("late-client"))
         .expect("the delayed first frame should be collected");
     delayed_writer
         .join()
         .expect("the delayed writer should complete");
 
-    assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0].client_id, "late-client");
-    assert_eq!(outputs[0].line, r#"{"List":null}"#);
+    assert_eq!(outputs.len(), 2);
+    assert!(
+        outputs.iter().any(|output| {
+            output.client_id == "other-client" && output.line == r#"{"List":null}"#
+        })
+    );
+    assert!(
+        outputs.iter().any(|output| {
+            output.client_id == "late-client" && output.line == r#"{"List":null}"#
+        })
+    );
+}
+
+fn wait_for_compat_lock_fixture_marker(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !path.is_file() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+fn wait_for_compat_lock_fixture_child(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> (bool, std::process::Output) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child
+            .try_wait()
+            .expect("lock fixture child status should be readable")
+        {
+            Some(_) => {
+                return (
+                    true,
+                    child
+                        .wait_with_output()
+                        .expect("completed lock fixture output should be collected"),
+                );
+            }
+            None if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            None => {
+                let _ = child.kill();
+                return (
+                    false,
+                    child
+                        .wait_with_output()
+                        .expect("timed-out lock fixture child should be reaped"),
+                );
+            }
+        }
+    }
 }
 
 #[test]
 fn legacy_checkout_bootstrap_lock_serializes_processes() {
-    const CHILD_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_CHILD";
+    const ROLE_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_ROLE";
     const ROOT_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_ROOT";
-    const CHILD_ID_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_CHILD_ID";
     const TEST_NAME: &str = "tests::legacy_checkout_bootstrap_lock_serializes_processes";
+    const FIXTURE_TIMEOUT: Duration = Duration::from_secs(15);
 
-    if std::env::var_os(CHILD_ENV).is_some() {
+    if let Some(role) = std::env::var_os(ROLE_ENV) {
         let root = PathBuf::from(
             std::env::var_os(ROOT_ENV).expect("lock fixture child must receive its root"),
         );
-        let child_id =
-            std::env::var(CHILD_ID_ENV).expect("lock fixture child must receive its identifier");
-        fs::write(root.join(format!("ready-{child_id}")), b"ready")
-            .expect("lock fixture child should publish readiness");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !root.join("go").is_file() {
-            assert!(
-                Instant::now() < deadline,
-                "lock fixture child timed out waiting for the start barrier"
-            );
-            thread::sleep(Duration::from_millis(5));
+        let checkout = root.join("checkout");
+        match role.to_string_lossy().as_ref() {
+            "holder" => {
+                let resolved = ensure_repo_local_legacy_syncplay_checkout_with(
+                    &checkout,
+                    FIXTURE_TIMEOUT,
+                    || {},
+                    |path| {
+                        fs::write(root.join("holder-entered"), b"held")?;
+                        if !wait_for_compat_lock_fixture_marker(
+                            &root.join("release-holder"),
+                            FIXTURE_TIMEOUT,
+                        ) {
+                            return Err(InteropError::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "holder timed out waiting for release",
+                            )));
+                        }
+                        fs::create_dir_all(path)?;
+                        fs::write(path.join("syncplayServer.py"), b"# ready\n")?;
+                        Ok(())
+                    },
+                )
+                .expect("holder should publish the ready checkout");
+                assert_eq!(resolved, checkout);
+                fs::write(root.join("holder-ready"), b"ready")
+                    .expect("holder should publish completion");
+            }
+            "contender" => {
+                let contention_marker = root.join("contender-contended");
+                let duplicate_marker = root.join("duplicate-bootstrap");
+                let resolved = ensure_repo_local_legacy_syncplay_checkout_with(
+                    &checkout,
+                    FIXTURE_TIMEOUT,
+                    || {
+                        fs::write(&contention_marker, b"contended")
+                            .expect("contender should publish actual lock contention");
+                    },
+                    |_| {
+                        fs::write(&duplicate_marker, b"duplicate")?;
+                        Err(InteropError::Io(std::io::Error::other(
+                            "contender must not bootstrap after the holder publishes readiness",
+                        )))
+                    },
+                )
+                .expect("contender should observe the checkout published by the holder");
+                assert_eq!(resolved, checkout);
+                fs::write(root.join("contender-ready"), b"ready")
+                    .expect("contender should publish completion");
+            }
+            unexpected => panic!("unknown lock fixture role {unexpected:?}"),
         }
-
-        let _guard = acquire_legacy_syncplay_checkout_process_lock(&root.join("checkout"))
-            .expect("lock fixture child should acquire the process lock");
-        let mut events = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(root.join("events"))
-            .expect("lock fixture child should open the event log");
-        writeln!(events, "enter {child_id}").expect("entry event should be recorded");
-        events.flush().expect("entry event should be visible");
-        thread::sleep(Duration::from_millis(200));
-        writeln!(events, "exit {child_id}").expect("exit event should be recorded");
-        events.flush().expect("exit event should be visible");
         return;
     }
 
@@ -157,62 +281,65 @@ fn legacy_checkout_bootstrap_lock_serializes_processes() {
     ));
     fs::create_dir(&root).expect("lock fixture root should be created");
     let executable = std::env::current_exe().expect("compatibility test image should resolve");
-    let mut children = (0..2)
-        .map(|child_id| {
-            Command::new(&executable)
-                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
-                .env(CHILD_ENV, "1")
-                .env(ROOT_ENV, &root)
-                .env(CHILD_ID_ENV, child_id.to_string())
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("lock fixture child should spawn")
-        })
-        .collect::<Vec<_>>();
+    let spawn_child = |role: &str| {
+        Command::new(&executable)
+            .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+            .env(ROLE_ENV, role)
+            .env(ROOT_ENV, &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("lock fixture child should spawn")
+    };
 
-    let ready_deadline = Instant::now() + Duration::from_secs(5);
-    for child_id in 0..2 {
-        while !root.join(format!("ready-{child_id}")).is_file() {
-            assert!(
-                Instant::now() < ready_deadline,
-                "lock fixture parent timed out waiting for child {child_id}"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    fs::write(root.join("go"), b"go").expect("lock fixture start barrier should open");
+    let holder = spawn_child("holder");
+    let holder_entered =
+        wait_for_compat_lock_fixture_marker(&root.join("holder-entered"), FIXTURE_TIMEOUT);
+    let contender = spawn_child("contender");
+    let contender_contended =
+        wait_for_compat_lock_fixture_marker(&root.join("contender-contended"), FIXTURE_TIMEOUT);
+    let duplicate_before_release = root.join("duplicate-bootstrap").exists();
+    fs::write(root.join("release-holder"), b"release").expect("holder release barrier should open");
+    let holder_ready =
+        wait_for_compat_lock_fixture_marker(&root.join("holder-ready"), FIXTURE_TIMEOUT);
+    let contender_ready =
+        wait_for_compat_lock_fixture_marker(&root.join("contender-ready"), FIXTURE_TIMEOUT);
+    let (holder_bounded, holder_output) =
+        wait_for_compat_lock_fixture_child(holder, FIXTURE_TIMEOUT);
+    let (contender_bounded, contender_output) =
+        wait_for_compat_lock_fixture_child(contender, FIXTURE_TIMEOUT);
+    let duplicate_after_release = root.join("duplicate-bootstrap").exists();
+    fs::remove_dir_all(&root).expect("lock fixture root should be removable");
 
-    for (child_id, child) in children.drain(..).enumerate() {
-        let output = child
-            .wait_with_output()
-            .expect("lock fixture child should complete");
+    assert!(holder_entered, "holder never entered the bootstrap seam");
+    assert!(
+        contender_contended,
+        "contender never observed the holder's process lock"
+    );
+    assert!(
+        !duplicate_before_release && !duplicate_after_release,
+        "contender executed a duplicate bootstrap action"
+    );
+    for (role, bounded, output) in [
+        ("holder", holder_bounded, holder_output),
+        ("contender", contender_bounded, contender_output),
+    ] {
         assert!(
-            output.status.success(),
-            "lock fixture child {child_id} failed\nstdout:\n{}\nstderr:\n{}",
+            bounded && output.status.success(),
+            "{role} child failed or exceeded its bound\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
-
-    let events =
-        fs::read_to_string(root.join("events")).expect("lock fixture event log should be readable");
-    let events = events.lines().collect::<Vec<_>>();
-    assert_eq!(events.len(), 4, "unexpected lock events: {events:?}");
-    assert!(events[0].starts_with("enter "));
-    assert_eq!(
-        events[1],
-        events[0].replacen("enter ", "exit ", 1),
-        "a second process entered before the first released the lock: {events:?}"
+    assert!(
+        holder_ready,
+        "holder did not observe its published checkout"
     );
-    assert!(events[2].starts_with("enter "));
-    assert_eq!(
-        events[3],
-        events[2].replacen("enter ", "exit ", 1),
-        "the second process did not retain exclusive ownership: {events:?}"
+    assert!(
+        contender_ready,
+        "contender did not observe readiness after acquiring the released lock"
     );
-    fs::remove_dir_all(&root).expect("lock fixture root should be removable");
 }
 
 #[test]

@@ -302,11 +302,12 @@ pub(crate) fn connect_legacy_client_stream(
 
 pub(crate) fn collect_legacy_server_step_outputs(
     clients: &mut BTreeMap<String, LegacyServerClientConnection>,
+    required_first_output_client: Option<&str>,
 ) -> Result<Vec<DirectedOutboundLine>, InteropError> {
     let mut outputs = Vec::new();
     let step_start = Instant::now();
     let mut last_activity = Instant::now();
-    let mut saw_any_output = false;
+    let mut saw_required_output = false;
     loop {
         let mut saw_new_output = false;
         for (client_id, connection) in clients.iter_mut() {
@@ -315,6 +316,9 @@ pub(crate) fn collect_legacy_server_step_outputs(
                 continue;
             }
             saw_new_output = true;
+            if required_first_output_client == Some(client_id.as_str()) {
+                saw_required_output = true;
+            }
             for line in lines {
                 outputs.push(DirectedOutboundLine {
                     client_id: client_id.clone(),
@@ -324,17 +328,16 @@ pub(crate) fn collect_legacy_server_step_outputs(
             }
         }
         if saw_new_output {
-            saw_any_output = true;
             last_activity = Instant::now();
         }
 
-        if saw_any_output
-            && step_start.elapsed() >= LEGACY_SERVER_STEP_MIN_WAIT
-            && last_activity.elapsed() >= LEGACY_SERVER_STEP_IDLE_WAIT
-        {
-            break;
-        }
-        if step_start.elapsed() >= LEGACY_SERVER_STEP_MAX_WAIT {
+        let step_elapsed = step_start.elapsed();
+        if legacy_server_step_collection_is_complete(
+            required_first_output_client.is_some(),
+            saw_required_output,
+            step_elapsed,
+            last_activity.elapsed(),
+        ) {
             break;
         }
 
@@ -342,6 +345,18 @@ pub(crate) fn collect_legacy_server_step_outputs(
     }
 
     Ok(outputs)
+}
+
+pub(crate) fn legacy_server_step_collection_is_complete(
+    wait_for_first_output: bool,
+    saw_required_output: bool,
+    step_elapsed: Duration,
+    idle_elapsed: Duration,
+) -> bool {
+    step_elapsed >= LEGACY_SERVER_STEP_MAX_WAIT
+        || ((!wait_for_first_output || saw_required_output)
+            && step_elapsed >= LEGACY_SERVER_STEP_MIN_WAIT
+            && idle_elapsed >= LEGACY_SERVER_STEP_IDLE_WAIT)
 }
 
 pub(crate) fn drain_legacy_client_lines(
@@ -515,9 +530,14 @@ pub(crate) fn legacy_syncplay_checkout_bootstrap_lock() -> &'static Mutex<()> {
     LEGACY_SYNCPLAY_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(crate) fn acquire_legacy_syncplay_checkout_process_lock(
+pub(crate) fn acquire_legacy_syncplay_checkout_process_lock<F>(
     checkout_path: &Path,
-) -> Result<fs::File, InteropError> {
+    timeout: Duration,
+    mut on_contention: F,
+) -> Result<fs::File, InteropError>
+where
+    F: FnMut(),
+{
     let parent = checkout_path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -541,8 +561,23 @@ pub(crate) fn acquire_legacy_syncplay_checkout_process_lock(
         .write(true)
         .truncate(false)
         .open(lock_path)?;
-    lock_file.lock()?;
-    Ok(lock_file)
+    let deadline = Instant::now() + timeout;
+    loop {
+        match lock_file.try_lock() {
+            Ok(()) => return Ok(lock_file),
+            Err(fs::TryLockError::WouldBlock) => {
+                on_contention();
+                if Instant::now() >= deadline {
+                    return Err(InteropError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timed out waiting for the legacy Syncplay checkout bootstrap lock",
+                    )));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(fs::TryLockError::Error(error)) => return Err(InteropError::Io(error)),
+        }
+    }
 }
 
 pub(crate) fn legacy_syncplay_checkout_is_ready(path: &Path) -> bool {
@@ -597,6 +632,33 @@ pub(crate) fn bootstrap_repo_local_legacy_syncplay_checkout(
     }
 }
 
+pub(crate) fn ensure_repo_local_legacy_syncplay_checkout_with<F, G>(
+    legacy_checkout: &Path,
+    lock_timeout: Duration,
+    on_lock_contention: G,
+    bootstrap: F,
+) -> Result<PathBuf, InteropError>
+where
+    F: FnOnce(&Path) -> Result<(), InteropError>,
+    G: FnMut(),
+{
+    let _process_guard = acquire_legacy_syncplay_checkout_process_lock(
+        legacy_checkout,
+        lock_timeout,
+        on_lock_contention,
+    )?;
+    if legacy_syncplay_checkout_is_ready(legacy_checkout) {
+        return Ok(legacy_checkout.to_path_buf());
+    }
+    bootstrap(legacy_checkout)?;
+    if !legacy_syncplay_checkout_is_ready(legacy_checkout) {
+        return Err(InteropError::LegacySyncplayCheckoutMissing(
+            legacy_checkout.to_path_buf(),
+        ));
+    }
+    Ok(legacy_checkout.to_path_buf())
+}
+
 pub(crate) fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, InteropError> {
     let configured_checkout = configured_legacy_syncplay_checkout_dir();
     if required_live_interop_enabled() && configured_checkout.is_none() {
@@ -617,14 +679,13 @@ pub(crate) fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, Int
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let legacy_checkout = repo_local_legacy_syncplay_checkout_dir();
-    let _process_guard = acquire_legacy_syncplay_checkout_process_lock(&legacy_checkout)
-        .map_err(required_live_prerequisite_error)?;
-    if legacy_syncplay_checkout_is_ready(&legacy_checkout) {
-        return Ok(legacy_checkout);
-    }
-    bootstrap_repo_local_legacy_syncplay_checkout(&legacy_checkout)
-        .map_err(required_live_prerequisite_error)?;
-    Ok(legacy_checkout)
+    ensure_repo_local_legacy_syncplay_checkout_with(
+        &legacy_checkout,
+        LEGACY_SYNCPLAY_BOOTSTRAP_LOCK_WAIT,
+        || {},
+        bootstrap_repo_local_legacy_syncplay_checkout,
+    )
+    .map_err(required_live_prerequisite_error)
 }
 
 pub fn legacy_syncplay_checkout_dir() -> PathBuf {

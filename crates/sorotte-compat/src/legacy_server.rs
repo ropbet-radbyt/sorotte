@@ -139,7 +139,8 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
         let mut events = Vec::with_capacity(steps.len());
         for step in steps {
             ensure_legacy_server_is_running(&mut child)?;
-            if !clients.contains_key(&step.client_id) {
+            let is_new_client = !clients.contains_key(&step.client_id);
+            if is_new_client {
                 let stream = connect_legacy_client_stream(port, &step.client_id)?;
                 clients.insert(
                     step.client_id.clone(),
@@ -159,13 +160,20 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
             let stream = clients
                 .get_mut(&step.client_id)
                 .ok_or_else(|| InteropError::MissingLegacyClient(step.client_id.clone()))?;
+            let required_first_output_client = (is_new_client
+                && matches!(
+                    decode_message_line(&step.request_line)?,
+                    ProtocolMessage::Hello(_)
+                ))
+            .then_some(step.client_id.as_str());
             let legacy_request_line = prepare_legacy_server_request_line(&step.request_line)?;
             stream.stream.write_all(legacy_request_line.as_bytes())?;
             // Twisted LineReceiver defaults to CRLF framing.
             stream.stream.write_all(b"\r\n")?;
             stream.stream.flush()?;
 
-            let outbound_lines = collect_legacy_server_step_outputs(&mut clients)?;
+            let outbound_lines =
+                collect_legacy_server_step_outputs(&mut clients, required_first_output_client)?;
             events.push(ServerRuntimeScenarioEvent {
                 client_id: step.client_id.clone(),
                 request_line: step.request_line.clone(),

@@ -175,6 +175,7 @@ const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
 const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
 const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
+const LEGACY_SYNCPLAY_BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
 
 static LEGACY_SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
