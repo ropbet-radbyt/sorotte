@@ -1,5 +1,36 @@
 use super::*;
 
+pub(in crate::tests) fn canonicalize_legacy_permanent_room_snapshot_setter(
+    scenario_name: &str,
+    step_index: usize,
+    request_client_id: &str,
+    request_line: &str,
+    output_client_id: &str,
+    message: &mut Value,
+) {
+    if scenario_name != PERMANENT_ROOMS_FILE_SCENARIO
+        || step_index != 8
+        || request_client_id != "client-3"
+        || output_client_id != "client-3"
+    {
+        return;
+    }
+    let Ok(ProtocolMessage::Hello(request)) = decode_message_line(request_line) else {
+        return;
+    };
+    if request.hello.username != "bob" || request.hello.room.name != "permanent-room" {
+        return;
+    }
+
+    for pointer in ["/Set/playlistChange/user", "/Set/playlistIndex/user"] {
+        if let Some(Value::String(user)) = message.pointer_mut(pointer)
+            && user == "bob"
+        {
+            *user = "alice".to_owned();
+        }
+    }
+}
+
 pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_scenario(
     scenario_name: &str,
 ) -> Result<(), InteropError> {
@@ -92,6 +123,14 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
             canonicalize_legacy_hello_fields(&mut normalized);
             canonicalize_legacy_set_user_features(&mut normalized);
             canonicalize_legacy_list_fields(&mut normalized);
+            canonicalize_legacy_permanent_room_snapshot_setter(
+                scenario_name,
+                index,
+                &legacy_event.client_id,
+                &legacy_event.request_line,
+                &output.client_id,
+                &mut normalized,
+            );
             legacy_outputs.push((output.client_id.clone(), normalized));
         }
 

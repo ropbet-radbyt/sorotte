@@ -291,7 +291,10 @@ fn scripted_server_runtime_permanent_rooms_file_scenario_retains_room_and_gui_du
                 .set
                 .playlist_change
                 .as_ref()
-                .is_some_and(|playlist_change| playlist_change.files.is_empty())
+                .is_some_and(|playlist_change| {
+                    playlist_change.files.is_empty()
+                        && playlist_change.user.as_deref() == Some("alice")
+                })
             {
                 saw_playlist_snapshot = true;
             }

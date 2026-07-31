@@ -580,8 +580,8 @@ class CoverageProfileLaneTests(unittest.TestCase):
 
     def test_compatibility_oracle_requires_complete_live_inventory(self) -> None:
         expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
-        self.assertEqual(lanes.EXPECTED_COMPAT_TOTAL_TESTS, 147)
-        self.assertEqual(lanes.EXPECTED_COMPAT_FILTERED_OUT, 127)
+        self.assertEqual(lanes.EXPECTED_COMPAT_TOTAL_TESTS, 148)
+        self.assertEqual(lanes.EXPECTED_COMPAT_FILTERED_OUT, 128)
         self.assertEqual(
             expected_count + lanes.EXPECTED_COMPAT_FILTERED_OUT,
             lanes.EXPECTED_COMPAT_TOTAL_TESTS,
