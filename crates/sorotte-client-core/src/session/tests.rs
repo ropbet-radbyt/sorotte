@@ -295,6 +295,7 @@ mod chat_tests;
 mod control_tests;
 mod controller_tests;
 mod file_metadata_tests;
+mod ping_jitter_drift_schedule_tests;
 mod ping_tests;
 mod playback_barrier_tests;
 mod playback_sync_tests;
