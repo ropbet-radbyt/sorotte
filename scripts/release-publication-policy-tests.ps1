@@ -79,7 +79,7 @@ try {
     $serverWorkflow = Get-Content -Raw -LiteralPath (
         Join-Path $RepoRoot ".github\workflows\publish-server-container.yml"
     )
-    $explicitLatestPolicy = 'type=raw,value=latest,enable=${{ github.event_name == ''workflow_dispatch'' && github.event.inputs.push_latest == ''true'' }}'
+    $explicitLatestPolicy = 'type=raw,value=latest,enable=${{ github.event_name == ''workflow_dispatch'' && inputs.push_latest == ''true'' }}'
     if (-not $serverWorkflow.Contains($explicitLatestPolicy)) {
         throw "server latest publication is not restricted to explicit workflow dispatch"
     }
