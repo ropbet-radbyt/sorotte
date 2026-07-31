@@ -350,7 +350,10 @@ fn sorotte_server_binary_accepts_legacy_python_client_hello() {
         serde_json::from_str(&status_line).expect("peer status line should be valid JSON");
     assert_eq!(
         status.get("status").and_then(Value::as_str),
-        Some("connected")
+        Some("connected"),
+        "legacy Python peer should connect; status={status}; stdout='{}' stderr='{}'",
+        captured_output(&stdout_lines),
+        captured_output(&stderr_lines),
     );
     assert_eq!(
         status.get("username").and_then(Value::as_str),

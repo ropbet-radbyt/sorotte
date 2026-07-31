@@ -416,13 +416,22 @@ class CiPolicyTests(unittest.TestCase):
             linux_step_names.index("Checkout pinned legacy reference for Linux tests"),
             linux_step_names.index("Nextest fail-on-flaky workspace tests"),
         )
+        self.assertLess(
+            linux_step_names.index("Setup Python"),
+            linux_step_names.index("Install Linux test prerequisites"),
+        )
+        self.assertLess(
+            linux_step_names.index("Install Linux test prerequisites"),
+            linux_step_names.index("Nextest fail-on-flaky workspace tests"),
+        )
 
         self.assert_exact_run(
             self.jobs,
             "checks",
-            "Install CI policy prerequisites",
+            "Install Linux test prerequisites",
             "python -m pip install --disable-pip-version-check "
-            "-r requirements/ci-policy.txt",
+            "-r requirements/ci-policy.txt "
+            "-r requirements/legacy-python-interop.txt",
         )
         actionlint_setup = named_step(
             self.jobs,
