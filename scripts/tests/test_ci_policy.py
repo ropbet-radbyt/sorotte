@@ -341,6 +341,7 @@ class CiPolicyTests(unittest.TestCase):
             "rust_windows",
             "coverage_diff",
             "compat-live-tls",
+            "media-match-generated-media",
             "mpv-pr-semantics",
             "verification_required",
         }
@@ -890,6 +891,37 @@ class CiPolicyTests(unittest.TestCase):
             "error",
         )
 
+        self.assert_exact_run(
+            self.jobs,
+            "media-match-generated-media",
+            "Install generated-media tools",
+            """
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends ffmpeg
+            """,
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "media-match-generated-media",
+            "Verify generated-media tools",
+            """
+            command -v ffmpeg
+            command -v ffprobe
+            ffmpeg -version
+            ffprobe -version
+            """,
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "media-match-generated-media",
+            "Required generated-media Media Match V3 diagnostic",
+            """
+            cargo test --locked -p sorotte-media-match --test generated_media_v3
+            v3_manifest_harness_runs_small_synthetic_case
+            -- --ignored --exact --nocapture
+            """,
+        )
+
         mpv_checkout = named_step(
             self.jobs,
             "mpv-pr-semantics",
@@ -1057,8 +1089,12 @@ class CiPolicyTests(unittest.TestCase):
             "verification_required",
             "Aggregate required behavior evidence",
         )
+        result_value = f"${{{{ needs['{required_job}'].result }}}}"
+        result_key = next(
+            key for key, value in aggregate["env"].items() if value == result_value
+        )
         aggregate["run"] = aggregate["run"].replace(
-            f'--job-result "{required_job}=$MPV_RESULT" \\',
+            f'--job-result "{required_job}=${result_key}" \\',
             "",
             1,
         )
@@ -1078,6 +1114,7 @@ class CiPolicyTests(unittest.TestCase):
                 "rust-windows",
                 "coverage-diff",
                 "compat-live-tls",
+                "media-match-generated-media",
                 "mpv-pr-semantics",
             ],
         )
@@ -1090,6 +1127,7 @@ class CiPolicyTests(unittest.TestCase):
                 "rust_windows",
                 "coverage_diff",
                 "compat-live-tls",
+                "media-match-generated-media",
                 "mpv-pr-semantics",
             ],
         )
@@ -1110,6 +1148,7 @@ class CiPolicyTests(unittest.TestCase):
             --job-result "rust-windows=$WINDOWS_RESULT"
             --job-result "coverage-diff=$COVERAGE_RESULT"
             --job-result "compat-live-tls=$COMPAT_RESULT"
+            --job-result "media-match-generated-media=$MEDIA_MATCH_RESULT"
             --job-result "mpv-pr-semantics=$MPV_RESULT"
             --input target/downloaded-evidence/lifecycle/evidence.lifecycle-contract.json
             --input target/downloaded-evidence/semantic/evidence.gui-semantic.json
@@ -1125,6 +1164,7 @@ class CiPolicyTests(unittest.TestCase):
                 "WINDOWS_RESULT",
                 "COVERAGE_RESULT",
                 "COMPAT_RESULT",
+                "MEDIA_MATCH_RESULT",
                 "MPV_RESULT",
             },
         )
@@ -1138,7 +1178,13 @@ class CiPolicyTests(unittest.TestCase):
         ]
 
     def test_general_pr_gates_use_merge_revision_and_evidence_uses_head(self) -> None:
-        for job_id in ("checks", "rust_windows", "compat-live-tls", "mpv-pr-semantics"):
+        for job_id in (
+            "checks",
+            "rust_windows",
+            "compat-live-tls",
+            "media-match-generated-media",
+            "mpv-pr-semantics",
+        ):
             checkouts = self.sorotte_checkouts(job_id)
             self.assertEqual(len(checkouts), 1)
             self.assertNotIn("ref", checkouts[0].get("with", {}))

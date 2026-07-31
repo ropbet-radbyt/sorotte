@@ -627,6 +627,42 @@ jobs:
           retention-days: 14
           overwrite: true
 
+  media-match-generated-media:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout Sorotte
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+
+      - name: Install generated-media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+
+      - name: Verify generated-media tools
+        run: |
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Required generated-media Media Match V3 diagnostic
+        run: |
+          cargo test --locked -p sorotte-media-match --test generated_media_v3 \
+            v3_manifest_harness_runs_small_synthetic_case \
+            -- --ignored --exact --nocapture
+
   mpv-pr-semantics:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -751,6 +787,7 @@ jobs:
       - rust_windows
       - coverage_diff
       - compat-live-tls
+      - media-match-generated-media
       - mpv-pr-semantics
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -788,6 +825,7 @@ jobs:
           WINDOWS_RESULT: ${{ needs.rust_windows.result }}
           COVERAGE_RESULT: ${{ needs.coverage_diff.result }}
           COMPAT_RESULT: ${{ needs['compat-live-tls'].result }}
+          MEDIA_MATCH_RESULT: ${{ needs['media-match-generated-media'].result }}
           MPV_RESULT: ${{ needs['mpv-pr-semantics'].result }}
         run: |
           python scripts/behavior_evidence.py aggregate \
@@ -802,6 +840,7 @@ jobs:
             --job-result "rust-windows=$WINDOWS_RESULT" \
             --job-result "coverage-diff=$COVERAGE_RESULT" \
             --job-result "compat-live-tls=$COMPAT_RESULT" \
+            --job-result "media-match-generated-media=$MEDIA_MATCH_RESULT" \
             --job-result "mpv-pr-semantics=$MPV_RESULT" \
             --input target/downloaded-evidence/lifecycle/evidence.lifecycle-contract.json \
             --input target/downloaded-evidence/semantic/evidence.gui-semantic.json \

@@ -179,14 +179,15 @@ mutates_fixtures = true
 
 [[ignored_test]]
 id = "IGN-GUI-001"
-source = "crates/sorotte-gui/src/app/media_match_support.rs"
+source = "crates/sorotte-media-match/tests/generated_media_v3.rs"
 test = "v3_manifest_harness_runs_small_synthetic_case"
-source_reason = "requires ffmpeg/ffprobe in SOROTTE_MEDIA_MATCH_FFMPEG/SOROTTE_MEDIA_MATCH_FFPROBE or PATH"
-tier = "manual"
+source_reason = "required Linux CI integration test; requires ffmpeg and ffprobe binaries"
+tier = "pull-request"
 owner = "gui"
-rationale = "Runs a real synthetic media probe and therefore requires explicitly provisioned ffmpeg and ffprobe binaries."
-prerequisites = ["ffmpeg executable", "ffprobe executable"]
-operating_systems = ["linux", "macos", "windows"]
+rationale = "Required fail-closed generated-media diagnostic contract executed explicitly with provisioned ffmpeg and ffprobe in pull-request CI."
+prerequisites = ["Ubuntu ffmpeg package"]
+operating_systems = ["linux"]
+required_job = "media-match-generated-media"
 
 [[ignored_test]]
 id = "IGN-GUI-002"
