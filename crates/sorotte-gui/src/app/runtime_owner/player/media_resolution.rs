@@ -164,6 +164,16 @@ impl GuiMediaResolutionPlan {
         });
     }
 
+    pub(super) fn push_direct_media_url_candidate(&mut self, url: String) {
+        self.candidates.push(GuiMediaResolutionCandidate {
+            provider: GuiMediaResolutionProviderKind::Core,
+            phase: GuiMediaResolutionPhase::ExactLocal,
+            priority: GuiMediaResolutionPriority::LocalExact,
+            execution: GuiMediaResolutionExecution::Synchronous,
+            target: GuiMediaResolutionTarget::LocalPath(url),
+        });
+    }
+
     pub(super) fn push_media_match_candidate(&mut self, path: String) {
         self.candidates.push(GuiMediaResolutionCandidate {
             provider: GuiMediaResolutionProviderKind::MediaMatch,

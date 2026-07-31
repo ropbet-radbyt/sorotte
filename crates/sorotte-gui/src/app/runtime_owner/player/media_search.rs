@@ -19,6 +19,15 @@ enum GuiPlexStreamResolutionState {
     Disabled,
 }
 
+fn is_direct_http_media_url(target: &str) -> bool {
+    let Some(parsed) = reqwest::Url::parse(target).ok() else {
+        return false;
+    };
+    matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && browser_stream_target_kind(target, None) == GuiStreamTargetKind::DirectMediaUrl
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct GuiLocalMediaSearchAliases {
     exact_file_name: Option<String>,
@@ -1175,6 +1184,48 @@ impl GuiPersistedConfigRuntimeOwner {
                 SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
             }
             GuiMediaResolutionTarget::LocalPath(resolved_target) => {
+                if self.current_player_is_loading_media_target(resolved_target) {
+                    let attempt_tracks_physical_load = self
+                        .playlist_resolution_attempt
+                        .as_ref()
+                        .is_some_and(|attempt| {
+                            attempt.state == PlaylistResolutionAttemptState::Loading
+                                && attempt
+                                    .candidate
+                                    .as_ref()
+                                    .is_some_and(|active| active == &candidate)
+                        });
+                    if !attempt_tracks_physical_load {
+                        let media_confirmation_pending = self
+                            .playlist_resolution_attempt
+                            .as_ref()
+                            .is_some_and(|attempt| attempt.media_confirmation_pending);
+                        self.begin_playlist_resolution_candidate_load(
+                            candidate.clone(),
+                            &StartedMediaLoad {
+                                feedback_message:
+                                    "Continued tracking the matching in-flight player load."
+                                        .to_owned(),
+                                player_command_id: None,
+                                player_media_generation: None,
+                            },
+                        );
+                        if media_confirmation_pending
+                            && let Some(attempt) = self.playlist_resolution_attempt.as_mut()
+                        {
+                            attempt.media_confirmation_pending = true;
+                        }
+                    }
+                    self.unresolved_attached_media_target = None;
+                    if !self.attached_media_search_refresh_pending() {
+                        self.attached_media_search_next_retry_at = None;
+                    }
+                    return if attempt_tracks_physical_load {
+                        SelectedPlaylistMediaSyncOutcome::NoChange
+                    } else {
+                        SelectedPlaylistMediaSyncOutcome::StartedLoading
+                    };
+                }
                 if self.current_player_matches_media_target(resolved_target) {
                     self.unresolved_attached_media_target = None;
                     if !self.attached_media_search_refresh_pending() {
@@ -1424,31 +1475,41 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
 
-        match self.resolve_main_window_user_media_target_for_automatic_sync(state, plan.target()) {
-            Ok(GuiUserMediaTargetResolution::Resolved { path, source }) => {
-                plan.push_user_media_candidate(path, source);
-            }
-            Ok(GuiUserMediaTargetResolution::Pending) => {
-                plan.record_pending_media_search();
-                if let Some(path) =
-                    self.media_match_cached_room_candidate_for_target(state, plan.target())
-                {
-                    plan.push_media_match_candidate(path);
-                } else if self.media_match_remote_lookup_pending_for_target(state, plan.target()) {
-                    plan.record_pending_media_match();
+        if is_direct_http_media_url(plan.target()) {
+            plan.push_direct_media_url_candidate(plan.target().to_owned());
+        } else {
+            match self
+                .resolve_main_window_user_media_target_for_automatic_sync(state, plan.target())
+            {
+                Ok(GuiUserMediaTargetResolution::Resolved { path, source }) => {
+                    plan.push_user_media_candidate(path, source);
                 }
-            }
-            Ok(
-                GuiUserMediaTargetResolution::Ambiguous { .. }
-                | GuiUserMediaTargetResolution::Missing,
-            )
-            | Err(_) => {
-                if let Some(path) =
-                    self.media_match_cached_room_candidate_for_target(state, plan.target())
-                {
-                    plan.push_media_match_candidate(path);
-                } else if self.media_match_remote_lookup_pending_for_target(state, plan.target()) {
-                    plan.record_pending_media_match();
+                Ok(GuiUserMediaTargetResolution::Pending) => {
+                    plan.record_pending_media_search();
+                    if let Some(path) =
+                        self.media_match_cached_room_candidate_for_target(state, plan.target())
+                    {
+                        plan.push_media_match_candidate(path);
+                    } else if self
+                        .media_match_remote_lookup_pending_for_target(state, plan.target())
+                    {
+                        plan.record_pending_media_match();
+                    }
+                }
+                Ok(
+                    GuiUserMediaTargetResolution::Ambiguous { .. }
+                    | GuiUserMediaTargetResolution::Missing,
+                )
+                | Err(_) => {
+                    if let Some(path) =
+                        self.media_match_cached_room_candidate_for_target(state, plan.target())
+                    {
+                        plan.push_media_match_candidate(path);
+                    } else if self
+                        .media_match_remote_lookup_pending_for_target(state, plan.target())
+                    {
+                        plan.record_pending_media_match();
+                    }
                 }
             }
         }
@@ -2500,6 +2561,20 @@ mod plex_cache_coordination_tests {
 
     use super::*;
     use crate::app::runtime_owner::GuiPlexSyncWorkerResult;
+
+    #[test]
+    fn extractor_page_url_is_not_a_direct_http_media_candidate() {
+        let youtube_watch = "https://www.youtube.com/watch?v=qDVPFAuBSXw";
+
+        assert_eq!(
+            browser_stream_target_kind(youtube_watch, None),
+            GuiStreamTargetKind::ExtractorPageUrl
+        );
+        assert!(
+            !is_direct_http_media_url(youtube_watch),
+            "extractor pages must continue through Stream Support instead of bypassing it as direct media"
+        );
+    }
 
     fn streaming_settings() -> StoredClientSettingsMvp {
         StoredClientSettingsMvp {
