@@ -524,6 +524,8 @@ fn timeline_map_from_alignment(
     alignment: &MediaTimelineAlignment,
     class: MatchClassV3,
 ) -> MediaTimelineMapV3 {
+    const UNITY_SCALE_PPM: i64 = 1_000_000;
+
     let query_start_ms = (alignment.first_query_second * 1000.0)
         .round()
         .clamp(0.0, f64::from(u32::MAX)) as u32;
@@ -533,6 +535,10 @@ fn timeline_map_from_alignment(
     let span_ms = (alignment.aligned_span_seconds * 1000.0)
         .round()
         .clamp(0.0, f64::from(u32::MAX)) as u32;
+    let affine_scale_ppm = i32::try_from(UNITY_SCALE_PPM + i64::from(alignment.scale_ppm))
+        .ok()
+        .filter(|scale_ppm| *scale_ppm > 0)
+        .unwrap_or(0);
     MediaTimelineMapV3 {
         global_class: class,
         current_position_class: class,
@@ -541,7 +547,7 @@ fn timeline_map_from_alignment(
             query_end_ms: query_start_ms.saturating_add(span_ms),
             candidate_start_ms,
             candidate_end_ms: candidate_start_ms.saturating_add(span_ms),
-            scale_ppm: alignment.scale_ppm,
+            scale_ppm: affine_scale_ppm,
             audio_pairs: alignment.aligned_audio_anchors,
             weighted_score: alignment.aligned_audio_anchors as u32,
             residual_ms: 0.0,

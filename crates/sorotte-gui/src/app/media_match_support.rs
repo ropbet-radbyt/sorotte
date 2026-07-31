@@ -23,13 +23,13 @@ use sorotte_media_match::{
     MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
     MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
-    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
-    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
-    summarize_record_v3_diagnostics,
+    fingerprint_media_file_cancellable_with_report, map_query_position_to_candidate_ms,
+    media_extraction_settings_hash, media_match_wire_value_from_records, normalize_media_path,
+    rank_media_match_candidates, summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
-use sorotte_media_match::{AudioAnchor, map_query_position_to_candidate_ms};
+use sorotte_media_match::AudioAnchor;
 
 use super::shell_state::{
     GuiMediaMatchRuntimeSnapshot, GuiMediaMatchToolHealth,
@@ -90,6 +90,7 @@ pub(super) struct MediaMatchIndexRebuildRequest<'a> {
     pub(super) tool_root: &'a Path,
     pub(super) search_roots: &'a [PathBuf],
     pub(super) current_player_path: Option<&'a str>,
+    pub(super) current_player_position_seconds: Option<f64>,
     pub(super) settings: &'a MediaMatchSettings,
     pub(super) extraction_settings: &'a MediaExtractionSettings,
     pub(super) cancel_flag: Option<&'a AtomicBool>,
@@ -99,6 +100,7 @@ pub(super) struct MediaMatchCandidateRebuildRequest<'a> {
     pub(super) root: &'a Path,
     pub(super) candidates: Vec<PathBuf>,
     pub(super) current_player_path: Option<&'a str>,
+    pub(super) current_player_position_seconds: Option<f64>,
     pub(super) settings: &'a MediaMatchSettings,
     pub(super) tools: &'a MediaMatchToolPaths,
     pub(super) extraction_settings: &'a MediaExtractionSettings,
@@ -732,6 +734,7 @@ where
             tool_root: root,
             search_roots,
             current_player_path,
+            current_player_position_seconds: None,
             settings,
             extraction_settings,
             cancel_flag,
@@ -752,6 +755,7 @@ where
         tool_root,
         search_roots,
         current_player_path,
+        current_player_position_seconds,
         settings,
         extraction_settings,
         cancel_flag,
@@ -775,6 +779,7 @@ where
                         root,
                         candidates,
                         current_player_path,
+                        current_player_position_seconds,
                         settings,
                         tools: &tools,
                         extraction_settings,
@@ -809,6 +814,7 @@ where
             root,
             candidates,
             current_player_path,
+            current_player_position_seconds,
             settings,
             tools: &tools,
             extraction_settings,
@@ -854,6 +860,7 @@ where
         let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
             request.root,
             request.current_player_path,
+            request.current_player_position_seconds,
             &existing_cache,
             request.settings,
             request.extraction_settings,
@@ -1040,6 +1047,7 @@ where
     let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
         request.root,
         request.current_player_path,
+        request.current_player_position_seconds,
         &next_cache,
         request.settings,
         request.extraction_settings,
@@ -2445,6 +2453,7 @@ fn media_match_v3_anchor_candidate_paths(
 fn summarize_current_media_match(
     root: &Path,
     current_player_path: Option<&str>,
+    current_player_position_seconds: Option<f64>,
     cache: &MediaMatchCache,
     settings: &MediaMatchSettings,
     extraction_settings: &MediaExtractionSettings,
@@ -2476,11 +2485,6 @@ fn summarize_current_media_match(
         .as_ref()
         .map(format_media_match_v3_retrieval_stats)
         .unwrap_or_default();
-    // TODO(media-match): the runtime owner has playback position as
-    // `sorotte_client_core::session::SessionState::local_position`; thread that value into
-    // `summarize_current_media_match` and append `format_media_match_position_mapping_diagnostic`
-    // to debug evidence only. Do not infer across edit gaps or change readiness/autoplay/seek
-    // behavior when this diagnostic is wired.
     let anchor_candidate_set = anchor_candidates.iter().cloned().collect::<BTreeSet<_>>();
     let use_anchor_candidates = !anchor_candidate_set.is_empty();
     let ranked = rank_media_match_candidates(
@@ -2505,26 +2509,36 @@ fn summarize_current_media_match(
         best.decision.tier,
         MediaMatchTier::Reject | MediaMatchTier::Unknown
     ) {
+        let evidence = append_media_match_position_mapping_diagnostic(
+            format!(
+                "current file is indexed exactly | nearest_other {}{retrieval_suffix}",
+                format_media_match_evidence_summary(&best.decision),
+            ),
+            &best.decision,
+            current_player_position_seconds,
+        );
         return (
             Some("exact: current local file is indexed".to_owned()),
             Some(format!(
                 "No alternate indexed match; nearest other: {}",
                 format_media_match_nearest_candidate(&best)
             )),
-            Some(format!(
-                "current file is indexed exactly | nearest_other {}{retrieval_suffix}",
-                format_media_match_evidence_summary(&best.decision),
-            )),
+            Some(evidence),
         );
     }
     let tier = media_match_tier_label(best.decision.tier);
+    let evidence = append_media_match_position_mapping_diagnostic(
+        format!(
+            "{}{retrieval_suffix}",
+            format_media_match_evidence_summary(&best.decision)
+        ),
+        &best.decision,
+        current_player_position_seconds,
+    );
     (
         Some(format!("{tier}: {}", best.decision.explanation)),
         Some(format_media_match_nearest_candidate(&best)),
-        Some(format!(
-            "{}{retrieval_suffix}",
-            format_media_match_evidence_summary(&best.decision)
-        )),
+        Some(evidence),
     )
 }
 
@@ -2671,7 +2685,7 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     )];
     if let Some(alignment) = decision.evidence.alignment.as_ref() {
         parts.push(format!(
-            "alignment offset={:.1}s scale={}ppm drift={:.4} span={:.1}s pairs={} audio={} margin={:.2}",
+            "alignment offset={:.1}s scale_drift={}ppm drift={:.4} span={:.1}s pairs={} audio={} margin={:.2}",
             alignment.offset_seconds,
             alignment.scale_ppm,
             alignment.drift_ratio,
@@ -2712,10 +2726,37 @@ fn format_media_match_evidence_summary(decision: &MediaMatchDecision) -> String 
     parts.join(" | ")
 }
 
-// TODO(media-match): wire `sorotte_client_core::session::SessionState::local_position`
-// into `summarize_current_media_match` and use this formatting path for debug evidence only.
-// The current summary inputs have the best V3 decision but not the player's current timestamp.
-#[cfg(test)]
+fn append_media_match_position_mapping_diagnostic(
+    mut evidence: String,
+    decision: &MediaMatchDecision,
+    current_player_position_seconds: Option<f64>,
+) -> String {
+    let Some(current_position_ms) = media_match_position_millis(current_player_position_seconds)
+    else {
+        return evidence;
+    };
+    let Some(diagnostic) =
+        format_media_match_position_mapping_diagnostic(decision, current_position_ms)
+    else {
+        return evidence;
+    };
+    evidence.push_str(" | ");
+    evidence.push_str(&diagnostic);
+    evidence
+}
+
+fn media_match_position_millis(current_player_position_seconds: Option<f64>) -> Option<u32> {
+    let position_seconds = current_player_position_seconds?;
+    if !position_seconds.is_finite() || position_seconds < 0.0 {
+        return None;
+    }
+    let position_millis = position_seconds * 1000.0;
+    if position_millis > f64::from(u32::MAX) {
+        return None;
+    }
+    Some(position_millis.floor() as u32)
+}
+
 fn format_media_match_position_mapping_diagnostic(
     decision: &MediaMatchDecision,
     current_position_ms: u32,
@@ -2723,7 +2764,7 @@ fn format_media_match_position_mapping_diagnostic(
     let map = decision.evidence.timeline_map_v3.as_ref()?;
     let mapped = map_query_position_to_candidate_ms(map, current_position_ms)?;
     Some(format!(
-        "mapped_position candidate={:.1}s class={:?} segment={} confidence={:.2} local_offset={}ms scale={}ppm",
+        "mapped_position candidate={:.1}s class={:?} segment={} confidence={:.2} local_offset={}ms affine_scale={}ppm",
         f64::from(mapped.mapped_ms) / 1000.0,
         mapped.class_at_position,
         mapped.segment_index,
@@ -3984,23 +4025,37 @@ mod tests {
                 timeline_map_v3: Some(sorotte_media_match::MediaTimelineMapV3 {
                     global_class: sorotte_media_match::MatchClassV3::SameCutStrong,
                     current_position_class: sorotte_media_match::MatchClassV3::SameCutStrong,
-                    segments: vec![sorotte_media_match::AlignedSegmentV3 {
-                        query_start_ms: 10_000,
-                        query_end_ms: 40_000,
-                        candidate_start_ms: 15_000,
-                        candidate_end_ms: 45_000,
-                        scale_ppm: 1_000_000,
-                        audio_pairs: 8,
-                        weighted_score: 32,
-                        residual_ms: 0.0,
-                        audio_score: 1.0,
-                        confidence: 0.9,
-                    }],
-                    total_aligned_span_ms: 30_000,
-                    largest_gap_ms: 0,
+                    segments: vec![
+                        sorotte_media_match::AlignedSegmentV3 {
+                            query_start_ms: 10_000,
+                            query_end_ms: 40_000,
+                            candidate_start_ms: 15_000,
+                            candidate_end_ms: 45_000,
+                            scale_ppm: 1_000_000,
+                            audio_pairs: 8,
+                            weighted_score: 32,
+                            residual_ms: 0.0,
+                            audio_score: 1.0,
+                            confidence: 0.9,
+                        },
+                        sorotte_media_match::AlignedSegmentV3 {
+                            query_start_ms: 50_000,
+                            query_end_ms: 70_000,
+                            candidate_start_ms: 55_000,
+                            candidate_end_ms: 75_000,
+                            scale_ppm: 1_000_000,
+                            audio_pairs: 6,
+                            weighted_score: 24,
+                            residual_ms: 0.0,
+                            audio_score: 1.0,
+                            confidence: 0.85,
+                        },
+                    ],
+                    total_aligned_span_ms: 50_000,
+                    largest_gap_ms: 10_000,
                     edge_only: false,
                     best_segment_score: 32,
-                    second_best_segment_score: 0,
+                    second_best_segment_score: 24,
                 }),
                 ..sorotte_media_match::MediaMatchEvidence::default()
             },
@@ -4014,6 +4069,29 @@ mod tests {
         assert!(diagnostic.contains("class=SameCutStrong"), "{diagnostic}");
         assert!(diagnostic.contains("segment=0"), "{diagnostic}");
         assert!(diagnostic.contains("local_offset=5000ms"), "{diagnostic}");
+        assert!(
+            format_media_match_position_mapping_diagnostic(&decision, 45_000).is_none(),
+            "positions in an edit gap must not be inferred"
+        );
+    }
+
+    #[test]
+    fn media_match_position_millis_rejects_invalid_debug_snapshots() {
+        assert_eq!(media_match_position_millis(None), None);
+        assert_eq!(media_match_position_millis(Some(f64::NAN)), None);
+        assert_eq!(media_match_position_millis(Some(f64::INFINITY)), None);
+        assert_eq!(media_match_position_millis(Some(-0.001)), None);
+        assert_eq!(media_match_position_millis(Some(0.0)), Some(0));
+        assert_eq!(
+            media_match_position_millis(Some(20.123_9)),
+            Some(20_123),
+            "debug mapping should use the observed whole-millisecond prefix"
+        );
+        assert_eq!(
+            media_match_position_millis(Some(f64::from(u32::MAX))),
+            None,
+            "positions outside the mapper's u32-millisecond domain must be omitted"
+        );
     }
 
     #[test]
@@ -4871,6 +4949,7 @@ mod tests {
         let (current_decision, nearest_match, last_evidence) = summarize_current_media_match(
             &root,
             Some("episode-current.mkv"),
+            None,
             &cache,
             &enabled_media_match_settings(),
             &MediaExtractionSettings::sampled_fast_audio_index_v3(),
@@ -4896,6 +4975,135 @@ mod tests {
         assert!(
             last_evidence.contains("no coherent sampled-fast audio offset"),
             "{last_evidence}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_summary_appends_safe_position_mapping_only_to_debug_evidence() {
+        let root = unique_media_match_test_root("position-diagnostic");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let anchors = |offset_ms| {
+            (0..48)
+                .map(|index| AudioAnchor {
+                    bucket: 100 + (index % 12),
+                    t_ms: index * 1_000 + offset_ms,
+                    weight: 10,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut query = fake_media_match_record("episode-current.mkv");
+        query.extraction_settings = extraction_settings.clone();
+        query.audio_anchors = anchors(0);
+        let mut candidate = fake_media_match_record("episode-alternate.mkv");
+        candidate.extraction_settings = extraction_settings.clone();
+        candidate.audio_anchors = anchors(400);
+        let mut cache = MediaMatchCache::default();
+        cache.insert(query);
+        cache.insert(candidate);
+        let settings = enabled_media_match_settings();
+
+        let without_position = summarize_current_media_match(
+            &root,
+            Some("episode-current.mkv"),
+            None,
+            &cache,
+            &settings,
+            &extraction_settings,
+        );
+        let with_position = summarize_current_media_match(
+            &root,
+            Some("episode-current.mkv"),
+            Some(20.0),
+            &cache,
+            &settings,
+            &extraction_settings,
+        );
+
+        assert_eq!(
+            without_position.0, with_position.0,
+            "position diagnostics must not change the visible decision"
+        );
+        assert_eq!(
+            without_position.1, with_position.1,
+            "position diagnostics must not change candidate ranking"
+        );
+        let without_evidence = without_position
+            .2
+            .expect("baseline debug evidence should exist");
+        let with_evidence = with_position
+            .2
+            .expect("position-aware debug evidence should exist");
+        assert!(
+            !without_evidence.contains("mapped_position"),
+            "{without_evidence}"
+        );
+        assert!(
+            with_evidence.contains("mapped_position candidate=20.4s"),
+            "{with_evidence}"
+        );
+        assert!(
+            with_evidence.contains("class=SameCutProbable"),
+            "{with_evidence}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_noop_rebuild_threads_position_into_debug_evidence() {
+        let root = unique_media_match_test_root("position-diagnostic-rebuild");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query_path = media_dir.join("episode-current.mkv");
+        let candidate_path = media_dir.join("episode-alternate.mkv");
+        std::fs::write(&query_path, b"query media").expect("query media should be written");
+        std::fs::write(&candidate_path, b"candidate media")
+            .expect("candidate media should be written");
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let anchors = |offset_ms| {
+            (0..48)
+                .map(|index| AudioAnchor {
+                    bucket: 100 + (index % 12),
+                    t_ms: index * 1_000 + offset_ms,
+                    weight: 10,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut query = fake_media_match_record_for_file(&query_path, extraction_settings.clone());
+        query.audio_anchors = anchors(0);
+        let mut candidate =
+            fake_media_match_record_for_file(&candidate_path, extraction_settings.clone());
+        candidate.audio_anchors = anchors(400);
+        let mut cache = MediaMatchCache::default();
+        cache.insert(query);
+        cache.insert(candidate);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+        };
+
+        let result = rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+            MediaMatchCandidateRebuildRequest {
+                root: &root,
+                candidates: vec![query_path.clone(), candidate_path],
+                current_player_path: query_path.to_str(),
+                current_player_position_seconds: Some(20.0),
+                settings: &enabled_media_match_settings(),
+                tools: &tools,
+                extraction_settings: &extraction_settings,
+                cancel_flag: None,
+            },
+            |_| {},
+        )
+        .expect("no-op rebuild should use the existing cache");
+
+        let evidence = result
+            .last_evidence
+            .expect("position-aware rebuild should publish debug evidence");
+        assert!(
+            evidence.contains("mapped_position candidate=20.4s"),
+            "{evidence}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4929,6 +5137,7 @@ mod tests {
                 root: &root,
                 candidates: vec![media_path],
                 current_player_path: None,
+                current_player_position_seconds: None,
                 settings: &settings,
                 tools: &tools,
                 extraction_settings: &extraction_settings,
@@ -4970,6 +5179,7 @@ mod tests {
                 root: &root,
                 candidates: vec![media_path.clone()],
                 current_player_path: media_path.to_str(),
+                current_player_position_seconds: None,
                 settings: &settings,
                 tools: &tools,
                 extraction_settings: &MediaExtractionSettings::sampled_fast_audio_index_v3(),

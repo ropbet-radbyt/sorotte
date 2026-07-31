@@ -731,6 +731,10 @@ impl GuiPersistedConfigRuntimeOwner {
         let worker_root = index_transaction.staging_app_root().to_path_buf();
         let tool_root = root.clone();
         let worker_path = path.clone();
+        let current_player_position_seconds = self
+            .session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds());
 
         match thread::Builder::new()
             .name("sorotte-gui-media-match-exact-signature".to_owned())
@@ -744,6 +748,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 root: &worker_root,
                                 candidates: vec![PathBuf::from(&worker_path)],
                                 current_player_path: Some(worker_path.as_str()),
+                                current_player_position_seconds,
                                 settings: &settings,
                                 tools: &tools,
                                 extraction_settings: &extraction_settings,
@@ -1365,6 +1370,11 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         let current_player_path = self.media_match_current_local_path_for_state(projected_state);
+        let current_player_position_seconds = current_player_path.as_ref().and_then(|_| {
+            self.session
+                .as_ref()
+                .and_then(|session| session.local_position_seconds())
+        });
         let remote_candidate = current_player_path
             .is_none()
             .then(|| self.media_match_preferred_remote_target_for_state(projected_state))
@@ -1474,6 +1484,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 tool_root: &tool_root,
                                 search_roots: &search_roots,
                                 current_player_path: None,
+                                current_player_position_seconds,
                                 settings: &settings,
                                 extraction_settings: &extraction_settings,
                                 cancel_flag: Some(worker_cancel_flag.as_ref()),
@@ -1493,6 +1504,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                 root: &worker_root,
                                 candidates,
                                 current_player_path: current_player_path.as_deref(),
+                                current_player_position_seconds,
                                 settings: &settings,
                                 tools: &tools,
                                 extraction_settings: &extraction_settings,
@@ -1513,6 +1525,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             tool_root: &tool_root,
                             search_roots: &search_roots,
                             current_player_path: current_player_path.as_deref(),
+                            current_player_position_seconds,
                             settings: &settings,
                             extraction_settings: &extraction_settings,
                             cancel_flag: Some(worker_cancel_flag.as_ref()),

@@ -115,6 +115,7 @@ pub struct AlignedSegmentV3 {
     pub query_end_ms: u32,
     pub candidate_start_ms: u32,
     pub candidate_end_ms: u32,
+    /// Absolute affine scale in parts per million; `1_000_000` is unity.
     pub scale_ppm: i32,
     #[serde(default)]
     pub audio_pairs: usize,
@@ -150,6 +151,7 @@ pub struct TimelinePositionMapResult {
     pub segment_index: usize,
     pub confidence: f32,
     pub local_offset_ms: i64,
+    /// Absolute affine scale copied from the selected segment.
     pub scale_ppm: i32,
 }
 
@@ -373,6 +375,7 @@ impl MediaMatchCache {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaTimelineAlignment {
     pub offset_seconds: f64,
+    /// Drift from affine unity in parts per million; `0` is unity.
     pub scale_ppm: i32,
     pub drift_ratio: f64,
     pub aligned_pairs: usize,

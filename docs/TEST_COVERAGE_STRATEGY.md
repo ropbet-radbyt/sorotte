@@ -18,6 +18,8 @@ Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz up
 Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
 Required-live, owned-process recovery, updater durability, and framed-mpv update: 2026-07-31
 Generated compatibility, Unix kernel IPC/durability, and faulting-HTTP update: 2026-07-31
+Known-issue audit, Media Match timeline diagnostic, and Windows manifest
+activation update: 2026-07-31
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -109,7 +111,24 @@ digest passed the healthy, owned-process-recovery, and faulting-HTTP native
 contracts in that order; the last campaign retained the malformed transfer,
 same-process recovery, full second response, and complete player/server/socket
 release. The canonical bundles are `20260731T044916649Z-67112`,
-`20260731T045019794Z-49868`, and `20260731T045105652Z-43360`:
+`20260731T045019794Z-49868`, and `20260731T045105652Z-43360`. A subsequent
+repository/live-tracker audit found no registered or hosted open issue and one
+duplicated debug-diagnostic TODO. Its first regression exposed
+`TC-MEDIA-001`: the alignment used zero to mean no drift while the generated
+timeline segment required one million to mean affine unity. The conversion
+boundary, unit documentation, and GUI position plumbing are now fixed with
+forward/reverse, invalid-input, edit-gap, summary, and persisted-rebuild
+regressions; no readiness, autoplay, ranking, or seek behavior changed. The
+ensuing full-workspace gate exposed `TC-MEDIA-002`: one transient Windows
+access denial could abort a durable media-index manifest replacement.
+Production now retries only access-denied, sharing-violation, and
+lock-violation results within an eight-attempt, 355-millisecond maximum
+budget. Persistent and nontransient errors retain their fail-closed behavior.
+Deterministic policy tests and 20 consecutive 100-generation runs are green,
+and the registry remains empty. The complete closure inventory and final
+three-mode real-mpv bundles are retained in
+[`outstanding-known-issues-closure-20260731.md`](evidence/test-coverage/outstanding-known-issues-closure-20260731.md).
+The complete assurance stack now contains:
 
 - a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -914,8 +933,8 @@ boundaries rather than adding hundreds more nearby examples.
 | `sorotte-client-core` | 724 | 0 |
 | `sorotte-compat` | 144 | 7 |
 | `sorotte-core` | 2 | 0 |
-| `sorotte-gui` | 1,219 | 2 |
-| `sorotte-media-match` | 84 | 0 |
+| `sorotte-gui` | 1,222 | 2 |
+| `sorotte-media-match` | 88 | 0 |
 | `sorotte-player-api` | 21 | 0 |
 | `sorotte-player-mpv` | 434 | 2 |
 | `sorotte-plex` | 68 | 0 |
@@ -923,10 +942,11 @@ boundaries rather than adding hundreds more nearby examples.
 | `sorotte-secret` | 20 | 0 |
 | `sorotte-server` | 392 | 0 |
 | `sorotte-sim` | 16 | 4 |
-| **Total** | **3,785** | **23** |
+| **Total** | **3,792** | **23** |
 
 This inventory was refreshed from the current Rust sources after the
-2026-07-31 four-slice system-boundary continuation.
+2026-07-31 Media Match timeline-diagnostic and Windows manifest-activation
+closures.
 
 Ignored tests are not one category:
 

@@ -5,6 +5,7 @@ use crate::{
     MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexCommitError,
     MediaIndexInventoryEntry, MediaIndexService, MediaMatchAutoplayPolicy, MediaMatchSettings,
     MediaMatchTier, decide_media_match, decide_media_match_against_wire_signature,
+    map_candidate_position_to_query_ms, map_query_position_to_candidate_ms,
     media_match_wire_signature_from_records, rank_media_match_candidates,
     settings::MediaExtractionSettings,
 };
@@ -1336,6 +1337,48 @@ fn sampled_audio_match_is_probable_and_not_autoplay_eligible() {
         Some(MediaDurationCompatibility::SameCutCompatible)
     );
     assert!(!decision.same_media_for_autoplay(&settings));
+}
+
+#[test]
+fn sampled_audio_timeline_map_uses_affine_unity_scale_and_round_trips_position() {
+    let query = record("query.mkv", 0);
+    let candidate = record("candidate.mkv", 400);
+    let decision = decide_media_match(&query, &candidate, &autoplay_settings());
+    let map = decision
+        .evidence
+        .timeline_map_v3
+        .as_ref()
+        .expect("sampled audio match should retain a timeline map");
+    let segment = map
+        .segments
+        .first()
+        .expect("sampled audio match should retain one aligned segment");
+
+    assert_eq!(
+        decision
+            .evidence
+            .alignment
+            .as_ref()
+            .expect("sampled audio match should retain alignment evidence")
+            .scale_ppm,
+        0,
+        "alignment scale is drift from affine unity"
+    );
+    assert_eq!(
+        segment.scale_ppm, 1_000_000,
+        "timeline segment scale is the absolute affine multiplier"
+    );
+    let query_position_ms = segment
+        .query_start_ms
+        .saturating_add(segment.query_end_ms.saturating_sub(segment.query_start_ms) / 2);
+    let mapped = map_query_position_to_candidate_ms(map, query_position_ms)
+        .expect("a position inside the aligned segment should map");
+    let round_trip = map_candidate_position_to_query_ms(map, mapped.mapped_ms)
+        .expect("the mapped candidate position should map back");
+
+    assert_eq!(mapped.scale_ppm, 1_000_000);
+    assert_eq!(round_trip.scale_ppm, 1_000_000);
+    assert_eq!(round_trip.mapped_ms, query_position_ms);
 }
 
 #[test]

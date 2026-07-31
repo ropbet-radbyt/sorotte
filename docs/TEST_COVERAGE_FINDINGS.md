@@ -2921,3 +2921,97 @@ target/verification/gui-real-mpv-faulting-http-recovery/20260731T041125117Z-3496
 The exact native fault/recovery outcome, strict request/session/process
 oracles, intermediate harness REDs, and limitations are retained in
 [`native-gui-real-mpv-faulting-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md).
+
+## TC-MEDIA-001: Production V3 timeline maps encoded unity as an invalid affine scale
+
+Status: **Resolved 2026-07-31; production maps use an absolute affine scale
+and current-position diagnostics are wired**
+
+Severity: **Low for current users, medium for the mapping contract (the path
+was debug-only, but every ordinary same-speed production map was unmappable)**
+
+Detection: repository-wide known-issue audit followed by the new GUI
+current-position summary regression
+
+The executable known-defect registry, every prior `TC-*` finding, and the live
+GitHub issue/PR inventory were empty. The only actionable source marker was a
+duplicated TODO to thread the active session's local playback position into
+Media Match V3 debug evidence. The first positive regression remained RED even
+though ranking produced a valid one-segment `SameCutProbable` timeline map.
+
+The cause was a representation mismatch at the map-construction boundary.
+`MediaTimelineAlignment.scale_ppm` is drift from affine unity, so ordinary
+same-speed media records `0`. `AlignedSegmentV3.scale_ppm` is the absolute
+affine multiplier consumed by the forward and reverse mappers, where unity is
+`1_000_000` and nonpositive values are invalid. Production copied the drift
+value directly, so both mapper directions returned `None`.
+
+Production now converts checked drift to the positive absolute affine scale
+when it builds a timeline segment. Type documentation and debug labels make
+the two units explicit. The GUI snapshots `local_position_seconds()` only
+alongside a resolved current local path, carries it through both rebuild
+request paths, converts only finite nonnegative timestamps inside the
+`u32`-millisecond domain, and appends a mapped timestamp only to
+`last_evidence`. Visible decisions, candidate order, readiness, autoplay,
+seek, and synchronization behavior are unchanged. The existing mapper remains
+fail closed outside an aligned segment, including edit gaps.
+
+Positive regressions prove:
+
+- a production sampled-audio decision emits affine unity and round-trips a
+  position through both mapper directions;
+- the GUI summary changes only debug evidence and reports the mapped candidate
+  timestamp;
+- a no-op persisted rebuild carries the position snapshot into its published
+  evidence;
+- missing, non-finite, negative, and out-of-domain positions are omitted; and
+- a position inside an edit gap is not inferred.
+
+The owning `sorotte-media-match` suite passed 84/84 tests. The owning
+all-feature GUI suite passed 1,131 tests with its two registered ignores, plus
+41 native-harness, 14 startup-benchmark, 33 updater-binary, and two updater
+integration tests. Warning-denied all-target/all-feature Clippy passed for
+both crates. `coverage/known-defects.toml` therefore remains explicitly empty.
+
+## TC-MEDIA-002: Windows manifest activation aborted on transient sharing denial
+
+Status: **Resolved 2026-07-31; the exact durable replacement retries only
+transient Windows access conflicts within a fixed budget**
+
+Severity: **Medium for Windows background index-refresh availability; low for
+integrity because the failed activation preserved the preceding generation**
+
+Detection: complete locked all-feature workspace test after resolving
+`TC-MEDIA-001`
+
+The 100-generation retention regression failed at epoch 25 when
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` returned
+Windows error 5 while replacing `current-b.json`. The staging generation was
+not activated, the previous two generations and both valid epoch-25 manifest
+replicas remained intact, and no test process survived. The exact pre-retry
+filesystem is preserved at:
+
+```text
+C:\Users\shaun\AppData\Local\Temp\sorotte-media-index-bounded-generations-live-59836-1785475960691087100
+```
+
+The activation path previously made one durable replacement attempt.
+Short-lived filesystem scanner, indexer, or other noncooperating handles can
+deny delete sharing on Windows even though a subsequent identical operation
+is safe. Production now retries that same operation only for raw Windows
+access-denied (5), sharing-violation (32), and lock-violation (33) errors. It
+makes at most eight attempts with 5, 10, 20, 40, 80, 100, and 100 millisecond
+delays, for at most 355 milliseconds of waiting. The operation retains
+`MOVEFILE_WRITE_THROUGH`; nontransient errors still fail immediately, and a
+persistent transient error returns the final native error without activating
+or deleting the prior generation.
+
+Deterministic policy regressions inject all three transient errors before
+success, exhaust the exact retry budget under persistent denial, and prove an
+unrelated native error is attempted once. The complete
+`sorotte-media-match` suite passed 84/84 tests, warning-denied all-target
+Clippy passed, and the original 100-generation retention regression passed 20
+consecutive runs (2,000 activation cycles). The known-defect registry remains
+empty. The complete workspace, policy, and final three-mode real-mpv results
+are retained in
+[`outstanding-known-issues-closure-20260731.md`](evidence/test-coverage/outstanding-known-issues-closure-20260731.md).
