@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import pathlib
+import shlex
 import stat
 import sys
 import tempfile
@@ -46,7 +47,18 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def show_env_output(self, **overrides: str) -> bytes:
+    def test_show_env_requests_stable_posix_shell_output(self) -> None:
+        self.assertEqual(
+            lanes.SHOW_ENV_COMMAND,
+            ("cargo", "llvm-cov", "show-env", "--sh"),
+        )
+
+    def show_env_output(
+        self,
+        *,
+        shell_quote: bool = True,
+        **overrides: str,
+    ) -> bytes:
         wrapper = self.root / (
             "cargo-llvm-cov.exe" if os.name == "nt" else "cargo-llvm-cov"
         )
@@ -68,8 +80,13 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
             "CARGO_LLVM_COV_BUILD_DIR": str(self.target),
         }
         values.update(overrides)
+        render = shlex.quote if shell_quote else str
         return (
-            "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+            "\n".join(
+                f"export {key}={render(value)}"
+                for key, value in values.items()
+            )
+            + "\n"
         ).encode("utf-8")
 
     @staticmethod
@@ -296,6 +313,27 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                 ),
                 repo_root=self.root,
             )
+
+    def test_show_env_accepts_quoted_dynamic_merge_pool(self) -> None:
+        profile_pattern = self.target / "fixture-%p-%4m.profraw"
+        environment, summary, root = lanes.parse_show_env(
+            command_result(
+                self.show_env_output(
+                    shell_quote=True,
+                    LLVM_PROFILE_FILE=str(profile_pattern),
+                )
+            ),
+            repo_root=self.root,
+        )
+        self.assertEqual(
+            environment["LLVM_PROFILE_FILE"],
+            str(profile_pattern),
+        )
+        self.assertEqual(
+            summary["profile_pattern"],
+            f"{lanes.TARGET_DIR}/fixture-%p-%4m.profraw",
+        )
+        self.assertEqual(root, self.target)
 
     def test_exact_libtest_oracle_accepts_every_lane(self) -> None:
         total = 0

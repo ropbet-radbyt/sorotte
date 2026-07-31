@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import pathlib
+import shlex
 import sys
 import tempfile
 import unittest
@@ -43,7 +44,18 @@ class CoverageProfileLaneTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def show_env_output(self, **overrides: str) -> bytes:
+    def test_show_env_requests_stable_posix_shell_output(self) -> None:
+        self.assertEqual(
+            lanes.SHOW_ENV_COMMAND,
+            ("cargo", "llvm-cov", "show-env", "--sh"),
+        )
+
+    def show_env_output(
+        self,
+        *,
+        shell_quote: bool = True,
+        **overrides: str,
+    ) -> bytes:
         wrapper = self.root / (
             "cargo-llvm-cov.exe" if os.name == "nt" else "cargo-llvm-cov"
         )
@@ -65,8 +77,13 @@ class CoverageProfileLaneTests(unittest.TestCase):
             "CARGO_LLVM_COV_BUILD_DIR": str(self.target),
         }
         values.update(overrides)
+        render = shlex.quote if shell_quote else str
         return (
-            "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+            "\n".join(
+                f"export {key}={render(value)}"
+                for key, value in values.items()
+            )
+            + "\n"
         ).encode("utf-8")
 
     def semantic_document(self) -> dict[str, object]:
@@ -226,6 +243,88 @@ class CoverageProfileLaneTests(unittest.TestCase):
             sorted(lanes.REQUIRED_INSTRUMENTED_CRATES),
         )
 
+    def test_show_env_decodes_posix_quotes_and_dynamic_merge_pool(self) -> None:
+        for pool_size in (1, 3, 4, 32):
+            with self.subTest(pool_size=pool_size):
+                pattern_name = (
+                    f"fixture's profile-%p-%{pool_size}m.profraw"
+                )
+                profile_pattern = self.target / pattern_name
+                environment, summary, profile_root = lanes.parse_show_env(
+                    command_result(
+                        self.show_env_output(
+                            LLVM_PROFILE_FILE=str(profile_pattern),
+                        )
+                    ),
+                    repo_root=self.root,
+                )
+                self.assertEqual(
+                    environment["LLVM_PROFILE_FILE"],
+                    str(profile_pattern),
+                )
+                self.assertEqual(
+                    environment[
+                        "__CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS"
+                    ],
+                    "-C\x1finstrument-coverage\x1f--cfg=coverage",
+                )
+                self.assertEqual(
+                    summary["profile_pattern"],
+                    f"target/{pattern_name}",
+                )
+                self.assertEqual(profile_root, self.target)
+
+    def test_show_env_rejects_bad_quotes_and_invalid_merge_pool(self) -> None:
+        malformed = self.show_env_output().replace(
+            b"export LLVM_PROFILE_FILE=",
+            b"export LLVM_PROFILE_FILE='",
+            1,
+        )
+        with self.assertRaisesRegex(
+            lanes.CoverageProfileLaneError,
+            "invalid shell quoting",
+        ):
+            lanes.parse_show_env(
+                command_result(malformed),
+                repo_root=self.root,
+            )
+
+        multiword = self.show_env_output().replace(
+            b"export CARGO_LLVM_COV=1",
+            b"export CARGO_LLVM_COV=1 extra",
+            1,
+        )
+        with self.assertRaisesRegex(
+            lanes.CoverageProfileLaneError,
+            "one non-empty word",
+        ):
+            lanes.parse_show_env(
+                command_result(multiword),
+                repo_root=self.root,
+            )
+
+        for pattern_name in (
+            "fixture-%p-%0m.profraw",
+            "fixture-%p-%m.profraw",
+            "fixture-%p-%4m-%8m.profraw",
+            "fixture-%p-%4m-%m.profraw",
+        ):
+            with self.subTest(pattern_name=pattern_name):
+                with self.assertRaisesRegex(
+                    lanes.CoverageProfileLaneError,
+                    "one %Nm merge pool",
+                ):
+                    lanes.parse_show_env(
+                        command_result(
+                            self.show_env_output(
+                                LLVM_PROFILE_FILE=str(
+                                    self.target / pattern_name
+                                )
+                            )
+                        ),
+                        repo_root=self.root,
+                    )
+
     def test_show_env_rejects_missing_duplicate_and_unknown_keys(self) -> None:
         missing = b"\n".join(self.show_env_output().splitlines()[:-1]) + b"\n"
         with self.assertRaisesRegex(
@@ -237,7 +336,9 @@ class CoverageProfileLaneTests(unittest.TestCase):
                 repo_root=self.root,
             )
 
-        duplicate = self.show_env_output() + b"CARGO_LLVM_COV=1\n"
+        duplicate = (
+            self.show_env_output() + b"export CARGO_LLVM_COV=1\n"
+        )
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
             "duplicate key",
@@ -247,7 +348,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
                 repo_root=self.root,
             )
 
-        unknown = self.show_env_output() + b"UNREVIEWED_FLAG=1\n"
+        unknown = self.show_env_output() + b"export UNREVIEWED_FLAG=1\n"
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
             "fields do not match schema",

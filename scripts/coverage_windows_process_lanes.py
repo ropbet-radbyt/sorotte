@@ -51,7 +51,7 @@ MAX_UNTRACKED_FILE_BYTES = 32 * 1024 * 1024
 
 VERSION_COMMAND = ("cargo", "llvm-cov", "--version")
 RUSTC_COMMAND = ("rustc", "-vV")
-SHOW_ENV_COMMAND = ("cargo", "llvm-cov", "show-env")
+SHOW_ENV_COMMAND = ("cargo", "llvm-cov", "show-env", "--sh")
 HEAD_COMMAND = ("git", "rev-parse", "HEAD")
 TRACKED_DIFF_COMMAND = ("git", "diff", "--binary", "--no-ext-diff", "HEAD", "--", ".")
 UNTRACKED_COMMAND = (
@@ -507,21 +507,16 @@ def parse_show_env(
         ) from error
     environment: dict[str, str] = {}
     for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line or "=" not in line:
+        if not line.startswith("export ") or "=" not in line:
             raise common.CoverageProfileLaneError(
-                f"show-env line {line_number} is not KEY=VALUE"
+                f"show-env line {line_number} is not export KEY=VALUE"
             )
-        key, value = line.split("=", maxsplit=1)
-        if (
-            not common.ENVIRONMENT_KEY.fullmatch(key)
-            or key in environment
-            or not value
-            or "\x00" in value
-        ):
+        key, value = line.removeprefix("export ").split("=", maxsplit=1)
+        if not common.ENVIRONMENT_KEY.fullmatch(key) or key in environment:
             raise common.CoverageProfileLaneError(
                 f"show-env line {line_number} is unsafe or duplicated"
             )
-        environment[key] = value
+        environment[key] = common.decode_show_env_value(value, key=key)
     common.require_exact_keys(
         environment,
         common.EXPECTED_SHOW_ENV_KEYS,
@@ -578,14 +573,7 @@ def parse_show_env(
             "LLVM raw profiles must write directly into the isolated target"
         )
     pattern_name = profile_pattern.name
-    if (
-        not pattern_name.endswith(".profraw")
-        or "%p" not in pattern_name
-        or "%32m" not in pattern_name
-    ):
-        raise common.CoverageProfileLaneError(
-            "LLVM profile pattern must contain %p and %32m and end in .profraw"
-        )
+    common.validate_profile_pattern_name(pattern_name)
 
     crate_names = [
         item

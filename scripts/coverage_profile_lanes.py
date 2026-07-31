@@ -24,6 +24,7 @@ import math
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -41,9 +42,11 @@ MAX_LOG_BYTES = 128 * 1024 * 1024
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 ENVIRONMENT_KEY = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+LLVM_MERGE_POOL_TOKEN = re.compile(r"%[0-9]*m")
+LLVM_VALID_MERGE_POOL_TOKEN = re.compile(r"%[1-9][0-9]*m")
 
 VERSION_COMMAND = ("cargo", "llvm-cov", "--version")
-SHOW_ENV_COMMAND = ("cargo", "llvm-cov", "show-env")
+SHOW_ENV_COMMAND = ("cargo", "llvm-cov", "show-env", "--sh")
 WORKSPACE_COMMAND = (
     "cargo",
     "llvm-cov",
@@ -334,6 +337,40 @@ def parse_producer_version(result: CommandResult) -> str:
     return version
 
 
+def decode_show_env_value(value: str, *, key: str) -> str:
+    """Decode one explicit ``show-env --sh`` value without shell evaluation."""
+
+    if not value or "\x00" in value:
+        raise CoverageProfileLaneError(
+            f"show-env value for {key!r} is empty or unsafe"
+        )
+    try:
+        words = shlex.split(value, comments=False, posix=True)
+    except ValueError as error:
+        raise CoverageProfileLaneError(
+            f"show-env value for {key!r} has invalid shell quoting"
+        ) from error
+    if len(words) != 1 or not words[0] or "\x00" in words[0]:
+        raise CoverageProfileLaneError(
+            f"show-env value for {key!r} must decode to one non-empty word"
+        )
+    return words[0]
+
+
+def validate_profile_pattern_name(pattern_name: str) -> None:
+    merge_pools = list(LLVM_MERGE_POOL_TOKEN.finditer(pattern_name))
+    if (
+        not pattern_name.endswith(".profraw")
+        or "%p" not in pattern_name
+        or len(merge_pools) != 1
+        or not LLVM_VALID_MERGE_POOL_TOKEN.fullmatch(merge_pools[0].group())
+    ):
+        raise CoverageProfileLaneError(
+            "LLVM profile pattern must contain %p and one %Nm merge pool "
+            "and end in .profraw"
+        )
+
+
 def parse_show_env(
     result: CommandResult,
     *,
@@ -352,11 +389,11 @@ def parse_show_env(
 
     environment: dict[str, str] = {}
     for line_number, raw_line in enumerate(output.splitlines(), start=1):
-        if not raw_line or "=" not in raw_line:
+        if not raw_line.startswith("export ") or "=" not in raw_line:
             raise CoverageProfileLaneError(
-                f"show-env line {line_number} is not KEY=VALUE"
+                f"show-env line {line_number} is not export KEY=VALUE"
             )
-        key, value = raw_line.split("=", maxsplit=1)
+        key, value = raw_line.removeprefix("export ").split("=", maxsplit=1)
         if not ENVIRONMENT_KEY.fullmatch(key):
             raise CoverageProfileLaneError(
                 f"show-env line {line_number} has unsafe key {key!r}"
@@ -365,11 +402,7 @@ def parse_show_env(
             raise CoverageProfileLaneError(
                 f"show-env contains duplicate key {key!r}"
             )
-        if not value or "\x00" in value:
-            raise CoverageProfileLaneError(
-                f"show-env value for {key!r} is empty or unsafe"
-            )
-        environment[key] = value
+        environment[key] = decode_show_env_value(value, key=key)
 
     require_exact_keys(
         environment,
@@ -422,14 +455,7 @@ def parse_show_env(
             "LLVM profile pattern must write directly into the coverage target"
         )
     pattern_name = profile_pattern.name
-    if (
-        not pattern_name.endswith(".profraw")
-        or "%p" not in pattern_name
-        or "%32m" not in pattern_name
-    ):
-        raise CoverageProfileLaneError(
-            "LLVM profile pattern must contain %p and %32m and end in .profraw"
-        )
+    validate_profile_pattern_name(pattern_name)
 
     crate_names = [
         name
