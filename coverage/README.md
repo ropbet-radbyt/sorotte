@@ -874,16 +874,28 @@ healthy, owned-process, and malformed-HTTP modes and passed 18 assertions with
 is retained in
 [`native-gui-real-mpv-stalled-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md).
 
-The required Linux `mpv-pr-semantics` lane is a separate minimum-supported-mpv
-contract, not one of those four Windows native GUI modes. After
-`TC-HARNESS-045`, both real-mpv clients must first reach exact `ReadyPaused`
-at revision 1 and exact timeout-free `Playing` at revision 2 with seeking
-clear. Only then does the fixture arm one globally claimed path stall across
-range/retry connections. The affected client may issue at most one seek per
-observed recovery episode, the healthy peer must perform no post-start seek,
-and the stall must apply and complete exactly once. A separate deterministic
-concurrent-request regression requires both parked handlers to resume and
-return their complete response bodies. This preserves the strict
+The required Linux `mpv-pr-semantics` lane is separate from those four Windows
+native GUI modes. Pull-request and push runs retain the peeled mpv `v0.41.0`
+minimum. Scheduled and manually dispatched runs expand the same fail-closed
+job to both that minimum and reviewed post-release snapshot
+`d12f2ce19c918875981e00ed276f153bdf40a2ac`, 330 official commits ahead. Both
+sources are immutable and verified after checkout; a floating `master`, a
+missing or collapsed endpoint, and matrix fail-fast are policy failures. Each
+selected endpoint executes pause/seek/resume, cache-cap drain, premature HTTP
+disconnect recovery, and the full stalled-HTTP recovery harness. The
+implementation and committed-source newest-snapshot campaigns both passed
+4/4; exact source selection, the upstream libplacebo boundary, and artifact
+hashes are retained in
+[`mpv-version-matrix-20260801.md`](../docs/evidence/test-coverage/mpv-version-matrix-20260801.md).
+
+After `TC-HARNESS-045`, both real-mpv clients must first reach exact
+`ReadyPaused` at revision 1 and exact timeout-free `Playing` at revision 2 with
+seeking clear. Only then does the fixture arm one globally claimed path stall
+across range/retry connections. The affected client may issue at most one seek
+per observed recovery episode, the healthy peer must perform no post-start
+seek, and the stall must apply and complete exactly once. A separate
+deterministic concurrent-request regression requires both parked handlers to
+resume and return their complete response bodies. This preserves the strict
 recovery/isolation oracle while preventing startup timing from triggering the
 fault prematurely.
 

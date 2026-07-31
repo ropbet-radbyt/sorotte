@@ -163,10 +163,12 @@ Later execution exposed `TC-HARNESS-030` through `TC-HARNESS-038` and
 `TC-HARNESS-040` through `TC-HARNESS-046`; `TC-HARNESS-039` is the separately
 preserved noncanonical native-ASan environment diagnostic. All 29
 hosted-continuation findings (`TC-HARNESS-018` through `TC-HARNESS-046`) have focused
-dispositions and positive regressions or exact-artifact replay. The finalizer
-now binds the exact ordered two-platform map tuple, the minimum-mpv HTTP-stall
-test separates prepared/started baselines from explicit fault arming, and the
-Plex fixture accepts only a complete request header across transient reads.
+dispositions and positive regressions or exact-artifact replay. The separate
+`TC-HARNESS-047` matrix-source preflight is also resolved. The finalizer now
+binds the exact ordered two-platform map tuple, the real-mpv HTTP-stall test
+separates prepared/started baselines from explicit fault arming, the version
+matrix binds minimum and reviewed post-release source identities, and the Plex
+fixture accepts only a complete request header across transient reads.
 Exact-head compatibility, WSL fuzz, the 54-test Windows process map, and the
 local Linux/Windows union replay are green. Exact implementation-head workflow
 `30639113884` also passed every required producer, the corrected coverage
@@ -341,11 +343,14 @@ The complete assurance stack now contains:
   same-process replacement stop, a complete recovery GET, progress beyond the
   stall, native pause/exit, and complete resource release, with
   `TC-PLAYER-005` positive in both deterministic and real-mpv proof;
-- a distinct required Linux minimum-mpv simulation that reaches exact
-  `ReadyPaused` and timeout-free `Playing` baselines for both clients before
-  arming one globally claimed path stall, then preserves the affected
+- a distinct required Linux real-mpv simulation that runs the minimum endpoint
+  on pull requests and expands manual/nightly execution to minimum plus an
+  immutable reviewed post-release snapshot; every selected identity reaches
+  exact `ReadyPaused` and timeout-free `Playing` baselines for both clients
+  before arming one globally claimed path stall, then preserves the affected
   client's at-most-one seek per observed recovery episode and the healthy
-  peer's zero-post-start-seek isolation contract (`TC-HARNESS-045`);
+  peer's zero-post-start-seek isolation contract (`TC-HARNESS-045` and
+  `TC-HARNESS-047`);
 - four deterministic client timing schedules covering legacy jitter smoothing,
   finite outliers, rejected non-finite/future echoes, affine offset/rate
   transformations, reply-clock scheduler delay, room projection, and playback
@@ -431,6 +436,8 @@ and
 [`native-gui-real-mpv-stalled-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md).
 Their integrated complete/pending ledger is
 [`next-four-test-slices-20260731.md`](evidence/test-coverage/next-four-test-slices-20260731.md).
+The focused minimum/newest-supported source-matrix continuation is retained in
+[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
@@ -992,7 +999,7 @@ boundaries rather than adding hundreds more nearby examples.
 | Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, a 47/47 viable mutation ratchet, and four independent-oracle schedules for jitter/outliers, invalid/nonmonotonic clocks, affine offset/rate transforms, reply-clock delay, room projection, and playback decisions | arithmetic, public clock delegation, finite outlier smoothing, atomic invalid-sample rejection, scheduler projection, and exposed legacy playback outcomes are mechanically encoded without sleeps; cross-host clock authenticity/path symmetry, monotonic clock typing, executor latency, and real synchronization telemetry remain unproven | retain the zero-survivor shard and deterministic schedules; add real synchronization telemetry and only materially distinct clock/executor boundaries |
 | Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet, a black-box 30-field INI/runtime/environment composition property suite, generated legacy scalar/container/malformed-value migration properties, four independent-model controlled-room properties, and a 256-case CLI parser/composition oracle | mutation covers all 31 persisted runtime overrides in both precedence directions, generated lower-layer composition covers all 30 environment-overridable fields, migration is canonical/idempotent, controlled-room normalization/credentials/precedence/redaction are generated, and the distinct CLI boundary now proves attached/separated values, duplicate clear/replace, atomic host/port, required values, and diagnostic redaction | retain the mutation, composition, migration, controlled-room, and CLI proofs; add only parser/configuration boundaries with a materially different grammar or consumer |
 | CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, deterministic partial-read cancellation matrices, generated byte schedules through committed session state, a 33/33 viable framing mutation ratchet, and source-bound in-memory coverage-guided framing/session application | session-owned framing state and positive cancellation regressions close `TC-CLI-003`; deterministic schedules and the 292,528-execution canonical campaign cover cancellation, EOF, UTF-8, payload seams, and session projections, while real-network timing and 142 older test-path sleeps remain gaps | retain the cancellation barriers, generated schedules, zero-survivor shard, and framed-session fuzz lane; continue clock/barrier replacement and real transport timing proof |
-| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe and Unix-domain-socket fragmentation/correlation/disconnect/deadline coverage, real child-process large-pipe/exit/hang/handle-release proofs, a source-bound framed-mpv IPC/transcript target, and locally green digest-bound healthy, owned-process-recovery, malformed-HTTP, and valid byte-silent HTTP native verticals | generated local and loopback-served media prove healthy playback, automatic managed-player replacement, same-process keep-open premature-EOF recovery, and same-process bounded cache-stall recovery without EOF; the required Linux minimum-mpv simulation prepares both clients, proves an exact timeout-free start, then explicitly arms one globally claimed stall, while one Windows/mpv identity supplied the native stalled proof and native GUI minimum/newest version combinations remain unexecuted | retain the kernel/process, framed, healthy, and both recovery proofs; add macOS/BSD kernel execution plus repeated native minimum/newest-supported-mpv fault and stall traces |
+| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe and Unix-domain-socket fragmentation/correlation/disconnect/deadline coverage, real child-process large-pipe/exit/hang/handle-release proofs, a source-bound framed-mpv IPC/transcript target, a pinned Linux minimum/newest-supported source matrix, and locally green digest-bound healthy, owned-process-recovery, malformed-HTTP, and valid byte-silent HTTP native verticals | generated local and loopback-served media prove healthy playback, automatic managed-player replacement, same-process keep-open premature-EOF recovery, and same-process bounded cache-stall recovery without EOF; the Linux matrix runs the minimum on pull requests and both immutable endpoints manually/nightly, prepares both clients, proves an exact timeout-free start, then explicitly arms one globally claimed stall, while one Windows/mpv identity supplied the native stalled proof and native GUI minimum/newest version combinations remain unexecuted | retain the kernel/process, framed, source-matrix, healthy, and both recovery proofs; add macOS/BSD kernel execution plus repeated native minimum/newest-supported-mpv fault and stall traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
 | Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, pre-termination failure capture, a dispatch-only ephemeral-runner workflow contract, and locally green healthy, owned-process-recovery, faulting-HTTP, and stalled-HTTP real-mpv verticals | the ten-scenario, healthy 13-assertion, owned-recovery 20-assertion, malformed-HTTP 18-assertion, and valid-stall 18-assertion contracts are locally green; the external one-job interactive runner has not been provisioned or executed, so the workflow is not a required gate | execute and retain repeated green runs on the attested ephemeral interactive runner before promotion; keep all four real-mpv inventories distinct |
@@ -1459,10 +1466,13 @@ valid complete-length framing, an exact playable prefix, and sustained byte
 silence without EOF before the complete same-process recovery body.
 
 **Decision:** retain all three coverage-guided targets and their checked-in
-corpora plus the Unix-kernel, faulting-HTTP, and stalled-HTTP suites. The next
-distinct mpv investment is repeated execution on minimum/newest-supported mpv
-and another Unix kernel family; do not duplicate the existing in-memory or
-Linux-kernel chunk/timeout/disconnect oracles with nearby examples.
+corpora plus the Unix-kernel, faulting-HTTP, and stalled-HTTP suites. The
+source-built Linux lane now repeats its four real-player contracts on minimum
+and reviewed newest-supported mpv during manual/nightly execution while
+retaining only the minimum on ordinary pull requests. The next distinct mpv
+investments are the native GUI version combinations and another Unix kernel
+family; do not duplicate the existing in-memory or Linux-kernel
+chunk/timeout/disconnect oracles with nearby examples.
 
 ### P1 — Persistence and atomic storage lack crash protocols
 
@@ -2709,10 +2719,11 @@ new bounded capabilities:
 1. provision and independently attest a one-job ephemeral interactive Windows
    runner, execute the dispatch-only zero-stderr native lane repeatedly, and
    promote it only after retained green evidence;
-2. retain the locally green GUI-to-real-mpv healthy, owned-process-recovery,
-   faulting-loopback-HTTP, and stalled-loopback-HTTP verticals, then repeat
-   both HTTP recovery modes against the minimum and newest supported mpv
-   without weakening exact process/Hello/artifact identity;
+2. retain the now-matrixed source-built Linux real-mpv contracts plus the
+   locally green GUI-to-real-mpv healthy, owned-process-recovery,
+   faulting-loopback-HTTP, and stalled-loopback-HTTP verticals, then repeat the
+   two native GUI HTTP recovery modes against distinct minimum/newest Windows
+   executables without weakening exact process/Hello/artifact identity;
 3. install the reviewed `replay-log` capability on a disposable capable Linux
    host and execute the three nonce-owned block-replay cuts before making any
    observed durability claim;

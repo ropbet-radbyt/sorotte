@@ -3911,3 +3911,39 @@ passes, and warning-denied all-target CLI Clippy is green. Exact-head workflow
 run `30639113884`, Windows job `91184230464`, subsequently passed 3,777/3,777
 nextest cases with 19 skipped, exit zero, and no failure, flaky, or rerun
 elements in artifact `8796957980` (`nextest-attempts-windows-1`).
+
+## TC-HARNESS-047: Floating newest mpv crossed the Ubuntu dependency boundary
+
+Status: **Resolved 2026-08-01; exact source pins, adversarial policy, and the
+committed-source newest-snapshot campaign are positive**
+
+Severity: **Harness source selection (a naive newest-source lane would fail in
+Meson before exercising any Sorotte behavior)**
+
+Detection: local matrix preflight against official mpv master
+`1d15686142fd5d53c954aab7526cedab05ef9dc3`
+
+The official latest release was still the minimum supported `v0.41.0`, so a
+release-only pair would duplicate one source. The first distinct endpoint
+candidate was official master, 918 commits ahead. Its configuration required
+libplacebo `>=7.360.1`, while Ubuntu 24.04 exposes `6.338.2`; the build stopped
+before compiling mpv or running a Sorotte oracle. Floating `master` would also
+make old workflow attempts unreproducible.
+
+Commit `022fbd16b99187d51f1961da788c2720cf3036ec` introduced that dependency
+bump. Commit `64255fe97ccb126eb275074166b9d551dee306ce` instead pins its first
+parent, official snapshot `d12f2ce19c918875981e00ed276f153bdf40a2ac`, as
+the reviewed newest-supported Ubuntu endpoint. It is 330 commits ahead of the
+peeled `v0.41.0` commit and builds against the runner's native dependency set.
+Pull requests retain only the minimum; manual and scheduled executions expand
+the same required job to both endpoints with fail-fast disabled. Checkout and
+`HEAD^{commit}` verification bind each selected source before compilation.
+
+The policy suite rejects removal of newest, floating `master`, collapsed
+source identities, or fail-fast. A local Lua-disabled diagnostic passed three
+tests and correctly failed the generation-bound cache option readback. The
+Lua-enabled build then passed all four real-player contracts, and the
+committed-source rerun passed 4/4 in 75.07 seconds without weakening the
+readback, recovery, process, or isolation oracles. Full provenance and hashes
+are retained in
+[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).

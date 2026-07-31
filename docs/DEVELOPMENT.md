@@ -37,6 +37,21 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
+## Real mpv Checks
+
+The required `mpv-pr-semantics` job builds the peeled mpv `v0.41.0` commit and
+runs the four ignored real-player contracts explicitly. Scheduled and manually
+dispatched CI expands that same fail-closed job to a second, immutable reviewed
+post-release snapshot. The two endpoints run in parallel, and matrix fail-fast
+is disabled so one failure cannot erase the other endpoint's result.
+
+Do not replace either source SHA with a floating tag or branch. The newest
+snapshot is the final reviewed mpv revision that builds against Ubuntu 24.04's
+native libplacebo dependency; rolling it forward requires reviewing the mpv
+and runner dependency boundary together. See
+[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md)
+for the exact identities and local campaign.
+
 ## GUI Checks
 
 Run semantic smoke coverage for GUI workflow changes:
