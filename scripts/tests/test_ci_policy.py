@@ -358,26 +358,21 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assertEqual(verify_source.get("working-directory"), "target/mpv-supported")
 
-        verify_version = named_step(
+        self.assert_exact_run(
             jobs,
             "mpv-pr-semantics",
             "Verify supported mpv version",
+            """
+            export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
+            python3 scripts/mpv_version_matrix.py validate \
+              --identity "$MPV_MATRIX_IDENTITY" \
+              --source-sha "$MPV_SOURCE_SHA" \
+              --minimum-source-sha "$MPV_MINIMUM_SOURCE_SHA" \
+              --newest-source-sha "$MPV_NEWEST_SOURCE_SHA" \
+              --minimum-version "$MPV_MINIMUM_VERSION" \
+              --binary mpv
+            """,
         )
-        self.assertNotIn("if", verify_version)
-        self.assertNotIn("continue-on-error", verify_version)
-        version_contract = verify_version.get("run", "")
-        for required in (
-            'identity = os.environ["MPV_MATRIX_IDENTITY"]',
-            'source_sha = os.environ["MPV_SOURCE_SHA"]',
-            '"minimum": os.environ["MPV_MINIMUM_SOURCE_SHA"]',
-            '"newest": os.environ["MPV_NEWEST_SOURCE_SHA"]',
-            "assert identity in expected_sources",
-            'expected_sources["minimum"] != expected_sources["newest"]',
-            "assert version >= minimum",
-            'if identity == "minimum":',
-            "assert version == minimum",
-        ):
-            self.assertIn(required, version_contract)
 
     def test_every_external_action_is_pinned_to_reviewed_commit(self) -> None:
         for path, workflow_text in (

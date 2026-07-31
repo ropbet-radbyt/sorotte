@@ -859,39 +859,13 @@ jobs:
       - name: Verify supported mpv version
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
-          python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-
-          identity = os.environ["MPV_MATRIX_IDENTITY"]
-          source_sha = os.environ["MPV_SOURCE_SHA"]
-          expected_sources = {
-              "minimum": os.environ["MPV_MINIMUM_SOURCE_SHA"],
-              "newest": os.environ["MPV_NEWEST_SOURCE_SHA"],
-          }
-          assert identity in expected_sources, f"unknown mpv matrix identity: {identity}"
-          assert source_sha == expected_sources[identity], (
-              f"mpv source identity drift for {identity}: {source_sha}"
-          )
-          assert expected_sources["minimum"] != expected_sources["newest"], (
-              "minimum and newest mpv matrix sources must be distinct"
-          )
-
-          first_line = subprocess.check_output(["mpv", "--version"], text=True).splitlines()[0]
-          match = re.search(r"\b(\d+)\.(\d+)\.(\d+)(?:-|\b)", first_line)
-          assert match, f"could not parse mpv version: {first_line}"
-          version = tuple(map(int, match.groups()))
-          minimum = tuple(map(int, os.environ["MPV_MINIMUM_VERSION"].split(".")))
-          assert version >= minimum, (
-              f"expected mpv {minimum} or newer, received: {first_line}"
-          )
-          if identity == "minimum":
-              assert version == minimum, (
-                  f"minimum mpv source no longer reports {minimum}: {first_line}"
-              )
-          print(f"identity={identity} source={source_sha} version={first_line}")
-          PY
+          python3 scripts/mpv_version_matrix.py validate \
+            --identity "$MPV_MATRIX_IDENTITY" \
+            --source-sha "$MPV_SOURCE_SHA" \
+            --minimum-source-sha "$MPV_MINIMUM_SOURCE_SHA" \
+            --newest-source-sha "$MPV_NEWEST_SOURCE_SHA" \
+            --minimum-version "$MPV_MINIMUM_VERSION" \
+            --binary mpv
 
       - name: Required real mpv pause, seek, resume, and bounded-fetch semantics
         run: |
