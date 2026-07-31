@@ -243,7 +243,7 @@ class LlvmCovLineMapTests(unittest.TestCase):
     def test_supported_native_positive_count_abbreviations_are_binary(self) -> None:
         report = self.build(
             native_text=self.native_text(
-                counts=["2", "152k", "1.04M", "3G", "9T"],
+                counts=["2", "18.4E", "1.04M", "300G", "900T"]
             )
         )
         self.assertEqual(report["files"][0]["covered_line_count"], 5)
@@ -252,14 +252,52 @@ class LlvmCovLineMapTests(unittest.TestCase):
             [[1, 1], [2, 1], [3, 1], [4, 1], [5, 1]],
         )
 
+        report = self.build(
+            native_text=self.native_text(counts=["152k", "4.00P", "0", "", "1"])
+        )
+        self.assertEqual(report["files"][0]["covered_line_count"], 3)
+
+    def test_supported_native_large_annotation_abbreviations_are_accepted(self) -> None:
+        native_text = self.native_text().replace("^1", "^7.20P ^18.4E")
+        self.assertEqual(self.build(native_text=native_text)["status"], "passed")
+
     def test_unknown_native_count_tokens_fail_closed(self) -> None:
-        for token in ("-1", "#####", "NaN", "0.5k", "1.234k", "1e3"):
+        for token in (
+            "-1",
+            "#####",
+            "NaN",
+            "0.5k",
+            "1.234k",
+            "1.234E",
+            "4P",
+            "7.2P",
+            "1000",
+            "1e3",
+            "1e",
+            "1.00Z",
+        ):
             with self.subTest(token=token):
                 self.assert_invalid(
                     "unsupported execution-count token",
                     native_text=self.native_text(
                         counts=[token, "0", "", "1", "1"],
                     ),
+                )
+
+    def test_unknown_native_annotation_count_tokens_fail_closed(self) -> None:
+        for token in (
+            "^1.234E",
+            "^4P",
+            "^7.2P",
+            "^1000",
+            "^1.00e",
+            "^1.00Z",
+            "^-1",
+        ):
+            with self.subTest(token=token):
+                self.assert_invalid(
+                    "not source line",
+                    native_text=self.native_text().replace("^1", token),
                 )
 
     def test_source_content_line_number_and_truncation_are_bound(self) -> None:

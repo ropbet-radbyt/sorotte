@@ -69,11 +69,14 @@ COUNT_WITH_NOT_COVERED_KEYS = frozenset(
 METRICS_WITH_NOT_COVERED = frozenset({"branches", "mcdc", "regions"})
 
 SOURCE_ROW = re.compile(r"^ *([1-9][0-9]*)\|([^|]*)\|(.*)$")
+ABBREVIATED_COUNT_PATTERN = (
+    r"(?:[1-9]\.[0-9]{2}|[1-9][0-9]\.[0-9]|[1-9][0-9]{2})[kMGTPE]"
+)
 POSITIVE_COUNT = re.compile(
-    r"^(?:[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]{1,2})?[kMGT])$"
+    rf"^(?:[1-9][0-9]{{0,2}}|{ABBREVIATED_COUNT_PATTERN})$"
 )
 ANNOTATION_ROW = re.compile(
-    r"^(?: *\^[0-9]+(?:\.[0-9]+)?[kMGT]?)+ *$"
+    rf"^(?: *\^(?:0|[1-9][0-9]{{0,2}}|{ABBREVIATED_COUNT_PATTERN}))+ *$"
 )
 
 
