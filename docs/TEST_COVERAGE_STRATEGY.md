@@ -164,7 +164,8 @@ Later execution exposed `TC-HARNESS-030` through `TC-HARNESS-038` and
 preserved noncanonical native-ASan environment diagnostic. All 29
 hosted-continuation findings (`TC-HARNESS-018` through `TC-HARNESS-046`) have focused
 dispositions and positive regressions or exact-artifact replay. The separate
-`TC-HARNESS-047` matrix-source preflight is also resolved. The finalizer now
+`TC-HARNESS-047` matrix-source preflight and `TC-HARNESS-048` version
+identification failure are also resolved. The finalizer now
 binds the exact ordered two-platform map tuple, the real-mpv HTTP-stall test
 separates prepared/started baselines from explicit fault arming, the version
 matrix binds minimum and reviewed post-release source identities, and the Plex
@@ -349,8 +350,9 @@ The complete assurance stack now contains:
   exact `ReadyPaused` and timeout-free `Playing` baselines for both clients
   before arming one globally claimed path stall, then preserves the affected
   client's at-most-one seek per observed recovery episode and the healthy
-  peer's zero-post-start-seek isolation contract (`TC-HARNESS-045` and
-  `TC-HARNESS-047`);
+  peer's zero-post-start-seek isolation contract; exact source and version
+  identity are fail-closed before those tests (`TC-HARNESS-045`,
+  `TC-HARNESS-047`, and `TC-HARNESS-048`);
 - four deterministic client timing schedules covering legacy jitter smoothing,
   finite outliers, rejected non-finite/future echoes, affine offset/rate
   transformations, reply-clock scheduler delay, room projection, and playback
@@ -438,6 +440,9 @@ Their integrated complete/pending ledger is
 [`next-four-test-slices-20260731.md`](evidence/test-coverage/next-four-test-slices-20260731.md).
 The focused minimum/newest-supported source-matrix continuation is retained in
 [`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).
+Its standalone version parser and both real-player endpoint jobs are positive
+on exact correction head `5a94562d18182058c5a322bbe0f627a15b6f1cc6` in
+manual workflow run `30673650173`.
 
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration

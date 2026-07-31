@@ -3947,3 +3947,40 @@ committed-source rerun passed 4/4 in 75.07 seconds without weakening the
 readback, recovery, process, or isolation oracles. Full provenance and hashes
 are retained in
 [`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).
+
+## TC-HARNESS-048: Valid v-prefixed mpv versions failed matrix identification
+
+Status: **Resolved 2026-08-01; standalone parser regressions, preserved-binary
+replay, and exact-head minimum/newest jobs are positive**
+
+Severity: **Harness version identification (both correctly pinned and built
+endpoints stopped before exercising Sorotte's real-player contracts)**
+
+Detection: manual exact-head workflow run `30673144701`, minimum job
+`91294887252`, and newest job `91294887263`
+
+Both jobs verified the selected source SHA and built mpv successfully, then
+failed only in `Verify supported mpv version`. The embedded regular expression
+required a word boundary immediately between the optional `v` and the first
+version digit. Since both characters are word characters, it rejected valid
+release and development output: `mpv v0.41.0` and `mpv
+v0.41.0-dev-gd12f2ce19`. No real-player assertion had run, so this was a
+harness false negative rather than an mpv compatibility result.
+
+Commit `5a94562d18182058c5a322bbe0f627a15b6f1cc6` extracts a standalone
+validator with a bounded optional `v` and keeps the fail-closed parts of the
+contract: exact lowercase source SHAs, known and distinct identities, selected
+source equality, an exact three-part minimum, the exact minimum endpoint, and
+a minimum version floor for newest. Five unit tests cover valid release,
+development, and unprefixed output plus malformed, partial, embedded, older,
+newer, floating, collapsed, unknown, and drifted cases. Together with the CI
+policy suite they pass 21/21; the full Python suite passes 542/542. The
+committed validator accepts the preserved Lua-enabled snapshot binary's exact
+version line without changing any player oracle.
+
+Corrected exact-head run `30673650173` is bound to the correction commit.
+Minimum job `91296358144` and newest job `91296358146` both passed source
+verification, build, version validation, pause/seek/resume, cache-cap drain,
+premature-disconnect recovery, and the full stalled-HTTP recovery harness.
+Full provenance is retained in
+[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).

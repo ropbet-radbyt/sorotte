@@ -17,10 +17,16 @@ The newest endpoint is 330 commits ahead of the minimum and zero commits
 behind. It is intentionally immutable. The matrix never checks out a floating
 tag or branch.
 
-The implementation source boundary is:
+The matrix implementation source boundary is:
 
 ```text
 64255fe97ccb126eb275074166b9d551dee306ce
+```
+
+The standalone version-validator correction boundary is:
+
+```text
+5a94562d18182058c5a322bbe0f627a15b6f1cc6
 ```
 
 ## Matrix contract
@@ -32,7 +38,7 @@ selected endpoint must:
 1. check out the exact source SHA into its isolated runner;
 2. verify `HEAD^{commit}` against the selected SHA;
 3. build mpv with the same headless feature set and Lua enabled;
-4. parse an mpv version of `0.41.0` or newer;
+4. validate a release or development version line as mpv `0.41.0` or newer;
 5. require the minimum endpoint to report the exact minimum tuple; and
 6. execute all four existing real-player contracts without a tolerated error.
 
@@ -73,6 +79,41 @@ target/verification/mpv-version-matrix-preflight/20260801-newest/source/build/me
 bytes:   15,918
 sha256:  0181c13852af1e25729487ad4e869cb1cf9e6e7de1fa96db61b5d260afb1d3dd
 ```
+
+## Hosted validator diagnostic and correction
+
+Manual exact-head run
+[`30673144701`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30673144701)
+expanded both endpoints on documentation head
+`b0f4821934ca601ddea57428d3ebc7e83495bf14`. Minimum job `91294887252`
+and newest job `91294887263` both checked out and verified their exact source,
+installed dependencies, and built mpv. Both then failed only at `Verify
+supported mpv version`, before any Sorotte semantic contract ran.
+
+The embedded regular expression placed a word-boundary assertion immediately
+between the optional `v` and the first digit. Both are word characters, so it
+rejected the valid release and development forms `mpv v0.41.0` and `mpv
+v0.41.0-dev-gd12f2ce19`. The failed run was cancelled only after both endpoint
+results and the parser diagnostic were retained.
+
+Commit `5a94562d18182058c5a322bbe0f627a15b6f1cc6` moves source and version
+validation into `scripts/mpv_version_matrix.py`. It accepts a bounded optional
+`v`, retains exact lowercase 40-character source SHA checks, rejects unknown,
+floating, collapsed, and drifted identities, requires an exact three-part
+minimum tuple, and preserves exact-minimum/newer-than-minimum semantics. Five
+unit tests cover release, development, unprefixed, malformed, partial,
+embedded, older, newer, and source-drift cases. The committed validator also
+accepted the preserved local binary's exact development line and emitted its
+source-bound JSON record.
+
+Corrected exact-head run
+[`30673650173`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30673650173)
+was bound to that commit. Minimum job
+[`91296358144`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30673650173/job/91296358144)
+and newest job
+[`91296358146`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30673650173/job/91296358146)
+both passed source verification, build, version validation, and all four
+real-player contracts.
 
 ## Canonical local campaign
 
@@ -124,7 +165,7 @@ and version-validation contract. Adversarial copies must fail when they:
 Focused results:
 
 ```text
-scripts.tests.test_ci_policy: 16/16 passed
+scripts.tests.test_mpv_version_matrix + scripts.tests.test_ci_policy: 21/21 passed
 actionlint .github/workflows/rust-ci.yml: passed
 git diff --check: passed
 ```
@@ -135,7 +176,7 @@ Final local gates:
 cargo fmt --all --check: passed
 cargo test --locked --workspace --all-features: passed, including doctests
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings: passed
-python -m unittest discover -s scripts/tests -p "test_*.py": 537/537 passed
+python -m unittest discover -s scripts/tests -p "test_*.py": 542/542 passed
 ```
 
 ## Limits

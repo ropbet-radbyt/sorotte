@@ -884,8 +884,11 @@ missing or collapsed endpoint, and matrix fail-fast are policy failures. Each
 selected endpoint executes pause/seek/resume, cache-cap drain, premature HTTP
 disconnect recovery, and the full stalled-HTTP recovery harness. The
 implementation and committed-source newest-snapshot campaigns both passed
-4/4; exact source selection, the upstream libplacebo boundary, and artifact
-hashes are retained in
+4/4. A standalone validator accepts bounded release/development version forms
+while retaining exact source and minimum-version checks; exact correction-head
+run `30673650173` passed both endpoint jobs and all eight selected executions.
+Exact source selection, the upstream libplacebo boundary, parser diagnostic,
+and artifact hashes are retained in
 [`mpv-version-matrix-20260801.md`](../docs/evidence/test-coverage/mpv-version-matrix-20260801.md).
 
 After `TC-HARNESS-045`, both real-mpv clients must first reach exact

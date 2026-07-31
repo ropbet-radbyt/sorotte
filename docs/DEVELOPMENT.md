@@ -50,7 +50,8 @@ snapshot is the final reviewed mpv revision that builds against Ubuntu 24.04's
 native libplacebo dependency; rolling it forward requires reviewing the mpv
 and runner dependency boundary together. See
 [`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md)
-for the exact identities and local campaign.
+for the exact identities, local campaign, version-parser regression, and
+exact-head minimum/newest result.
 
 ## GUI Checks
 
