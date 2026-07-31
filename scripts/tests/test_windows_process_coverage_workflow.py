@@ -75,7 +75,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
             rust.get("with"),
             {
                 "toolchain": "1.97.1",
-                "components": "llvm-tools-preview",
+                "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
 
