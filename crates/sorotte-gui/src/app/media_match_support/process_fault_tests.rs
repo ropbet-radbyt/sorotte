@@ -19,6 +19,7 @@ const PARKED_FIXTURE_TEST: &str = concat!(
     "app::media_match_support::process_fault_tests::",
     "media_match_parked_process_fixture"
 );
+const PROCESS_FIXTURE_IMAGE_STEM: &str = "fake-media-match-tool";
 const FINITE_FAKE_TOOL_OUTPUT_BYTES: usize = 512 * 1024;
 const PROCESS_FIXTURE_TIMEOUT: Duration = Duration::from_millis(400);
 static PROCESS_FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -68,7 +69,14 @@ impl Drop for FakeMediaMatchTool {
 
 fn invoked_as_exact_fixture(test_name: &str) -> bool {
     let args = std::env::args().collect::<Vec<_>>();
-    args.iter().any(|arg| arg == "--exact") && args.iter().any(|arg| arg == test_name)
+    std::env::current_exe()
+        .is_ok_and(|executable| is_exact_copied_fixture_invocation(test_name, &args, &executable))
+}
+
+fn is_exact_copied_fixture_invocation(test_name: &str, args: &[String], executable: &Path) -> bool {
+    executable.file_stem().and_then(|stem| stem.to_str()) == Some(PROCESS_FIXTURE_IMAGE_STEM)
+        && args.iter().any(|arg| arg == "--exact")
+        && args.iter().any(|arg| arg == test_name)
 }
 
 fn fixture_args(test_name: &'static str) -> [&'static str; 3] {
@@ -154,6 +162,42 @@ fn media_match_parked_process_fixture() {
     loop {
         std::thread::park();
     }
+}
+
+#[test]
+fn process_fixture_requires_copied_image_and_exact_target() {
+    let exact_parked_args = fixture_args(PARKED_FIXTURE_TEST)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(
+        !is_exact_copied_fixture_invocation(
+            PARKED_FIXTURE_TEST,
+            &exact_parked_args,
+            Path::new("sorotte_gui.exe"),
+        ),
+        "an ordinary nextest --exact invocation must not become the parked child"
+    );
+    assert!(is_exact_copied_fixture_invocation(
+        PARKED_FIXTURE_TEST,
+        &exact_parked_args,
+        Path::new("fake-media-match-tool.exe"),
+    ));
+
+    let wrong_target_args = fixture_args(LARGE_STDOUT_FIXTURE_TEST)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(!is_exact_copied_fixture_invocation(
+        PARKED_FIXTURE_TEST,
+        &wrong_target_args,
+        Path::new("fake-media-match-tool.exe"),
+    ));
+    assert!(!is_exact_copied_fixture_invocation(
+        PARKED_FIXTURE_TEST,
+        &[PARKED_FIXTURE_TEST.to_owned()],
+        Path::new("fake-media-match-tool.exe"),
+    ));
 }
 
 #[test]
