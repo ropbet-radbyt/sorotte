@@ -15,7 +15,7 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 `
 The committed implementation is:
 
 ```text
-33c8ff0efb7da7472252edbead3b12c064b414e5
+374b6a6f7edefef6f7db44422d16e9c11dd6f8bf
 ```
 
 This is deliberately local, bounded, non-authoritative development evidence.
@@ -75,7 +75,7 @@ therefore cannot satisfy strict CI even if copied into a strict artifact root.
 Canonical local bundle:
 
 ```text
-target/verification/gui-native-smoke/20260731T214657652Z-48968
+target/verification/gui-native-smoke/20260731T220008415Z-13100
 ```
 
 The UTC bundle timestamp is 2026-07-31 because the local date was already
@@ -98,32 +98,35 @@ validator status:               local-pass
 validator authoritative:        false
 remaining Sorotte GUI processes: 0
 GUI SHA-256 before/after:        1b7efb4867490143a7b0da67f1939a6711c86809f9fca47aef097213c5c65a21
-runner duration:                 2,434 ms
-reported interaction duration:  1,956 ms
+runner duration:                 1,762 ms
+reported interaction duration:  1,296 ms
 ```
 
 Artifact inventory:
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `native-report.json` | 1,607 | `2cca83e54b02c7a5f103226ad40b535ca7854461e147f71ff8dd28e20399cc94` |
-| `contract-summary.json` | 514 | `058f49f981c61282d56bcb26a90502c189d7eb36a73b8cac32f7fab5f1351c4e` |
-| `invocation.json` | 1,881 | `0e9469cd3ee525ac77387cf32d86b957e84e2874bb746bf4485587302eeabed8` |
+| `native-report.json` | 1,607 | `c3d25ddb16fadaaab4ef18f66b8fd88d13f0dab21a858ce29b87fcd220626d42` |
+| `contract-summary.json` | 514 | `3dec5bba6fc3e42a4faf9bb15828fe38bac431ebe1f707fb12d0b9081cf59d72` |
+| `invocation.json` | 1,880 | `092855b0c227b5138a5606111b9a4581ebaffadfd8002a4ab2d767c0920b270b` |
 | `native-stderr.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `build-stdout.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `build-stderr.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `harness-build-stdout.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `harness-build-stderr.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 
-Two earlier green development bundles are intentionally retained:
+Three earlier green development bundles are intentionally retained:
 
 ```text
 target/verification/gui-native-smoke/20260731T213610609Z-43232
 target/verification/gui-native-smoke/20260731T214102021Z-24724
+target/verification/gui-native-smoke/20260731T214657652Z-48968
 ```
 
 The first preceded the additional cursor-movement guard. The second used the
-final guard but preceded the implementation commit. Neither is canonical.
+final guard but preceded the implementation commit. The third was bound to the
+initial implementation commit, before the Windows-only guard members were
+correctly cfg-gated for warning-denied Linux builds. None is canonical.
 
 ## Validation
 
@@ -131,6 +134,7 @@ The completed gates were:
 
 ```text
 cargo fmt --all --check
+cargo +1.97.1 clippy --locked -p sorotte-gui --bin sorotte-gui-native-smoke --all-features -- -D warnings (Ubuntu/WSL)
 cargo test --locked --workspace --all-features
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 python -m unittest discover -s scripts/tests -p "test_*.py" -v
@@ -147,8 +151,15 @@ focused native/workflow Python tests:  46/46
 complete Python policy suite:          536/536
 workspace tests and doctests:          passed
 workspace warning-denied Clippy:        passed
+Linux native-smoke warning-denied lint: passed
 formatting/actionlint/PowerShell parse: passed
 ```
+
+The first exact-head hosted Linux lint exposed that the input-mode field and
+desktop-input guard method are Windows-only outside unit tests. Commit
+`374b6a6f7edefef6f7db44422d16e9c11dd6f8bf` cfg-gates only those members. The
+exact affected all-feature target then passed warning-denied Clippy on both
+Ubuntu/WSL and Windows before this canonical campaign was recorded.
 
 One focused parallel native-smoke test run transiently received Windows socket
 abort 10053 while a negative real-mpv fixture wrote after its server had
