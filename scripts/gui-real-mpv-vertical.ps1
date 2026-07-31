@@ -2,7 +2,8 @@ param(
     [string]$MpvPath,
     [string]$BinaryPath,
     [int]$TimeoutMs = 30000,
-    [switch]$ExerciseOwnedMpvRecovery
+    [switch]$ExerciseOwnedMpvRecovery,
+    [switch]$ExerciseFaultingHttpRecovery
 )
 
 Set-StrictMode -Version Latest
@@ -10,6 +11,9 @@ $ErrorActionPreference = "Stop"
 
 if ($TimeoutMs -le 0) {
     throw "-TimeoutMs must be greater than zero"
+}
+if ($ExerciseOwnedMpvRecovery -and $ExerciseFaultingHttpRecovery) {
+    throw "-ExerciseOwnedMpvRecovery and -ExerciseFaultingHttpRecovery are mutually exclusive"
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -31,6 +35,9 @@ else {
 $timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ")
 $capabilityDirectory = if ($ExerciseOwnedMpvRecovery) {
     "gui-real-mpv-owned-process-recovery"
+}
+elseif ($ExerciseFaultingHttpRecovery) {
+    "gui-real-mpv-faulting-http-recovery"
 }
 else {
     "gui-real-mpv-vertical"
@@ -73,6 +80,8 @@ function Write-InvocationMetadata {
         started_at_utc = $startedAtUtc
         finished_at_utc = if ($Result -eq "running") { $null } else { [DateTime]::UtcNow.ToString("o") }
         timeout_ms = $TimeoutMs
+        exercise_owned_mpv_recovery = [bool]$ExerciseOwnedMpvRecovery
+        exercise_faulting_http_recovery = [bool]$ExerciseFaultingHttpRecovery
         artifact_directory = $artifactDirectory
         gui_binary_path = $EffectiveGuiPath
         gui_binary_sha256_before = $GuiSha256Before
@@ -281,7 +290,15 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
 $runner = $null
 $producerExitCode = $buildExitCode
 if ($buildExitCode -eq 0 -and -not $prelaunchError) {
-    $timeoutMultiplier = if ($ExerciseOwnedMpvRecovery) { 12 } else { 8 }
+    $timeoutMultiplier = if ($ExerciseOwnedMpvRecovery) {
+        12
+    }
+    elseif ($ExerciseFaultingHttpRecovery) {
+        14
+    }
+    else {
+        8
+    }
     $runnerTimeout = ([long]$TimeoutMs * $timeoutMultiplier) + 30000
     if ($runnerTimeout -gt [int]::MaxValue) {
         throw "derived real-mpv wall-clock timeout exceeds supported process wait"
@@ -300,6 +317,9 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
     )
     if ($ExerciseOwnedMpvRecovery) {
         $runnerArguments += "--exercise-owned-mpv-recovery"
+    }
+    if ($ExerciseFaultingHttpRecovery) {
+        $runnerArguments += "--exercise-faulting-http-recovery"
     }
     $runner = Invoke-CapturedProcess `
         -FilePath $nativeHarnessPath `
@@ -378,6 +398,9 @@ if ($pythonCommand -and $guiSha256Before) {
     )
     if ($ExerciseOwnedMpvRecovery) {
         $validatorArguments += "--expect-recovery"
+    }
+    if ($ExerciseFaultingHttpRecovery) {
+        $validatorArguments += "--expect-http-fault"
     }
     & $pythonCommand.Source @validatorArguments
     $validatorExitCode = $LASTEXITCODE

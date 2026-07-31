@@ -109,6 +109,7 @@ struct MockSessionServer {
     port: u16,
     peer_rx: mpsc::Receiver<String>,
     hello_rx: mpsc::Receiver<String>,
+    playlist_exchange_rx: Option<mpsc::Receiver<(String, String, String, String)>>,
     release_tx: mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
 }
