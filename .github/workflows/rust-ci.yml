@@ -772,9 +772,21 @@ jobs:
             -- --ignored --exact --nocapture
 
   mpv-pr-semantics:
-    if: github.event_name != 'schedule'
+    name: mpv semantics (${{ matrix.mpv_identity }})
+    strategy:
+      fail-fast: false
+      matrix:
+        mpv_identity: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["minimum","newest"]' || '["minimum"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      MPV_MATRIX_IDENTITY: ${{ matrix.mpv_identity }}
+      MPV_SOURCE_SHA: ${{ matrix.mpv_identity == 'minimum' && '41f6a645068483470267271e1d09966ca3b9f413' || 'd12f2ce19c918875981e00ed276f153bdf40a2ac' }}
+      MPV_MINIMUM_SOURCE_SHA: 41f6a645068483470267271e1d09966ca3b9f413
+      # Last reviewed post-release snapshot before mpv requires libplacebo 7,
+      # which is outside Ubuntu 24.04's supported native dependency set.
+      MPV_NEWEST_SOURCE_SHA: d12f2ce19c918875981e00ed276f153bdf40a2ac
+      MPV_MINIMUM_VERSION: "0.41.0"
     defaults:
       run:
         working-directory: .
@@ -807,12 +819,11 @@ jobs:
             ninja-build \
             pkg-config
 
-      - name: Checkout minimum supported official mpv
+      - name: Checkout pinned official mpv source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: mpv-player/mpv
-          # Peeled commit for annotated tag v0.41.0
-          ref: 41f6a645068483470267271e1d09966ca3b9f413
+          ref: ${{ env.MPV_SOURCE_SHA }}
           path: target/mpv-supported
           persist-credentials: false
 
@@ -820,9 +831,9 @@ jobs:
         working-directory: target/mpv-supported
         run: >-
           test "$(git rev-parse 'HEAD^{commit}')" =
-          "41f6a645068483470267271e1d09966ca3b9f413"
+          "$MPV_SOURCE_SHA"
 
-      - name: Build minimum supported mpv
+      - name: Build pinned supported mpv
         working-directory: target/mpv-supported
         run: |
           meson setup build \
@@ -849,15 +860,37 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           python3 - <<'PY'
+          import os
           import re
           import subprocess
 
+          identity = os.environ["MPV_MATRIX_IDENTITY"]
+          source_sha = os.environ["MPV_SOURCE_SHA"]
+          expected_sources = {
+              "minimum": os.environ["MPV_MINIMUM_SOURCE_SHA"],
+              "newest": os.environ["MPV_NEWEST_SOURCE_SHA"],
+          }
+          assert identity in expected_sources, f"unknown mpv matrix identity: {identity}"
+          assert source_sha == expected_sources[identity], (
+              f"mpv source identity drift for {identity}: {source_sha}"
+          )
+          assert expected_sources["minimum"] != expected_sources["newest"], (
+              "minimum and newest mpv matrix sources must be distinct"
+          )
+
           first_line = subprocess.check_output(["mpv", "--version"], text=True).splitlines()[0]
-          match = re.search(r"\b(\d+)\.(\d+)(?:\.|\b)", first_line)
+          match = re.search(r"\b(\d+)\.(\d+)\.(\d+)(?:-|\b)", first_line)
           assert match, f"could not parse mpv version: {first_line}"
           version = tuple(map(int, match.groups()))
-          assert version >= (0, 41), f"expected mpv 0.41 or newer, received: {first_line}"
-          print(first_line)
+          minimum = tuple(map(int, os.environ["MPV_MINIMUM_VERSION"].split(".")))
+          assert version >= minimum, (
+              f"expected mpv {minimum} or newer, received: {first_line}"
+          )
+          if identity == "minimum":
+              assert version == minimum, (
+                  f"minimum mpv source no longer reports {minimum}: {first_line}"
+              )
+          print(f"identity={identity} source={source_sha} version={first_line}")
           PY
 
       - name: Required real mpv pause, seek, resume, and bounded-fetch semantics

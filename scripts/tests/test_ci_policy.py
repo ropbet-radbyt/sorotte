@@ -24,7 +24,18 @@ PACKAGE_PATH_BOUNDARY_TEST_PATH = REPO_ROOT / "scripts" / "package-path-boundary
 CI_REQUIREMENTS = REPO_ROOT / "requirements" / "ci-policy.txt"
 LEGACY_REQUIREMENTS = REPO_ROOT / "requirements" / "legacy-python-interop.txt"
 LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
-MPV_SUPPORTED_SHA = "41f6a645068483470267271e1d09966ca3b9f413"
+MPV_MINIMUM_SHA = "41f6a645068483470267271e1d09966ca3b9f413"
+MPV_NEWEST_SHA = "d12f2ce19c918875981e00ed276f153bdf40a2ac"
+MPV_MATRIX_EXPRESSION = (
+    "${{ fromJSON((github.event_name == 'schedule' || "
+    "github.event_name == 'workflow_dispatch') && "
+    "'[\"minimum\",\"newest\"]' || '[\"minimum\"]') }}"
+)
+MPV_SOURCE_EXPRESSION = (
+    "${{ matrix.mpv_identity == 'minimum' && "
+    + f"'{MPV_MINIMUM_SHA}' || '{MPV_NEWEST_SHA}'"
+    + " }}"
+)
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
     "actions/checkout": (
@@ -298,6 +309,75 @@ class CiPolicyTests(unittest.TestCase):
         else:
             self.assertEqual(step.get("continue-on-error"), continue_on_error)
         return step
+
+    def assert_mpv_version_matrix(self, jobs: dict[str, Any]) -> None:
+        job = jobs["mpv-pr-semantics"]
+        self.assertEqual(job.get("name"), "mpv semantics (${{ matrix.mpv_identity }})")
+        self.assertNotIn("if", job)
+        self.assertNotIn("continue-on-error", job)
+        self.assertEqual(job.get("timeout-minutes"), "30")
+        self.assertEqual(
+            job.get("strategy"),
+            {
+                "fail-fast": "false",
+                "matrix": {"mpv_identity": MPV_MATRIX_EXPRESSION},
+            },
+        )
+        self.assertEqual(
+            job.get("env"),
+            {
+                "MPV_MATRIX_IDENTITY": "${{ matrix.mpv_identity }}",
+                "MPV_SOURCE_SHA": MPV_SOURCE_EXPRESSION,
+                "MPV_MINIMUM_SOURCE_SHA": MPV_MINIMUM_SHA,
+                "MPV_NEWEST_SOURCE_SHA": MPV_NEWEST_SHA,
+                "MPV_MINIMUM_VERSION": "0.41.0",
+            },
+        )
+
+        checkout = named_step(
+            jobs,
+            "mpv-pr-semantics",
+            "Checkout pinned official mpv source",
+        )
+        self.assertEqual(checkout.get("uses"), PINNED_USES["actions/checkout"])
+        self.assertEqual(
+            checkout.get("with"),
+            {
+                "repository": "mpv-player/mpv",
+                "ref": "${{ env.MPV_SOURCE_SHA }}",
+                "path": "target/mpv-supported",
+                "persist-credentials": "false",
+            },
+        )
+
+        verify_source = self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Verify supported mpv source revision",
+            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$MPV_SOURCE_SHA\"",
+        )
+        self.assertEqual(verify_source.get("working-directory"), "target/mpv-supported")
+
+        verify_version = named_step(
+            jobs,
+            "mpv-pr-semantics",
+            "Verify supported mpv version",
+        )
+        self.assertNotIn("if", verify_version)
+        self.assertNotIn("continue-on-error", verify_version)
+        version_contract = verify_version.get("run", "")
+        for required in (
+            'identity = os.environ["MPV_MATRIX_IDENTITY"]',
+            'source_sha = os.environ["MPV_SOURCE_SHA"]',
+            '"minimum": os.environ["MPV_MINIMUM_SOURCE_SHA"]',
+            '"newest": os.environ["MPV_NEWEST_SOURCE_SHA"]',
+            "assert identity in expected_sources",
+            'expected_sources["minimum"] != expected_sources["newest"]',
+            "assert version >= minimum",
+            'if identity == "minimum":',
+            "assert version == minimum",
+        ):
+            self.assertIn(required, version_contract)
 
     def test_every_external_action_is_pinned_to_reviewed_commit(self) -> None:
         for path, workflow_text in (
@@ -1181,34 +1261,7 @@ class CiPolicyTests(unittest.TestCase):
             """,
         )
 
-        mpv_checkout = named_step(
-            self.jobs,
-            "mpv-pr-semantics",
-            "Checkout minimum supported official mpv",
-        )
-        self.assertEqual(
-            mpv_checkout.get("uses"),
-            PINNED_USES["actions/checkout"],
-        )
-        self.assertEqual(
-            mpv_checkout.get("with"),
-            {
-                "repository": "mpv-player/mpv",
-                "ref": MPV_SUPPORTED_SHA,
-                "path": "target/mpv-supported",
-                "persist-credentials": "false",
-            },
-        )
-        verify_mpv_source = self.assert_exact_run(
-            self.jobs,
-            "mpv-pr-semantics",
-            "Verify supported mpv source revision",
-            f"test \"$(git rev-parse 'HEAD^{{commit}}')\" = \"{MPV_SUPPORTED_SHA}\"",
-        )
-        self.assertEqual(
-            verify_mpv_source.get("working-directory"),
-            "target/mpv-supported",
-        )
+        self.assert_mpv_version_matrix(self.jobs)
 
         expected_mpv = {
             "Required real mpv pause, seek, resume, and bounded-fetch semantics": """
@@ -1237,6 +1290,37 @@ class CiPolicyTests(unittest.TestCase):
         }
         for name, command in expected_mpv.items():
             self.assert_exact_run(self.jobs, "mpv-pr-semantics", name, command)
+
+    def test_mpv_version_matrix_rejects_missing_newest_or_floating_sources(
+        self,
+    ) -> None:
+        mutations: list[tuple[str, dict[str, Any]]] = []
+
+        missing_newest = copy.deepcopy(self.jobs)
+        missing_newest["mpv-pr-semantics"]["strategy"]["matrix"][
+            "mpv_identity"
+        ] = "${{ fromJSON('[\"minimum\"]') }}"
+        mutations.append(("missing-newest", missing_newest))
+
+        floating_newest = copy.deepcopy(self.jobs)
+        floating_newest["mpv-pr-semantics"]["env"]["MPV_NEWEST_SOURCE_SHA"] = (
+            "master"
+        )
+        mutations.append(("floating-newest", floating_newest))
+
+        collapsed_endpoints = copy.deepcopy(self.jobs)
+        collapsed_endpoints["mpv-pr-semantics"]["env"]["MPV_NEWEST_SOURCE_SHA"] = (
+            MPV_MINIMUM_SHA
+        )
+        mutations.append(("collapsed-endpoints", collapsed_endpoints))
+
+        fail_fast = copy.deepcopy(self.jobs)
+        fail_fast["mpv-pr-semantics"]["strategy"]["fail-fast"] = "true"
+        mutations.append(("fail-fast", fail_fast))
+
+        for mutation, jobs in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                self.assert_mpv_version_matrix(jobs)
 
     def test_pull_request_ignored_tests_are_explicitly_invoked(self) -> None:
         validate_pull_request_ignored_bindings(
