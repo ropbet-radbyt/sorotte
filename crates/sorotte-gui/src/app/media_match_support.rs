@@ -2830,9 +2830,17 @@ fn probe_executable_version(
                 .unwrap_or_else(|| "unknown".to_owned())
         ));
     }
-    let (first_line, terminated) = first_nonempty_output_line(&output.stdout)
-        .ok_or_else(|| "version output was empty".to_owned())?;
-    if output.stdout_truncated && !terminated {
+    parse_executable_version_output(&output.stdout, output.stdout_truncated, expected_tool)
+}
+
+fn parse_executable_version_output(
+    stdout: &[u8],
+    stdout_truncated: bool,
+    expected_tool: MediaMatchTool,
+) -> Result<String, String> {
+    let (first_line, terminated) =
+        first_nonempty_output_line(stdout).ok_or_else(|| "version output was empty".to_owned())?;
+    if stdout_truncated && !terminated {
         return Err(format!(
             "{} version banner exceeded the {} byte capture limit",
             expected_tool.display_name(),

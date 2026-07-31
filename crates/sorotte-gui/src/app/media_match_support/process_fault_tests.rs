@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::{
-    MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES, MediaMatchTool, probe_executable_output_with_timeout,
-    probe_executable_version,
+    MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES, MediaMatchTool, parse_executable_version_output,
+    probe_executable_output_with_timeout, probe_executable_version,
 };
 
 const LARGE_STDOUT_FIXTURE_TEST: &str = concat!(
@@ -78,8 +78,8 @@ fn fixture_args(test_name: &'static str) -> [&'static str; 3] {
 #[cfg(windows)]
 fn shell_probe(script: &str) -> Result<String, String> {
     probe_executable_version(
-        Path::new("powershell.exe"),
-        &["-NoProfile", "-NonInteractive", "-Command", script],
+        Path::new("cmd.exe"),
+        &["/d", "/s", "/c", script],
         MediaMatchTool::Ffprobe,
     )
 }
@@ -95,17 +95,17 @@ fn shell_probe(script: &str) -> Result<String, String> {
 
 #[cfg(windows)]
 const COMPLETE_VERSION_SCRIPT: &str =
-    "[Console]::Out.Write(\"`r`nffprobe version 8.0`r`nconfiguration details`r`n\")";
+    "(echo.&echo ffprobe version 8.0&echo configuration details)&exit /b 0";
 #[cfg(not(windows))]
 const COMPLETE_VERSION_SCRIPT: &str = "printf '\\nffprobe version 8.0\\nconfiguration details\\n'";
 
 #[cfg(windows)]
-const UNTERMINATED_VERSION_SCRIPT: &str = "[Console]::Out.Write('ffprobe version 8.0-no-newline')";
+const UNTERMINATED_VERSION_SCRIPT: &str = "<nul set /p =ffprobe version 8.0-no-newline&exit /b 0";
 #[cfg(not(windows))]
 const UNTERMINATED_VERSION_SCRIPT: &str = "printf 'ffprobe version 8.0-no-newline'";
 
 #[cfg(windows)]
-const NONZERO_EXIT_SCRIPT: &str = "[Console]::Error.Write('probe failure'); exit 23";
+const NONZERO_EXIT_SCRIPT: &str = ">&2 echo probe failure&exit /b 23";
 #[cfg(not(windows))]
 const NONZERO_EXIT_SCRIPT: &str = "printf 'probe failure' >&2; exit 23";
 
@@ -115,16 +115,7 @@ const EMPTY_SUCCESS_SCRIPT: &str = "exit 0";
 const EMPTY_SUCCESS_SCRIPT: &str = "exit 0";
 
 #[cfg(windows)]
-const INVALID_UTF8_SCRIPT: &str = concat!(
-    "$stdout=[Console]::OpenStandardOutput();",
-    "$bytes=[byte[]](0x66,0x66,0xff,0x70,0x72,0x6f,0x62,0x65,0x0a);",
-    "$stdout.Write($bytes,0,$bytes.Length)"
-);
-#[cfg(not(windows))]
-const INVALID_UTF8_SCRIPT: &str = "printf 'ff\\377probe\\n'";
-
-#[cfg(windows)]
-const UNRELATED_SUCCESS_SCRIPT: &str = "[Console]::Out.Write('not a media tool')";
+const UNRELATED_SUCCESS_SCRIPT: &str = "<nul set /p =not a media tool&exit /b 0";
 #[cfg(not(windows))]
 const UNRELATED_SUCCESS_SCRIPT: &str = "printf 'not a media tool'";
 
@@ -188,7 +179,6 @@ fn version_probe_preserves_nonzero_exit_status() {
 fn version_probe_rejects_unusable_success_output() {
     let accepted = [
         ("empty", shell_probe(EMPTY_SUCCESS_SCRIPT)),
-        ("invalid-utf8", shell_probe(INVALID_UTF8_SCRIPT)),
         ("unrelated", shell_probe(UNRELATED_SUCCESS_SCRIPT)),
     ]
     .into_iter()
@@ -198,6 +188,15 @@ fn version_probe_rejects_unusable_success_output() {
     assert!(
         accepted.is_empty(),
         "successful process without a valid tool version must be rejected: {accepted:?}"
+    );
+    assert_eq!(
+        parse_executable_version_output(
+            b"ff\xffprobe version 8.0\n",
+            false,
+            MediaMatchTool::Ffprobe,
+        )
+        .expect_err("invalid UTF-8 must be rejected before banner matching"),
+        "version banner was not valid UTF-8"
     );
 }
 
