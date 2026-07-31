@@ -2457,6 +2457,48 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    struct UnixDirectoryPermissionsGuard {
+        path: PathBuf,
+        original: fs::Permissions,
+        restored: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl UnixDirectoryPermissionsGuard {
+        fn deny_read(path: &Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let original = fs::metadata(path)
+                .expect("the nonce-owned updater directory should have metadata")
+                .permissions();
+            let mut denied = original.clone();
+            denied.set_mode(0o300);
+            fs::set_permissions(path, denied)
+                .expect("the test should remove read permission from its owned directory");
+            Self {
+                path: path.to_path_buf(),
+                original,
+                restored: false,
+            }
+        }
+
+        fn restore(&mut self) {
+            fs::set_permissions(&self.path, self.original.clone())
+                .expect("the test should restore its owned directory permissions");
+            self.restored = true;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for UnixDirectoryPermissionsGuard {
+        fn drop(&mut self) {
+            if !self.restored {
+                let _ = fs::set_permissions(&self.path, self.original.clone());
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn target_update_lock_serializes_live_updaters_for_the_same_install() {
@@ -3111,6 +3153,99 @@ mod tests {
             );
         }
         assert_eq!(cases.len(), 13);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_parent_directory_read_denial_recovers_old_install_idempotently() {
+        let fixture = DurabilityFixtureRoot::new("linux-directory-read-denial");
+        let transaction_root = fixture.path.join("transaction");
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        let plan = recovery_matrix_plan(&transaction_root);
+        let target_sentinel = write_relative(
+            &plan.target_dir,
+            "unmanaged/sentinel.bin",
+            b"unmanaged-target-must-not-change",
+        );
+        let mut permissions_guard = None;
+        let mut direct_denial = None;
+
+        assert!(
+            take_test_storage_fault().is_none(),
+            "the Linux syscall test must not use the synthetic storage fault seam"
+        );
+        let result = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(1) {
+                let guard = UnixDirectoryPermissionsGuard::deny_read(&plan.target_dir);
+                direct_denial = Some(
+                    sync_directory(&plan.target_dir)
+                        .expect_err("the owned Linux directory should deny read-open for sync"),
+                );
+                permissions_guard = Some(guard);
+            }
+            Ok(())
+        });
+
+        let direct_denial =
+            direct_denial.expect("the test should reach the first replacement boundary");
+        assert!(
+            direct_denial.contains("failed synchronizing updater directory")
+                && direct_denial.contains("os error 13"),
+            "unexpected Linux directory permission diagnostic: {direct_denial}"
+        );
+        let error =
+            result.expect_err("the real parent-directory sync denial must abort the transaction");
+        assert!(
+            error.contains("failed synchronizing updater directory")
+                && error.contains("rollback was incomplete"),
+            "the production transaction lost its directory-sync recovery boundary: {error}"
+        );
+        assert_authenticated_journal_selection(&plan, false);
+        assert_matrix_target_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+
+        permissions_guard
+            .as_mut()
+            .expect("the owned directory permissions should be guarded")
+            .restore();
+        sync_directory(&plan.target_dir)
+            .expect("directory synchronization should recover after restoring owner read access");
+
+        recover_pending_update(&plan.target_dir)
+            .expect("the authenticated uncommitted journal should recover the old install");
+        assert_matrix_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        recover_pending_update(&plan.target_dir)
+            .expect("a second recovery after the real Linux denial should be a no-op");
+        assert_matrix_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
     }
 
     #[cfg(windows)]
