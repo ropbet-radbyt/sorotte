@@ -3,7 +3,8 @@ param(
     [string]$BinaryPath,
     [int]$TimeoutMs = 30000,
     [switch]$ExerciseOwnedMpvRecovery,
-    [switch]$ExerciseFaultingHttpRecovery
+    [switch]$ExerciseFaultingHttpRecovery,
+    [switch]$ExerciseStalledHttp
 )
 
 Set-StrictMode -Version Latest
@@ -12,8 +13,21 @@ $ErrorActionPreference = "Stop"
 if ($TimeoutMs -le 0) {
     throw "-TimeoutMs must be greater than zero"
 }
-if ($ExerciseOwnedMpvRecovery -and $ExerciseFaultingHttpRecovery) {
-    throw "-ExerciseOwnedMpvRecovery and -ExerciseFaultingHttpRecovery are mutually exclusive"
+$selectedModeCount = 0
+foreach ($enabled in @(
+    $ExerciseOwnedMpvRecovery,
+    $ExerciseFaultingHttpRecovery,
+    $ExerciseStalledHttp
+)) {
+    if ($enabled) {
+        $selectedModeCount += 1
+    }
+}
+if ($selectedModeCount -gt 1) {
+    throw "-ExerciseOwnedMpvRecovery, -ExerciseFaultingHttpRecovery, and -ExerciseStalledHttp are mutually exclusive"
+}
+if ($ExerciseStalledHttp -and $TimeoutMs -lt 50000) {
+    throw "-ExerciseStalledHttp requires -TimeoutMs of at least 50000"
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -38,6 +52,9 @@ $capabilityDirectory = if ($ExerciseOwnedMpvRecovery) {
 }
 elseif ($ExerciseFaultingHttpRecovery) {
     "gui-real-mpv-faulting-http-recovery"
+}
+elseif ($ExerciseStalledHttp) {
+    "gui-real-mpv-stalled-http"
 }
 else {
     "gui-real-mpv-vertical"
@@ -82,6 +99,7 @@ function Write-InvocationMetadata {
         timeout_ms = $TimeoutMs
         exercise_owned_mpv_recovery = [bool]$ExerciseOwnedMpvRecovery
         exercise_faulting_http_recovery = [bool]$ExerciseFaultingHttpRecovery
+        exercise_stalled_http = [bool]$ExerciseStalledHttp
         artifact_directory = $artifactDirectory
         gui_binary_path = $EffectiveGuiPath
         gui_binary_sha256_before = $GuiSha256Before
@@ -296,6 +314,9 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
     elseif ($ExerciseFaultingHttpRecovery) {
         14
     }
+    elseif ($ExerciseStalledHttp) {
+        16
+    }
     else {
         8
     }
@@ -320,6 +341,9 @@ if ($buildExitCode -eq 0 -and -not $prelaunchError) {
     }
     if ($ExerciseFaultingHttpRecovery) {
         $runnerArguments += "--exercise-faulting-http-recovery"
+    }
+    if ($ExerciseStalledHttp) {
+        $runnerArguments += "--exercise-stalled-http"
     }
     $runner = Invoke-CapturedProcess `
         -FilePath $nativeHarnessPath `
@@ -401,6 +425,9 @@ if ($pythonCommand -and $guiSha256Before) {
     }
     if ($ExerciseFaultingHttpRecovery) {
         $validatorArguments += "--expect-http-fault"
+    }
+    if ($ExerciseStalledHttp) {
+        $validatorArguments += "--expect-http-stall"
     }
     & $pythonCommand.Source @validatorArguments
     $validatorExitCode = $LASTEXITCODE

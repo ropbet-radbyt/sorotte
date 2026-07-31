@@ -667,6 +667,8 @@ enum TrackedCommandSupersession {
 struct DeferredStartFileObservation {
     attachment_epoch: PlayerAttachmentEpoch,
     playlist_entry_id: i64,
+    playback_restart_sequence_at_observation: u64,
+    playback_restart_observed_after_start: bool,
     retained_paused: Option<bool>,
     retained_logical_pause: Option<bool>,
     retained_playback_rate: Option<f64>,
@@ -5607,15 +5609,15 @@ impl MpvAdapter {
         let Some(media_generation) = self.observation_media_generation() else {
             return;
         };
-        let is_rebuffering_network_vod = self.active_file_loaded
+        let is_recoverable_network_rebuffer = self.active_file_loaded
             && self.active_generation_has_restarted
-            && self.timeline_kind == PlayerTimelineKind::Vod
+            && self.network_cache_stall_is_not_known_live(media_generation)
             && self.observed_state.seeking != Some(true)
             && self
                 .current_path
                 .as_deref()
                 .is_some_and(uses_network_media_options);
-        if !is_rebuffering_network_vod {
+        if !is_recoverable_network_rebuffer {
             return;
         }
         if self
@@ -5645,6 +5647,15 @@ impl MpvAdapter {
         )
     }
 
+    fn network_cache_stall_is_not_known_live(
+        &self,
+        media_generation: PlayerMediaGeneration,
+    ) -> bool {
+        self.timeline_kind != PlayerTimelineKind::SlidingLive
+            && !(self.ytdl_is_live
+                && self.ytdl_is_live_metadata_generation == Some(media_generation))
+    }
+
     fn maintain_network_cache_stall_recovery(&mut self) {
         let Some(stall) = self.network_cache_stall else {
             return;
@@ -5652,7 +5663,7 @@ impl MpvAdapter {
         let still_stalled = self.observation_media_generation() == Some(stall.media_generation)
             && self.active_file_loaded
             && self.active_generation_has_restarted
-            && self.timeline_kind == PlayerTimelineKind::Vod
+            && self.network_cache_stall_is_not_known_live(stall.media_generation)
             && self.observed_state.paused_for_cache == Some(true)
             && self.observed_state.seeking != Some(true)
             && self.observed_state.eof_reached != Some(true)
@@ -7223,6 +7234,8 @@ impl MpvAdapter {
         let observation = DeferredStartFileObservation {
             attachment_epoch: lifecycle_epoch,
             playlist_entry_id: lifecycle_playlist_entry_id,
+            playback_restart_sequence_at_observation: self.playback_restart_sequence,
+            playback_restart_observed_after_start: false,
             retained_paused: self.observed_state.paused,
             retained_logical_pause: self.observed_state.logical_pause,
             retained_playback_rate: self.observed_state.playback_rate,
@@ -7322,6 +7335,13 @@ impl MpvAdapter {
         lifecycle_attempt_id: LoadAttemptId,
         generation: PlayerMediaGeneration,
     ) {
+        let newer_restart_already_applied_to_attempt = self.playback_restart_sequence
+            != observation.playback_restart_sequence_at_observation
+            && self.active_generation_has_restarted
+            && self.active_load_attempt_id == Some(lifecycle_attempt_id)
+            && self.active_media_generation == Some(generation);
+        let replay_playback_restart = observation.playback_restart_observed_after_start
+            || newer_restart_already_applied_to_attempt;
         if self.network_media_options_hook_instance_id.is_some()
             && self.network_media_options_hook_configured_generation
                 == Some(self.network_media_options_generation)
@@ -7397,6 +7417,13 @@ impl MpvAdapter {
             None,
             AuthoritativePathObservationOrigin::StartFilePending,
         );
+        if replay_playback_restart {
+            // The restart was reduced at the authoritative response boundary
+            // before playlist identity could bind this start-file. Replay the
+            // newer edge only after the older start has initialized the exact
+            // attempt, preserving the causal event order.
+            self.handle_playback_restart_event();
+        }
     }
 
     fn replay_deferred_start_file_if_bound(&mut self) {
@@ -7497,6 +7524,35 @@ impl MpvAdapter {
         let lifecycle_playlist_entry_id = self
             .active_playlist_entry_id
             .and_then(|entry_id| i64::try_from(entry_id).ok());
+        let restart_follows_unbound_or_different_deferred_start = self
+            .deferred_start_file_observation
+            .is_some_and(|observation| {
+                let matches_latest = observation.attachment_epoch == lifecycle_epoch
+                    && self.latest_start_file_observation.is_some_and(|latest| {
+                        latest.attachment_epoch == observation.attachment_epoch
+                            && latest.playlist_entry_id == observation.playlist_entry_id
+                    });
+                let deferred_attempt = self
+                    .player_lifecycle
+                    .attempt_for_playlist_entry(observation.playlist_entry_id);
+                let reducer_active_attempt = self
+                    .player_lifecycle
+                    .active_attempt()
+                    .map(|attempt| attempt.id);
+                matches_latest
+                    && (deferred_attempt.is_none() || deferred_attempt != reducer_active_attempt)
+            });
+        if restart_follows_unbound_or_different_deferred_start {
+            if let Some(observation) = self.deferred_start_file_observation.as_mut() {
+                observation.playback_restart_observed_after_start = true;
+            }
+            // An accepted successor remains unbound until the authoritative
+            // playlist response arrives, so the physical predecessor can
+            // still be reducer-active here. Preserve this edge for the newer
+            // deferred start instead of projecting it onto that predecessor.
+            self.lifecycle_reconciliation_due = true;
+            return;
+        }
         #[cfg(test)]
         if let Some(playlist_entry_id) = lifecycle_playlist_entry_id
             && self
@@ -10456,6 +10512,234 @@ mod interrupted_network_stream_recovery_tests {
         }));
         assert_eq!(local.transport_phase, PlayerTransportPhase::Ended);
         assert_eq!(local.network_stream_recovery_attempt_count(), 0);
+    }
+
+    #[test]
+    fn deferred_start_replay_retains_newer_restart_and_arms_cache_watchdog() {
+        let mut adapter = MpvAdapter {
+            simulation_mode: true,
+            ..MpvAdapter::default()
+        };
+        let generation = adapter.allocate_media_generation();
+        let attempt_id =
+            adapter.submit_lifecycle_load(None, generation, NETWORK_PATH, BTreeSet::new());
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id,
+        });
+
+        // `open_file`'s first authoritative playlist response reduces this
+        // entire event prefix before applying the identity snapshot.
+        adapter.handle_start_file_observation(42);
+        assert!(adapter.deferred_start_file_observation.is_some());
+        adapter.handle_playback_restart_event();
+        assert!(!adapter.active_generation_has_restarted);
+        assert!(
+            adapter
+                .deferred_start_file_observation
+                .is_some_and(|observation| observation.playback_restart_observed_after_start)
+        );
+
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch,
+            entries: vec![AuthoritativePlaylistEntry::new(
+                42,
+                Some(NETWORK_PATH.to_owned()),
+                true,
+            )],
+            current_path: Some(NETWORK_PATH.to_owned()),
+        });
+        adapter.replay_deferred_start_file_if_bound();
+        assert!(
+            adapter.active_generation_has_restarted,
+            "replaying the older start-file must retain the newer restart for this attempt"
+        );
+
+        adapter.handle_file_loaded_observation(Some(NETWORK_PATH.to_owned()));
+        adapter.current_path = Some(NETWORK_PATH.to_owned());
+        adapter.observed_state.path = Some(NETWORK_PATH.to_owned());
+        adapter.observed_state.duration_seconds = Some(45.0);
+        adapter.observed_state.position_seconds = Some(7.424);
+        adapter.path_metadata_generation = Some(generation);
+        adapter.duration_metadata_generation = Some(generation);
+        adapter.refresh_timeline_kind_from_metadata();
+        assert_eq!(adapter.timeline_kind, PlayerTimelineKind::Vod);
+
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": true,
+        }));
+        assert!(
+            adapter.network_cache_stall.is_some(),
+            "a post-progress cache pause must arm bounded recovery"
+        );
+    }
+
+    #[test]
+    fn deferred_start_replay_delays_restart_until_identity_snapshot() {
+        let mut adapter = MpvAdapter {
+            simulation_mode: true,
+            ..MpvAdapter::default()
+        };
+        let generation = adapter.allocate_media_generation();
+        let attempt_id =
+            adapter.submit_lifecycle_load(None, generation, NETWORK_PATH, BTreeSet::new());
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id,
+        });
+        adapter.handle_start_file_observation(42);
+
+        // This represents the sibling response-boundary ordering where the
+        // accepted pending attempt is already reducer-active even though its
+        // playlist identity has not yet been applied.
+        adapter.player_lifecycle.active_load_attempt = Some(attempt_id);
+        adapter.handle_playback_restart_event();
+        assert!(!adapter.active_generation_has_restarted);
+        assert!(
+            adapter
+                .deferred_start_file_observation
+                .is_some_and(|observation| observation.playback_restart_observed_after_start),
+            "the restart must remain attached to the causally newer deferred start"
+        );
+
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch,
+            entries: vec![AuthoritativePlaylistEntry::new(
+                42,
+                Some(NETWORK_PATH.to_owned()),
+                true,
+            )],
+            current_path: Some(NETWORK_PATH.to_owned()),
+        });
+        adapter.replay_deferred_start_file_if_bound();
+
+        assert!(
+            adapter.active_generation_has_restarted,
+            "the older deferred start must not erase a restart already reduced for this attempt"
+        );
+        assert_eq!(adapter.active_load_attempt_id, Some(attempt_id));
+        assert_eq!(adapter.active_playlist_entry_id, Some(42));
+    }
+
+    #[test]
+    fn deferred_recovery_start_does_not_attribute_restart_to_retained_predecessor() {
+        let mut adapter = loaded_network_vod(7.424, 45.0);
+        let generation = adapter
+            .active_media_generation
+            .expect("fixture should have an active generation");
+        let predecessor_attempt = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("fixture should have an active predecessor");
+        let restart_sequence_before_successor = adapter.playback_restart_sequence;
+        let successor_attempt =
+            adapter.submit_lifecycle_load(None, generation, NETWORK_PATH, BTreeSet::new());
+        let attachment_epoch = adapter.lifecycle_epoch();
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id: successor_attempt,
+        });
+        assert_eq!(
+            adapter.player_lifecycle.active_load_attempt,
+            Some(predecessor_attempt),
+            "the predecessor remains reducer-active until the successor playlist ID binds"
+        );
+
+        adapter.handle_start_file_observation(42);
+        assert!(adapter.deferred_start_file_observation.is_some());
+        adapter.handle_playback_restart_event();
+        assert_eq!(
+            adapter.playback_restart_sequence, restart_sequence_before_successor,
+            "the successor restart must not be projected onto the retained predecessor"
+        );
+        assert!(
+            adapter
+                .deferred_start_file_observation
+                .is_some_and(|observation| observation.playback_restart_observed_after_start)
+        );
+
+        adapter.apply_lifecycle_input(PlayerLifecycleInput::PlaylistSnapshot {
+            attachment_epoch,
+            entries: vec![AuthoritativePlaylistEntry::new(
+                42,
+                Some(NETWORK_PATH.to_owned()),
+                true,
+            )],
+            current_path: Some(NETWORK_PATH.to_owned()),
+        });
+        adapter.replay_deferred_start_file_if_bound();
+        assert_eq!(adapter.active_load_attempt_id, Some(successor_attempt));
+        assert_eq!(adapter.active_playlist_entry_id, Some(42));
+        assert!(
+            adapter.active_generation_has_restarted,
+            "the causal restart must replay only after the successor binds"
+        );
+        assert_eq!(
+            adapter.playback_restart_sequence,
+            restart_sequence_before_successor.wrapping_add(1).max(1)
+        );
+
+        adapter.handle_file_loaded_observation(Some(NETWORK_PATH.to_owned()));
+        adapter.current_path = Some(NETWORK_PATH.to_owned());
+        adapter.observed_state.path = Some(NETWORK_PATH.to_owned());
+        adapter.observed_state.duration_seconds = Some(45.0);
+        adapter.observed_state.position_seconds = Some(7.424);
+        adapter.path_metadata_generation = Some(generation);
+        adapter.duration_metadata_generation = Some(generation);
+        adapter.refresh_timeline_kind_from_metadata();
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": true,
+        }));
+        assert!(
+            adapter.network_cache_stall.is_some(),
+            "the correctly attributed successor restart must leave the cache watchdog armed"
+        );
+    }
+
+    #[test]
+    fn unknown_timeline_cache_stall_uses_coherent_vod_recovery_evidence() {
+        let mut adapter = loaded_network_vod(7.424, 45.0);
+        adapter.timeline_kind = PlayerTimelineKind::Unknown;
+        adapter.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": true,
+        }));
+        adapter
+            .network_cache_stall
+            .as_mut()
+            .expect("an unknown timeline without positive live evidence should arm")
+            .last_progress_at = Instant::now()
+            - adapter.network_cache_stall_recovery_delay()
+            - Duration::from_millis(1);
+
+        adapter.maintain_network_cache_stall_recovery();
+
+        assert_eq!(adapter.network_stream_recovery_attempt_count(), 1);
+        assert_eq!(adapter.network_cache_stall, None);
+
+        let mut positive_live = loaded_network_vod(7.424, 45.0);
+        let generation = positive_live
+            .active_media_generation
+            .expect("fixture generation");
+        positive_live.timeline_kind = PlayerTimelineKind::Unknown;
+        positive_live.ytdl_is_live = true;
+        positive_live.ytdl_is_live_metadata_generation = Some(generation);
+        positive_live.handle_ipc_event(&json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_PAUSED_FOR_CACHE,
+            "data": true,
+        }));
+        assert!(
+            positive_live.network_cache_stall.is_none(),
+            "generation-bound positive live metadata must remain excluded"
+        );
     }
 
     #[test]

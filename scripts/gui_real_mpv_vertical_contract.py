@@ -21,6 +21,19 @@ HTTP_FAULT_KIND = "sorotte-gui-real-mpv-faulting-http-recovery"
 HTTP_FAULT_ROUTE = "/generated-fault.au"
 HTTP_FAULT_DURATION_SECONDS = 45
 HTTP_FAULT_DISCONNECT_AFTER_BYTES = 720_000
+HTTP_STALL_KIND = "sorotte-gui-real-mpv-stalled-http"
+HTTP_STALL_ROUTE = "/generated-stall.au"
+HTTP_STALL_DURATION_SECONDS = 45
+HTTP_STALL_PREFIX_BYTES = 720_000
+HTTP_STALL_PREFIX_BYTES_PER_SECOND = 350_000
+HTTP_STALL_MINIMUM_DURATION_MS = 25_000
+HTTP_STALL_MAXIMUM_RECOVERY_WAIT_MS = 50_000
+HTTP_STALL_AU_HEADER_BYTES = 24
+HTTP_STALL_PCM_BYTES_PER_SECOND = 48_000 * 2
+HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS = (
+    HTTP_STALL_PREFIX_BYTES - HTTP_STALL_AU_HEADER_BYTES
+) / HTTP_STALL_PCM_BYTES_PER_SECOND
+HTTP_STALL_POSITION_TOLERANCE_SECONDS = 0.25
 SESSION_CAPABILITIES = ("chat", "readiness", "sharedPlaylists")
 EXPECTED_CLIENT_HELLO = {
     "Hello": {
@@ -112,6 +125,26 @@ HTTP_FAULT_REQUIRED_ASSERTIONS = (
     "native-success-screenshot",
     "gui-exit-reaped-owned-mpv-and-released-fault-server",
 )
+HTTP_STALL_REQUIRED_ASSERTIONS = (
+    "supported-mpv-version-and-digest",
+    "isolated-config-and-generated-local-media",
+    "strict-loopback-stalled-http-ready",
+    "actual-native-gui-window",
+    "loopback-session-bound-to-local-gui",
+    "native-file-menu-open-media",
+    "gui-owned-exact-mpv-loaded-generated-media",
+    "gui-projected-real-mpv-transport-ready",
+    "gui-play-command-observed-by-real-mpv",
+    "gui-projected-playing-after-real-mpv-observation",
+    "sustained-valid-http-cache-stall-observed",
+    "same-owned-mpv-reloaded-after-bounded-cache-stall",
+    "recovered-playback-advanced-past-stall",
+    "gui-pause-command-observed-by-real-mpv",
+    "gui-projected-paused-after-real-mpv-observation",
+    "stall-evidence-retained-before-cleanup",
+    "native-success-screenshot",
+    "gui-exit-reaped-owned-mpv-and-released-stall-server",
+)
 REQUIRED_ARTIFACTS = (
     "config",
     "generated_media",
@@ -133,6 +166,10 @@ RECOVERY_REQUIRED_ARTIFACTS = (
 HTTP_FAULT_REQUIRED_ARTIFACTS = (
     *REQUIRED_ARTIFACTS,
     "faulting_http_recovery",
+)
+HTTP_STALL_REQUIRED_ARTIFACTS = (
+    *REQUIRED_ARTIFACTS,
+    "stalled_http",
 )
 RECOVERY_KEYS = {
     "schema_version",
@@ -226,6 +263,77 @@ HTTP_REQUEST_KEYS = {
     "transmitted_body_bytes",
     "framing_fault_injected",
     "disconnected_early",
+    "write_error",
+}
+HTTP_STALL_KEYS = {
+    "schema_version",
+    "kind",
+    "result",
+    "schedule",
+    "expected_outcome",
+    "listener_endpoint",
+    "listener_ipv4_loopback",
+    "media_url",
+    "route",
+    "generated_media_bytes",
+    "generated_media_sha256",
+    "duration_seconds",
+    "prefix_body_bytes",
+    "prefix_bytes_per_second",
+    "expected_prefix_playable_seconds",
+    "cache_stall_position_tolerance_seconds",
+    "minimum_stall_duration_ms",
+    "maximum_recovery_wait_ms",
+    "request_count",
+    "stalled_response_count",
+    "complete_response_count",
+    "requests",
+    "initial_file_loaded_index",
+    "pre_stall_progress_index",
+    "cache_stall_index",
+    "recovered_file_loaded_index",
+    "recovered_progress_index",
+    "recovered_paused_index",
+    "initial_pid",
+    "recovered_pid",
+    "parent_pid",
+    "process_image_path",
+    "process_sha256",
+    "initial_ipc_endpoint",
+    "recovered_ipc_endpoint",
+    "stable_process_identity",
+    "stable_ipc_endpoint",
+    "stable_media_url",
+    "stable_duration",
+    "pre_stall_position_seconds",
+    "cache_stall_position_seconds",
+    "recovered_position_seconds",
+    "eof_observations_before_recovery",
+    "end_file_observations_before_recovery",
+    "manual_retry_invoked",
+    "foreign_pid_observations_after_stall",
+    "evidence_retained_before_cleanup",
+    "server_thread_released",
+    "socket_released",
+    "owned_mpv_terminated_after_gui_exit",
+    "error",
+}
+HTTP_STALL_REQUEST_KEYS = {
+    "ordinal",
+    "method",
+    "path",
+    "peer_endpoint",
+    "peer_ipv4_loopback",
+    "range_header",
+    "status_code",
+    "content_length_header",
+    "transfer_encoding",
+    "transmitted_body_bytes",
+    "stall_injected",
+    "stalled_for_ms",
+    "server_response_retained_at_recovery_get",
+    "connection_released",
+    "response_completed",
     "write_error",
 }
 
@@ -659,6 +767,401 @@ def validate_http_fault_evidence(
     )
 
 
+def validate_http_stall_evidence(
+    evidence: Any,
+    *,
+    artifact_evidence: dict[str, Any],
+    observations: list[dict[str, Any]],
+    expected_media: Path,
+    expected_media_url: str,
+    expected_mpv: Path,
+    expected_mpv_sha256: str,
+    mpv: dict[str, Any],
+    ipc_endpoint: str,
+) -> None:
+    require(isinstance(evidence, dict), "HTTP stall contract missing")
+    require(set(evidence) == HTTP_STALL_KEYS, "HTTP stall field inventory drifted")
+    require(artifact_evidence == evidence, "report/artifact HTTP stall evidence diverged")
+    require(evidence.get("schema_version") == SCHEMA_VERSION, "HTTP stall schema mismatch")
+    require(evidence.get("kind") == HTTP_STALL_KIND, "HTTP stall kind mismatch")
+    require(evidence.get("result") == "passed", "HTTP stall campaign did not pass")
+    require(
+        evidence.get("schedule")
+        == "first-response-valid-prefix-then-open-byte-silence",
+        "HTTP stall schedule drifted",
+    )
+    require(
+        evidence.get("expected_outcome")
+        == "one-bounded-same-generation-reload-after-sustained-cache-pause",
+        "HTTP stall expected outcome drifted",
+    )
+    listener_endpoint = evidence.get("listener_endpoint")
+    validate_ipv4_loopback_endpoint(listener_endpoint, "recorded stalled HTTP listener")
+    require(
+        evidence.get("listener_ipv4_loopback") is True,
+        "HTTP stall listener loopback attestation missing",
+    )
+    require(
+        evidence.get("media_url") == expected_media_url
+        == f"http://{listener_endpoint}{HTTP_STALL_ROUTE}",
+        "native Open Media did not deliver the exact stalled loopback URL",
+    )
+    require(evidence.get("route") == HTTP_STALL_ROUTE, "HTTP stall route drifted")
+    require(
+        is_json_integer(evidence.get("generated_media_bytes"))
+        and evidence["generated_media_bytes"] == expected_media.stat().st_size,
+        "HTTP stall generated-media size mismatch",
+    )
+    require(
+        evidence.get("generated_media_sha256") == sha256_file(expected_media),
+        "HTTP stall generated-media digest mismatch",
+    )
+    require(
+        is_json_integer(evidence.get("duration_seconds"))
+        and evidence["duration_seconds"] == HTTP_STALL_DURATION_SECONDS,
+        "HTTP stall media duration contract drifted",
+    )
+    require(
+        is_json_integer(evidence.get("prefix_body_bytes"))
+        and evidence["prefix_body_bytes"] == HTTP_STALL_PREFIX_BYTES
+        and evidence["prefix_body_bytes"] < evidence["generated_media_bytes"],
+        "HTTP stall playable-prefix boundary drifted",
+    )
+    require(
+        is_json_integer(evidence.get("prefix_bytes_per_second"))
+        and evidence["prefix_bytes_per_second"] == HTTP_STALL_PREFIX_BYTES_PER_SECOND,
+        "HTTP stall prefix pacing drifted",
+    )
+    require(
+        is_json_number(evidence.get("expected_prefix_playable_seconds"))
+        and math.isclose(
+            float(evidence["expected_prefix_playable_seconds"]),
+            HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS,
+            abs_tol=1e-9,
+        )
+        and is_json_number(evidence.get("cache_stall_position_tolerance_seconds"))
+        and math.isclose(
+            float(evidence["cache_stall_position_tolerance_seconds"]),
+            HTTP_STALL_POSITION_TOLERANCE_SECONDS,
+            abs_tol=1e-9,
+        ),
+        "HTTP stall deterministic playable-prefix position oracle drifted",
+    )
+    require(
+        is_json_integer(evidence.get("minimum_stall_duration_ms"))
+        and evidence["minimum_stall_duration_ms"] == HTTP_STALL_MINIMUM_DURATION_MS
+        and is_json_integer(evidence.get("maximum_recovery_wait_ms"))
+        and evidence["maximum_recovery_wait_ms"]
+        == HTTP_STALL_MAXIMUM_RECOVERY_WAIT_MS,
+        "HTTP stall independent finite bounds drifted",
+    )
+    require(
+        evidence.get("initial_pid") == mpv["pid"]
+        and evidence.get("recovered_pid") == mpv["pid"]
+        and evidence.get("parent_pid") == mpv["parent_pid"],
+        "HTTP stall changed the attested GUI-owned mpv process",
+    )
+    require(
+        normalized_resolved_path(evidence.get("process_image_path", "")) == expected_mpv
+        and evidence.get("process_sha256") == expected_mpv_sha256,
+        "HTTP stall process image identity drifted",
+    )
+    require(
+        evidence.get("initial_ipc_endpoint") == ipc_endpoint
+        and evidence.get("recovered_ipc_endpoint") == ipc_endpoint,
+        "HTTP stall changed the managed mpv IPC endpoint",
+    )
+    require(
+        all(
+            evidence.get(key) is True
+            for key in (
+                "stable_process_identity",
+                "stable_ipc_endpoint",
+                "stable_media_url",
+                "stable_duration",
+                "evidence_retained_before_cleanup",
+                "server_thread_released",
+                "socket_released",
+                "owned_mpv_terminated_after_gui_exit",
+            )
+        ),
+        "HTTP stall identity, retention, release, or cleanup attestation was incomplete",
+    )
+    require(
+        evidence.get("manual_retry_invoked") is False,
+        "HTTP stall unexpectedly used a manual retry",
+    )
+    require(
+        is_json_integer(evidence.get("foreign_pid_observations_after_stall"))
+        and evidence["foreign_pid_observations_after_stall"] == 0,
+        "stale or foreign mpv generation was observed after the HTTP stall",
+    )
+    require(
+        is_json_integer(evidence.get("eof_observations_before_recovery"))
+        and evidence["eof_observations_before_recovery"] == 0,
+        "HTTP stall unexpectedly crossed an EOF boundary before recovery",
+    )
+    require(evidence.get("error") is None, "HTTP stall evidence retained an error")
+
+    indices = [
+        evidence.get("initial_file_loaded_index"),
+        evidence.get("pre_stall_progress_index"),
+        evidence.get("cache_stall_index"),
+        evidence.get("recovered_file_loaded_index"),
+        evidence.get("recovered_progress_index"),
+        evidence.get("recovered_paused_index"),
+    ]
+    require(
+        all(is_json_integer(index) and index >= 0 for index in indices),
+        "HTTP stall observation indices were invalid",
+    )
+    (
+        initial_index,
+        pre_stall_progress_index,
+        cache_stall_index,
+        recovered_index,
+        progress_index,
+        paused_index,
+    ) = indices
+    require(
+        initial_index
+        < pre_stall_progress_index
+        < cache_stall_index
+        < recovered_index
+        < progress_index
+        < paused_index
+        < len(observations),
+        "HTTP stall observation ordering or bounds drifted",
+    )
+    require(
+        all(
+            item.get("pid") == mpv["pid"]
+            and item.get("ipc_endpoint") == ipc_endpoint
+            for item in observations[cache_stall_index : paused_index + 1]
+        ),
+        "unidentified, stale, or foreign mpv generation appeared after the HTTP stall boundary",
+    )
+    initial = observations[initial_index]
+    require(
+        initial.get("event") == "file-loaded"
+        and initial.get("pid") == mpv["pid"]
+        and initial.get("ipc_endpoint") == ipc_endpoint
+        and initial.get("path") == expected_media_url
+        and initial.get("filename") == HTTP_STALL_ROUTE.rsplit("/", 1)[-1]
+        and is_json_number(initial.get("duration"))
+        and abs(float(initial["duration"]) - HTTP_STALL_DURATION_SECONDS) <= 0.05,
+        "initial native stalled HTTP file-loaded identity drifted or used a cache path",
+    )
+    pre_stall_position = evidence.get("pre_stall_position_seconds")
+    cache_stall_position = evidence.get("cache_stall_position_seconds")
+    recovered_position = evidence.get("recovered_position_seconds")
+    require(
+        is_json_number(pre_stall_position)
+        and float(pre_stall_position) >= 0.5
+        and is_json_number(cache_stall_position)
+        and float(cache_stall_position) >= float(pre_stall_position)
+        and abs(
+            float(cache_stall_position) - HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+        )
+        <= HTTP_STALL_POSITION_TOLERANCE_SECONDS
+        and is_json_number(recovered_position)
+        and float(recovered_position) >= float(cache_stall_position) + 0.5,
+        "HTTP stall did not retain bounded positive playback progress",
+    )
+    pre_stall_progress = observations[pre_stall_progress_index]
+    require(
+        pre_stall_progress.get("event") == "time-pos"
+        and pre_stall_progress.get("pid") == mpv["pid"]
+        and pre_stall_progress.get("ipc_endpoint") == ipc_endpoint
+        and pre_stall_progress.get("path") == expected_media_url
+        and is_json_number(pre_stall_progress.get("position"))
+        and float(pre_stall_progress["position"]) == float(pre_stall_position),
+        "HTTP pre-stall progress observation mismatch",
+    )
+    cache_stall = observations[cache_stall_index]
+    require(
+        cache_stall.get("event") == "paused-for-cache"
+        and cache_stall.get("paused_for_cache") is True
+        and cache_stall.get("pid") == mpv["pid"]
+        and cache_stall.get("ipc_endpoint") == ipc_endpoint
+        and cache_stall.get("path") == expected_media_url
+        and is_json_number(cache_stall.get("duration"))
+        and abs(float(cache_stall["duration"]) - HTTP_STALL_DURATION_SECONDS) <= 0.05
+        and is_json_number(cache_stall.get("position"))
+        and float(cache_stall["position"]) == float(cache_stall_position)
+        and cache_stall.get("eof_reached") is not True,
+        "valid open HTTP response did not produce the exact cache-stall observation",
+    )
+    require(
+        not any(
+            item.get("event") == "eof-reached" and item.get("eof_reached") is True
+            for item in observations[initial_index:recovered_index]
+        ),
+        "HTTP stall trace observed EOF before the recovery load",
+    )
+    end_file_observations = [
+        item
+        for item in observations[cache_stall_index + 1 : recovered_index]
+        if item.get("event") == "end-file"
+    ]
+    recovery_lifecycle_observations = [
+        (index, item)
+        for index, item in enumerate(observations)
+        if cache_stall_index < index <= recovered_index
+        and item.get("event") in {"end-file", "file-loaded"}
+    ]
+    require(
+        len(end_file_observations) == 1
+        and len(recovery_lifecycle_observations) == 2
+        and recovery_lifecycle_observations[0][1].get("event") == "end-file"
+        and recovery_lifecycle_observations[0][1].get("pid") == mpv["pid"]
+        and recovery_lifecycle_observations[0][1].get("ipc_endpoint")
+        == ipc_endpoint
+        and recovery_lifecycle_observations[0][1].get("reason") == "stop"
+        and recovery_lifecycle_observations[1][0] == recovered_index
+        and recovery_lifecycle_observations[1][1].get("event") == "file-loaded"
+        and recovery_lifecycle_observations[1][1].get("pid") == mpv["pid"]
+        and recovery_lifecycle_observations[1][1].get("ipc_endpoint")
+        == ipc_endpoint,
+        "HTTP stall trace contained an unidentified or intervening lifecycle row instead of exactly one same-process end-file stop followed by recovery",
+    )
+    require(
+        is_json_integer(evidence.get("end_file_observations_before_recovery"))
+        and evidence["end_file_observations_before_recovery"]
+        == len(end_file_observations),
+        "HTTP stall end-file boundary accounting drifted",
+    )
+    recovered = observations[recovered_index]
+    require(
+        recovered.get("event") == "file-loaded"
+        and recovered.get("pid") == mpv["pid"]
+        and recovered.get("ipc_endpoint") == ipc_endpoint
+        and recovered.get("path") == expected_media_url
+        and recovered.get("filename") == HTTP_STALL_ROUTE.rsplit("/", 1)[-1]
+        and is_json_number(recovered.get("duration"))
+        and abs(float(recovered["duration"]) - HTTP_STALL_DURATION_SECONDS) <= 0.05,
+        "recovered stalled HTTP media identity drifted or used a cache path",
+    )
+    recovered_progress = observations[progress_index]
+    require(
+        recovered_progress.get("event") == "time-pos"
+        and recovered_progress.get("pid") == mpv["pid"]
+        and recovered_progress.get("ipc_endpoint") == ipc_endpoint
+        and recovered_progress.get("path") == expected_media_url
+        and is_json_number(recovered_progress.get("position"))
+        and float(recovered_progress["position"]) == float(recovered_position),
+        "HTTP stalled recovery progress observation mismatch",
+    )
+    recovered_pause = observations[paused_index]
+    require(
+        recovered_pause.get("event") == "pause"
+        and recovered_pause.get("pause") is True
+        and recovered_pause.get("pid") == mpv["pid"]
+        and recovered_pause.get("ipc_endpoint") == ipc_endpoint
+        and recovered_pause.get("path") == expected_media_url,
+        "HTTP stalled recovery pause observation mismatch",
+    )
+
+    requests = evidence.get("requests")
+    require(
+        isinstance(requests, list) and requests,
+        "stalled HTTP request accounting was empty",
+    )
+    require(
+        is_json_integer(evidence.get("request_count"))
+        and evidence["request_count"] == len(requests),
+        "stalled HTTP request count diverged from retained rows",
+    )
+    for index, request in enumerate(requests, start=1):
+        require(isinstance(request, dict), "stalled HTTP request row must be an object")
+        require(
+            set(request) == HTTP_STALL_REQUEST_KEYS,
+            "stalled HTTP request field inventory drifted",
+        )
+        require(
+            is_json_integer(request.get("ordinal")) and request["ordinal"] == index,
+            "stalled HTTP request ordinal drifted",
+        )
+        require(request.get("path") == HTTP_STALL_ROUTE, "stalled HTTP request path drifted")
+        require(
+            request.get("method") in {"HEAD", "GET"},
+            "stalled HTTP method was unaccounted",
+        )
+        validate_ipv4_loopback_endpoint(
+            request.get("peer_endpoint"), "stalled HTTP request peer endpoint"
+        )
+        require(
+            request.get("peer_ipv4_loopback") is True,
+            "stalled HTTP request ownership accounting drifted",
+        )
+        require(
+            request.get("range_header") is None
+            or isinstance(request.get("range_header"), str),
+            "stalled HTTP Range accounting was malformed",
+        )
+        require(
+            is_json_integer(request.get("status_code"))
+            and request["status_code"] == 200
+            and is_json_integer(request.get("content_length_header"))
+            and request["content_length_header"] == evidence["generated_media_bytes"]
+            and request.get("transfer_encoding") is None
+            and is_json_integer(request.get("transmitted_body_bytes"))
+            and request.get("write_error") is None,
+            "stalled HTTP response framing or write accounting drifted",
+        )
+        if request["method"] == "HEAD":
+            require(
+                request.get("transmitted_body_bytes") == 0
+                and request.get("stall_injected") is False
+                and request.get("stalled_for_ms") is None
+                and request.get("server_response_retained_at_recovery_get") is False
+                and request.get("connection_released") is True
+                and request.get("response_completed") is True,
+                "stalled HTTP HEAD probe unexpectedly carried a body or stall",
+            )
+        else:
+            require(
+                request.get("range_header") == "bytes=0-",
+                "stalled HTTP media GET did not use the exact byte-zero contract",
+            )
+
+    media_gets = [request for request in requests if request["method"] == "GET"]
+    require(
+        len(media_gets) == 2,
+        "HTTP stall did not use exactly one open stalled GET and one complete GET",
+    )
+    first_get, recovered_get = media_gets
+    require(
+        first_get.get("transmitted_body_bytes") == HTTP_STALL_PREFIX_BYTES
+        and first_get.get("stall_injected") is True
+        and is_json_integer(first_get.get("stalled_for_ms"))
+        and HTTP_STALL_MINIMUM_DURATION_MS
+        <= first_get["stalled_for_ms"]
+        <= HTTP_STALL_MAXIMUM_RECOVERY_WAIT_MS
+        and first_get.get("server_response_retained_at_recovery_get") is True
+        and first_get.get("connection_released") is True
+        and first_get.get("response_completed") is False,
+        "first HTTP GET was not the exact bounded open byte-silent response",
+    )
+    require(
+        recovered_get.get("transmitted_body_bytes")
+        == evidence["generated_media_bytes"]
+        and recovered_get.get("stall_injected") is False
+        and recovered_get.get("stalled_for_ms") is None
+        and recovered_get.get("server_response_retained_at_recovery_get") is False
+        and recovered_get.get("connection_released") is True
+        and recovered_get.get("response_completed") is True,
+        "second HTTP GET was not a complete stalled-read recovery response",
+    )
+    require(
+        is_json_integer(evidence.get("stalled_response_count"))
+        and evidence["stalled_response_count"] == 1
+        and is_json_integer(evidence.get("complete_response_count"))
+        and evidence["complete_response_count"] == 1,
+        "stalled HTTP response aggregate accounting drifted",
+    )
+
+
 def validate_report(
     report: dict[str, Any],
     *,
@@ -670,11 +1173,13 @@ def validate_report(
     producer_exit_code: int,
     expect_recovery: bool = False,
     expect_http_fault: bool = False,
+    expect_http_stall: bool = False,
 ) -> dict[str, Any]:
     require(
-        not (expect_recovery and expect_http_fault),
-        "process recovery and faulting HTTP contracts are mutually exclusive",
+        sum((expect_recovery, expect_http_fault, expect_http_stall)) <= 1,
+        "process recovery, faulting HTTP, and stalled HTTP contracts are mutually exclusive",
     )
+    expect_http = expect_http_fault or expect_http_stall
     artifact_root = normalized_resolved_path(artifact_root)
     expected_gui = normalized_resolved_path(expected_gui)
     expected_mpv = normalized_resolved_path(expected_mpv)
@@ -746,6 +1251,13 @@ def validate_report(
             "http_fault" not in report,
             "non-HTTP report unexpectedly included faulting HTTP state",
         )
+    if expect_http_stall:
+        require(isinstance(report.get("http_stall"), dict), "HTTP stall contract missing")
+    else:
+        require(
+            "http_stall" not in report,
+            "non-stall report unexpectedly included stalled HTTP state",
+        )
 
     isolation = report.get("isolation")
     require(isinstance(isolation, dict), "isolation contract missing")
@@ -757,7 +1269,7 @@ def validate_report(
         isolation.get("network_mode")
         == (
             "os-assigned-ipv4-loopback-session-and-http"
-            if expect_http_fault
+            if expect_http
             else "os-assigned-ipv4-loopback-session"
         ),
         "network mode drift",
@@ -775,8 +1287,12 @@ def validate_report(
     require(
         isolation.get("media_source")
         == (
-            "generated-pcm-au-over-faulting-loopback-http"
-            if expect_http_fault
+            (
+                "generated-pcm-au-over-faulting-loopback-http"
+                if expect_http_fault
+                else "generated-pcm-au-over-stalled-loopback-http"
+            )
+            if expect_http
             else "generated-local-pcm-wav"
         ),
         "generated media contract drift",
@@ -797,13 +1313,16 @@ def validate_report(
         require(candidate.is_relative_to(artifact_root), f"{key} escaped artifact root")
     expected_media = normalized_resolved_path(isolation["media_path"])
     expected_media_url: str | None = None
-    if expect_http_fault:
+    if expect_http:
         expected_media_url = str(isolation.get("media_url", ""))
         http_endpoint = isolation.get("http_endpoint")
-        validate_ipv4_loopback_endpoint(http_endpoint, "faulting HTTP listener endpoint")
+        validate_ipv4_loopback_endpoint(http_endpoint, "HTTP listener endpoint")
+        expected_http_route = (
+            HTTP_FAULT_ROUTE if expect_http_fault else HTTP_STALL_ROUTE
+        )
         require(
-            expected_media_url == f"http://{http_endpoint}{HTTP_FAULT_ROUTE}",
-            "faulting HTTP media URL was not the exact strict loopback route",
+            expected_media_url == f"http://{http_endpoint}{expected_http_route}",
+            "HTTP media URL was not the exact strict loopback route",
         )
         http_evidence_path = normalized_resolved_path(
             isolation.get("http_evidence_path", "")
@@ -831,7 +1350,11 @@ def validate_report(
         else (
             HTTP_FAULT_REQUIRED_ASSERTIONS
             if expect_http_fault
-            else REQUIRED_ASSERTIONS
+            else (
+                HTTP_STALL_REQUIRED_ASSERTIONS
+                if expect_http_stall
+                else REQUIRED_ASSERTIONS
+            )
         )
     )
     assertions = report.get("assertions")
@@ -847,7 +1370,11 @@ def validate_report(
         else (
             HTTP_FAULT_REQUIRED_ARTIFACTS
             if expect_http_fault
-            else REQUIRED_ARTIFACTS
+            else (
+                HTTP_STALL_REQUIRED_ARTIFACTS
+                if expect_http_stall
+                else REQUIRED_ARTIFACTS
+            )
         )
     )
     artifacts = report.get("artifacts")
@@ -898,6 +1425,12 @@ def validate_report(
             resolved_artifacts["faulting_http_recovery"].resolve()
             == normalized_resolved_path(isolation["http_evidence_path"]),
             "faulting HTTP evidence artifact mismatch",
+        )
+    if expect_http_stall:
+        require(
+            resolved_artifacts["stalled_http"].resolve()
+            == normalized_resolved_path(isolation["http_evidence_path"]),
+            "stalled HTTP evidence artifact mismatch",
         )
 
     session_exchange = load_json(
@@ -955,11 +1488,11 @@ def validate_report(
     except json.JSONDecodeError as error:
         raise ValueError(f"session Hello exchange was invalid JSON: {error}") from error
     expected_client_hello = (
-        EXPECTED_HTTP_FAULT_CLIENT_HELLO if expect_http_fault else EXPECTED_CLIENT_HELLO
+        EXPECTED_HTTP_FAULT_CLIENT_HELLO if expect_http else EXPECTED_CLIENT_HELLO
     )
     require(client_hello == expected_client_hello, "client Hello exchange drifted")
     require(server_hello == EXPECTED_SERVER_HELLO, "server Hello exchange drifted")
-    if expect_http_fault:
+    if expect_http:
         expected_media_url = isolation.get("media_url")
         try:
             playlist_change_request = json.loads(
@@ -1276,6 +1809,23 @@ def validate_report(
             mpv=mpv,
             ipc_endpoint=str(isolation["ipc_endpoint"]),
         )
+    if expect_http_stall:
+        http_stall = report.get("http_stall")
+        artifact_http_stall = load_json(
+            resolved_artifacts["stalled_http"],
+            "stalled HTTP",
+        )
+        validate_http_stall_evidence(
+            http_stall,
+            artifact_evidence=artifact_http_stall,
+            observations=observations,
+            expected_media=expected_media,
+            expected_media_url=str(expected_media_url),
+            expected_mpv=expected_mpv,
+            expected_mpv_sha256=expected_mpv_sha256,
+            mpv=mpv,
+            ipc_endpoint=str(isolation["ipc_endpoint"]),
+        )
     config_text = resolved_artifacts["config"].read_text(encoding="utf-8")
     expected_mpv_spellings = {str(expected_mpv)}
     if os.name == "nt":
@@ -1300,6 +1850,8 @@ def validate_report(
         summary["recovery_exercised"] = True
     if expect_http_fault:
         summary["http_fault_exercised"] = True
+    if expect_http_stall:
+        summary["http_stall_exercised"] = True
     return summary
 
 
@@ -1321,6 +1873,7 @@ def main() -> int:
     capability = parser.add_mutually_exclusive_group()
     capability.add_argument("--expect-recovery", action="store_true")
     capability.add_argument("--expect-http-fault", action="store_true")
+    capability.add_argument("--expect-http-stall", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -1335,6 +1888,7 @@ def main() -> int:
             producer_exit_code=args.producer_exit_code,
             expect_recovery=args.expect_recovery,
             expect_http_fault=args.expect_http_fault,
+            expect_http_stall=args.expect_http_stall,
         )
     except (OSError, TypeError, ValueError) as error:
         summary = {

@@ -579,6 +579,274 @@ def extend_with_faulting_http_recovery(
         report["artifacts"][label] = identity(path, relative_to=root)
 
 
+def extend_with_stalled_http(
+    report: dict[str, Any], arguments: dict[str, Any]
+) -> None:
+    root = pathlib.Path(arguments["artifact_root"])
+    observations_path = root / "mpv-observation.jsonl"
+    state_path = root / "real-mpv-state.json"
+    evidence_path = root / "stalled-http.json"
+    media_path = root / "generated-silence.au"
+    media_path.write_bytes(pcm_au_bytes(contract.HTTP_STALL_DURATION_SECONDS))
+    endpoint = "127.0.0.1:46801"
+    media_url = f"http://{endpoint}{contract.HTTP_STALL_ROUTE}"
+    pid = report["mpv"]["pid"]
+    ipc_endpoint = report["isolation"]["ipc_endpoint"]
+    session_exchange_path = root / "session-exchange.json"
+    session_exchange = json.loads(session_exchange_path.read_text(encoding="utf-8"))
+    session_exchange.update(
+        {
+            "client_hello": json.dumps(contract.EXPECTED_HTTP_FAULT_CLIENT_HELLO),
+            "playlist_change_request": json.dumps(
+                {"Set": {"playlistChange": {"files": [media_url]}}},
+                separators=(",", ":"),
+            ),
+            "playlist_change_echo": json.dumps(
+                {
+                    "Set": {
+                        "playlistChange": {
+                            "files": [media_url],
+                            "user": "real-mpv-user",
+                        }
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            "playlist_index_request": json.dumps(
+                {"Set": {"playlistIndex": {"index": 0}}},
+                separators=(",", ":"),
+            ),
+            "playlist_index_echo": json.dumps(
+                {
+                    "Set": {
+                        "playlistIndex": {
+                            "index": 0,
+                            "user": "real-mpv-user",
+                        }
+                    }
+                },
+                separators=(",", ":"),
+            ),
+        }
+    )
+    write_json(session_exchange_path, session_exchange)
+
+    observations = [
+        {
+            "event": "file-loaded",
+            "pid": pid,
+            "path": media_url,
+            "filename": "generated-stall.au",
+            "duration": 45.0,
+            "position": 0.0,
+            "pause": True,
+            "ipc_endpoint": ipc_endpoint,
+            "reason": None,
+        },
+        {
+            "event": "pause",
+            "pid": pid,
+            "path": media_url,
+            "pause": False,
+            "ipc_endpoint": ipc_endpoint,
+        },
+        {
+            "event": "time-pos",
+            "pid": pid,
+            "path": media_url,
+            "position": 1.0,
+            "pause": False,
+            "ipc_endpoint": ipc_endpoint,
+        },
+        {
+            "event": "paused-for-cache",
+            "pid": pid,
+            "path": media_url,
+            "duration": 45.0,
+            "position": 7.5,
+            "pause": False,
+            "paused_for_cache": True,
+            "ipc_endpoint": ipc_endpoint,
+        },
+        {
+            "event": "end-file",
+            "pid": pid,
+            "path": media_url,
+            "duration": 45.0,
+            "position": 7.5,
+            "pause": False,
+            "ipc_endpoint": ipc_endpoint,
+            "reason": "stop",
+        },
+        {
+            "event": "file-loaded",
+            "pid": pid,
+            "path": media_url,
+            "filename": "generated-stall.au",
+            "duration": 45.0,
+            "position": 7.5,
+            "pause": False,
+            "ipc_endpoint": ipc_endpoint,
+            "reason": None,
+        },
+        {
+            "event": "time-pos",
+            "pid": pid,
+            "path": media_url,
+            "position": 8.2,
+            "pause": False,
+            "ipc_endpoint": ipc_endpoint,
+        },
+        {
+            "event": "pause",
+            "pid": pid,
+            "path": media_url,
+            "position": 8.2,
+            "pause": True,
+            "ipc_endpoint": ipc_endpoint,
+        },
+    ]
+    observations_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in observations),
+        encoding="utf-8",
+    )
+
+    request_common = {
+        "path": contract.HTTP_STALL_ROUTE,
+        "peer_ipv4_loopback": True,
+        "status_code": 200,
+        "content_length_header": media_path.stat().st_size,
+        "transfer_encoding": None,
+        "write_error": None,
+    }
+    requests = [
+        {
+            **request_common,
+            "ordinal": 1,
+            "method": "HEAD",
+            "peer_endpoint": "127.0.0.1:52101",
+            "range_header": None,
+            "transmitted_body_bytes": 0,
+            "stall_injected": False,
+            "stalled_for_ms": None,
+            "server_response_retained_at_recovery_get": False,
+            "connection_released": True,
+            "response_completed": True,
+        },
+        {
+            **request_common,
+            "ordinal": 2,
+            "method": "GET",
+            "peer_endpoint": "127.0.0.1:52102",
+            "range_header": "bytes=0-",
+            "transmitted_body_bytes": contract.HTTP_STALL_PREFIX_BYTES,
+            "stall_injected": True,
+            "stalled_for_ms": 30_000,
+            "server_response_retained_at_recovery_get": True,
+            "connection_released": True,
+            "response_completed": False,
+        },
+        {
+            **request_common,
+            "ordinal": 3,
+            "method": "GET",
+            "peer_endpoint": "127.0.0.1:52103",
+            "range_header": "bytes=0-",
+            "transmitted_body_bytes": media_path.stat().st_size,
+            "stall_injected": False,
+            "stalled_for_ms": None,
+            "server_response_retained_at_recovery_get": False,
+            "connection_released": True,
+            "response_completed": True,
+        },
+    ]
+    evidence = {
+        "schema_version": 1,
+        "kind": contract.HTTP_STALL_KIND,
+        "result": "passed",
+        "schedule": "first-response-valid-prefix-then-open-byte-silence",
+        "expected_outcome": (
+            "one-bounded-same-generation-reload-after-sustained-cache-pause"
+        ),
+        "listener_endpoint": endpoint,
+        "listener_ipv4_loopback": True,
+        "media_url": media_url,
+        "route": contract.HTTP_STALL_ROUTE,
+        "generated_media_bytes": media_path.stat().st_size,
+        "generated_media_sha256": sha256(media_path),
+        "duration_seconds": contract.HTTP_STALL_DURATION_SECONDS,
+        "prefix_body_bytes": contract.HTTP_STALL_PREFIX_BYTES,
+        "prefix_bytes_per_second": contract.HTTP_STALL_PREFIX_BYTES_PER_SECOND,
+        "expected_prefix_playable_seconds": (
+            contract.HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+        ),
+        "cache_stall_position_tolerance_seconds": (
+            contract.HTTP_STALL_POSITION_TOLERANCE_SECONDS
+        ),
+        "minimum_stall_duration_ms": contract.HTTP_STALL_MINIMUM_DURATION_MS,
+        "maximum_recovery_wait_ms": contract.HTTP_STALL_MAXIMUM_RECOVERY_WAIT_MS,
+        "request_count": len(requests),
+        "stalled_response_count": 1,
+        "complete_response_count": 1,
+        "requests": requests,
+        "initial_file_loaded_index": 0,
+        "pre_stall_progress_index": 2,
+        "cache_stall_index": 3,
+        "recovered_file_loaded_index": 5,
+        "recovered_progress_index": 6,
+        "recovered_paused_index": 7,
+        "initial_pid": pid,
+        "recovered_pid": pid,
+        "parent_pid": report["mpv"]["parent_pid"],
+        "process_image_path": report["mpv"]["process_image_path"],
+        "process_sha256": report["mpv"]["sha256"],
+        "initial_ipc_endpoint": ipc_endpoint,
+        "recovered_ipc_endpoint": ipc_endpoint,
+        "stable_process_identity": True,
+        "stable_ipc_endpoint": True,
+        "stable_media_url": True,
+        "stable_duration": True,
+        "pre_stall_position_seconds": 1.0,
+        "cache_stall_position_seconds": 7.5,
+        "recovered_position_seconds": 8.2,
+        "eof_observations_before_recovery": 0,
+        "end_file_observations_before_recovery": 1,
+        "manual_retry_invoked": False,
+        "foreign_pid_observations_after_stall": 0,
+        "evidence_retained_before_cleanup": True,
+        "server_thread_released": True,
+        "socket_released": True,
+        "owned_mpv_terminated_after_gui_exit": True,
+        "error": None,
+    }
+    write_json(evidence_path, evidence)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["assertions"] = list(contract.HTTP_STALL_REQUIRED_ASSERTIONS)
+    write_json(state_path, state)
+
+    report["assertions"] = list(contract.HTTP_STALL_REQUIRED_ASSERTIONS)
+    report["http_stall"] = evidence
+    report["isolation"].update(
+        {
+            "network_mode": "os-assigned-ipv4-loopback-session-and-http",
+            "media_source": "generated-pcm-au-over-stalled-loopback-http",
+            "media_path": str(media_path),
+            "media_url": media_url,
+            "http_endpoint": endpoint,
+            "http_evidence_path": str(evidence_path),
+        }
+    )
+    for label, path in {
+        "generated_media": media_path,
+        "mpv_observation": observations_path,
+        "session_exchange": session_exchange_path,
+        "state": state_path,
+        "stalled_http": evidence_path,
+    }.items():
+        report["artifacts"][label] = identity(path, relative_to=root)
+
+
 class RealMpvVerticalContractTests(unittest.TestCase):
     def test_accepts_complete_owned_isolated_vertical_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -627,6 +895,271 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self.assertEqual(
             summary["artifact_count"], len(contract.HTTP_FAULT_REQUIRED_ARTIFACTS)
         )
+
+    def test_accepts_native_stalled_http_same_process_recovery_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")
+            extend_with_stalled_http(report, arguments)
+            summary = contract.validate_report(
+                report,
+                **arguments,
+                expect_http_stall=True,
+            )
+
+        self.assertEqual(summary["result"], "passed")
+        self.assertTrue(summary["http_stall_exercised"])
+        self.assertEqual(
+            summary["assertion_count"], len(contract.HTTP_STALL_REQUIRED_ASSERTIONS)
+        )
+        self.assertEqual(
+            summary["artifact_count"], len(contract.HTTP_STALL_REQUIRED_ARTIFACTS)
+        )
+
+    def test_capability_modes_are_pairwise_mutually_exclusive(self) -> None:
+        mode_pairs = (
+            {"expect_recovery": True, "expect_http_fault": True},
+            {"expect_recovery": True, "expect_http_stall": True},
+            {"expect_http_fault": True, "expect_http_stall": True},
+        )
+        for modes in mode_pairs:
+            with self.subTest(modes=modes), tempfile.TemporaryDirectory() as temporary:
+                report, arguments = build_valid_fixture(
+                    pathlib.Path(temporary) / "artifacts"
+                )
+                with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+                    contract.validate_report(report, **arguments, **modes)
+
+    def test_stalled_http_contract_rejects_invalid_boundary_trace_and_cleanup(
+        self,
+    ) -> None:
+        def insert_premature_eof(
+            report: dict[str, Any], rows: list[dict[str, Any]]
+        ) -> None:
+            eof = copy.deepcopy(rows[3])
+            eof.update({"event": "eof-reached", "eof_reached": True})
+            rows.insert(4, eof)
+            report["http_stall"].update(
+                {
+                    "recovered_file_loaded_index": 6,
+                    "recovered_progress_index": 7,
+                    "recovered_paused_index": 8,
+                }
+            )
+
+        def remove_replacement_end_file(
+            report: dict[str, Any], rows: list[dict[str, Any]]
+        ) -> None:
+            rows.pop(4)
+            report["http_stall"].update(
+                {
+                    "recovered_file_loaded_index": 4,
+                    "recovered_progress_index": 5,
+                    "recovered_paused_index": 6,
+                    "end_file_observations_before_recovery": 0,
+                }
+            )
+
+        def insert_intervening_file_loaded(
+            report: dict[str, Any], rows: list[dict[str, Any]]
+        ) -> None:
+            rows.insert(5, copy.deepcopy(rows[5]))
+            report["http_stall"].update(
+                {
+                    "recovered_file_loaded_index": 6,
+                    "recovered_progress_index": 7,
+                    "recovered_paused_index": 8,
+                }
+            )
+
+        mutations = (
+            (
+                "too-short server-side silence",
+                lambda report, rows: report["http_stall"]["requests"][1].__setitem__(
+                    "stalled_for_ms", contract.HTTP_STALL_MINIMUM_DURATION_MS - 1
+                ),
+                "exact bounded open byte-silent response",
+            ),
+            (
+                "boolean stall duration",
+                lambda report, rows: report["http_stall"]["requests"][1].__setitem__(
+                    "stalled_for_ms", True
+                ),
+                "exact bounded open byte-silent response",
+            ),
+            (
+                "framing corruption substituted for valid response",
+                lambda report, rows: report["http_stall"]["requests"][1].__setitem__(
+                    "transfer_encoding", "chunked"
+                ),
+                "framing or write accounting drifted",
+            ),
+            (
+                "server response released before recovery request",
+                lambda report, rows: report["http_stall"]["requests"][1].__setitem__(
+                    "server_response_retained_at_recovery_get", False
+                ),
+                "exact bounded open byte-silent response",
+            ),
+            (
+                "stalled connection not released at cleanup",
+                lambda report, rows: report["http_stall"]["requests"][1].__setitem__(
+                    "connection_released", False
+                ),
+                "exact bounded open byte-silent response",
+            ),
+            (
+                "extra media GET",
+                lambda report, rows: report["http_stall"]["requests"].append(
+                    {
+                        **copy.deepcopy(report["http_stall"]["requests"][-1]),
+                        "ordinal": 4,
+                        "peer_endpoint": "127.0.0.1:52104",
+                    }
+                ),
+                "exactly one open stalled GET and one complete GET",
+            ),
+            (
+                "premature EOF",
+                insert_premature_eof,
+                "observed EOF before the recovery load",
+            ),
+            (
+                "missing cache pause",
+                lambda report, rows: rows[3].__setitem__("paused_for_cache", False),
+                "exact cache-stall observation",
+            ),
+            (
+                "cache pause duration drift",
+                lambda report, rows: rows[3].__setitem__("duration", 44.0),
+                "exact cache-stall observation",
+            ),
+            (
+                "cache pause embedded EOF",
+                lambda report, rows: rows[3].__setitem__("eof_reached", True),
+                "exact cache-stall observation",
+            ),
+            (
+                "cache pause below deterministic prefix boundary",
+                lambda report, rows: (
+                    report["http_stall"].__setitem__(
+                        "cache_stall_position_seconds",
+                        contract.HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+                        - contract.HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                        - 0.01,
+                    ),
+                    rows[3].__setitem__(
+                        "position",
+                        contract.HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+                        - contract.HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                        - 0.01,
+                    ),
+                ),
+                "bounded positive playback progress",
+            ),
+            (
+                "cache pause above deterministic prefix boundary",
+                lambda report, rows: (
+                    report["http_stall"].__setitem__(
+                        "cache_stall_position_seconds",
+                        contract.HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+                        + contract.HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                        + 0.01,
+                    ),
+                    rows[3].__setitem__(
+                        "position",
+                        contract.HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS
+                        + contract.HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                        + 0.01,
+                    ),
+                ),
+                "bounded positive playback progress",
+            ),
+            (
+                "unexpected end-file reason",
+                lambda report, rows: rows[4].__setitem__("reason", "error"),
+                "exactly one same-process end-file stop",
+            ),
+            (
+                "missing replacement end-file",
+                remove_replacement_end_file,
+                "exactly one same-process end-file stop",
+            ),
+            (
+                "intervening same-process file-loaded",
+                insert_intervening_file_loaded,
+                "unidentified or intervening lifecycle row",
+            ),
+            (
+                "recovery did not pass stall position",
+                lambda report, rows: (
+                    report["http_stall"].__setitem__(
+                        "recovered_position_seconds", 7.9
+                    ),
+                    rows[6].__setitem__("position", 7.9),
+                ),
+                "bounded positive playback progress",
+            ),
+            (
+                "foreign generation",
+                lambda report, rows: rows[6].__setitem__(
+                    "pid", report["mpv"]["pid"] + 1
+                ),
+                "stale, or foreign mpv generation",
+            ),
+            (
+                "unidentified generation",
+                lambda report, rows: rows[6].__setitem__("pid", None),
+                "unidentified, stale, or foreign mpv generation",
+            ),
+            (
+                "incomplete server cleanup",
+                lambda report, rows: report["http_stall"].__setitem__(
+                    "server_thread_released", False
+                ),
+                "release, or cleanup attestation was incomplete",
+            ),
+            (
+                "boolean prefix size",
+                lambda report, rows: report["http_stall"].__setitem__(
+                    "prefix_body_bytes", True
+                ),
+                "playable-prefix boundary drifted",
+            ),
+        )
+        for label, mutate, error_pattern in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                report, arguments = build_valid_fixture(
+                    pathlib.Path(temporary) / "artifacts"
+                )
+                extend_with_stalled_http(report, arguments)
+                root = pathlib.Path(arguments["artifact_root"])
+                observations_path = root / "mpv-observation.jsonl"
+                rows = [
+                    json.loads(line)
+                    for line in observations_path.read_text(encoding="utf-8").splitlines()
+                ]
+                mutate(report, rows)
+                observations_path.write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8",
+                )
+                evidence_path = root / "stalled-http.json"
+                report["http_stall"]["request_count"] = len(
+                    report["http_stall"]["requests"]
+                )
+                write_json(evidence_path, report["http_stall"])
+                report["artifacts"]["mpv_observation"] = identity(
+                    observations_path, relative_to=root
+                )
+                report["artifacts"]["stalled_http"] = identity(
+                    evidence_path, relative_to=root
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    contract.validate_report(
+                        report,
+                        **arguments,
+                        expect_http_stall=True,
+                    )
 
     def test_http_fault_contract_rejects_cache_path_extra_get_and_foreign_generation(
         self,
@@ -1255,10 +1788,14 @@ class RealMpvVerticalContractTests(unittest.TestCase):
             '"--real-mpv-vertical"',
             "--exercise-owned-mpv-recovery",
             "--exercise-faulting-http-recovery",
+            "--exercise-stalled-http",
             "--expect-recovery",
             "--expect-http-fault",
+            "--expect-http-stall",
             "gui-real-mpv-owned-process-recovery",
             "gui-real-mpv-faulting-http-recovery",
+            "gui-real-mpv-stalled-http",
+            "requires -TimeoutMs of at least 50000",
             "--expected-gui-sha256",
             "--expected-mpv-sha256",
             "--producer-exit-code",

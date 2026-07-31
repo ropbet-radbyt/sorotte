@@ -29,8 +29,27 @@ const REAL_MPV_HTTP_FAULT_ROUTE: &str = "/generated-fault.au";
 const REAL_MPV_HTTP_FAULT_DURATION_SECONDS: u32 = 45;
 const REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES: usize = 720_000;
 const REAL_MPV_HTTP_FAULT_BYTES_PER_SECOND: usize = 350_000;
+const REAL_MPV_HTTP_STALL_KIND: &str = "sorotte-gui-real-mpv-stalled-http";
+const REAL_MPV_HTTP_STALL_ROUTE: &str = "/generated-stall.au";
+const REAL_MPV_HTTP_STALL_DURATION_SECONDS: u32 = 45;
+const REAL_MPV_HTTP_STALL_PREFIX_BYTES: usize = 720_000;
+const REAL_MPV_HTTP_STALL_BYTES_PER_SECOND: usize = 350_000;
+const REAL_MPV_HTTP_STALL_MINIMUM_DURATION: Duration = Duration::from_secs(25);
+const REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT: Duration = Duration::from_secs(50);
+const REAL_MPV_HTTP_STALL_REQUEST_DEADLINE: Duration = Duration::from_secs(3);
+const REAL_MPV_HTTP_STALL_PREFIX_DEADLINE: Duration = Duration::from_secs(6);
+const REAL_MPV_HTTP_STALL_COMPLETE_RESPONSE_DEADLINE: Duration = Duration::from_secs(5);
+const REAL_MPV_HTTP_STALL_SOCKET_POLL: Duration = Duration::from_millis(250);
+const REAL_MPV_HTTP_STALL_AU_HEADER_BYTES: usize = 24;
+const REAL_MPV_HTTP_STALL_PCM_BYTES_PER_SECOND: usize = 48_000 * 2;
+const REAL_MPV_HTTP_STALL_POSITION_TOLERANCE_SECONDS: f64 = 0.25;
 const PLAY_CONTROL_AUTOMATION_ID: &str = "main-window:control:play";
 const PAUSE_CONTROL_AUTOMATION_ID: &str = "main-window:control:pause";
+
+fn real_mpv_http_stall_prefix_playable_seconds() -> f64 {
+    REAL_MPV_HTTP_STALL_PREFIX_BYTES.saturating_sub(REAL_MPV_HTTP_STALL_AU_HEADER_BYTES) as f64
+        / REAL_MPV_HTTP_STALL_PCM_BYTES_PER_SECOND as f64
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RealMpvVerticalOptions {
@@ -40,6 +59,7 @@ struct RealMpvVerticalOptions {
     timeout: Duration,
     exercise_recovery: bool,
     exercise_http_fault: bool,
+    exercise_http_stall: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +178,8 @@ struct RealMpvVerticalReport {
     recovery: Option<MpvRecoveryEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     http_fault: Option<HttpFaultRecoveryEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_stall: Option<HttpStallEvidence>,
     isolation: IsolationContract,
     assertions: Vec<String>,
     artifacts: BTreeMap<String, ArtifactIdentity>,
@@ -296,6 +318,770 @@ impl HttpFaultRecoveryEvidence {
             .count();
         self.requests = requests;
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HttpStallRequestEvidence {
+    ordinal: usize,
+    method: String,
+    path: String,
+    peer_endpoint: String,
+    peer_ipv4_loopback: bool,
+    range_header: Option<String>,
+    status_code: u16,
+    content_length_header: Option<usize>,
+    transfer_encoding: Option<String>,
+    transmitted_body_bytes: usize,
+    stall_injected: bool,
+    stalled_for_ms: Option<u128>,
+    server_response_retained_at_recovery_get: bool,
+    connection_released: bool,
+    response_completed: bool,
+    write_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HttpStallEvidence {
+    schema_version: u32,
+    kind: &'static str,
+    result: String,
+    schedule: &'static str,
+    expected_outcome: &'static str,
+    listener_endpoint: String,
+    listener_ipv4_loopback: bool,
+    media_url: String,
+    route: &'static str,
+    generated_media_bytes: usize,
+    generated_media_sha256: String,
+    duration_seconds: u32,
+    prefix_body_bytes: usize,
+    prefix_bytes_per_second: usize,
+    expected_prefix_playable_seconds: f64,
+    cache_stall_position_tolerance_seconds: f64,
+    minimum_stall_duration_ms: u128,
+    maximum_recovery_wait_ms: u128,
+    request_count: usize,
+    stalled_response_count: usize,
+    complete_response_count: usize,
+    requests: Vec<HttpStallRequestEvidence>,
+    initial_file_loaded_index: Option<usize>,
+    pre_stall_progress_index: Option<usize>,
+    cache_stall_index: Option<usize>,
+    recovered_file_loaded_index: Option<usize>,
+    recovered_progress_index: Option<usize>,
+    recovered_paused_index: Option<usize>,
+    initial_pid: Option<u32>,
+    recovered_pid: Option<u32>,
+    parent_pid: Option<u32>,
+    process_image_path: Option<String>,
+    process_sha256: Option<String>,
+    initial_ipc_endpoint: Option<String>,
+    recovered_ipc_endpoint: Option<String>,
+    stable_process_identity: bool,
+    stable_ipc_endpoint: bool,
+    stable_media_url: bool,
+    stable_duration: bool,
+    pre_stall_position_seconds: Option<f64>,
+    cache_stall_position_seconds: Option<f64>,
+    recovered_position_seconds: Option<f64>,
+    eof_observations_before_recovery: usize,
+    end_file_observations_before_recovery: usize,
+    manual_retry_invoked: bool,
+    foreign_pid_observations_after_stall: usize,
+    evidence_retained_before_cleanup: bool,
+    server_thread_released: bool,
+    socket_released: bool,
+    owned_mpv_terminated_after_gui_exit: bool,
+    error: Option<String>,
+}
+
+impl HttpStallEvidence {
+    fn new(listener_endpoint: String, media_url: String, generated_media: &[u8]) -> Self {
+        Self {
+            schema_version: REAL_MPV_SCHEMA_VERSION,
+            kind: REAL_MPV_HTTP_STALL_KIND,
+            result: "running".to_owned(),
+            schedule: "first-response-valid-prefix-then-open-byte-silence",
+            expected_outcome: "one-bounded-same-generation-reload-after-sustained-cache-pause",
+            listener_endpoint,
+            listener_ipv4_loopback: true,
+            media_url,
+            route: REAL_MPV_HTTP_STALL_ROUTE,
+            generated_media_bytes: generated_media.len(),
+            generated_media_sha256: hex_sha256(generated_media),
+            duration_seconds: REAL_MPV_HTTP_STALL_DURATION_SECONDS,
+            prefix_body_bytes: REAL_MPV_HTTP_STALL_PREFIX_BYTES,
+            prefix_bytes_per_second: REAL_MPV_HTTP_STALL_BYTES_PER_SECOND,
+            expected_prefix_playable_seconds: real_mpv_http_stall_prefix_playable_seconds(),
+            cache_stall_position_tolerance_seconds: REAL_MPV_HTTP_STALL_POSITION_TOLERANCE_SECONDS,
+            minimum_stall_duration_ms: REAL_MPV_HTTP_STALL_MINIMUM_DURATION.as_millis(),
+            maximum_recovery_wait_ms: REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT.as_millis(),
+            request_count: 0,
+            stalled_response_count: 0,
+            complete_response_count: 0,
+            requests: Vec::new(),
+            initial_file_loaded_index: None,
+            pre_stall_progress_index: None,
+            cache_stall_index: None,
+            recovered_file_loaded_index: None,
+            recovered_progress_index: None,
+            recovered_paused_index: None,
+            initial_pid: None,
+            recovered_pid: None,
+            parent_pid: None,
+            process_image_path: None,
+            process_sha256: None,
+            initial_ipc_endpoint: None,
+            recovered_ipc_endpoint: None,
+            stable_process_identity: false,
+            stable_ipc_endpoint: false,
+            stable_media_url: false,
+            stable_duration: false,
+            pre_stall_position_seconds: None,
+            cache_stall_position_seconds: None,
+            recovered_position_seconds: None,
+            eof_observations_before_recovery: 0,
+            end_file_observations_before_recovery: 0,
+            manual_retry_invoked: false,
+            foreign_pid_observations_after_stall: 0,
+            evidence_retained_before_cleanup: false,
+            server_thread_released: false,
+            socket_released: false,
+            owned_mpv_terminated_after_gui_exit: false,
+            error: None,
+        }
+    }
+
+    fn record_requests(&mut self, requests: Vec<HttpStallRequestEvidence>) {
+        self.request_count = requests.len();
+        self.stalled_response_count = requests
+            .iter()
+            .filter(|request| request.stall_injected)
+            .count();
+        self.complete_response_count = requests
+            .iter()
+            .filter(|request| request.method == "GET" && request.response_completed)
+            .count();
+        self.requests = requests;
+    }
+}
+
+#[derive(Default)]
+struct StalledHttpSharedState {
+    requests: Vec<HttpStallRequestEvidence>,
+    stall_started_at: Option<Instant>,
+    recovery_request_seen_at: Option<Instant>,
+    recovery_request_server_response_retained: Option<bool>,
+}
+
+struct StalledLoopbackHttpServer {
+    address: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+    state: Arc<Mutex<StalledHttpSharedState>>,
+    join_handle: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl StalledLoopbackHttpServer {
+    fn start(generated_media: Vec<u8>) -> Result<Self, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| format!("failed to bind stalled HTTP loopback listener: {error}"))?;
+        listener.set_nonblocking(true).map_err(|error| {
+            format!("failed to make stalled HTTP listener nonblocking: {error}")
+        })?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("failed to inspect stalled HTTP listener: {error}"))?;
+        if !address.is_ipv4() || !address.ip().is_loopback() || address.port() == 0 {
+            return Err(format!(
+                "stalled HTTP listener {address} was not strict nonzero IPv4 loopback"
+            ));
+        }
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(StalledHttpSharedState::default()));
+        let stalled_response_retained = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let thread_state = Arc::clone(&state);
+        let thread_stalled_response_retained = Arc::clone(&stalled_response_retained);
+        let generated_media = Arc::new(generated_media);
+        let join_handle = thread::Builder::new()
+            .name("sorotte-native-stalled-http".to_owned())
+            .spawn(move || {
+                let mut next_ordinal = 1_usize;
+                let mut stall_spawned = false;
+                let mut workers = Vec::new();
+                while !thread_shutdown.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, peer)) => {
+                            if thread_shutdown.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let ordinal = next_ordinal;
+                            next_ordinal = next_ordinal.saturating_add(1);
+                            let request = read_stalled_http_request(
+                                &mut stream,
+                                peer,
+                                ordinal,
+                                &thread_shutdown,
+                            )?;
+                            if request.method == "GET" && !stall_spawned {
+                                stall_spawned = true;
+                                let worker_shutdown = Arc::clone(&thread_shutdown);
+                                let worker_state = Arc::clone(&thread_state);
+                                let worker_response_retained =
+                                    Arc::clone(&thread_stalled_response_retained);
+                                let worker_media = Arc::clone(&generated_media);
+                                workers.push(
+                                    thread::Builder::new()
+                                        .name("sorotte-native-stalled-http-response".to_owned())
+                                        .spawn(move || {
+                                            serve_stalled_http_prefix(
+                                                stream,
+                                                request,
+                                                worker_media.as_slice(),
+                                                &worker_shutdown,
+                                                &worker_state,
+                                                &worker_response_retained,
+                                            )
+                                        })
+                                        .map_err(|error| {
+                                            format!(
+                                                "failed to spawn stalled HTTP response thread: {error}"
+                                            )
+                                        })?,
+                                );
+                            } else {
+                                if request.method == "GET" {
+                                    note_stalled_http_recovery_request(
+                                        &thread_state,
+                                        &thread_stalled_response_retained,
+                                    )?;
+                                }
+                                let record = serve_complete_stalled_http_response(
+                                    stream,
+                                    request,
+                                    generated_media.as_slice(),
+                                    &thread_shutdown,
+                                )?;
+                                record_stalled_http_request(&thread_state, record)?;
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => {
+                            return Err(format!("stalled HTTP listener accept failed: {error}"));
+                        }
+                    }
+                }
+                for worker in workers {
+                    worker
+                        .join()
+                        .map_err(|_| "stalled HTTP response thread panicked".to_owned())??;
+                }
+                Ok(())
+            })
+            .map_err(|error| format!("failed to spawn stalled HTTP server thread: {error}"))?;
+        Ok(Self {
+            address,
+            shutdown,
+            state,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        self.address.to_string()
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}{}", self.address, REAL_MPV_HTTP_STALL_ROUTE)
+    }
+
+    fn requests(&self) -> Result<Vec<HttpStallRequestEvidence>, String> {
+        self.state
+            .lock()
+            .map(|state| state.requests.clone())
+            .map_err(|_| "stalled HTTP request state was poisoned".to_owned())
+    }
+
+    fn stall_elapsed(&self) -> Result<Option<Duration>, String> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .stall_started_at
+                    .map(|started| Instant::now().saturating_duration_since(started))
+            })
+            .map_err(|_| "stalled HTTP request state was poisoned".to_owned())
+    }
+
+    fn wait_for_media_gets(
+        &self,
+        expected: usize,
+        timeout: Duration,
+    ) -> Result<Vec<HttpStallRequestEvidence>, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let requests = self.requests()?;
+            if requests
+                .iter()
+                .filter(|request| request.method == "GET")
+                .count()
+                >= expected
+            {
+                return Ok(requests);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for {expected} stalled HTTP media GETs; requests={requests:?}"
+                ));
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn release(mut self) -> Result<Vec<HttpStallRequestEvidence>, String> {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle
+                .join()
+                .map_err(|_| "stalled HTTP server thread panicked".to_owned())??;
+        }
+        let requests = self.requests()?;
+        let rebound = TcpListener::bind(self.address).map_err(|error| {
+            format!(
+                "stalled HTTP listener endpoint {} could not be rebound after release: {error}",
+                self.address
+            )
+        })?;
+        drop(rebound);
+        Ok(requests)
+    }
+}
+
+impl Drop for StalledLoopbackHttpServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+fn read_stalled_http_request(
+    stream: &mut TcpStream,
+    peer: SocketAddr,
+    ordinal: usize,
+    shutdown: &AtomicBool,
+) -> Result<HttpStallRequestEvidence, String> {
+    if !peer.is_ipv4() || !peer.ip().is_loopback() || peer.port() == 0 {
+        return Err(format!(
+            "stalled HTTP peer {peer} was not strict nonzero IPv4 loopback"
+        ));
+    }
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("failed making stalled HTTP connection blocking: {error}"))?;
+    stream
+        .set_read_timeout(Some(REAL_MPV_HTTP_STALL_SOCKET_POLL))
+        .map_err(|error| format!("failed setting stalled HTTP read timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(REAL_MPV_HTTP_STALL_SOCKET_POLL))
+        .map_err(|error| format!("failed setting stalled HTTP write timeout: {error}"))?;
+
+    let mut request_bytes = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let deadline = Instant::now() + REAL_MPV_HTTP_STALL_REQUEST_DEADLINE;
+    while !request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        if shutdown.load(Ordering::Acquire) {
+            return Err("stalled HTTP server released while reading request headers".to_owned());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "stalled HTTP request headers exceeded the {} ms absolute deadline",
+                REAL_MPV_HTTP_STALL_REQUEST_DEADLINE.as_millis()
+            ));
+        }
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("failed reading stalled HTTP request: {error}"));
+            }
+        };
+        if read == 0 {
+            return Err("stalled HTTP peer closed before complete headers".to_owned());
+        }
+        request_bytes.extend_from_slice(&buffer[..read]);
+        if request_bytes.len() > 16 * 1024 {
+            return Err("stalled HTTP request headers exceeded 16 KiB".to_owned());
+        }
+    }
+    let request = std::str::from_utf8(&request_bytes)
+        .map_err(|error| format!("stalled HTTP request headers were not UTF-8: {error}"))?;
+    let mut lines = request.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "stalled HTTP request line was absent".to_owned())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default().to_owned();
+    let path = request_parts.next().unwrap_or_default().to_owned();
+    let version = request_parts.next().unwrap_or_default();
+    if !matches!(method.as_str(), "GET" | "HEAD")
+        || path != REAL_MPV_HTTP_STALL_ROUTE
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+    {
+        return Err(format!(
+            "stalled HTTP received unexpected request line {request_line:?}"
+        ));
+    }
+    let range_header = lines.find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case("range")
+                .then(|| value.trim().to_owned())
+        })
+    });
+    Ok(HttpStallRequestEvidence {
+        ordinal,
+        method,
+        path,
+        peer_endpoint: peer.to_string(),
+        peer_ipv4_loopback: true,
+        range_header,
+        status_code: 200,
+        content_length_header: None,
+        transfer_encoding: None,
+        transmitted_body_bytes: 0,
+        stall_injected: false,
+        stalled_for_ms: None,
+        server_response_retained_at_recovery_get: false,
+        connection_released: false,
+        response_completed: false,
+        write_error: None,
+    })
+}
+
+fn record_stalled_http_request(
+    state: &Mutex<StalledHttpSharedState>,
+    record: HttpStallRequestEvidence,
+) -> Result<(), String> {
+    let mut state = state
+        .lock()
+        .map_err(|_| "stalled HTTP request state was poisoned".to_owned())?;
+    state.requests.push(record);
+    state.requests.sort_by_key(|request| request.ordinal);
+    Ok(())
+}
+
+fn note_stalled_http_recovery_request(
+    state: &Mutex<StalledHttpSharedState>,
+    stalled_response_retained: &AtomicBool,
+) -> Result<(), String> {
+    let now = Instant::now();
+    let mut state = state
+        .lock()
+        .map_err(|_| "stalled HTTP request state was poisoned".to_owned())?;
+    if state.recovery_request_seen_at.is_some() {
+        return Ok(());
+    }
+    state.recovery_request_seen_at = Some(now);
+    state.recovery_request_server_response_retained =
+        Some(stalled_response_retained.load(Ordering::Acquire));
+    let stall_started_at = state.stall_started_at;
+    if let Some(first) = state
+        .requests
+        .iter_mut()
+        .find(|request| request.stall_injected)
+    {
+        first.stalled_for_ms =
+            stall_started_at.map(|started| now.saturating_duration_since(started).as_millis());
+        first.server_response_retained_at_recovery_get =
+            stalled_response_retained.load(Ordering::Acquire);
+    }
+    Ok(())
+}
+
+fn write_stalled_http_bytes_before_deadline(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    deadline: Instant,
+    shutdown: &AtomicBool,
+    label: &str,
+) -> Result<usize, String> {
+    let mut sent = 0;
+    while sent < bytes.len() {
+        if shutdown.load(Ordering::Acquire) {
+            return Err(format!(
+                "stalled HTTP server released while writing {label}"
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "stalled HTTP {label} exceeded its absolute deadline"
+            ));
+        }
+        let next = (sent + 64 * 1024).min(bytes.len());
+        match stream.write(&bytes[sent..next]) {
+            Ok(0) => {
+                return Err(format!("stalled HTTP {label} write made no progress"));
+            }
+            Ok(written) => sent += written,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("failed writing stalled HTTP {label}: {error}"));
+            }
+        }
+    }
+    Ok(sent)
+}
+
+fn flush_stalled_http_before_deadline(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    shutdown: &AtomicBool,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            return Err(format!(
+                "stalled HTTP server released while flushing {label}"
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "stalled HTTP {label} flush exceeded its absolute deadline"
+            ));
+        }
+        match stream.flush() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("failed flushing stalled HTTP {label}: {error}"));
+            }
+        }
+    }
+}
+
+fn serve_stalled_http_prefix(
+    mut stream: TcpStream,
+    mut evidence: HttpStallRequestEvidence,
+    generated_media: &[u8],
+    shutdown: &AtomicBool,
+    state: &Mutex<StalledHttpSharedState>,
+    stalled_response_retained: &AtomicBool,
+) -> Result<(), String> {
+    let operation_deadline = Instant::now() + REAL_MPV_HTTP_STALL_PREFIX_DEADLINE;
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: audio/basic\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        generated_media.len()
+    );
+    evidence.content_length_header = Some(generated_media.len());
+    evidence.stall_injected = true;
+    if let Err(error) = write_stalled_http_bytes_before_deadline(
+        &mut stream,
+        headers.as_bytes(),
+        operation_deadline,
+        shutdown,
+        "stalled response headers",
+    ) {
+        evidence.write_error = Some(error);
+    }
+    let target = REAL_MPV_HTTP_STALL_PREFIX_BYTES.min(generated_media.len());
+    let started = Instant::now();
+    let mut sent = 0;
+    while evidence.write_error.is_none() && sent < target && !shutdown.load(Ordering::Acquire) {
+        if Instant::now() >= operation_deadline {
+            evidence.write_error = Some(format!(
+                "stalled HTTP prefix exceeded the {} ms absolute deadline",
+                REAL_MPV_HTTP_STALL_PREFIX_DEADLINE.as_millis()
+            ));
+            break;
+        }
+        let next = (sent + 16 * 1024).min(target);
+        match stream.write(&generated_media[sent..next]) {
+            Ok(0) => {
+                evidence.write_error =
+                    Some("stalled HTTP prefix write made no progress".to_owned());
+            }
+            Ok(written) => sent += written,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => {
+                evidence.write_error = Some(format!("failed writing stalled HTTP prefix: {error}"));
+            }
+        }
+        let target_elapsed =
+            Duration::from_secs_f64(sent as f64 / REAL_MPV_HTTP_STALL_BYTES_PER_SECOND as f64);
+        if let Some(delay) = target_elapsed.checked_sub(started.elapsed()) {
+            let remaining = operation_deadline.saturating_duration_since(Instant::now());
+            thread::sleep(delay.min(remaining));
+        }
+    }
+    if shutdown.load(Ordering::Acquire) && evidence.write_error.is_none() && sent < target {
+        evidence.write_error =
+            Some("stalled HTTP server released before the playable prefix completed".to_owned());
+    }
+    if evidence.write_error.is_none()
+        && let Err(error) =
+            flush_stalled_http_before_deadline(&mut stream, operation_deadline, shutdown, "prefix")
+    {
+        evidence.write_error = Some(error);
+    }
+    evidence.transmitted_body_bytes = sent;
+    if evidence.write_error.is_none() && sent == target {
+        let stall_started_at = Instant::now();
+        stalled_response_retained.store(true, Ordering::Release);
+        let mut locked = state
+            .lock()
+            .map_err(|_| "stalled HTTP request state was poisoned".to_owned())?;
+        locked.stall_started_at = Some(stall_started_at);
+        if let Some(recovery_seen_at) = locked.recovery_request_seen_at {
+            evidence.stalled_for_ms = Some(
+                recovery_seen_at
+                    .saturating_duration_since(stall_started_at)
+                    .as_millis(),
+            );
+            evidence.server_response_retained_at_recovery_get = recovery_seen_at
+                >= stall_started_at
+                && locked.recovery_request_server_response_retained == Some(true);
+        }
+        locked.requests.push(evidence.clone());
+        locked.requests.sort_by_key(|request| request.ordinal);
+        drop(locked);
+        while !shutdown.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    } else {
+        evidence.connection_released = true;
+        record_stalled_http_request(state, evidence.clone())?;
+    }
+    stalled_response_retained.store(false, Ordering::Release);
+    let _ = stream.shutdown(Shutdown::Both);
+    let mut locked = state
+        .lock()
+        .map_err(|_| "stalled HTTP request state was poisoned".to_owned())?;
+    let stall_started_at = locked.stall_started_at;
+    if let Some(first) = locked
+        .requests
+        .iter_mut()
+        .find(|request| request.ordinal == evidence.ordinal)
+    {
+        if first.stalled_for_ms.is_none() {
+            first.stalled_for_ms = stall_started_at.map(|started| {
+                Instant::now()
+                    .saturating_duration_since(started)
+                    .as_millis()
+            });
+        }
+        first.connection_released = true;
+    }
+    Ok(())
+}
+
+fn serve_complete_stalled_http_response(
+    mut stream: TcpStream,
+    mut evidence: HttpStallRequestEvidence,
+    generated_media: &[u8],
+    shutdown: &AtomicBool,
+) -> Result<HttpStallRequestEvidence, String> {
+    let operation_deadline = Instant::now() + REAL_MPV_HTTP_STALL_COMPLETE_RESPONSE_DEADLINE;
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: audio/basic\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        generated_media.len()
+    );
+    evidence.content_length_header = Some(generated_media.len());
+    if let Err(error) = write_stalled_http_bytes_before_deadline(
+        &mut stream,
+        headers.as_bytes(),
+        operation_deadline,
+        shutdown,
+        "complete response headers",
+    ) {
+        evidence.write_error = Some(error);
+    }
+    let mut sent = 0;
+    if evidence.method == "GET" {
+        while evidence.write_error.is_none() && sent < generated_media.len() {
+            if shutdown.load(Ordering::Acquire) {
+                evidence.write_error =
+                    Some("stalled HTTP server released during complete response".to_owned());
+                break;
+            }
+            if Instant::now() >= operation_deadline {
+                evidence.write_error = Some(format!(
+                    "complete stalled HTTP response exceeded the {} ms absolute deadline",
+                    REAL_MPV_HTTP_STALL_COMPLETE_RESPONSE_DEADLINE.as_millis()
+                ));
+                break;
+            }
+            let next = (sent + 64 * 1024).min(generated_media.len());
+            match stream.write(&generated_media[sent..next]) {
+                Ok(0) => {
+                    evidence.write_error =
+                        Some("complete stalled HTTP write made no progress".to_owned());
+                }
+                Ok(written) => sent += written,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => {
+                    evidence.write_error = Some(format!(
+                        "failed writing complete stalled HTTP body: {error}"
+                    ));
+                }
+            }
+        }
+        if evidence.write_error.is_none() && Instant::now() >= operation_deadline {
+            evidence.write_error = Some(format!(
+                "complete stalled HTTP flush exceeded the {} ms absolute deadline",
+                REAL_MPV_HTTP_STALL_COMPLETE_RESPONSE_DEADLINE.as_millis()
+            ));
+        } else if evidence.write_error.is_none()
+            && let Err(error) = flush_stalled_http_before_deadline(
+                &mut stream,
+                operation_deadline,
+                shutdown,
+                "complete response",
+            )
+        {
+            evidence.write_error = Some(error);
+        }
+    }
+    evidence.transmitted_body_bytes = sent;
+    evidence.response_completed = evidence.write_error.is_none()
+        && (evidence.method == "HEAD" || sent == generated_media.len());
+    evidence.connection_released = true;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(evidence)
 }
 
 struct FaultingLoopbackHttpServer {
@@ -706,8 +1492,10 @@ struct MpvObservation {
     duration: Option<f64>,
     position: Option<f64>,
     pause: Option<bool>,
+    paused_for_cache: Option<bool>,
     eof_reached: Option<bool>,
     ipc_endpoint: Option<String>,
+    reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -821,6 +1609,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let menu_interactions_path = artifact_root.join("menu-interactions.json");
     let recovery_path = artifact_root.join("owned-mpv-recovery.json");
     let http_fault_path = artifact_root.join("faulting-http-recovery.json");
+    let http_stall_path = artifact_root.join("stalled-http.json");
     let mut state = RealMpvVerticalState::new(&artifact_root);
     write_json_file(&state_path, &state)?;
     let mut menu_interactions = MenuInteractionsEvidence::new();
@@ -836,6 +1625,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let mut recovery_evidence: Option<MpvRecoveryEvidence> = None;
     let mut fault_http_server: Option<FaultingLoopbackHttpServer> = None;
     let mut http_fault_evidence: Option<HttpFaultRecoveryEvidence> = None;
+    let mut stalled_http_server: Option<StalledLoopbackHttpServer> = None;
+    let mut http_stall_evidence: Option<HttpStallEvidence> = None;
 
     let run_result = (|| -> Result<RealMpvVerticalReport, String> {
         #[cfg(not(target_os = "windows"))]
@@ -865,9 +1656,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             Some("supported-mpv-version-and-digest"),
         )?;
 
+        let exercise_http = options.exercise_http_fault || options.exercise_http_stall;
         let config_path = artifact_root.join("sorotte-real-mpv.ini");
         let appdata_root = artifact_root.join("appdata");
-        let media_path = artifact_root.join(if options.exercise_http_fault {
+        let media_path = artifact_root.join(if exercise_http {
             "generated-silence.au"
         } else {
             "generated-silence.wav"
@@ -888,10 +1680,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         })?;
         let media_duration_seconds = if options.exercise_http_fault {
             REAL_MPV_HTTP_FAULT_DURATION_SECONDS
+        } else if options.exercise_http_stall {
+            REAL_MPV_HTTP_STALL_DURATION_SECONDS
         } else {
             REAL_MPV_MEDIA_DURATION_SECONDS
         };
-        let generated_media = if options.exercise_http_fault {
+        let generated_media = if exercise_http {
             pcm_au_bytes(media_duration_seconds)
         } else {
             pcm_wav_bytes(media_duration_seconds)
@@ -933,6 +1727,17 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             http_fault_evidence = Some(evidence);
             media_url = Some(url.clone());
             PathBuf::from(url)
+        } else if options.exercise_http_stall {
+            let server = StalledLoopbackHttpServer::start(generated_media.clone())?;
+            let endpoint = server.endpoint();
+            require_ipv4_loopback_endpoint(&endpoint, "stalled HTTP listener")?;
+            let url = server.url();
+            let evidence = HttpStallEvidence::new(endpoint, url.clone(), &generated_media);
+            write_json_file(&http_stall_path, &evidence)?;
+            stalled_http_server = Some(server);
+            http_stall_evidence = Some(evidence);
+            media_url = Some(url.clone());
+            PathBuf::from(url)
         } else {
             media_path.clone()
         };
@@ -953,6 +1758,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 &state_path,
                 "faulting-http-ready",
                 Some("strict-loopback-faulting-http-ready"),
+            )?;
+        } else if options.exercise_http_stall {
+            state.advance(
+                &state_path,
+                "stalled-http-ready",
+                Some("strict-loopback-stalled-http-ready"),
             )?;
         }
 
@@ -1071,7 +1882,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             "open-media-invoked",
             Some("native-file-menu-open-media"),
         )?;
-        if options.exercise_http_fault {
+        if exercise_http {
             let (
                 playlist_change_request,
                 playlist_change_echo,
@@ -1079,8 +1890,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 playlist_index_echo,
             ) = session_server
                 .as_ref()
-                .expect("faulting HTTP session server must remain live")
-                .recv_playlist_exchange(step_timeout, "real-mpv faulting HTTP")?;
+                .expect("HTTP session server must remain live")
+                .recv_playlist_exchange(step_timeout, "real-mpv loopback HTTP")?;
             let exchange = session_exchange
                 .as_mut()
                 .expect("real-mpv session exchange must remain initialized");
@@ -1112,6 +1923,11 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 .rsplit('/')
                 .next()
                 .expect("faulting HTTP route has a file component")
+        } else if options.exercise_http_stall {
+            REAL_MPV_HTTP_STALL_ROUTE
+                .rsplit('/')
+                .next()
+                .expect("stalled HTTP route has a file component")
         } else {
             media_path
                 .file_name()
@@ -1182,6 +1998,15 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             evidence.process_sha256 = Some(process_identity.sha256.clone());
             evidence.initial_ipc_endpoint = Some(ipc_endpoint.clone());
             write_json_file(&http_fault_path, evidence)?;
+        }
+        if let Some(evidence) = http_stall_evidence.as_mut() {
+            evidence.initial_file_loaded_index = Some(file_loaded_index);
+            evidence.initial_pid = Some(mpv_pid);
+            evidence.parent_pid = Some(parent_pid);
+            evidence.process_image_path = Some(initial_process_image_path.display().to_string());
+            evidence.process_sha256 = Some(process_identity.sha256.clone());
+            evidence.initial_ipc_endpoint = Some(ipc_endpoint.clone());
+            write_json_file(&http_stall_path, evidence)?;
         }
         state.advance(
             &state_path,
@@ -1483,6 +2308,406 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 &state_path,
                 "faulting-http-evidence-retained",
                 Some("fault-evidence-retained-before-cleanup"),
+            )?;
+        } else if options.exercise_http_stall {
+            let stall_timeout = REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT;
+            let (pre_stall_progress_index, pre_stall_progress) = wait_for_mpv_observation(
+                &observation_path,
+                playing_index,
+                step_timeout,
+                "positive time-pos before the controlled HTTP stall",
+                |observation| {
+                    observation.event == "time-pos"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref() == media_url.as_deref()
+                        && observation.position.is_some_and(|position| position >= 0.5)
+                },
+            )?;
+            let pre_stall_position = pre_stall_progress
+                .position
+                .ok_or_else(|| "pre-stall time-pos observation omitted its position".to_owned())?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.pre_stall_progress_index = Some(pre_stall_progress_index);
+                evidence.pre_stall_position_seconds = Some(pre_stall_position);
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            let first_requests = stalled_http_server
+                .as_ref()
+                .expect("stalled HTTP server must remain live")
+                .wait_for_media_gets(1, step_timeout)?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.record_requests(first_requests.clone());
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            let first_request = first_requests
+                .iter()
+                .find(|request| request.method == "GET")
+                .ok_or_else(|| "stalled HTTP request evidence was empty".to_owned())?;
+            if first_request.status_code != 200
+                || first_request.range_header.as_deref() != Some("bytes=0-")
+                || first_request.content_length_header != Some(generated_media.len())
+                || first_request.transfer_encoding.is_some()
+                || first_request.transmitted_body_bytes != REAL_MPV_HTTP_STALL_PREFIX_BYTES
+                || !first_request.stall_injected
+                || first_request.stalled_for_ms.is_some()
+                || first_request.server_response_retained_at_recovery_get
+                || first_request.connection_released
+                || first_request.response_completed
+                || first_request.write_error.is_some()
+            {
+                return Err(format!(
+                    "first stalled HTTP response was not the exact open byte-silent prefix: {first_request:?}"
+                ));
+            }
+            let (cache_stall_index, cache_stall) = wait_for_mpv_observation(
+                &observation_path,
+                pre_stall_progress_index,
+                step_timeout,
+                "paused-for-cache=true after the valid HTTP prefix stopped advancing",
+                |observation| {
+                    observation.event == "paused-for-cache"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.paused_for_cache == Some(true)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref() == media_url.as_deref()
+                },
+            )?;
+            let cache_stall_position = cache_stall.position.ok_or_else(|| {
+                "cache-stall observation omitted its retained playback position".to_owned()
+            })?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.cache_stall_index = Some(cache_stall_index);
+                evidence.cache_stall_position_seconds = Some(cache_stall_position);
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            let expected_prefix_position = real_mpv_http_stall_prefix_playable_seconds();
+            if cache_stall
+                .duration
+                .is_none_or(|duration| (duration - f64::from(media_duration_seconds)).abs() > 0.05)
+                || cache_stall_position < pre_stall_position
+                || (cache_stall_position - expected_prefix_position).abs()
+                    > REAL_MPV_HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                || cache_stall.eof_reached == Some(true)
+            {
+                return Err(format!(
+                    "cache-stall identity, prefix-bound position, duration, or EOF state drifted (expected {expected_prefix_position:.6} +/- {:.3} seconds): {cache_stall:?}",
+                    REAL_MPV_HTTP_STALL_POSITION_TOLERANCE_SECONDS
+                ));
+            }
+            state.advance(
+                &state_path,
+                "stalled-http-cache-pause-observed",
+                Some("sustained-valid-http-cache-stall-observed"),
+            )?;
+
+            let stall_elapsed = stalled_http_server
+                .as_ref()
+                .expect("stalled HTTP server must remain live")
+                .stall_elapsed()?
+                .ok_or_else(|| {
+                    "stalled HTTP server did not retain its prefix-completion boundary".to_owned()
+                })?;
+            let recovery_timeout = stall_timeout.checked_sub(stall_elapsed).ok_or_else(|| {
+                format!(
+                    "stalled HTTP cache pause arrived after the {} ms prefix-to-recovery deadline (elapsed {} ms)",
+                    stall_timeout.as_millis(),
+                    stall_elapsed.as_millis()
+                )
+            })?;
+            let (recovered_file_loaded_index, recovered_file_loaded) = wait_for_mpv_observation(
+                &observation_path,
+                cache_stall_index.saturating_add(1),
+                recovery_timeout,
+                "same-process file-loaded after bounded cache-stall recovery",
+                |observation| {
+                    observation.event == "file-loaded"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref().is_some_and(|observed| {
+                            observed_media_target_matches(
+                                observed,
+                                &media_path,
+                                media_url.as_deref(),
+                            )
+                        })
+                },
+            )?;
+            let recovered_duration = recovered_file_loaded.duration.ok_or_else(|| {
+                "recovered stalled-HTTP file-loaded observation omitted duration".to_owned()
+            })?;
+            if recovered_file_loaded.filename.as_deref() != Some(expected_file_name)
+                || (recovered_duration - f64::from(media_duration_seconds)).abs() > 0.05
+            {
+                return Err(format!(
+                    "recovered stalled-HTTP media identity drifted: filename={:?}, duration={recovered_duration}",
+                    recovered_file_loaded.filename
+                ));
+            }
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.recovered_file_loaded_index = Some(recovered_file_loaded_index);
+                evidence.recovered_pid = Some(mpv_pid);
+                evidence.recovered_ipc_endpoint = Some(ipc_endpoint.clone());
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            let requests = stalled_http_server
+                .as_ref()
+                .expect("stalled HTTP server must remain live")
+                .wait_for_media_gets(2, step_timeout)?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.record_requests(requests.clone());
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            validate_stalled_http_request_accounting(&requests, generated_media.len(), false)?;
+            if !process_is_running(mpv_pid)
+                || process_parent_pid(mpv_pid)? != gui_pid
+                || binary_identity(&process_image_path(mpv_pid)?)?.sha256
+                    != mpv_preflight.identity.sha256
+            {
+                return Err(format!(
+                    "GUI-owned mpv identity changed across the stalled HTTP boundary for PID {mpv_pid}"
+                ));
+            }
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.stable_process_identity = true;
+                evidence.stable_ipc_endpoint = true;
+                evidence.stable_media_url = true;
+                evidence.stable_duration = true;
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            let observations_through_recovery = read_mpv_observations(&observation_path)?;
+            let causal_observations = observations_through_recovery
+                .iter()
+                .skip(file_loaded_index)
+                .take(
+                    recovered_file_loaded_index
+                        .saturating_sub(file_loaded_index)
+                        .saturating_add(1),
+                );
+            let eof_observations_before_recovery = causal_observations
+                .clone()
+                .filter(|observation| {
+                    observation.event == "eof-reached" && observation.eof_reached == Some(true)
+                })
+                .count();
+            let end_file_observations = observations_through_recovery
+                .iter()
+                .enumerate()
+                .skip(cache_stall_index.saturating_add(1))
+                .take(
+                    recovered_file_loaded_index
+                        .saturating_sub(cache_stall_index)
+                        .saturating_sub(1),
+                )
+                .filter(|(_, observation)| observation.event == "end-file")
+                .collect::<Vec<_>>();
+            let end_file_observations_before_recovery = end_file_observations.len();
+            let recovery_lifecycle_observations = observations_through_recovery
+                .iter()
+                .enumerate()
+                .skip(cache_stall_index.saturating_add(1))
+                .take(recovered_file_loaded_index.saturating_sub(cache_stall_index))
+                .filter(|(_, observation)| {
+                    matches!(observation.event.as_str(), "end-file" | "file-loaded")
+                })
+                .collect::<Vec<_>>();
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.eof_observations_before_recovery = eof_observations_before_recovery;
+                evidence.end_file_observations_before_recovery =
+                    end_file_observations_before_recovery;
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            if eof_observations_before_recovery != 0 {
+                return Err(format!(
+                    "stalled HTTP recovery observed {eof_observations_before_recovery} EOF events despite an open valid response"
+                ));
+            }
+            if end_file_observations_before_recovery != 1
+                || recovery_lifecycle_observations.len() != 2
+                || recovery_lifecycle_observations[0].1.event != "end-file"
+                || recovery_lifecycle_observations[0].1.pid != Some(mpv_pid)
+                || recovery_lifecycle_observations[0].1.ipc_endpoint.as_deref()
+                    != Some(&ipc_endpoint)
+                || recovery_lifecycle_observations[0].1.reason.as_deref() != Some("stop")
+                || recovery_lifecycle_observations[1].0 != recovered_file_loaded_index
+                || recovery_lifecycle_observations[1].1.event != "file-loaded"
+                || recovery_lifecycle_observations[1].1.pid != Some(mpv_pid)
+                || recovery_lifecycle_observations[1].1.ipc_endpoint.as_deref()
+                    != Some(&ipc_endpoint)
+            {
+                return Err(format!(
+                    "stalled HTTP recovery contained an unidentified or intervening lifecycle row instead of exactly one same-process end-file stop followed by the recovered file-loaded: {recovery_lifecycle_observations:?}"
+                ));
+            }
+            state.advance(
+                &state_path,
+                "stalled-http-reloaded",
+                Some("same-owned-mpv-reloaded-after-bounded-cache-stall"),
+            )?;
+
+            let required_recovered_position = cache_stall_position + 0.5;
+            let (recovered_progress_index, recovered_progress) = wait_for_mpv_observation(
+                &observation_path,
+                recovered_file_loaded_index,
+                step_timeout,
+                "post-recovery playback progress beyond the cache-stall position",
+                |observation| {
+                    observation.event == "time-pos"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref() == media_url.as_deref()
+                        && observation
+                            .position
+                            .is_some_and(|position| position >= required_recovered_position)
+                },
+            )?;
+            let recovered_position = recovered_progress.position.ok_or_else(|| {
+                "recovered stalled-HTTP time-pos observation omitted its position".to_owned()
+            })?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.recovered_progress_index = Some(recovered_progress_index);
+                evidence.recovered_position_seconds = Some(recovered_position);
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            wait_for_accessible_name(
+                &driver,
+                launched_window,
+                "Room state: playing",
+                step_timeout,
+            )?;
+            state.advance(
+                &state_path,
+                "stalled-http-progress-recovered",
+                Some("recovered-playback-advanced-past-stall"),
+            )?;
+
+            let observations_before_pause = read_mpv_observations(&observation_path)?.len();
+            invoke_named_control_with_wait(
+                &driver,
+                launched_window,
+                PAUSE_CONTROL_AUTOMATION_ID,
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            let (recovered_paused_index, _) = wait_for_mpv_observation(
+                &observation_path,
+                observations_before_pause,
+                step_timeout,
+                "pause=true after recovered stalled-HTTP playback",
+                |observation| {
+                    observation.event == "pause"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.pause == Some(true)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref() == media_url.as_deref()
+                },
+            )?;
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.recovered_paused_index = Some(recovered_paused_index);
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            if !(file_loaded_index < playing_index
+                && playing_index < pre_stall_progress_index
+                && pre_stall_progress_index < cache_stall_index
+                && cache_stall_index < recovered_file_loaded_index
+                && recovered_file_loaded_index < recovered_progress_index
+                && recovered_progress_index < recovered_paused_index)
+            {
+                return Err(format!(
+                    "stalled HTTP observation ordering drifted: {file_loaded_index}, {playing_index}, {pre_stall_progress_index}, {cache_stall_index}, {recovered_file_loaded_index}, {recovered_progress_index}, {recovered_paused_index}"
+                ));
+            }
+            state.advance(
+                &state_path,
+                "real-mpv-paused",
+                Some("gui-pause-command-observed-by-real-mpv"),
+            )?;
+            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            state.advance(
+                &state_path,
+                "gui-paused-projected",
+                Some("gui-projected-paused-after-real-mpv-observation"),
+            )?;
+
+            let observations = read_mpv_observations(&observation_path)?;
+            let foreign_observations = observations
+                .iter()
+                .skip(cache_stall_index)
+                .take(
+                    recovered_paused_index
+                        .saturating_sub(cache_stall_index)
+                        .saturating_add(1),
+                )
+                .filter(|observation| {
+                    observation.pid != Some(mpv_pid)
+                        || observation.ipc_endpoint.as_deref() != Some(&ipc_endpoint)
+                })
+                .count();
+            {
+                let evidence = http_stall_evidence
+                    .as_mut()
+                    .expect("stalled HTTP evidence must be initialized");
+                evidence.foreign_pid_observations_after_stall = foreign_observations;
+                write_json_file(&http_stall_path, evidence)?;
+            }
+            if foreign_observations != 0 {
+                return Err(format!(
+                    "unidentified, stale, or foreign mpv generation emitted {foreign_observations} observations after the HTTP stall boundary"
+                ));
+            }
+            let evidence = http_stall_evidence
+                .as_mut()
+                .expect("stalled HTTP evidence must be initialized");
+            evidence.record_requests(requests);
+            evidence.pre_stall_progress_index = Some(pre_stall_progress_index);
+            evidence.cache_stall_index = Some(cache_stall_index);
+            evidence.recovered_file_loaded_index = Some(recovered_file_loaded_index);
+            evidence.recovered_progress_index = Some(recovered_progress_index);
+            evidence.recovered_paused_index = Some(recovered_paused_index);
+            evidence.recovered_pid = Some(mpv_pid);
+            evidence.recovered_ipc_endpoint = Some(ipc_endpoint.clone());
+            evidence.stable_process_identity = true;
+            evidence.stable_ipc_endpoint = true;
+            evidence.stable_media_url = true;
+            evidence.stable_duration = true;
+            evidence.pre_stall_position_seconds = Some(pre_stall_position);
+            evidence.cache_stall_position_seconds = Some(cache_stall_position);
+            evidence.recovered_position_seconds = Some(recovered_position);
+            evidence.eof_observations_before_recovery = eof_observations_before_recovery;
+            evidence.foreign_pid_observations_after_stall = foreign_observations;
+            evidence.evidence_retained_before_cleanup = true;
+            write_json_file(&http_stall_path, evidence)?;
+            state.advance(
+                &state_path,
+                "stalled-http-evidence-retained",
+                Some("stall-evidence-retained-before-cleanup"),
             )?;
         } else {
             let observations_before_pause = read_mpv_observations(&observation_path)?.len();
@@ -1882,6 +3107,28 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             evidence.result = "passed".to_owned();
             write_json_file(&http_fault_path, evidence)?;
         }
+        if options.exercise_http_stall {
+            let requests = stalled_http_server
+                .take()
+                .expect("stalled HTTP server must remain live until GUI exit")
+                .release()?;
+            let evidence = http_stall_evidence
+                .as_mut()
+                .expect("stalled HTTP evidence must be complete");
+            evidence.record_requests(requests.clone());
+            evidence.server_thread_released = true;
+            evidence.socket_released = true;
+            evidence.owned_mpv_terminated_after_gui_exit = !process_is_running(mpv_pid);
+            write_json_file(&http_stall_path, evidence)?;
+            validate_stalled_http_request_accounting(&requests, generated_media.len(), true)?;
+            if !evidence.owned_mpv_terminated_after_gui_exit {
+                return Err(format!(
+                    "GUI-owned mpv PID {mpv_pid} remained alive after stalled HTTP GUI exit"
+                ));
+            }
+            evidence.result = "passed".to_owned();
+            write_json_file(&http_stall_path, evidence)?;
+        }
         let release_result = session_server
             .take()
             .expect("real-mpv loopback server must remain live until GUI exit")
@@ -1909,6 +3156,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             "gui-exit-reaped-replacement-owned-mpv"
         } else if options.exercise_http_fault {
             "gui-exit-reaped-owned-mpv-and-released-fault-server"
+        } else if options.exercise_http_stall {
+            "gui-exit-reaped-owned-mpv-and-released-stall-server"
         } else {
             "gui-exit-reaped-owned-mpv"
         };
@@ -1941,6 +3190,9 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         if options.exercise_http_fault {
             artifact_files.push(("faulting_http_recovery", http_fault_path.as_path()));
         }
+        if options.exercise_http_stall {
+            artifact_files.push(("stalled_http", http_stall_path.as_path()));
+        }
         let artifacts = artifact_manifest(&artifact_root, &artifact_files)?;
         Ok(RealMpvVerticalReport {
             schema_version: REAL_MPV_SCHEMA_VERSION,
@@ -1961,6 +3213,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             recovered_mpv: recovered_mpv_identity,
             recovery: recovery_evidence.clone(),
             http_fault: http_fault_evidence.clone(),
+            http_stall: http_stall_evidence.clone(),
             isolation: IsolationContract {
                 artifact_root: artifact_root.display().to_string(),
                 config_path: config_path.display().to_string(),
@@ -1976,13 +3229,15 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 session_endpoint,
                 session_peer_endpoint,
                 session_advertised_capabilities: REAL_MPV_SESSION_CAPABILITIES.to_vec(),
-                network_mode: if options.exercise_http_fault {
+                network_mode: if exercise_http {
                     "os-assigned-ipv4-loopback-session-and-http"
                 } else {
                     "os-assigned-ipv4-loopback-session"
                 },
                 media_source: if options.exercise_http_fault {
                     "generated-pcm-au-over-faulting-loopback-http"
+                } else if options.exercise_http_stall {
+                    "generated-pcm-au-over-stalled-loopback-http"
                 } else {
                     "generated-local-pcm-wav"
                 },
@@ -1990,10 +3245,19 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 media_url: media_url.clone(),
                 http_endpoint: http_fault_evidence
                     .as_ref()
-                    .map(|evidence| evidence.listener_endpoint.clone()),
-                http_evidence_path: options
-                    .exercise_http_fault
-                    .then(|| http_fault_path.display().to_string()),
+                    .map(|evidence| evidence.listener_endpoint.clone())
+                    .or_else(|| {
+                        http_stall_evidence
+                            .as_ref()
+                            .map(|evidence| evidence.listener_endpoint.clone())
+                    }),
+                http_evidence_path: if options.exercise_http_fault {
+                    Some(http_fault_path.display().to_string())
+                } else if options.exercise_http_stall {
+                    Some(http_stall_path.display().to_string())
+                } else {
+                    None
+                },
             },
             assertions: state.assertions.clone(),
             artifacts,
@@ -2012,6 +3276,13 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             {
                 evidence.record_requests(requests);
                 let _ = write_json_file(&http_fault_path, evidence);
+            }
+            if let (Some(server), Some(evidence)) =
+                (stalled_http_server.as_ref(), http_stall_evidence.as_mut())
+                && let Ok(requests) = server.requests()
+            {
+                evidence.record_requests(requests);
+                let _ = write_json_file(&http_stall_path, evidence);
             }
             if let (Some(gui_child), Some(gui_window)) = (child.as_mut(), window)
                 && gui_child.try_wait().ok().flatten().is_none()
@@ -2038,6 +3309,20 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 match server.release() {
                     Ok(requests) => {
                         if let Some(evidence) = http_fault_evidence.as_mut() {
+                            evidence.record_requests(requests);
+                            evidence.server_thread_released = true;
+                            evidence.socket_released = true;
+                        }
+                    }
+                    Err(release_error) => {
+                        error = format!("{error}; {release_error}");
+                    }
+                }
+            }
+            if let Some(server) = stalled_http_server.take() {
+                match server.release() {
+                    Ok(requests) => {
+                        if let Some(evidence) = http_stall_evidence.as_mut() {
                             evidence.record_requests(requests);
                             evidence.server_thread_released = true;
                             evidence.socket_released = true;
@@ -2097,6 +3382,14 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 evidence.error = Some(redact_real_mpv_error(&error));
                 let _ = write_json_file(&http_fault_path, evidence);
             }
+            if let Some(evidence) = http_stall_evidence.as_mut() {
+                evidence.result = "failed".to_owned();
+                evidence.owned_mpv_terminated_after_gui_exit = evidence
+                    .initial_pid
+                    .is_some_and(|pid| !process_is_running(pid));
+                evidence.error = Some(redact_real_mpv_error(&error));
+                let _ = write_json_file(&http_stall_path, evidence);
+            }
             state.result = "failed".to_owned();
             state.stage = format!("{}-failed", state.stage);
             state.error = Some(redact_real_mpv_error(&error));
@@ -2113,6 +3406,7 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
     let mut timeout = Duration::from_secs(30);
     let mut exercise_recovery = false;
     let mut exercise_http_fault = false;
+    let mut exercise_http_stall = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -2123,6 +3417,10 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
             }
             "--exercise-faulting-http-recovery" => {
                 exercise_http_fault = true;
+                index += 1;
+            }
+            "--exercise-stalled-http" => {
+                exercise_http_stall = true;
                 index += 1;
             }
             "--binary" => {
@@ -2147,16 +3445,26 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
             }
             argument => {
                 return Err(format!(
-                    "unknown real-mpv vertical argument {argument:?}; expected --binary, --mpv, --artifact-dir, optional --timeout-ms, optional --exercise-owned-mpv-recovery, and optional --exercise-faulting-http-recovery"
+                    "unknown real-mpv vertical argument {argument:?}; expected --binary, --mpv, --artifact-dir, optional --timeout-ms, optional --exercise-owned-mpv-recovery, optional --exercise-faulting-http-recovery, and optional --exercise-stalled-http"
                 ));
             }
         }
     }
-    if exercise_recovery && exercise_http_fault {
+    if usize::from(exercise_recovery)
+        + usize::from(exercise_http_fault)
+        + usize::from(exercise_http_stall)
+        > 1
+    {
         return Err(
-            "--exercise-owned-mpv-recovery and --exercise-faulting-http-recovery are mutually exclusive"
+            "--exercise-owned-mpv-recovery, --exercise-faulting-http-recovery, and --exercise-stalled-http are mutually exclusive"
                 .to_owned(),
         );
+    }
+    if exercise_http_stall && timeout < REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT {
+        return Err(format!(
+            "--exercise-stalled-http requires --timeout-ms of at least {}",
+            REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT.as_millis()
+        ));
     }
     Ok(RealMpvVerticalOptions {
         binary_path: binary_path
@@ -2167,6 +3475,7 @@ fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOpt
         timeout,
         exercise_recovery,
         exercise_http_fault,
+        exercise_http_stall,
     })
 }
 
@@ -2308,6 +3617,7 @@ local function emit(event, event_data)
         duration = mp.get_property_native("duration"),
         position = mp.get_property_native("time-pos"),
         pause = mp.get_property_native("pause"),
+        paused_for_cache = event_data and event_data.paused_for_cache or nil,
         eof_reached = event_data and event_data.eof_reached or nil,
         ipc_endpoint = mp.get_property_native("input-ipc-server"),
         reason = event_data and event_data.reason or nil,
@@ -2332,6 +3642,11 @@ end)
 mp.observe_property("time-pos", "number", function(_, value)
     if value ~= nil then
         emit("time-pos")
+    end
+end)
+mp.observe_property("paused-for-cache", "bool", function(_, value)
+    if value ~= nil then
+        emit("paused-for-cache", {{ paused_for_cache = value }})
     end
 end)
 mp.observe_property("eof-reached", "bool", function(_, value)
@@ -2609,6 +3924,106 @@ fn validate_faulting_http_request_accounting(
     {
         return Err(format!(
             "faulting HTTP did not retain exactly one premature response: {requests:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stalled_http_request_accounting(
+    requests: &[HttpStallRequestEvidence],
+    generated_media_bytes: usize,
+    require_stalled_connection_released: bool,
+) -> Result<(), String> {
+    if requests.is_empty() {
+        return Err("stalled HTTP request accounting was empty".to_owned());
+    }
+    for (index, request) in requests.iter().enumerate() {
+        if request.ordinal != index + 1
+            || request.path != REAL_MPV_HTTP_STALL_ROUTE
+            || !request.peer_ipv4_loopback
+            || request.status_code != 200
+            || request.write_error.is_some()
+        {
+            return Err(format!(
+                "stalled HTTP request accounting drifted at row {index}: {request:?}"
+            ));
+        }
+        require_ipv4_loopback_endpoint(&request.peer_endpoint, "stalled HTTP connected peer")?;
+        if request.method == "HEAD" {
+            if request.content_length_header != Some(generated_media_bytes)
+                || request.transfer_encoding.is_some()
+                || request.transmitted_body_bytes != 0
+                || request.stall_injected
+                || request.stalled_for_ms.is_some()
+                || request.server_response_retained_at_recovery_get
+                || !request.connection_released
+                || !request.response_completed
+            {
+                return Err(format!(
+                    "stalled HTTP HEAD probe unexpectedly carried a body or stall: {request:?}"
+                ));
+            }
+        } else if request.method == "GET" {
+            if request.range_header.as_deref() != Some("bytes=0-") {
+                return Err(format!(
+                    "stalled HTTP media GET did not use the exact byte-zero non-seekable contract: {request:?}"
+                ));
+            }
+        } else {
+            return Err(format!(
+                "stalled HTTP request method was not explicitly accounted: {request:?}"
+            ));
+        }
+    }
+    let media_gets = requests
+        .iter()
+        .filter(|request| request.method == "GET")
+        .collect::<Vec<_>>();
+    if media_gets.len() != 2 {
+        return Err(format!(
+            "stalled HTTP expected exactly one open stalled GET and one complete recovery GET; requests={requests:?}"
+        ));
+    }
+    let stalled = media_gets[0];
+    let stalled_for_ms = stalled.stalled_for_ms.ok_or_else(|| {
+        format!("stalled HTTP first GET did not record the recovery-request boundary: {stalled:?}")
+    })?;
+    if stalled.content_length_header != Some(generated_media_bytes)
+        || stalled.transfer_encoding.is_some()
+        || stalled.transmitted_body_bytes != REAL_MPV_HTTP_STALL_PREFIX_BYTES
+        || !stalled.stall_injected
+        || stalled_for_ms < REAL_MPV_HTTP_STALL_MINIMUM_DURATION.as_millis()
+        || stalled_for_ms > REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT.as_millis()
+        || !stalled.server_response_retained_at_recovery_get
+        || stalled.connection_released != require_stalled_connection_released
+        || stalled.response_completed
+    {
+        return Err(format!(
+            "stalled HTTP first media GET did not retain the exact bounded open byte-silent response: {stalled:?}"
+        ));
+    }
+    let complete = media_gets[1];
+    if complete.content_length_header != Some(generated_media_bytes)
+        || complete.transfer_encoding.is_some()
+        || complete.transmitted_body_bytes != generated_media_bytes
+        || complete.stall_injected
+        || complete.stalled_for_ms.is_some()
+        || complete.server_response_retained_at_recovery_get
+        || !complete.connection_released
+        || !complete.response_completed
+    {
+        return Err(format!(
+            "stalled HTTP recovery GET was not a complete response: {complete:?}"
+        ));
+    }
+    if requests
+        .iter()
+        .filter(|request| request.stall_injected)
+        .count()
+        != 1
+    {
+        return Err(format!(
+            "stalled HTTP did not retain exactly one stalled response: {requests:?}"
         ));
     }
     Ok(())
@@ -3120,6 +4535,7 @@ mod tests {
         assert_eq!(parsed.timeout, Duration::from_millis(1234));
         assert!(!parsed.exercise_recovery);
         assert!(!parsed.exercise_http_fault);
+        assert!(!parsed.exercise_http_stall);
 
         let mut recovery_args = args.clone();
         recovery_args.push("--exercise-owned-mpv-recovery".to_owned());
@@ -3135,9 +4551,41 @@ mod tests {
                 .expect("faulting HTTP options should parse")
                 .exercise_http_fault
         );
-        let mut conflicting_args = recovery_args;
+        let mut stalled_http_args = args.clone();
+        let timeout_index = stalled_http_args
+            .iter()
+            .position(|value| value == "1234")
+            .expect("timeout argument");
+        stalled_http_args[timeout_index] = "50000".to_owned();
+        stalled_http_args.push("--exercise-stalled-http".to_owned());
+        assert!(
+            parse_real_mpv_vertical_options(&stalled_http_args)
+                .expect("stalled HTTP options should parse")
+                .exercise_http_stall
+        );
+        let mut too_short_stalled_http_args = args.clone();
+        too_short_stalled_http_args.push("--exercise-stalled-http".to_owned());
+        assert!(parse_real_mpv_vertical_options(&too_short_stalled_http_args).is_err());
+
+        let mut conflicting_args = recovery_args.clone();
         conflicting_args.push("--exercise-faulting-http-recovery".to_owned());
         assert!(parse_real_mpv_vertical_options(&conflicting_args).is_err());
+        let mut recovery_stall_conflict = recovery_args;
+        let timeout_index = recovery_stall_conflict
+            .iter()
+            .position(|value| value == "1234")
+            .expect("timeout argument");
+        recovery_stall_conflict[timeout_index] = "50000".to_owned();
+        recovery_stall_conflict.push("--exercise-stalled-http".to_owned());
+        assert!(parse_real_mpv_vertical_options(&recovery_stall_conflict).is_err());
+        let mut fault_stall_conflict = http_fault_args;
+        let timeout_index = fault_stall_conflict
+            .iter()
+            .position(|value| value == "1234")
+            .expect("timeout argument");
+        fault_stall_conflict[timeout_index] = "50000".to_owned();
+        fault_stall_conflict.push("--exercise-stalled-http".to_owned());
+        assert!(parse_real_mpv_vertical_options(&fault_stall_conflict).is_err());
 
         assert!(parse_real_mpv_vertical_options(&["--real-mpv-vertical".to_owned()]).is_err());
         let mut zero = args;
@@ -3199,6 +4647,8 @@ mod tests {
         assert!(script.contains(r#"mp.register_event("end-file""#));
         assert!(script.contains(r#"mp.observe_property("pause""#));
         assert!(script.contains(r#"mp.observe_property("time-pos""#));
+        assert!(script.contains(r#"mp.observe_property("paused-for-cache""#));
+        assert!(script.contains("paused_for_cache = value"));
         assert!(script.contains(r#"mp.observe_property("eof-reached""#));
         assert!(script.contains("eof_reached = value"));
         assert!(script.contains(r#"mp.get_property_native("input-ipc-server")"#));
@@ -3569,6 +5019,130 @@ mod tests {
             release_error.contains("playlistIndex did not match the exact closed request schema"),
             "unexpected rejection reason: {release_error}"
         );
+    }
+
+    #[test]
+    fn stalled_http_server_keeps_first_get_open_while_serving_complete_recovery_get() {
+        fn write_get(stream: &mut TcpStream, endpoint: &str) {
+            stream
+                .write_all(
+                    format!(
+                        "GET {REAL_MPV_HTTP_STALL_ROUTE} HTTP/1.1\r\nHost: {endpoint}\r\nRange: bytes=0-\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .expect("write stalled HTTP GET");
+        }
+
+        let generated_media = pcm_au_bytes(REAL_MPV_HTTP_STALL_DURATION_SECONDS);
+        let server =
+            StalledLoopbackHttpServer::start(generated_media.clone()).expect("start fixture");
+        let endpoint = server.endpoint();
+        require_ipv4_loopback_endpoint(&endpoint, "unit stalled HTTP listener")
+            .expect("strict listener");
+
+        let mut stalled_stream =
+            TcpStream::connect(&endpoint).expect("connect first stalled loopback request");
+        stalled_stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set stalled response timeout");
+        write_get(&mut stalled_stream, &endpoint);
+        let mut first_response = Vec::new();
+        let mut buffer = [0_u8; 16 * 1024];
+        let header_end = loop {
+            let read = stalled_stream
+                .read(&mut buffer)
+                .expect("read stalled HTTP response prefix");
+            assert_ne!(read, 0, "stalled response closed before exact prefix");
+            first_response.extend_from_slice(&buffer[..read]);
+            if let Some(index) = first_response
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
+                let header_end = index + 4;
+                if first_response.len() - header_end >= REAL_MPV_HTTP_STALL_PREFIX_BYTES {
+                    break header_end;
+                }
+            }
+        };
+        let expected_content_length = format!("Content-Length: {}", generated_media.len());
+        assert!(
+            first_response[..header_end]
+                .windows(expected_content_length.len())
+                .any(|window| window == expected_content_length.as_bytes()),
+            "stalled response must declare the complete generated body"
+        );
+        assert_eq!(
+            first_response.len() - header_end,
+            REAL_MPV_HTTP_STALL_PREFIX_BYTES,
+            "stalled response must stop at the deterministic playable prefix"
+        );
+        stalled_stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set byte-silence probe timeout");
+        let no_byte_result = stalled_stream.read(&mut buffer[..1]);
+        assert!(
+            matches!(
+                no_byte_result,
+                Err(ref error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    )
+            ),
+            "first response must remain open without another byte: {no_byte_result:?}"
+        );
+
+        let mut recovery_stream =
+            TcpStream::connect(&endpoint).expect("connect complete recovery request");
+        recovery_stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set recovery response timeout");
+        write_get(&mut recovery_stream, &endpoint);
+        let mut recovery_response = Vec::new();
+        recovery_stream
+            .read_to_end(&mut recovery_response)
+            .expect("read complete recovery response");
+        let recovery_header_end = recovery_response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+            .expect("recovery response header boundary");
+        assert_eq!(
+            recovery_response.len() - recovery_header_end,
+            generated_media.len(),
+            "recovery response must carry the complete generated body"
+        );
+
+        let requests = server
+            .wait_for_media_gets(2, Duration::from_secs(5))
+            .expect("two media GETs");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].stall_injected);
+        assert!(requests[0].server_response_retained_at_recovery_get);
+        assert!(!requests[0].connection_released);
+        assert!(!requests[0].response_completed);
+        assert!(requests[1].response_completed);
+        assert!(
+            validate_stalled_http_request_accounting(&requests, generated_media.len(), false)
+                .is_err(),
+            "the fast unit fixture must prove the independent 25-second lower bound is enforced"
+        );
+        let mut bounded_requests = requests;
+        bounded_requests[0].stalled_for_ms = Some(REAL_MPV_HTTP_STALL_MINIMUM_DURATION.as_millis());
+        validate_stalled_http_request_accounting(&bounded_requests, generated_media.len(), false)
+            .expect("otherwise exact in-flight stalled request accounting");
+
+        let mut released_requests = server.release().expect("release stalled HTTP server");
+        assert!(released_requests[0].connection_released);
+        released_requests[0].stalled_for_ms =
+            Some(REAL_MPV_HTTP_STALL_MINIMUM_DURATION.as_millis());
+        validate_stalled_http_request_accounting(&released_requests, generated_media.len(), true)
+            .expect("exact final stalled request accounting");
+        drop(stalled_stream);
+        let rebound =
+            TcpListener::bind(&endpoint).expect("stalled HTTP listener socket should be released");
+        drop(rebound);
     }
 
     #[test]
