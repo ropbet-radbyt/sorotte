@@ -200,7 +200,7 @@ impl MpvJsonIpcClient {
         self.generation
     }
 
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) fn connect_with_command_timeout(
         path: &Path,
         command_timeout: Duration,
@@ -213,7 +213,7 @@ impl MpvJsonIpcClient {
         ))
     }
 
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, any(unix, windows)))]
     pub(crate) fn connect_with_command_timeout_and_initial_request_id(
         path: &Path,
         command_timeout: Duration,

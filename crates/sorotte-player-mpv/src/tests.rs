@@ -39,6 +39,8 @@ mod ipc_named_pipe_fault_tests;
 #[cfg(windows)]
 mod ipc_process_fault_tests;
 mod ipc_tests;
+#[cfg(unix)]
+mod ipc_unix_socket_fault_tests;
 mod legacy_ui_tests;
 mod network_options_lua_tests;
 mod smoke_tests;
