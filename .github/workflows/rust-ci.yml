@@ -707,7 +707,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: mpv-player/mpv
-          ref: 2c219aa822df18a1b7fd9abe3e151cd93ad67307
+          # Peeled commit for annotated tag v0.41.0
+          ref: 41f6a645068483470267271e1d09966ca3b9f413
           path: target/mpv-supported
           persist-credentials: false
 
@@ -715,7 +716,7 @@ jobs:
         working-directory: target/mpv-supported
         run: >-
           test "$(git rev-parse 'HEAD^{commit}')" =
-          "2c219aa822df18a1b7fd9abe3e151cd93ad67307"
+          "41f6a645068483470267271e1d09966ca3b9f413"
 
       - name: Build minimum supported mpv
         working-directory: target/mpv-supported

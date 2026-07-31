@@ -23,7 +23,7 @@ PACKAGE_PATH_BOUNDARY_TEST_PATH = REPO_ROOT / "scripts" / "package-path-boundary
 CI_REQUIREMENTS = REPO_ROOT / "requirements" / "ci-policy.txt"
 LEGACY_REQUIREMENTS = REPO_ROOT / "requirements" / "legacy-python-interop.txt"
 LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
-MPV_SUPPORTED_SHA = "2c219aa822df18a1b7fd9abe3e151cd93ad67307"
+MPV_SUPPORTED_SHA = "41f6a645068483470267271e1d09966ca3b9f413"
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
     "actions/checkout": (
