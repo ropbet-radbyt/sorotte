@@ -1,4 +1,20 @@
-use std::path::Path;
+use std::{cell::Cell, path::Path};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum NativeInputMode {
+    #[default]
+    StrictPhysical,
+    UiaOnly,
+}
+
+impl NativeInputMode {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::StrictPhysical => "strict-physical",
+            Self::UiaOnly => "uia-only",
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeControlKind {
@@ -122,7 +138,35 @@ type PlatformWindowHandle = windows_sys::Win32::Foundation::HWND;
 type PlatformWindowHandle = ();
 
 #[derive(Default)]
-pub(super) struct PlatformNativeGuiDriver;
+pub(super) struct PlatformNativeGuiDriver {
+    input_mode: NativeInputMode,
+    desktop_input_attempts: Cell<usize>,
+}
+
+impl PlatformNativeGuiDriver {
+    pub(super) fn new(input_mode: NativeInputMode) -> Self {
+        Self {
+            input_mode,
+            desktop_input_attempts: Cell::new(0),
+        }
+    }
+
+    pub(super) fn desktop_input_attempt_count(&self) -> usize {
+        self.desktop_input_attempts.get()
+    }
+
+    pub(super) fn begin_desktop_input(&self) -> Result<(), String> {
+        self.desktop_input_attempts
+            .set(self.desktop_input_attempts.get().saturating_add(1));
+        if self.input_mode == NativeInputMode::UiaOnly {
+            return Err(
+                "desktop-wide Win32 input is disabled by --input-mode uia-only (SendInput and cursor movement)"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
 
 #[cfg(not(target_os = "windows"))]
 #[path = "platform_driver/non_windows_impl.rs"]
@@ -163,3 +207,23 @@ mod png;
 #[cfg(target_os = "windows")]
 #[path = "platform_driver/windows_impl.rs"]
 mod windows_impl;
+
+#[cfg(test)]
+mod input_policy_tests {
+    use super::*;
+
+    #[test]
+    fn strict_physical_mode_allows_and_counts_desktop_input() {
+        let driver = PlatformNativeGuiDriver::new(NativeInputMode::StrictPhysical);
+        driver.begin_desktop_input().unwrap();
+        assert_eq!(driver.desktop_input_attempt_count(), 1);
+    }
+
+    #[test]
+    fn uia_only_mode_blocks_and_counts_desktop_input_before_dispatch() {
+        let driver = PlatformNativeGuiDriver::new(NativeInputMode::UiaOnly);
+        let error = driver.begin_desktop_input().unwrap_err();
+        assert!(error.contains("Win32 input is disabled"));
+        assert_eq!(driver.desktop_input_attempt_count(), 1);
+    }
+}

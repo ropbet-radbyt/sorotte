@@ -16,6 +16,7 @@ enum NamedControlInteraction {
 
 impl PlatformNativeGuiDriver {
     pub(super) fn invoke_named_control_internal(
+        &self,
         window: PlatformWindowHandle,
         name: &str,
         control_kind: NativeControlKind,
@@ -27,15 +28,16 @@ impl PlatformNativeGuiDriver {
         } else {
             NamedControlInteraction::Accessibility
         };
-        Self::interact_with_named_control(window, name, control_kind, prefer_last, interaction)
+        self.interact_with_named_control(window, name, control_kind, prefer_last, interaction)
     }
 
     pub(super) fn activate_named_control_by_keyboard_internal(
+        &self,
         window: PlatformWindowHandle,
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::interact_with_named_control(
+        self.interact_with_named_control(
             window,
             name,
             control_kind,
@@ -45,6 +47,7 @@ impl PlatformNativeGuiDriver {
     }
 
     fn interact_with_named_control(
+        &self,
         window: PlatformWindowHandle,
         name: &str,
         control_kind: NativeControlKind,
@@ -182,7 +185,7 @@ impl PlatformNativeGuiDriver {
 
                 if interaction == NamedControlInteraction::PhysicalClick {
                     let click_result =
-                        Self::click_element_center(window, automation, &candidate, name);
+                        self.click_element_center(window, automation, &candidate, name);
                     if click_result.is_ok() {
                         return Ok(());
                     }
@@ -205,7 +208,7 @@ impl PlatformNativeGuiDriver {
                                 control_kind.label()
                             ));
                         }
-                        Self::send_enter_key().map_err(|error| {
+                        self.send_enter_key().map_err(|error| {
                             format!(
                                 "failed to send Enter to focused {} named {name:?}: {error}",
                                 control_kind.label()
@@ -237,7 +240,7 @@ impl PlatformNativeGuiDriver {
                 if control_kind == NativeControlKind::Button && is_local_ready_button_request(name)
                 {
                     let click_result =
-                        Self::click_element_center(window, automation, &candidate, name);
+                        self.click_element_center(window, automation, &candidate, name);
                     if click_result.is_ok() {
                         return Ok(());
                     }
@@ -286,6 +289,7 @@ impl PlatformNativeGuiDriver {
     }
 
     pub(super) fn scroll_named_control_internal(
+        &self,
         window: PlatformWindowHandle,
         name: &str,
         control_kind: NativeControlKind,
@@ -361,6 +365,10 @@ impl PlatformNativeGuiDriver {
                     ));
                 };
 
+                self.begin_desktop_input().map_err(|error| {
+                    format!("refused desktop-wide cursor movement for {name:?}: {error}")
+                })?;
+
                 let mut original_cursor = POINT { x: 0, y: 0 };
                 // SAFETY: `window` is the GUI HWND under test. Cursor APIs are process-global
                 // Win32 calls used only by the native smoke driver and checked for failure.
@@ -375,7 +383,8 @@ impl PlatformNativeGuiDriver {
                     }
                 }
                 thread::sleep(Duration::from_millis(80));
-                let wheel_result = Self::send_mouse_wheel(wheel_delta)
+                let wheel_result = self
+                    .send_mouse_wheel(wheel_delta)
                     .map_err(|error| format!("failed to send mouse-wheel input: {error}"));
                 // Keep the cursor over the target until egui has processed the wheel event.
                 // Restoring it immediately can move hover outside the ScrollArea before the

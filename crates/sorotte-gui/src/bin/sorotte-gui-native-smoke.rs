@@ -30,11 +30,13 @@ struct NativeSmokeOptions {
     binary_path: Option<PathBuf>,
     timeout: Duration,
     format: OutputFormat,
+    input_mode: NativeInputMode,
     keep_open: bool,
     scenario_filters: Vec<String>,
 }
 
 struct NativeSmokeReport {
+    input_mode: NativeInputMode,
     binary_path: String,
     pid: u32,
     window_title: String,
@@ -210,7 +212,8 @@ const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 mod platform_driver;
 use native_smoke_runner::{run_native_smoke, run_real_mpv_vertical_from_args};
 use platform_driver::{
-    NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, PlatformNativeGuiDriver,
+    NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, NativeInputMode,
+    PlatformNativeGuiDriver,
 };
 
 #[path = "sorotte-gui-native-smoke/native_smoke_accessibility.rs"]

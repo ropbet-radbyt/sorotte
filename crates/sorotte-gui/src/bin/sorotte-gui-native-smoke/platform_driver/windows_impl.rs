@@ -130,7 +130,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn press_escape(&self, window: Self::WindowHandle) -> Result<(), String> {
         Self::ensure_window_foreground(window, "native smoke window before Escape")?;
         thread::sleep(Duration::from_millis(80));
-        Self::send_escape_key()
+        self.send_escape_key()
             .map_err(|error| format!("failed to send Escape to native smoke window: {error}"))?;
         thread::sleep(Duration::from_millis(120));
         Ok(())
@@ -139,7 +139,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
         Self::ensure_window_foreground(window, "native smoke window before PageDown")?;
         thread::sleep(Duration::from_millis(80));
-        Self::send_page_down_key()
+        self.send_page_down_key()
             .map_err(|error| format!("failed to send PageDown to native smoke window: {error}"))?;
         thread::sleep(Duration::from_millis(120));
         Ok(())
@@ -148,7 +148,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String> {
         Self::ensure_window_foreground(window, "native smoke window before PageUp")?;
         thread::sleep(Duration::from_millis(80));
-        Self::send_page_up_key()
+        self.send_page_up_key()
             .map_err(|error| format!("failed to send PageUp to native smoke window: {error}"))?;
         thread::sleep(Duration::from_millis(120));
         Ok(())
@@ -160,7 +160,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::scroll_named_control_internal(window, name, control_kind, -120)
+        self.scroll_named_control_internal(window, name, control_kind, -120)
     }
 
     fn scroll_named_control_up(
@@ -169,7 +169,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::scroll_named_control_internal(window, name, control_kind, 120)
+        self.scroll_named_control_internal(window, name, control_kind, 120)
     }
 
     fn window_title(&self, window: Self::WindowHandle) -> Result<String, String> {
@@ -225,7 +225,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         value: &str,
         submit: bool,
     ) -> Result<(), String> {
-        Self::set_named_edit_value(window, name, value, submit)
+        PlatformNativeGuiDriver::set_named_edit_value(self, window, name, value, submit)
     }
 
     fn invoke_named_control(
@@ -234,7 +234,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::invoke_named_control_internal(window, name, control_kind, false, false)
+        self.invoke_named_control_internal(window, name, control_kind, false, false)
     }
 
     fn click_named_control(
@@ -243,7 +243,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::invoke_named_control_internal(window, name, control_kind, false, true)
+        self.invoke_named_control_internal(window, name, control_kind, false, true)
     }
 
     fn activate_named_control_by_keyboard(
@@ -252,7 +252,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::activate_named_control_by_keyboard_internal(window, name, control_kind)
+        self.activate_named_control_by_keyboard_internal(window, name, control_kind)
     }
 
     fn capture_window_png(

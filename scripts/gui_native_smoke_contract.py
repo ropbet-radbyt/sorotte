@@ -21,6 +21,7 @@ from typing import Any
 SUMMARY_KIND = "sorotte-gui-native-smoke-contract"
 REQUIRED_REPORT_KEYS = {
     "result",
+    "input_mode",
     "binary",
     "pid",
     "window_title",
@@ -45,6 +46,9 @@ REQUIRED_MENU_AUTOMATION_IDS = {
     "menu.section.help",
 }
 REQUIRED_MENU_SOURCE = "uia-accesskit"
+STRICT_PHYSICAL_INPUT_MODE = "strict-physical"
+UIA_ONLY_INPUT_MODE = "uia-only"
+INPUT_MODES = (STRICT_PHYSICAL_INPUT_MODE, UIA_ONLY_INPUT_MODE)
 
 # Completion markers are deliberately behavior-facing rather than an assertion
 # count.  A runner refactor that removes a scenario or turns it into a no-op
@@ -159,6 +163,56 @@ SCENARIO_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
     ),
     "menu-open-media": ("native.menu.open-media.attached",),
 }
+UIA_ONLY_REQUIRED_STEPS = (
+    "uia-only-menu-inventory",
+    "uia-only-file-exit",
+    "uia-only-file-exit-lifecycle-observed",
+)
+UIA_ONLY_CAPABILITY_CONTRACTS: dict[
+    str, tuple[str, str, tuple[str, ...]]
+] = {
+    "native.menu.inventory": (
+        "required-pass",
+        "uia-accesskit",
+        (
+            "menu.section.file",
+            "menu.section.playback",
+            "menu.section.advanced",
+            "menu.section.window",
+            "menu.section.help",
+        ),
+    ),
+    "native.shutdown.file-exit": (
+        "required-pass",
+        "uia-accesskit+eframe+lifecycle-jsonl",
+        (
+            "exit-action-applied",
+            "viewport-close-requested",
+            "runtime-stop-requested",
+            "runtime-worker-stopped",
+            "app-drop-complete",
+        ),
+    ),
+    "native.menu.physical-input": (
+        "optional-skip",
+        "local-uia-mode",
+        (
+            "reason=local-uia-mode",
+            "win32-sendinput=disabled",
+            "desktop-input-attempt-count=0",
+        ),
+    ),
+    "native.input.focused-keyboard": (
+        "optional-skip",
+        "local-uia-mode",
+        (
+            "reason=local-uia-mode",
+            "focused-keyboard-fallback=disabled",
+            "win32-sendinput=disabled",
+            "desktop-input-attempt-count=0",
+        ),
+    ),
+}
 
 
 class NativeSmokeContractError(ValueError):
@@ -230,12 +284,23 @@ def validate_native_smoke(
     stderr_text: str,
     scenarios: Iterable[str],
     *,
+    input_mode: str = STRICT_PHYSICAL_INPUT_MODE,
     allowed_stderr_patterns: Iterable[str] = (),
     expected_binary: pathlib.Path | None = None,
     expected_binary_sha256: str | None = None,
     producer_exit_code: int = 0,
 ) -> Mapping[str, Any]:
-    required_scenarios = normalize_scenarios(scenarios)
+    if input_mode not in INPUT_MODES:
+        raise NativeSmokeContractError(f"unknown native input mode: {input_mode!r}")
+    scenario_inventory = tuple(scenarios)
+    if input_mode == STRICT_PHYSICAL_INPUT_MODE:
+        required_scenarios = normalize_scenarios(scenario_inventory)
+    else:
+        if scenario_inventory:
+            raise NativeSmokeContractError(
+                "uia-only native smoke does not accept strict scenario evidence"
+            )
+        required_scenarios = ()
     report = _parse_report(report_text)
     errors: list[str] = []
 
@@ -249,6 +314,12 @@ def validate_native_smoke(
 
     if report.get("result") != "ok":
         errors.append(f"native report result must be 'ok', got {report.get('result')!r}")
+
+    if report.get("input_mode") != input_mode:
+        errors.append(
+            "native report input mode differs from the requested validator mode: "
+            f"expected={input_mode!r}, got={report.get('input_mode')!r}"
+        )
 
     if not _is_int(producer_exit_code):
         errors.append("native producer exit code must be an integer")
@@ -383,28 +454,52 @@ def validate_native_smoke(
                 + ", ".join(forbidden_steps)
             )
 
-        step_set = set(steps)
-        for step in GLOBAL_REQUIRED_STEPS:
-            if step not in step_set:
-                errors.append(f"global native completion step is missing: {step}")
-        for scenario in required_scenarios:
-            for step in SCENARIO_REQUIRED_STEPS[scenario]:
+        if input_mode == STRICT_PHYSICAL_INPUT_MODE:
+            step_set = set(steps)
+            for step in GLOBAL_REQUIRED_STEPS:
                 if step not in step_set:
-                    errors.append(
-                        f"scenario {scenario!r} is missing completion step {step!r}"
-                    )
+                    errors.append(f"global native completion step is missing: {step}")
+            for scenario in required_scenarios:
+                for step in SCENARIO_REQUIRED_STEPS[scenario]:
+                    if step not in step_set:
+                        errors.append(
+                            f"scenario {scenario!r} is missing completion step {step!r}"
+                        )
+        elif steps != list(UIA_ONLY_REQUIRED_STEPS):
+            errors.append(
+                "uia-only native smoke must report the exact local interaction inventory: "
+                f"expected={list(UIA_ONLY_REQUIRED_STEPS)!r}, got={steps!r}"
+            )
 
-    if report.get("interaction_contract") != "verified":
+    expected_interaction_contract = (
+        "verified"
+        if input_mode == STRICT_PHYSICAL_INPUT_MODE
+        else "local-uia-only-non-authoritative"
+    )
+    if report.get("interaction_contract") != expected_interaction_contract:
         errors.append(
-            "interaction contract must be required-pass ('verified'), "
+            "interaction contract does not match the requested input mode: "
+            f"expected={expected_interaction_contract!r}, "
             f"got {report.get('interaction_contract')!r}"
         )
 
-    required_capability_ids = list(GLOBAL_REQUIRED_CAPABILITIES)
-    for scenario in required_scenarios:
-        required_capability_ids.extend(
-            SCENARIO_REQUIRED_CAPABILITIES.get(scenario, ())
-        )
+    if input_mode == STRICT_PHYSICAL_INPUT_MODE:
+        required_capability_ids = list(GLOBAL_REQUIRED_CAPABILITIES)
+        for scenario in required_scenarios:
+            required_capability_ids.extend(
+                SCENARIO_REQUIRED_CAPABILITIES.get(scenario, ())
+            )
+        expected_capability_contracts = {
+            capability_id: (
+                "required-pass",
+                CAPABILITY_CONTRACTS[capability_id][0],
+                CAPABILITY_CONTRACTS[capability_id][1],
+            )
+            for capability_id in required_capability_ids
+        }
+    else:
+        required_capability_ids = list(UIA_ONLY_CAPABILITY_CONTRACTS)
+        expected_capability_contracts = UIA_ONLY_CAPABILITY_CONTRACTS
     capability_outcomes = report.get("capability_outcomes")
     observed_capabilities: dict[str, Mapping[str, Any]] = {}
     if not isinstance(capability_outcomes, list):
@@ -453,11 +548,13 @@ def validate_native_smoke(
             required_capability_set & set(observed_capabilities)
         ):
             capability = observed_capabilities[capability_id]
-            expected_source, expected_evidence = CAPABILITY_CONTRACTS[capability_id]
-            if capability.get("outcome") != "required-pass":
+            expected_outcome, expected_source, expected_evidence = (
+                expected_capability_contracts[capability_id]
+            )
+            if capability.get("outcome") != expected_outcome:
                 errors.append(
                     f"native capability {capability_id!r} must have outcome "
-                    f"'required-pass', got {capability.get('outcome')!r}"
+                    f"{expected_outcome!r}, got {capability.get('outcome')!r}"
                 )
             if capability.get("source") != expected_source:
                 errors.append(
@@ -505,6 +602,7 @@ def validate_native_smoke(
 def _summary(
     *,
     status: str,
+    input_mode: str,
     scenarios: Iterable[str],
     report_text: str,
     errors: Iterable[str],
@@ -516,6 +614,8 @@ def _summary(
         "schema_version": 1,
         "kind": SUMMARY_KIND,
         "status": status,
+        "input_mode": input_mode,
+        "authoritative": input_mode == STRICT_PHYSICAL_INPUT_MODE,
         "required_scenarios": list(scenarios),
         "report_sha256": hashlib.sha256(report_text.encode("utf-8")).hexdigest(),
         "expected_binary": (
@@ -544,6 +644,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=pathlib.Path)
     parser.add_argument("--stderr", type=pathlib.Path)
     parser.add_argument("--summary", type=pathlib.Path)
+    parser.add_argument(
+        "--input-mode",
+        choices=INPUT_MODES,
+        default=STRICT_PHYSICAL_INPUT_MODE,
+    )
     parser.add_argument("--scenario", action="append", default=[])
     parser.add_argument("--allow-stderr-regex", action="append", default=[])
     parser.add_argument("--expected-binary", type=pathlib.Path)
@@ -566,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             or options.expected_binary
             or options.expected_binary_sha256
             or options.producer_exit_code is not None
+            or options.input_mode != STRICT_PHYSICAL_INPUT_MODE
         ):
             print(
                 "--print-default-scenarios cannot be combined with validation options",
@@ -583,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
             or options.expected_binary
             or options.expected_binary_sha256
             or options.producer_exit_code is not None
+            or options.input_mode != STRICT_PHYSICAL_INPUT_MODE
         ):
             print(
                 "--check-scenarios cannot be combined with report validation",
@@ -617,11 +724,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         report_text = _read_text(options.report)
         stderr_text = _read_text(options.stderr)
-        scenarios = normalize_scenarios(options.scenario)
+        scenarios = (
+            normalize_scenarios(options.scenario)
+            if options.input_mode == STRICT_PHYSICAL_INPUT_MODE
+            else tuple(options.scenario)
+        )
         validate_native_smoke(
             report_text,
             stderr_text,
             scenarios,
+            input_mode=options.input_mode,
             allowed_stderr_patterns=options.allow_stderr_regex,
             expected_binary=options.expected_binary,
             expected_binary_sha256=options.expected_binary_sha256,
@@ -633,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
             options.summary,
             _summary(
                 status="failure",
+                input_mode=options.input_mode,
                 scenarios=scenarios,
                 report_text=report_text,
                 errors=errors,
@@ -647,7 +760,12 @@ def main(argv: list[str] | None = None) -> int:
     _write_summary(
         options.summary,
         _summary(
-            status="required-pass",
+            status=(
+                "required-pass"
+                if options.input_mode == STRICT_PHYSICAL_INPUT_MODE
+                else "local-pass"
+            ),
+            input_mode=options.input_mode,
             scenarios=scenarios,
             report_text=report_text,
             errors=(),
@@ -656,11 +774,13 @@ def main(argv: list[str] | None = None) -> int:
             producer_exit_code=options.producer_exit_code,
         ),
     )
-    print(
-        "native smoke evidence accepted for required scenarios: "
-        + ", ".join(scenarios),
-        file=sys.stderr,
-    )
+    if options.input_mode == STRICT_PHYSICAL_INPUT_MODE:
+        message = "native smoke evidence accepted for required scenarios: " + ", ".join(
+            scenarios
+        )
+    else:
+        message = "native UIA-only evidence accepted as local non-authoritative development evidence"
+    print(message, file=sys.stderr)
     return 0
 
 

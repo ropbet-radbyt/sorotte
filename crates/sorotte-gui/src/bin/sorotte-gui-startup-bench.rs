@@ -563,7 +563,7 @@ fn run_sample(request: StartupSampleRequest<'_>) -> Result<StartupRun, String> {
         tcp_session,
     };
 
-    let driver = PlatformNativeGuiDriver;
+    let driver = PlatformNativeGuiDriver::default();
     let started_at = Instant::now();
     let mut child = match launch_sorotte_gui_with_retry(&driver, binary_path, launch, timeout) {
         Ok(child) => child,

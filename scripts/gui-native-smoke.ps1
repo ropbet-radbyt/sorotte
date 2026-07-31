@@ -3,6 +3,8 @@ param(
     [switch]$KeepOpen,
     [string]$BinaryPath,
     [int]$TimeoutMs = 80000,
+    [ValidateSet("StrictPhysical", "UiaOnly")]
+    [string]$InputMode = "StrictPhysical",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
 )
@@ -16,6 +18,17 @@ if ($KeepOpen) {
 
 if ($TimeoutMs -le 0) {
     throw "-TimeoutMs must be greater than zero"
+}
+
+$inputModeArgument = if ($InputMode -eq "StrictPhysical") {
+    "strict-physical"
+}
+else {
+    "uia-only"
+}
+
+if ($InputMode -eq "UiaOnly" -and $ExtraArgs.Count -ne 0) {
+    throw "-InputMode UiaOnly runs a fixed local UI Automation inventory and does not accept --scenario"
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -37,7 +50,7 @@ while ($index -lt $ExtraArgs.Length) {
     $index += 2
 }
 
-if ($requestedScenarios.Count -eq 0) {
+if ($InputMode -eq "StrictPhysical" -and $requestedScenarios.Count -eq 0) {
     $defaultScenarios = @(& $pythonCommand.Source $validatorPath --print-default-scenarios)
     if ($LASTEXITCODE -ne 0 -or $defaultScenarios.Count -eq 0) {
         throw "failed to load the required native-smoke scenario inventory"
@@ -47,14 +60,16 @@ if ($requestedScenarios.Count -eq 0) {
     }
 }
 
-$scenarioCheckArgs = @($validatorPath, "--check-scenarios")
-foreach ($scenario in $requestedScenarios) {
-    $scenarioCheckArgs += "--scenario"
-    $scenarioCheckArgs += $scenario
-}
-& $pythonCommand.Source @scenarioCheckArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "required native-smoke scenario selection is invalid"
+if ($InputMode -eq "StrictPhysical") {
+    $scenarioCheckArgs = @($validatorPath, "--check-scenarios")
+    foreach ($scenario in $requestedScenarios) {
+        $scenarioCheckArgs += "--scenario"
+        $scenarioCheckArgs += $scenario
+    }
+    & $pythonCommand.Source @scenarioCheckArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "required native-smoke scenario selection is invalid"
+    }
 }
 
 $targetRoot = if ($env:CARGO_TARGET_DIR) {
@@ -81,7 +96,11 @@ else {
 }
 $binaryProvenance = if ($BinaryPath) { "caller-supplied" } else { "rebuilt-debug" }
 
-$suiteArgs = @("--json", "--binary", $effectiveBinaryPath)
+$suiteArgs = @(
+    "--json",
+    "--binary", $effectiveBinaryPath,
+    "--input-mode", $inputModeArgument
+)
 $suiteArgs += "--timeout-ms"
 $suiteArgs += [string]$TimeoutMs
 foreach ($scenario in $requestedScenarios) {
@@ -115,6 +134,8 @@ $buildWallClockTimeoutMs = 600000
 [pscustomobject]@{
     schema_version = 1
     kind = "sorotte-gui-native-smoke-invocation"
+    input_mode = $inputModeArgument
+    authoritative = $InputMode -eq "StrictPhysical"
     started_at_utc = $startedAtUtc
     timeout_ms = $TimeoutMs
     required_scenarios = @($requestedScenarios)
@@ -277,6 +298,8 @@ if ($binarySha256Before) {
 [pscustomobject]@{
     schema_version = 1
     kind = "sorotte-gui-native-smoke-invocation"
+    input_mode = $inputModeArgument
+    authoritative = $InputMode -eq "StrictPhysical"
     started_at_utc = $startedAtUtc
     finished_at_utc = [DateTime]::UtcNow.ToString("o")
     timeout_ms = $TimeoutMs
@@ -302,6 +325,7 @@ else {
 }
 $validatorArgs = @(
     $validatorPath,
+    "--input-mode", $inputModeArgument,
     "--report", $reportPath,
     "--stderr", $stderrPath,
     "--summary", $summaryPath,
@@ -327,9 +351,9 @@ if ($nativeExitCode -ne 0) {
 }
 
 if ($validatorExitCode -ne 0) {
-    Write-Error "native smoke report failed its strict contract; artifacts: $artifactDirectory" -ErrorAction Continue
+    Write-Error "native smoke report failed its $inputModeArgument contract; artifacts: $artifactDirectory" -ErrorAction Continue
     exit $validatorExitCode
 }
 
-Write-Verbose "Strict native-smoke artifacts: $artifactDirectory"
+Write-Verbose "Native-smoke ($inputModeArgument) artifacts: $artifactDirectory"
 exit 0

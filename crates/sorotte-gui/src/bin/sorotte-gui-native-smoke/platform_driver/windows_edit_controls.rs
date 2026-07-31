@@ -146,6 +146,7 @@ impl PlatformNativeGuiDriver {
     }
 
     fn set_edit_element_value(
+        &self,
         window: PlatformWindowHandle,
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
         value: &str,
@@ -153,11 +154,11 @@ impl PlatformNativeGuiDriver {
     ) -> Result<(), String> {
         Self::focus_window_element(window, element, "edit field for keyboard entry")?;
         thread::sleep(Duration::from_millis(120));
-        Self::send_select_all_backspace_and_type(value)
+        self.send_select_all_backspace_and_type(value)
             .map_err(|error| format!("failed keyboard fallback text entry: {error}"))?;
         thread::sleep(Duration::from_millis(120));
         if submit {
-            Self::send_enter_key()
+            self.send_enter_key()
                 .map_err(|error| format!("failed to submit edit entry with Enter key: {error}"))?;
             thread::sleep(Duration::from_millis(120));
         }
@@ -258,6 +259,7 @@ impl PlatformNativeGuiDriver {
         )
     }
     pub(super) fn set_named_edit_value(
+        &self,
         window: PlatformWindowHandle,
         name: &str,
         value: &str,
@@ -276,7 +278,8 @@ impl PlatformNativeGuiDriver {
                     }
                     let automation_id = Self::automation_element_automation_id(element);
                     if element_name == name || automation_id == name {
-                        return Self::set_edit_element_value(window, element, value, submit)
+                        return self
+                            .set_edit_element_value(window, element, value, submit)
                             .map_err(|error| {
                                 format!("failed to write edit field named {name:?}: {error}")
                             });
@@ -290,11 +293,11 @@ impl PlatformNativeGuiDriver {
                         &edit_elements,
                     )?
                 {
-                    return Self::set_edit_element_value(window, &element, value, submit).map_err(
-                        |error| {
+                    return self
+                        .set_edit_element_value(window, &element, value, submit)
+                        .map_err(|error| {
                             format!("failed to write edit field nearest label {name:?}: {error}")
-                        },
-                    );
+                        });
                 }
                 available_names.sort();
                 available_names.dedup();

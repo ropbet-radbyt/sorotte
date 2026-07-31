@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn native_png_capture_reports_unsupported_platform() {
-        let error = PlatformNativeGuiDriver
+        let error = PlatformNativeGuiDriver::default()
             .capture_window_png((), Path::new("unused.png"))
             .expect_err("non-Windows capture must report that it is unavailable");
         assert!(error.contains("implemented only on Windows"));

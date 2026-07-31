@@ -4,9 +4,12 @@ use super::{PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
     fn send_inputs(
+        &self,
         inputs: &mut [windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT],
     ) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput;
+
+        self.begin_desktop_input()?;
 
         // SAFETY: `inputs` is a valid contiguous array for the duration of the call, and the
         // element size matches the Win32 `INPUT` layout from windows-sys.
@@ -120,12 +123,13 @@ impl PlatformNativeGuiDriver {
         Self::mouse_input(MOUSEEVENTF_WHEEL, delta as u32)
     }
 
-    pub(super) fn send_mouse_wheel(delta: i32) -> Result<(), String> {
+    pub(super) fn send_mouse_wheel(&self, delta: i32) -> Result<(), String> {
         let mut inputs = [Self::mouse_input_for_wheel(delta)];
-        Self::send_inputs(&mut inputs)
+        self.send_inputs(&mut inputs)
     }
 
     pub(super) fn click_element_center(
+        &self,
         window: PlatformWindowHandle,
         automation: &windows::Win32::UI::Accessibility::IUIAutomation,
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
@@ -156,7 +160,7 @@ impl PlatformNativeGuiDriver {
             rect.bottom.saturating_add(4)
         };
         let mut prime = [Self::absolute_mouse_move_input(center_x, priming_y)?];
-        Self::send_inputs(&mut prime)
+        self.send_inputs(&mut prime)
             .map_err(|error| format!("failed to prime the pointer outside {name:?}: {error}"))?;
         thread::sleep(Duration::from_millis(80));
         let click_result = (|| -> Result<(), String> {
@@ -165,7 +169,7 @@ impl PlatformNativeGuiDriver {
                 Self::absolute_mouse_move_input(center_x, center_y)?,
                 Self::mouse_input(MOUSEEVENTF_LEFTDOWN, 0),
             ];
-            Self::send_inputs(&mut down)
+            self.send_inputs(&mut down)
                 .map_err(|error| format!("failed to press {name:?}: {error}"))?;
             // Deliver down and up in separate frames, but atomically bind each endpoint to the
             // intended absolute coordinate. Unrelated desktop pointer movement cannot redirect
@@ -175,7 +179,7 @@ impl PlatformNativeGuiDriver {
                 Self::absolute_mouse_move_input(center_x, center_y)?,
                 Self::mouse_input(MOUSEEVENTF_LEFTUP, 0),
             ];
-            Self::send_inputs(&mut up)
+            self.send_inputs(&mut up)
                 .map_err(|error| format!("failed to release {name:?}: {error}"))
         })();
         // Keep pointer ownership on the target until the next explicit interaction. A timed
@@ -230,7 +234,7 @@ impl PlatformNativeGuiDriver {
         }
     }
 
-    pub(super) fn send_select_all_backspace_and_type(value: &str) -> Result<(), String> {
+    pub(super) fn send_select_all_backspace_and_type(&self, value: &str) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL,
         };
@@ -243,7 +247,7 @@ impl PlatformNativeGuiDriver {
             Self::keyboard_input_for_vk(VK_BACK, 0),
             Self::keyboard_input_for_vk(VK_BACK, KEYEVENTF_KEYUP),
         ];
-        Self::send_inputs(&mut controls)?;
+        self.send_inputs(&mut controls)?;
 
         if value.is_empty() {
             return Ok(());
@@ -256,10 +260,10 @@ impl PlatformNativeGuiDriver {
             }
             if ch == '\n' {
                 if !text_inputs.is_empty() {
-                    Self::send_inputs(&mut text_inputs)?;
+                    self.send_inputs(&mut text_inputs)?;
                     text_inputs.clear();
                 }
-                Self::send_enter_key()?;
+                self.send_enter_key()?;
                 continue;
             }
             let mut utf16_buffer = [0u16; 2];
@@ -274,48 +278,48 @@ impl PlatformNativeGuiDriver {
         if text_inputs.is_empty() {
             Ok(())
         } else {
-            Self::send_inputs(&mut text_inputs)
+            self.send_inputs(&mut text_inputs)
         }
     }
 
-    pub(super) fn send_enter_key() -> Result<(), String> {
+    pub(super) fn send_enter_key(&self) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_RETURN};
 
         let mut enter_inputs = [
             Self::keyboard_input_for_vk(VK_RETURN, 0),
             Self::keyboard_input_for_vk(VK_RETURN, KEYEVENTF_KEYUP),
         ];
-        Self::send_inputs(&mut enter_inputs)
+        self.send_inputs(&mut enter_inputs)
     }
 
-    pub(super) fn send_escape_key() -> Result<(), String> {
+    pub(super) fn send_escape_key(&self) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_ESCAPE};
 
         let mut escape_inputs = [
             Self::keyboard_input_for_vk(VK_ESCAPE, 0),
             Self::keyboard_input_for_vk(VK_ESCAPE, KEYEVENTF_KEYUP),
         ];
-        Self::send_inputs(&mut escape_inputs)
+        self.send_inputs(&mut escape_inputs)
     }
 
-    pub(super) fn send_page_down_key() -> Result<(), String> {
+    pub(super) fn send_page_down_key(&self) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_NEXT};
 
         let mut page_down_inputs = [
             Self::keyboard_input_for_vk(VK_NEXT, 0),
             Self::keyboard_input_for_vk(VK_NEXT, KEYEVENTF_KEYUP),
         ];
-        Self::send_inputs(&mut page_down_inputs)
+        self.send_inputs(&mut page_down_inputs)
     }
 
-    pub(super) fn send_page_up_key() -> Result<(), String> {
+    pub(super) fn send_page_up_key(&self) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_PRIOR};
 
         let mut page_up_inputs = [
             Self::keyboard_input_for_vk(VK_PRIOR, 0),
             Self::keyboard_input_for_vk(VK_PRIOR, KEYEVENTF_KEYUP),
         ];
-        Self::send_inputs(&mut page_up_inputs)
+        self.send_inputs(&mut page_up_inputs)
     }
 }
 

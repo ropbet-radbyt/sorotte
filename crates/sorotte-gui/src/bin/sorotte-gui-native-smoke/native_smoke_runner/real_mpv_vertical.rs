@@ -1616,7 +1616,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     write_json_file(&menu_interactions_path, &menu_interactions)?;
 
     let started_at = Instant::now();
-    let driver = PlatformNativeGuiDriver;
+    let driver = PlatformNativeGuiDriver::default();
     let mut child: Option<Child> = None;
     let mut window = None;
     let mut verified_mpv_pids = Vec::new();

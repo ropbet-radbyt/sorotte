@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,7 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
             )
         return {
             "result": "ok",
+            "input_mode": contract.STRICT_PHYSICAL_INPUT_MODE,
             "binary": r"C:\test\sorotte-gui.exe",
             "pid": 42,
             "window_title": "Sorotte",
@@ -61,13 +63,36 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
             "duration_ms": 1200,
         }
 
+    def uia_only_report(self) -> dict:
+        report = self.complete_report()
+        report["input_mode"] = contract.UIA_ONLY_INPUT_MODE
+        report["interaction_steps"] = list(contract.UIA_ONLY_REQUIRED_STEPS)
+        report["interaction_contract"] = "local-uia-only-non-authoritative"
+        report["capability_outcomes"] = [
+            {
+                "capability_id": capability_id,
+                "outcome": outcome,
+                "source": source,
+                "evidence": list(evidence),
+            }
+            for capability_id, (
+                outcome,
+                source,
+                evidence,
+            ) in contract.UIA_ONLY_CAPABILITY_CONTRACTS.items()
+        ]
+        return report
+
     def validate(
         self,
         report: dict,
         scenarios: tuple[str, ...] = ("baseline",),
         stderr: str = "",
+        input_mode: str = contract.STRICT_PHYSICAL_INPUT_MODE,
     ) -> None:
-        contract.validate_native_smoke(json.dumps(report), stderr, scenarios)
+        contract.validate_native_smoke(
+            json.dumps(report), stderr, scenarios, input_mode=input_mode
+        )
 
     def prepare_binary(
         self, root: pathlib.Path, report: dict
@@ -95,6 +120,58 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
     def test_complete_default_inventory_report_passes(self) -> None:
         report = self.complete_report(contract.DEFAULT_REQUIRED_SCENARIOS)
         self.validate(report, contract.DEFAULT_REQUIRED_SCENARIOS)
+
+    def test_uia_only_local_report_passes_but_cannot_satisfy_strict_evidence(self) -> None:
+        report = self.uia_only_report()
+        self.validate(report, (), input_mode=contract.UIA_ONLY_INPUT_MODE)
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "input mode differs from the requested validator mode",
+        ):
+            self.validate(report)
+
+    def test_uia_only_is_exact_and_rejects_strict_or_injected_input_evidence(self) -> None:
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "does not accept strict scenario evidence",
+        ):
+            self.validate(
+                self.uia_only_report(),
+                ("baseline",),
+                input_mode=contract.UIA_ONLY_INPUT_MODE,
+            )
+
+        report = self.uia_only_report()
+        next(
+            outcome
+            for outcome in report["capability_outcomes"]
+            if outcome["capability_id"] == "native.menu.physical-input"
+        )["outcome"] = "required-pass"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "must have outcome 'optional-skip'",
+        ):
+            self.validate(report, (), input_mode=contract.UIA_ONLY_INPUT_MODE)
+
+        report = self.uia_only_report()
+        next(
+            outcome
+            for outcome in report["capability_outcomes"]
+            if outcome["capability_id"] == "native.menu.physical-input"
+        )["evidence"][2] = "desktop-input-attempt-count=1"
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "must have exact evidence",
+        ):
+            self.validate(report, (), input_mode=contract.UIA_ONLY_INPUT_MODE)
+
+        report = self.uia_only_report()
+        report["interaction_steps"].append("menu-input-stress-25")
+        with self.assertRaisesRegex(
+            contract.NativeSmokeContractError,
+            "exact local interaction inventory",
+        ):
+            self.validate(report, (), input_mode=contract.UIA_ONLY_INPUT_MODE)
 
     def test_default_inventory_covers_every_known_scenario(self) -> None:
         self.assertEqual(
@@ -434,6 +511,8 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["status"], "failure")
+            self.assertEqual(summary["input_mode"], "strict-physical")
+            self.assertTrue(summary["authoritative"])
             self.assertEqual(summary["required_scenarios"], ["baseline"])
             self.assertEqual(summary["producer_exit_code"], 0)
             self.assertEqual(summary["expected_binary_sha256"], digest)
@@ -513,7 +592,46 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["status"], "required-pass")
+            self.assertEqual(summary["input_mode"], "strict-physical")
+            self.assertTrue(summary["authoritative"])
             self.assertEqual(summary["producer_exit_code"], 0)
+
+    def test_cli_labels_uia_only_success_as_local_non_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            report_path = root / "report.json"
+            stderr_path = root / "stderr.log"
+            summary_path = root / "summary.json"
+            report = self.uia_only_report()
+            binary, digest = self.prepare_binary(root, report)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "gui_native_smoke_contract.py"),
+                    "--input-mode",
+                    "uia-only",
+                    "--report",
+                    str(report_path),
+                    "--stderr",
+                    str(stderr_path),
+                    "--summary",
+                    str(summary_path),
+                ]
+                + self.provenance_cli_args(binary, digest),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "local-pass")
+            self.assertEqual(summary["input_mode"], "uia-only")
+            self.assertFalse(summary["authoritative"])
+            self.assertEqual(summary["required_scenarios"], [])
 
     def test_wrapper_is_fail_closed_and_uses_validator_inventory(self) -> None:
         wrapper = (SCRIPTS / "gui-native-smoke.ps1").read_text(encoding="utf-8")
@@ -522,6 +640,10 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("--print-default-scenarios", wrapper)
         self.assertIn('"--json"', wrapper)
+        self.assertIn('[ValidateSet("StrictPhysical", "UiaOnly")]', wrapper)
+        self.assertIn('"--input-mode", $inputModeArgument', wrapper)
+        self.assertIn('"--input-mode", $inputModeArgument,', wrapper)
+        self.assertIn('authoritative = $InputMode -eq "StrictPhysical"', wrapper)
         self.assertIn("native-report.json", wrapper)
         self.assertIn("native-stderr.log", wrapper)
         self.assertIn("contract-summary.json", wrapper)
@@ -550,6 +672,57 @@ class GuiNativeSmokeContractTests(unittest.TestCase):
         self.assertIn("if ($nativeExitCode -ne 0)", wrapper)
         self.assertIn("if ($validatorExitCode -ne 0)", wrapper)
         self.assertNotIn('"baseline"\n    $suiteArgs += "--scenario"', wrapper)
+
+    def test_uia_only_sendinput_guard_is_central_and_fail_closed(self) -> None:
+        native_bin_root = (
+            ROOT
+            / "crates"
+            / "sorotte-gui"
+            / "src"
+            / "bin"
+        )
+        native_source_root = native_bin_root / "sorotte-gui-native-smoke"
+        input_path = (
+            native_source_root
+            / "platform_driver"
+            / "windows_input.rs"
+        )
+        input_source = input_path.read_text(encoding="utf-8")
+        driver_source = (native_source_root / "platform_driver.rs").read_text(
+            encoding="utf-8"
+        )
+        runner_source = (native_source_root / "native_smoke_runner.rs").read_text(
+            encoding="utf-8"
+        )
+        control_source = (
+            native_source_root
+            / "platform_driver"
+            / "windows_control_actions.rs"
+        ).read_text(encoding="utf-8")
+
+        native_rust_sources = [native_bin_root / "sorotte-gui-native-smoke.rs"]
+        native_rust_sources.extend(sorted(native_source_root.rglob("*.rs")))
+        sendinput_sites = [
+            path.relative_to(ROOT).as_posix()
+            for path in native_rust_sources
+            for _ in re.finditer(r"\bSendInput\s*\(", path.read_text(encoding="utf-8"))
+        ]
+        self.assertEqual(
+            sendinput_sites,
+            [input_path.relative_to(ROOT).as_posix()],
+        )
+        guard_index = input_source.index("self.begin_desktop_input()?;")
+        dispatch_index = input_source.index("SendInput(", guard_index)
+        self.assertLess(guard_index, dispatch_index)
+        cursor_guard_index = control_source.index("self.begin_desktop_input()")
+        first_cursor_move_index = control_source.index("SetCursorPos(center_x, center_y)")
+        self.assertLess(cursor_guard_index, first_cursor_move_index)
+        self.assertIn("if self.input_mode == NativeInputMode::UiaOnly", driver_source)
+        self.assertIn("desktop-wide Win32 input is disabled", driver_source)
+        self.assertIn("if desktop_input_attempts != 0", runner_source)
+        self.assertIn(
+            '"desktop-input-attempt-count={desktop_input_attempts}"', runner_source
+        )
 
     @unittest.skipUnless(os.name == "nt", "PowerShell watchdog is Windows-only")
     def test_process_watchdog_terminates_hung_process_and_persists_evidence(

@@ -600,7 +600,7 @@ fn capture_visual_scenario(
         ),
         _ => None,
     };
-    let driver = PlatformNativeGuiDriver;
+    let driver = PlatformNativeGuiDriver::default();
     let public_servers_spec = if matches!(
         scenario,
         VisualScenario::SaveAndConnect | VisualScenario::ConnectOnceDirty

@@ -313,6 +313,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
             "-File scripts/gui-native-smoke.ps1",
             "-Json",
             "-TimeoutMs 80000",
+            "-InputMode StrictPhysical",
             "exit $LASTEXITCODE",
         ],
         label="native command",
@@ -324,6 +325,10 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         )
     if native_run.count("-TimeoutMs 80000") != 1:
         raise AssertionError("native command must bind exactly one 80-second timeout")
+    if native_run.count("-InputMode StrictPhysical") != 1:
+        raise AssertionError("native command must bind exactly one strict physical input mode")
+    if "UiaOnly" in native_run or "uia-only" in native_run:
+        raise AssertionError("strict native workflow must not select local UIA-only mode")
     for forbidden in ("--allow-stderr", "-AllowStderr", "-KeepOpen", "-BinaryPath"):
         if forbidden in native_run:
             raise AssertionError(f"native command contains forbidden option {forbidden}")
@@ -512,6 +517,21 @@ class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
                 STEP_NAMES[6],
                 lambda step: step.update(
                     {"run": step["run"].replace("-TimeoutMs 80000", "-TimeoutMs 0")}
+                ),
+            )
+        )
+
+    def test_local_uia_only_mode_cannot_replace_strict_physical_ci(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[6],
+                lambda step: step.update(
+                    {
+                        "run": step["run"].replace(
+                            "-InputMode StrictPhysical", "-InputMode UiaOnly"
+                        )
+                    }
                 ),
             )
         )

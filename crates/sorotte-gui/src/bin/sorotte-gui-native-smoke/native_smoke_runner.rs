@@ -94,7 +94,7 @@ pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmo
     seed_native_smoke_config(&config_path)?;
 
     let started_at = Instant::now();
-    let driver = PlatformNativeGuiDriver;
+    let driver = PlatformNativeGuiDriver::new(options.input_mode);
     let launch = GuiLaunchConfig {
         config_path: &config_path,
         media_search_browse_path: &media_search_browse_path,
@@ -157,6 +157,58 @@ pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmo
         let menu_automation_ids = menu_evidence.automation_ids;
         let menu_contract = "verified".to_owned();
         let accessibility_contract = "verified".to_owned();
+        if options.input_mode == NativeInputMode::UiaOnly {
+            let close_step_timeout = options.timeout.min(Duration::from_millis(4_000));
+            invoke_menu_action_by_id_uia_only_with_wait(
+                &driver,
+                window,
+                FILE_MENU_AUTOMATION_ID,
+                EXIT_MENU_AUTOMATION_ID,
+                close_step_timeout,
+            )?;
+            wait_for_process_exit(&mut child, close_step_timeout)?;
+            wait_for_lifecycle_events(
+                &lifecycle_observation_path,
+                &[
+                    "exit-action-applied",
+                    "viewport-close-requested",
+                    "runtime-stop-requested",
+                    "runtime-worker-stopped",
+                    "app-drop-complete",
+                ],
+                close_step_timeout,
+            )?;
+            let desktop_input_attempts = driver.desktop_input_attempt_count();
+            if desktop_input_attempts != 0 {
+                return Err(format!(
+                    "uia-only native smoke reached {desktop_input_attempts} blocked desktop-input attempt(s)"
+                ));
+            }
+            let interaction_steps = vec![
+                "uia-only-menu-inventory".to_owned(),
+                "uia-only-file-exit".to_owned(),
+                "uia-only-file-exit-lifecycle-observed".to_owned(),
+            ];
+            let capability_outcomes =
+                uia_only_capability_outcomes(&menu_automation_ids, desktop_input_attempts);
+            return Ok(NativeSmokeReport {
+                input_mode: options.input_mode,
+                binary_path: binary_path.display().to_string(),
+                pid,
+                window_title,
+                menu_source,
+                menu_labels,
+                menu_automation_ids,
+                menu_contract,
+                accessible_name_count: accessible_names.len(),
+                accessibility_contract,
+                interaction_steps,
+                interaction_contract: "local-uia-only-non-authoritative".to_owned(),
+                capability_outcomes,
+                duration_ms: started_at.elapsed().as_millis(),
+                closed: true,
+            });
+        }
         let mut interaction_steps = if scenario_selected(options, "baseline") {
             verify_interaction_contract(
                 &driver,
@@ -183,6 +235,7 @@ pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmo
             let capability_outcomes =
                 native_capability_outcomes(&menu_automation_ids, &interaction_steps);
             return Ok(NativeSmokeReport {
+                input_mode: options.input_mode,
                 binary_path: binary_path.display().to_string(),
                 pid,
                 window_title,
@@ -320,6 +373,7 @@ pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmo
         let capability_outcomes =
             native_capability_outcomes(&menu_automation_ids, &interaction_steps);
         Ok(NativeSmokeReport {
+            input_mode: options.input_mode,
             binary_path: binary_path.display().to_string(),
             pid,
             window_title,
@@ -411,4 +465,52 @@ fn native_capability_outcomes(
         });
     }
     outcomes
+}
+
+fn uia_only_capability_outcomes(
+    menu_automation_ids: &[String],
+    desktop_input_attempts: usize,
+) -> Vec<NativeCapabilityOutcome> {
+    let no_desktop_input = format!("desktop-input-attempt-count={desktop_input_attempts}");
+    vec![
+        NativeCapabilityOutcome {
+            capability_id: "native.menu.inventory".to_owned(),
+            outcome: "required-pass".to_owned(),
+            source: MENU_SOURCE_UIA_ACCESSKIT.to_owned(),
+            evidence: menu_automation_ids.to_vec(),
+        },
+        NativeCapabilityOutcome {
+            capability_id: "native.shutdown.file-exit".to_owned(),
+            outcome: "required-pass".to_owned(),
+            source: "uia-accesskit+eframe+lifecycle-jsonl".to_owned(),
+            evidence: vec![
+                "exit-action-applied".to_owned(),
+                "viewport-close-requested".to_owned(),
+                "runtime-stop-requested".to_owned(),
+                "runtime-worker-stopped".to_owned(),
+                "app-drop-complete".to_owned(),
+            ],
+        },
+        NativeCapabilityOutcome {
+            capability_id: "native.menu.physical-input".to_owned(),
+            outcome: "optional-skip".to_owned(),
+            source: "local-uia-mode".to_owned(),
+            evidence: vec![
+                "reason=local-uia-mode".to_owned(),
+                "win32-sendinput=disabled".to_owned(),
+                no_desktop_input.clone(),
+            ],
+        },
+        NativeCapabilityOutcome {
+            capability_id: "native.input.focused-keyboard".to_owned(),
+            outcome: "optional-skip".to_owned(),
+            source: "local-uia-mode".to_owned(),
+            evidence: vec![
+                "reason=local-uia-mode".to_owned(),
+                "focused-keyboard-fallback=disabled".to_owned(),
+                "win32-sendinput=disabled".to_owned(),
+                no_desktop_input,
+            ],
+        },
+    ]
 }

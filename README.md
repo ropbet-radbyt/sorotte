@@ -96,10 +96,19 @@ Run GUI semantic smoke coverage:
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 ```
 
-Run Windows native GUI smoke coverage:
+For local Windows UI Automation iteration without desktop-wide mouse, keyboard,
+or cursor injection:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode UiaOnly
+```
+
+This fixed UIA-only inventory is explicitly non-authoritative and may still
+display or foreground Sorotte. Run the complete physical native GUI contract
+only on an isolated interactive desktop:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode StrictPhysical
 ```
 
 The wrapper performs the locked native-smoke build, treats every implemented

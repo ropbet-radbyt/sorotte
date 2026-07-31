@@ -455,6 +455,78 @@ pub(super) fn invoke_menu_action_by_id_with_wait<D: NativeGuiDriver>(
     )
 }
 
+pub(super) fn invoke_menu_action_by_id_uia_only_with_wait<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    section_automation_id: &str,
+    action_automation_id: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        section_automation_id,
+        NativeControlKind::Any,
+        timeout,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to open menu section {section_automation_id:?} through UI Automation: {error}"
+        )
+    })?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match driver.accessibility_nodes(window) {
+            Ok(nodes) => {
+                let visible_matches = nodes
+                    .iter()
+                    .filter(|node| {
+                        node.automation_id == action_automation_id
+                            && !node.offscreen
+                            && node.bounds.is_some()
+                    })
+                    .count();
+                match visible_matches {
+                    1 => break,
+                    count if count > 1 => {
+                        return Err(format!(
+                            "UI Automation menu section {section_automation_id:?} exposed {count} visible matches for {action_automation_id:?}"
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            Err(error) if Instant::now() >= deadline => {
+                return Err(format!(
+                    "failed to read UI Automation menu state for {action_automation_id:?}: {error}"
+                ));
+            }
+            Err(_) => {}
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for UI Automation to expose {action_automation_id:?} from {section_automation_id:?}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        action_automation_id,
+        NativeControlKind::Any,
+        deadline.saturating_duration_since(Instant::now()),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to invoke menu action {action_automation_id:?} through UI Automation: {error}"
+        )
+    })
+}
+
 pub(super) fn verify_menu_action_enabled_state_by_id<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,

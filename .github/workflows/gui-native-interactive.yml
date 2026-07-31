@@ -251,6 +251,7 @@ jobs:
               -File scripts/gui-native-smoke.ps1 `
               -Json `
               -TimeoutMs 80000 `
+              -InputMode StrictPhysical `
               --scenario baseline `
               --scenario relaunch `
               --scenario drag-drop `

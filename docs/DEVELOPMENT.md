@@ -45,10 +45,25 @@ Run semantic smoke coverage for GUI workflow changes:
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 ```
 
-Run Windows native smoke coverage for rendering, accessibility, startup, and end-to-end GUI changes:
+For local Windows accessibility iteration without desktop-wide mouse, keyboard,
+or cursor injection, run the fixed non-authoritative UIA-only inventory:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode UiaOnly
+```
+
+The UIA-only lane verifies the AccessKit menu inventory and invokes File -> Exit
+through UI Automation. It rejects every Win32 `SendInput` or cursor-movement
+fallback and reports physical/focused-keyboard capabilities as
+`optional-skip(reason=local-uia-mode)`. It may still display, resize, or
+foreground Sorotte. Its report has `authoritative=false` and cannot satisfy the
+strict CI contract.
+
+Run authoritative Windows native smoke coverage for rendering, accessibility,
+startup, and end-to-end GUI changes only on an isolated interactive desktop:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode StrictPhysical
 ```
 
 `scripts/gui-native-smoke.ps1` performs a locked build before the watchdog
