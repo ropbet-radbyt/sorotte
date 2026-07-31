@@ -7164,6 +7164,17 @@ impl MpvAdapter {
                         reached: eof_reached,
                         position_seconds,
                     });
+                    // keep-open=always retains the current file at EOF, so mpv can publish
+                    // eof-reached=true without following it with end-file. Reuse the same
+                    // generation-fenced, duration-bounded recovery transaction as end-file
+                    // when the retained EOF is materially before the declared VOD tail.
+                    if eof_reached
+                        && self.player_lifecycle.provisional_eof_attempt()
+                            == self.active_load_attempt_id
+                        && let Some(generation) = self.active_media_generation
+                    {
+                        let _ = self.try_recover_interrupted_network_stream(generation);
+                    }
                 } else {
                     self.observed_state.eof_reached = None;
                 }
@@ -10419,7 +10430,14 @@ mod interrupted_network_stream_recovery_tests {
 
     #[test]
     fn near_tail_and_local_eof_are_not_reloaded() {
+        let keep_open_eof = json!({
+            "event": MPV_EVENT_PROPERTY_CHANGE,
+            "name": MPV_PROPERTY_EOF_REACHED,
+            "data": true,
+        });
         let mut near_tail = loaded_network_vod(1_910.0, 1_919.0);
+        near_tail.handle_ipc_event(&keep_open_eof);
+        assert_eq!(near_tail.network_stream_recovery_attempt_count(), 0);
         near_tail.handle_end_file_event(&json!({
             "reason": "eof",
             "playlist_entry_id": 10,
@@ -10430,6 +10448,8 @@ mod interrupted_network_stream_recovery_tests {
         let mut local = loaded_network_vod(257.25, 1_919.0);
         local.current_path = Some("C:/media/movie.mkv".to_owned());
         local.observed_state.path = local.current_path.clone();
+        local.handle_ipc_event(&keep_open_eof);
+        assert_eq!(local.network_stream_recovery_attempt_count(), 0);
         local.handle_end_file_event(&json!({
             "reason": "eof",
             "playlist_entry_id": 10,
@@ -10521,21 +10541,36 @@ mod interrupted_network_stream_recovery_tests {
     }
 
     #[test]
-    fn split_pump_eof_property_is_provisional_until_end_file_classifies_recovery() {
+    fn keep_open_premature_eof_property_starts_bounded_recovery_without_end_file() {
         let mut adapter = loaded_network_vod(257.25, 1_919.0);
         let generation = adapter
             .active_media_generation
             .expect("fixture should have an active generation");
+        let old_attempt = adapter
+            .player_lifecycle
+            .active_load_attempt
+            .expect("fixture should have an active attempt");
         adapter.handle_ipc_event(&json!({
             "event": MPV_EVENT_PROPERTY_CHANGE,
             "name": MPV_PROPERTY_EOF_REACHED,
             "data": true,
         }));
 
-        assert!(adapter.player_lifecycle.provisional_eof_attempt().is_some());
+        let recovery = adapter
+            .interrupted_network_stream_recovery
+            .expect("keep-open premature EOF should create a bounded recovery attempt");
+        assert_eq!(recovery.media_generation, generation);
+        assert_ne!(recovery.latest_attempt_id, old_attempt);
+        assert_eq!(recovery.resume_position_seconds, 257.25);
+        assert_eq!(adapter.player_lifecycle.provisional_eof_attempt(), None);
+        assert_eq!(adapter.player_lifecycle.logical_terminal, None);
+        assert_eq!(
+            adapter.player_lifecycle.load_attempts[&old_attempt].superseded_by,
+            Some(recovery.latest_attempt_id)
+        );
         let provisional = adapter
             .take_ordered_event_batch()
-            .expect("the provisional observation remains pump-visible");
+            .expect("the recovery transition remains pump-visible");
         assert!(provisional.ordered_events.iter().all(|event| {
             !matches!(
                 &event.kind,
@@ -10551,37 +10586,15 @@ mod interrupted_network_stream_recovery_tests {
         assert_eq!(
             adapter.observed_state.eof_reached,
             Some(true),
-            "physical EOF remains internal evidence while the published delta stays non-terminal"
+            "physical EOF remains internal evidence while the successor is starting"
         );
-
-        adapter.handle_end_file_event(&json!({
-            "reason": "eof",
-            "playlist_entry_id": 10,
-        }));
-        let recovered = adapter
-            .take_ordered_event_batch()
-            .expect("causal end-file should publish the recovery transition");
-        assert_eq!(
-            adapter.transport_phase,
-            PlayerTransportPhase::Empty,
-            "the recovery successor cannot own transport before start-file"
-        );
-        assert!(recovered.ordered_events.iter().all(|event| {
-            !matches!(
-                &event.kind,
-                PlayerOrderedEventKind::Transport(update)
-                    if update.media_generation == Some(generation)
-                        && (matches!(
-                            update.phase,
-                            Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed)
-                        ) || update.eof_reached == Some(true))
-            )
-        }));
     }
 
     #[test]
     fn progress_seek_and_restart_cancel_provisional_eof_without_a_terminal() {
-        let mut adapter = loaded_network_vod(257.25, 1_919.0);
+        // A near-tail EOF is deliberately ineligible for automatic reload, leaving the
+        // provisional lifecycle candidate available for contradictory evidence to cancel.
+        let mut adapter = loaded_network_vod(1_910.0, 1_919.0);
         let eof_event = json!({
             "event": MPV_EVENT_PROPERTY_CHANGE,
             "name": MPV_PROPERTY_EOF_REACHED,
@@ -10593,7 +10606,7 @@ mod interrupted_network_stream_recovery_tests {
         adapter.handle_ipc_event(&json!({
             "event": MPV_EVENT_PROPERTY_CHANGE,
             "name": MPV_PROPERTY_TIME_POS,
-            "data": 258.0,
+            "data": 1_911.0,
         }));
         assert_eq!(adapter.player_lifecycle.provisional_eof_attempt(), None);
 

@@ -103,7 +103,7 @@ HTTP_FAULT_REQUIRED_ASSERTIONS = (
     "gui-projected-real-mpv-transport-ready",
     "gui-play-command-observed-by-real-mpv",
     "gui-projected-playing-after-real-mpv-observation",
-    "one-premature-http-eof-observed",
+    "one-malformed-http-premature-eof-observed",
     "same-owned-mpv-reloaded-stable-network-media",
     "recovered-playback-advanced-past-fault",
     "gui-pause-command-observed-by-real-mpv",
@@ -187,7 +187,7 @@ HTTP_FAULT_KEYS = {
     "requests",
     "initial_file_loaded_index",
     "pre_fault_progress_index",
-    "end_file_index",
+    "premature_eof_index",
     "recovered_file_loaded_index",
     "recovered_progress_index",
     "recovered_paused_index",
@@ -203,6 +203,7 @@ HTTP_FAULT_KEYS = {
     "stable_media_url",
     "stable_duration",
     "pre_fault_position_seconds",
+    "premature_eof_position_seconds",
     "recovered_position_seconds",
     "manual_retry_invoked",
     "foreign_pid_observations_after_fault",
@@ -220,8 +221,10 @@ HTTP_REQUEST_KEYS = {
     "peer_ipv4_loopback",
     "range_header",
     "status_code",
-    "advertised_body_bytes",
+    "content_length_header",
+    "transfer_encoding",
     "transmitted_body_bytes",
+    "framing_fault_injected",
     "disconnected_early",
     "write_error",
 }
@@ -382,7 +385,7 @@ def validate_http_fault_evidence(
     require(evidence.get("result") == "passed", "HTTP fault recovery did not pass")
     require(
         evidence.get("fault")
-        == "first-response-content-length-is-shorter-than-declared-au-media-once",
+        == "first-response-malformed-chunk-after-paced-au-prefix-once",
         "HTTP fault shape drifted",
     )
     require(
@@ -464,7 +467,7 @@ def validate_http_fault_evidence(
     indices = [
         evidence.get("initial_file_loaded_index"),
         evidence.get("pre_fault_progress_index"),
-        evidence.get("end_file_index"),
+        evidence.get("premature_eof_index"),
         evidence.get("recovered_file_loaded_index"),
         evidence.get("recovered_progress_index"),
         evidence.get("recovered_paused_index"),
@@ -509,13 +512,16 @@ def validate_http_fault_evidence(
         and abs(float(initial.get("duration")) - HTTP_FAULT_DURATION_SECONDS) <= 0.05,
         "initial native HTTP file-loaded identity drifted or used a cache path",
     )
-    terminal = observations[end_index]
+    premature_eof = observations[end_index]
     require(
-        terminal.get("event") == "end-file"
-        and terminal.get("reason") == "eof"
-        and terminal.get("pid") == mpv["pid"]
-        and terminal.get("ipc_endpoint") == ipc_endpoint,
-        "controlled HTTP response did not cause the expected terminal EOF",
+        premature_eof.get("event") == "eof-reached"
+        and premature_eof.get("eof_reached") is True
+        and premature_eof.get("pid") == mpv["pid"]
+        and premature_eof.get("ipc_endpoint") == ipc_endpoint
+        and premature_eof.get("path") == expected_media_url
+        and abs(float(premature_eof.get("duration")) - HTTP_FAULT_DURATION_SECONDS)
+        <= 0.05,
+        "malformed HTTP response did not cause the expected keep-open premature EOF",
     )
     recovered = observations[recovered_index]
     require(
@@ -528,13 +534,22 @@ def validate_http_fault_evidence(
         "recovered native HTTP media identity drifted or used a cache path",
     )
     pre_fault_position = evidence.get("pre_fault_position_seconds")
+    premature_eof_position = evidence.get("premature_eof_position_seconds")
     recovered_position = evidence.get("recovered_position_seconds")
     require(
         is_json_number(pre_fault_position)
         and pre_fault_position >= 0.5
+        and is_json_number(premature_eof_position)
+        and premature_eof_position >= pre_fault_position
+        and HTTP_FAULT_DURATION_SECONDS - premature_eof_position > 15.0
         and is_json_number(recovered_position)
         and recovered_position >= pre_fault_position + 0.5,
         "HTTP recovery did not retain bounded positive playback progress",
+    )
+    require(
+        is_json_number(premature_eof.get("position"))
+        and float(premature_eof["position"]) == float(premature_eof_position),
+        "HTTP premature EOF position observation mismatch",
     )
     pre_fault_progress = observations[pre_fault_progress_index]
     require(
@@ -596,9 +611,11 @@ def validate_http_fault_evidence(
         if request["method"] == "HEAD":
             require(
                 request.get("status_code") == 200
-                and request.get("advertised_body_bytes")
+                and request.get("content_length_header")
                 == evidence["generated_media_bytes"]
+                and request.get("transfer_encoding") is None
                 and request.get("transmitted_body_bytes") == 0
+                and request.get("framing_fault_injected") is False
                 and request.get("disconnected_early") is False,
                 "HTTP HEAD probe unexpectedly carried the controlled body fault",
             )
@@ -612,24 +629,27 @@ def validate_http_fault_evidence(
     media_gets = [request for request in requests if request["method"] == "GET"]
     require(
         len(media_gets) == 2,
-        "HTTP recovery did not use exactly one short GET and one complete GET",
+        "HTTP recovery did not use exactly one malformed chunked GET and one complete GET",
     )
     first_get, recovered_get = media_gets
     require(
         first_get.get("disconnected_early") is True
-        and first_get.get("advertised_body_bytes")
-        == HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        and first_get.get("content_length_header") is None
+        and first_get.get("transfer_encoding") == "chunked"
         and first_get.get("transmitted_body_bytes")
         == HTTP_FAULT_DISCONNECT_AFTER_BYTES
-        < evidence["generated_media_bytes"],
-        "first HTTP GET was not the exact one-shot short response",
+        < evidence["generated_media_bytes"]
+        and first_get.get("framing_fault_injected") is True,
+        "first HTTP GET was not the exact malformed chunked response",
     )
     require(
         recovered_get.get("disconnected_early") is False
-        and recovered_get.get("advertised_body_bytes")
+        and recovered_get.get("content_length_header")
         == evidence["generated_media_bytes"]
+        and recovered_get.get("transfer_encoding") is None
+        and recovered_get.get("framing_fault_injected") is False
         and recovered_get.get("transmitted_body_bytes")
-        == recovered_get.get("advertised_body_bytes"),
+        == recovered_get.get("content_length_header"),
         "second HTTP GET was not a complete recovery response",
     )
     require(

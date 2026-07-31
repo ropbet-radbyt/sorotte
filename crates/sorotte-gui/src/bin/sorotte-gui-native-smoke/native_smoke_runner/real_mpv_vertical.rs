@@ -173,8 +173,10 @@ struct HttpRequestEvidence {
     peer_ipv4_loopback: bool,
     range_header: Option<String>,
     status_code: u16,
-    advertised_body_bytes: usize,
+    content_length_header: Option<usize>,
+    transfer_encoding: Option<String>,
     transmitted_body_bytes: usize,
+    framing_fault_injected: bool,
     disconnected_early: bool,
     write_error: Option<String>,
 }
@@ -200,7 +202,7 @@ struct HttpFaultRecoveryEvidence {
     requests: Vec<HttpRequestEvidence>,
     initial_file_loaded_index: Option<usize>,
     pre_fault_progress_index: Option<usize>,
-    end_file_index: Option<usize>,
+    premature_eof_index: Option<usize>,
     recovered_file_loaded_index: Option<usize>,
     recovered_progress_index: Option<usize>,
     recovered_paused_index: Option<usize>,
@@ -216,6 +218,7 @@ struct HttpFaultRecoveryEvidence {
     stable_media_url: bool,
     stable_duration: bool,
     pre_fault_position_seconds: Option<f64>,
+    premature_eof_position_seconds: Option<f64>,
     recovered_position_seconds: Option<f64>,
     manual_retry_invoked: bool,
     foreign_pid_observations_after_fault: usize,
@@ -232,7 +235,7 @@ impl HttpFaultRecoveryEvidence {
             schema_version: REAL_MPV_SCHEMA_VERSION,
             kind: REAL_MPV_HTTP_FAULT_KIND,
             result: "running".to_owned(),
-            fault: "first-response-content-length-is-shorter-than-declared-au-media-once",
+            fault: "first-response-malformed-chunk-after-paced-au-prefix-once",
             recovery_mode: "same-generation-automatic-network-stream-reload",
             listener_endpoint,
             listener_ipv4_loopback: true,
@@ -248,7 +251,7 @@ impl HttpFaultRecoveryEvidence {
             requests: Vec::new(),
             initial_file_loaded_index: None,
             pre_fault_progress_index: None,
-            end_file_index: None,
+            premature_eof_index: None,
             recovered_file_loaded_index: None,
             recovered_progress_index: None,
             recovered_paused_index: None,
@@ -264,6 +267,7 @@ impl HttpFaultRecoveryEvidence {
             stable_media_url: false,
             stable_duration: false,
             pre_fault_position_seconds: None,
+            premature_eof_position_seconds: None,
             recovered_position_seconds: None,
             manual_retry_invoked: false,
             foreign_pid_observations_after_fault: 0,
@@ -284,8 +288,10 @@ impl HttpFaultRecoveryEvidence {
         self.complete_response_count = requests
             .iter()
             .filter(|request| {
-                !request.disconnected_early
-                    && request.transmitted_body_bytes == request.advertised_body_bytes
+                request.method == "GET"
+                    && !request.disconnected_early
+                    && !request.framing_fault_injected
+                    && request.content_length_header == Some(request.transmitted_body_bytes)
             })
             .count();
         self.requests = requests;
@@ -503,15 +509,21 @@ fn handle_faulting_http_connection(
         && fault_injected
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
-    let advertised_body_bytes = if inject_fault {
-        REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES.min(generated_media.len())
+    let content_length_header = if inject_fault {
+        None
     } else {
-        generated_media.len()
+        Some(generated_media.len())
     };
-    let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: audio/basic\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
-        advertised_body_bytes
-    );
+    let transfer_encoding = inject_fault.then(|| "chunked".to_owned());
+    let headers = if inject_fault {
+        "HTTP/1.1 200 OK\r\nContent-Type: audio/basic\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+            .to_owned()
+    } else {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: audio/basic\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+            generated_media.len()
+        )
+    };
     let mut evidence = HttpRequestEvidence {
         ordinal,
         method: method.clone(),
@@ -520,8 +532,10 @@ fn handle_faulting_http_connection(
         peer_ipv4_loopback: true,
         range_header,
         status_code: 200,
-        advertised_body_bytes,
+        content_length_header,
+        transfer_encoding,
         transmitted_body_bytes: 0,
+        framing_fault_injected: inject_fault,
         disconnected_early: false,
         write_error: None,
     };
@@ -535,35 +549,40 @@ fn handle_faulting_http_connection(
     let transmitted_body_bytes = if method == "HEAD" {
         0
     } else if inject_fault {
-        let target = advertised_body_bytes;
+        let target = REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES.min(generated_media.len());
         let started = Instant::now();
         let mut sent = 0;
         while sent < target && !shutdown.load(Ordering::Acquire) {
             let next = (sent + 16 * 1024).min(target);
-            match stream.write(&generated_media[sent..next]) {
-                Ok(0) => {
-                    evidence.write_error =
-                        Some("faulting HTTP short-body write made no progress".to_owned());
-                    break;
-                }
-                Ok(written) => sent += written,
-                Err(error) => {
-                    evidence.write_error =
-                        Some(format!("failed writing faulting HTTP short body: {error}"));
-                    break;
-                }
+            let chunk = &generated_media[sent..next];
+            let chunk_header = format!("{:x}\r\n", chunk.len());
+            if let Err(error) = stream
+                .write_all(chunk_header.as_bytes())
+                .and_then(|()| stream.write_all(chunk))
+                .and_then(|()| stream.write_all(b"\r\n"))
+            {
+                evidence.write_error = Some(format!(
+                    "failed writing faulting HTTP chunked body: {error}"
+                ));
+                break;
             }
+            sent = next;
             let target_elapsed =
                 Duration::from_secs_f64(sent as f64 / REAL_MPV_HTTP_FAULT_BYTES_PER_SECOND as f64);
             if let Some(delay) = target_elapsed.checked_sub(started.elapsed()) {
                 thread::sleep(delay);
             }
         }
-        if evidence.write_error.is_none()
-            && let Err(error) = stream.flush()
-        {
-            evidence.write_error =
-                Some(format!("failed flushing faulting HTTP short body: {error}"));
+        if evidence.write_error.is_none() {
+            if let Err(error) = stream.write_all(b"not-a-chunk-size\r\n") {
+                evidence.write_error = Some(format!(
+                    "failed writing malformed HTTP chunk boundary: {error}"
+                ));
+            } else if let Err(error) = stream.flush() {
+                evidence.write_error = Some(format!(
+                    "failed flushing malformed HTTP chunk boundary: {error}"
+                ));
+            }
         }
         let _ = stream.shutdown(Shutdown::Both);
         sent
@@ -593,7 +612,8 @@ fn handle_faulting_http_connection(
         sent
     };
     evidence.transmitted_body_bytes = transmitted_body_bytes;
-    evidence.disconnected_early = method == "GET" && transmitted_body_bytes < generated_media.len();
+    evidence.disconnected_early = method == "GET"
+        && (evidence.framing_fault_injected || transmitted_body_bytes < generated_media.len());
     Ok(evidence)
 }
 
@@ -686,8 +706,8 @@ struct MpvObservation {
     duration: Option<f64>,
     position: Option<f64>,
     pause: Option<bool>,
+    eof_reached: Option<bool>,
     ipc_endpoint: Option<String>,
-    reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1238,18 +1258,21 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             let pre_fault_position = pre_fault_progress
                 .position
                 .ok_or_else(|| "pre-fault time-pos observation omitted its position".to_owned())?;
-            let (end_file_index, end_file) = wait_for_mpv_observation(
+            let (premature_eof_index, premature_eof) = wait_for_mpv_observation(
                 &observation_path,
                 pre_fault_progress_index,
                 fault_timeout,
-                "causal end-file:eof after the controlled short HTTP response",
+                "causal keep-open eof-reached=true after the malformed chunked HTTP response",
                 |observation| {
-                    observation.event == "end-file"
+                    observation.event == "eof-reached"
                         && observation.pid == Some(mpv_pid)
-                        && observation.reason.as_deref() == Some("eof")
+                        && observation.eof_reached == Some(true)
                         && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
                 },
             )?;
+            let premature_eof_position = premature_eof.position.ok_or_else(|| {
+                "premature keep-open EOF observation omitted its position".to_owned()
+            })?;
             let first_requests = fault_http_server
                 .as_ref()
                 .expect("faulting HTTP server must remain live")
@@ -1263,30 +1286,35 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 || first_request.range_header.as_deref() != Some("bytes=0-")
                 || first_request.transmitted_body_bytes
                     != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
-                || first_request.advertised_body_bytes != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+                || first_request.content_length_header.is_some()
+                || first_request.transfer_encoding.as_deref() != Some("chunked")
+                || !first_request.framing_fault_injected
                 || first_request.write_error.is_some()
             {
                 return Err(format!(
-                    "first faulting HTTP response was not the exact controlled short response: {first_request:?}"
+                    "first faulting HTTP response was not the exact malformed chunked response: {first_request:?}"
                 ));
             }
-            if end_file.path.as_deref().is_some_and(|observed| {
-                !observed_media_target_matches(observed, &media_path, media_url.as_deref())
-            }) {
+            if premature_eof.path.as_deref() != media_url.as_deref()
+                || premature_eof.duration.is_none_or(|duration| {
+                    (duration - f64::from(media_duration_seconds)).abs() > 0.05
+                })
+                || premature_eof_position < pre_fault_position
+                || f64::from(media_duration_seconds) - premature_eof_position <= 15.0
+            {
                 return Err(format!(
-                    "terminal HTTP observation drifted to an unexpected path: {:?}",
-                    end_file.path
+                    "premature keep-open EOF identity or remaining duration drifted: {premature_eof:?}"
                 ));
             }
             state.advance(
                 &state_path,
-                "premature-http-eof-observed",
-                Some("one-premature-http-eof-observed"),
+                "malformed-http-premature-eof-observed",
+                Some("one-malformed-http-premature-eof-observed"),
             )?;
 
             let (recovered_file_loaded_index, recovered_file_loaded) = wait_for_mpv_observation(
                 &observation_path,
-                end_file_index.saturating_add(1),
+                premature_eof_index.saturating_add(1),
                 fault_timeout,
                 "same-process file-loaded after automatic HTTP recovery",
                 |observation| {
@@ -1382,13 +1410,13 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             )?;
             if !(file_loaded_index < playing_index
                 && playing_index < pre_fault_progress_index
-                && pre_fault_progress_index < end_file_index
-                && end_file_index < recovered_file_loaded_index
+                && pre_fault_progress_index < premature_eof_index
+                && premature_eof_index < recovered_file_loaded_index
                 && recovered_file_loaded_index < recovered_progress_index
                 && recovered_progress_index < recovered_paused_index)
             {
                 return Err(format!(
-                    "faulting HTTP observation ordering drifted: {file_loaded_index}, {playing_index}, {pre_fault_progress_index}, {end_file_index}, {recovered_file_loaded_index}, {recovered_progress_index}, {recovered_paused_index}"
+                    "faulting HTTP observation ordering drifted: {file_loaded_index}, {playing_index}, {pre_fault_progress_index}, {premature_eof_index}, {recovered_file_loaded_index}, {recovered_progress_index}, {recovered_paused_index}"
                 ));
             }
             state.advance(
@@ -1411,10 +1439,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             let observations = read_mpv_observations(&observation_path)?;
             let foreign_observations = observations
                 .iter()
-                .skip(end_file_index)
+                .skip(premature_eof_index)
                 .take(
                     recovered_paused_index
-                        .saturating_sub(end_file_index)
+                        .saturating_sub(premature_eof_index)
                         .saturating_add(1),
                 )
                 .filter(|observation| {
@@ -1435,7 +1463,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 .expect("faulting HTTP evidence must be initialized");
             evidence.record_requests(requests);
             evidence.pre_fault_progress_index = Some(pre_fault_progress_index);
-            evidence.end_file_index = Some(end_file_index);
+            evidence.premature_eof_index = Some(premature_eof_index);
             evidence.recovered_file_loaded_index = Some(recovered_file_loaded_index);
             evidence.recovered_progress_index = Some(recovered_progress_index);
             evidence.recovered_paused_index = Some(recovered_paused_index);
@@ -1446,6 +1474,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             evidence.stable_media_url = true;
             evidence.stable_duration = true;
             evidence.pre_fault_position_seconds = Some(pre_fault_position);
+            evidence.premature_eof_position_seconds = Some(premature_eof_position);
             evidence.recovered_position_seconds = Some(recovered_position);
             evidence.foreign_pid_observations_after_fault = foreign_observations;
             evidence.evidence_retained_before_cleanup = true;
@@ -2279,6 +2308,7 @@ local function emit(event, event_data)
         duration = mp.get_property_native("duration"),
         position = mp.get_property_native("time-pos"),
         pause = mp.get_property_native("pause"),
+        eof_reached = event_data and event_data.eof_reached or nil,
         ipc_endpoint = mp.get_property_native("input-ipc-server"),
         reason = event_data and event_data.reason or nil,
     }}
@@ -2302,6 +2332,11 @@ end)
 mp.observe_property("time-pos", "number", function(_, value)
     if value ~= nil then
         emit("time-pos")
+    end
+end)
+mp.observe_property("eof-reached", "bool", function(_, value)
+    if value ~= nil then
+        emit("eof-reached", {{ eof_reached = value }})
     end
 end)
 "#
@@ -2512,8 +2547,10 @@ fn validate_faulting_http_request_accounting(
         require_ipv4_loopback_endpoint(&request.peer_endpoint, "faulting HTTP connected peer")?;
         if request.method == "HEAD" {
             if request.status_code != 200
-                || request.advertised_body_bytes != generated_media_bytes
+                || request.content_length_header != Some(generated_media_bytes)
+                || request.transfer_encoding.is_some()
                 || request.transmitted_body_bytes != 0
+                || request.framing_fault_injected
                 || request.disconnected_early
             {
                 return Err(format!(
@@ -2538,23 +2575,27 @@ fn validate_faulting_http_request_accounting(
         .collect::<Vec<_>>();
     if media_gets.len() != 2 {
         return Err(format!(
-            "faulting HTTP expected exactly two media GETs (one short, one complete); requests={requests:?}"
+            "faulting HTTP expected exactly two media GETs (one malformed chunked, one complete); requests={requests:?}"
         ));
     }
     let short = media_gets[0];
     if !short.disconnected_early
-        || short.advertised_body_bytes != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        || short.content_length_header.is_some()
+        || short.transfer_encoding.as_deref() != Some("chunked")
         || short.transmitted_body_bytes != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
-        || short.advertised_body_bytes >= generated_media_bytes
+        || !short.framing_fault_injected
+        || short.transmitted_body_bytes >= generated_media_bytes
     {
         return Err(format!(
-            "faulting HTTP first media GET was not the exact one-shot short response: {short:?}"
+            "faulting HTTP first media GET was not the exact malformed chunked response: {short:?}"
         ));
     }
     let complete = media_gets[1];
     if complete.disconnected_early
-        || complete.advertised_body_bytes != generated_media_bytes
-        || complete.transmitted_body_bytes != complete.advertised_body_bytes
+        || complete.content_length_header != Some(generated_media_bytes)
+        || complete.transfer_encoding.is_some()
+        || complete.framing_fault_injected
+        || complete.transmitted_body_bytes != generated_media_bytes
     {
         return Err(format!(
             "faulting HTTP recovery GET was not a complete response: {complete:?}"
@@ -3158,6 +3199,8 @@ mod tests {
         assert!(script.contains(r#"mp.register_event("end-file""#));
         assert!(script.contains(r#"mp.observe_property("pause""#));
         assert!(script.contains(r#"mp.observe_property("time-pos""#));
+        assert!(script.contains(r#"mp.observe_property("eof-reached""#));
+        assert!(script.contains("eof_reached = value"));
         assert!(script.contains(r#"mp.get_property_native("input-ipc-server")"#));
     }
 
@@ -3529,7 +3572,7 @@ mod tests {
     }
 
     #[test]
-    fn faulting_http_server_accounts_head_range_one_short_get_and_one_complete_get() {
+    fn faulting_http_server_accounts_one_malformed_chunked_get_and_one_complete_get() {
         fn request(endpoint: &str, method: &str, range: Option<&str>) -> Vec<u8> {
             let mut stream = TcpStream::connect(endpoint).expect("connect loopback fixture");
             let range = range.map_or_else(String::new, |value| format!("Range: {value}\r\n"));
@@ -3565,17 +3608,19 @@ mod tests {
         let short = request(&endpoint, "GET", Some("bytes=0-"));
         assert!(
             short.windows(15).any(|window| window == b"HTTP/1.1 200 OK"),
-            "byte-zero GET must receive a non-seekable finite response"
-        );
-        let short_content_length = format!(
-            "Content-Length: {}",
-            REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+            "byte-zero GET must receive a non-seekable chunked response"
         );
         assert!(
             short
-                .windows(short_content_length.len())
-                .any(|window| window == short_content_length.as_bytes()),
-            "first GET must declare the exact clean short-body boundary"
+                .windows(b"Transfer-Encoding: chunked".len())
+                .any(|window| window == b"Transfer-Encoding: chunked"),
+            "first GET must use explicit chunked transfer framing"
+        );
+        assert!(
+            !short
+                .windows(b"Content-Length:".len())
+                .any(|window| window == b"Content-Length:"),
+            "the malformed chunked response must not also declare a content length"
         );
         assert!(
             !short
@@ -3589,14 +3634,9 @@ mod tests {
                 .any(|window| window == b"Content-Range:"),
             "non-seekable response must not advertise partial-content semantics"
         );
-        let short_body = short
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map(|index| short.len() - index - 4)
-            .expect("short response header boundary");
-        assert_eq!(
-            short_body, REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES,
-            "first GET must close at the exact one-shot boundary"
+        assert!(
+            short.ends_with(b"\r\nnot-a-chunk-size\r\n"),
+            "first GET must end with the exact malformed chunk-size boundary"
         );
 
         let complete = request(&endpoint, "GET", Some("bytes=0-"));
@@ -3622,7 +3662,20 @@ mod tests {
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method, "HEAD");
         assert_eq!(requests[1].range_header.as_deref(), Some("bytes=0-"));
+        assert_eq!(requests[1].content_length_header, None);
+        assert_eq!(requests[1].transfer_encoding.as_deref(), Some("chunked"));
+        assert!(requests[1].framing_fault_injected);
+        assert_eq!(
+            requests[1].transmitted_body_bytes,
+            REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        );
         assert_eq!(requests[2].range_header.as_deref(), Some("bytes=0-"));
+        assert_eq!(
+            requests[2].content_length_header,
+            Some(generated_media.len())
+        );
+        assert_eq!(requests[2].transfer_encoding, None);
+        assert!(!requests[2].framing_fault_injected);
         server.release().expect("release faulting HTTP server");
         let rebound =
             TcpListener::bind(&endpoint).expect("faulting HTTP listener socket should be released");
