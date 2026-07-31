@@ -8,6 +8,13 @@ use sorotte_media_match::{
     media_match_v3_diagnostic_manifest_report_json, run_media_match_v3_diagnostic_manifest,
 };
 
+// This duration selects three non-overlapping production body windows. Seeded
+// broadband audio keeps the identical copy's zero-offset anchors unambiguous.
+const FIXTURE_DURATION_SECONDS: u32 = 120;
+const FIXTURE_DURATION_MILLIS: u32 = FIXTURE_DURATION_SECONDS * 1_000;
+const FIXTURE_AUDIO_SEED: u32 = 20_260_731;
+const EXPECTED_SAMPLED_WINDOW_COUNT: usize = 3;
+
 struct GeneratedMediaRoot {
     path: PathBuf,
 }
@@ -65,6 +72,10 @@ fn required_tool(environment_key: &str, default_name: &str) -> PathBuf {
 }
 
 fn generate_synthetic_media(ffmpeg: &Path, path: &Path) {
+    let video_source = format!("testsrc2=size=64x64:rate=1:duration={FIXTURE_DURATION_SECONDS}");
+    let audio_source = format!(
+        "anoisesrc=color=white:amplitude=0.25:sample_rate=44100:duration={FIXTURE_DURATION_SECONDS}:seed={FIXTURE_AUDIO_SEED}"
+    );
     let output = Command::new(ffmpeg)
         .args([
             "-v",
@@ -74,11 +85,11 @@ fn generate_synthetic_media(ffmpeg: &Path, path: &Path) {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=64x64:rate=1:duration=30",
+            &video_source,
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=44100:duration=30",
+            &audio_source,
             "-map",
             "0:v:0",
             "-map",
@@ -146,16 +157,13 @@ fn v3_manifest_harness_runs_small_synthetic_case() {
     )
     .expect("diagnostic manifest should run");
     let case = report.cases.first().expect("one diagnostic case");
-    let candidate_fingerprint = &case
-        .candidates
-        .first()
-        .expect("one diagnostic candidate")
-        .fingerprint;
+    let candidate_report = case.candidates.first().expect("one diagnostic candidate");
+    let candidate_fingerprint = &candidate_report.fingerprint;
     for (label, fingerprint) in [("query", &case.query), ("candidate", candidate_fingerprint)] {
         let diagnostics = &fingerprint.diagnostics;
         assert_eq!(
             diagnostics.duration_ms,
-            Some(30_000),
+            Some(FIXTURE_DURATION_MILLIS),
             "{label} ffprobe duration should match the generated fixture"
         );
         assert!(
@@ -172,10 +180,31 @@ fn v3_manifest_harness_runs_small_synthetic_case() {
                 .is_some_and(|bytes| bytes > 0),
             "{label} should report decoded ffmpeg PCM output"
         );
+        assert_eq!(
+            diagnostics.sampled_audio_windows_decoded,
+            Some(EXPECTED_SAMPLED_WINDOW_COUNT),
+            "{label} should exercise all production sampled-fast windows"
+        );
     }
     assert!(
         case.retrieval.stats.query_buckets_total > 0,
         "query landmarks should populate at least one retrieval bucket"
+    );
+    let decision = candidate_report.decision.as_ref();
+    assert!(
+        candidate_report.expectation_passed,
+        "candidate expectation failed: reason={:?}; retrieved={}; rank={:?}; tier={:?}; class={:?}; notes={:?}; top retrieval={:?}",
+        candidate_report.failure_reason,
+        candidate_report.retrieved,
+        candidate_report.retrieval_rank,
+        decision.map(|decision| decision.tier),
+        decision.and_then(|decision| decision.class),
+        decision.map(|decision| decision.notes.as_slice()),
+        case.retrieval.candidates.first(),
+    );
+    assert!(
+        case.passed,
+        "diagnostic case should pass after its candidate expectation passes"
     );
     let report_json =
         media_match_v3_diagnostic_manifest_report_json(&report).expect("report should serialize");
