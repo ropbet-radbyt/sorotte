@@ -285,3 +285,28 @@ Implementation binding:
 - Generated bundles remain ignored. This committed record binds them by exact
   paths, structured fields, and hashes without placing large logs, media, or
   screenshots under source control.
+
+## Final post-build four-mode sequence — 2026-08-01 AEST
+
+The valid byte-silent stalled-HTTP mode ran last:
+
+```text
+target/verification/gui-real-mpv-stalled-http/20260731T150829535Z-48288
+```
+
+It passed 18 assertions and 11 artifacts in 48,373 ms. GUI PID `20276` kept
+mpv PID `36504` and the same IPC endpoint. The first response delivered
+720,000 bytes, remained open and byte-silent for 29,197 ms, and emitted zero
+EOF observations before recovery. One same-process recovery request completed
+all 4,320,024 bytes; playback advanced from the 7.424-second cache stall to
+8.013835 seconds, and GUI/player/server/socket cleanup completed without a
+manual retry.
+
+```text
+093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  stable mpv
+97e19d8b0e84ce13907ac57c77d5c0c468a013cab495b775c249ea9da588a4cd  harness-report.json
+301179cf2379ab8aeb4fe01459e19fa94f315da0bd21214d782c29978cb20e74  contract-summary.json
+773be72e5aff96f7664476167446605467ca694a847a67b27c8c155626de993e  invocation.json
+f51cf2c0c498943a9d1b60bbbf6b1becd7ad94464aed3e7a5975c8c94159342a  stalled-http.json
+```

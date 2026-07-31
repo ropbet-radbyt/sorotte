@@ -288,7 +288,7 @@ The exact generated campaign, oracle, stdout/stderr identities, and limitations
 are retained in
 [`compat-generated-json-framing-differential-20260731.md`](compat-generated-json-framing-differential-20260731.md).
 
-### Final four-slice committed-source matrix
+### Four-slice committed-source matrix
 
 The later four-slice continuation strengthened legacy process synchronization,
 added one context-exact delayed permanent-room setter canonicalizer, and leased
@@ -336,7 +336,7 @@ is important: it exercised the checkout, delayed-frame, and server-port
 coordination under ordinary parallel scheduling rather than a serial-only
 mode.
 
-### Exact-head coverage-policy refresh
+### `829ab98` coverage-policy checkpoint
 
 The later coverage-policy correction changed no compatibility Rust source but
 did change the repository head and its source-binding policy. A fresh output
@@ -360,7 +360,7 @@ ignored writers, failed and skipped zero, returned zero, and completed in
 48.529611 seconds. Closed prerequisite, oracle, fixture, inventory, execution,
 and accounting records remain complete.
 
-Exact-head bundle identities:
+`829ab98` checkpoint bundle identities:
 
 ```text
 be641cf0b556e424aede4adf5b848983c3c6aecade388163882cf7328b30b285  compat-live-committed-829ab98-v1.json
@@ -368,7 +368,55 @@ b0b11465dfd99640cc1a2be2e9458b1cc230579d953917d8c6c9876f6bda9ff3  compat-live-co
 96d63126df9b96f39864a6a7b322f70bc7014ad9eab9ee5114f26ce458a417a7  compat-live-committed-829ab98-v1.stderr.log
 ```
 
-### Final integrated gates
+This remains a complete source-bound historical checkpoint. Later focused
+coverage-finalizer, real-mpv fixture, and Plex fixture commits advanced the
+branch head without changing the compatibility product or oracle sources;
+strict provenance nevertheless required a fresh committed-head matrix rather
+than renaming this local artifact.
+
+### Committed implementation-head matrix
+
+On 2026-08-01 AEST, a fresh report path ran and validated the complete matrix:
+
+```text
+SYNCPLAY_REQUIRE_LIVE_INTEROP=1
+SYNCPLAY_LEGACY_ROOT=.interop-cache/syncplay-legacy
+SYNCPLAY_PYTHON_BIN=C:\Python313\python.exe
+C:\Python313\python.exe scripts/compat_live_interop.py run --repo-root . \
+  --output target/verification/compat-live-committed-dd3012c-v1.json
+C:\Python313\python.exe scripts/compat_live_interop.py validate \
+  --report target/verification/compat-live-committed-dd3012c-v1.json
+```
+
+The report binds both source fields to
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`, lists 149 tests, executes and
+passes all 142 non-writing tests, accounts for the seven exact ignored
+writers, and records zero failed/skipped tests in 48.280455 seconds. Bundle
+identities are:
+
+```text
+be21707fe709e3bea95568f85dfef78d497643af1b8bd21d4db08ef489599801  compat-live-committed-dd3012c-v1.json
+8b3ebce8ecdc21bb6890f70b9016a46a7dfdcec4e09a42de85bbb93cb5c6c6b0  compat-live-committed-dd3012c-v1.stdout.log
+6e8e6cb7e00a08ed9f7119fa6e69dcc19730334c94af5a498eca598d13ba7100  compat-live-committed-dd3012c-v1.stderr.log
+```
+
+Intermediate hosted matrices were also positive at
+`a2441a30f1e98ba85d2384c2986f09b84a5dcb4f` (workflow run `30632931277`,
+job `91163394633`) and at
+`2b8af5672cd27c727f3707b71ccd15a1292135c7` (workflow run
+`30636380151`, job `91174919848`). These are retained source checkpoints;
+neither is used to rename the local `829ab98` artifact.
+
+Hosted workflow run
+[`30639113884`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30639113884)
+then executed the complete live matrix at exact source
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`. Job
+[`91184230428`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30639113884/job/91184230428)
+passed. This confirms the current 149-test discovery / 142 executable / seven
+ignored-writer contract under the hosted Python environment without changing
+the immutable identities of the local `829ab98` checkpoint above.
+
+### Original four-slice integrated gates
 
 After the committed matrix and evidence integration, repository formatting,
 `git diff --check`, and actionlint for both changed workflows passed. All 496

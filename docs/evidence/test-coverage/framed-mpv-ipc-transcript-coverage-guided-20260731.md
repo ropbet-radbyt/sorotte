@@ -226,7 +226,7 @@ Python 3.12.3
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64, glibc 2.39
 ```
 
-## Four-slice continuation and final implementation-source campaign
+## Four-slice continuation and implementation-source campaigns
 
 All intermediate bundles remain preserved. The first continuation attempt at
 `ad410fc` was stopped by an outer 120-second operator bound while Cargo was
@@ -282,7 +282,7 @@ wsl.exe -d Ubuntu --cd /mnt/c/tmp/sorotte-test-coverage-design bash -lc \
     --output-root target/fuzz-ci/mpv-framed-transcript-deep-9f3cb60-wsl-v1"
 ```
 
-The final implementation-source report records:
+The primary implementation-source report records:
 
 ```text
 status / exit:           passed / 0
@@ -304,14 +304,14 @@ evidence errors:         0
 minimization:            not required
 ```
 
-Final bundle identities:
+Primary implementation bundle identities:
 
 ```text
 4a29518400180e5bb49adee30d40292be9596da800c5132d4bb443a4acafa744  run-report.json
 42cbeca1ac73f6040317991e8a6b5dccf7313d2b0fdb09a69cb71759967bcfe0  fuzz.log
 ```
 
-## Exact-head coverage-policy refresh campaign
+## `829ab98` coverage-policy checkpoint campaign
 
 The later coverage-map policy correction changed no framed-mpv target source,
 but exact source provenance required a new campaign at the resulting commit.
@@ -329,7 +329,7 @@ wsl.exe -d Ubuntu --cd /mnt/c/tmp/sorotte-test-coverage-design bash -lc \
     --output-root target/fuzz-ci/mpv-framed-transcript-deep-829ab98-wsl-v1"
 ```
 
-The exact-head report records:
+The `829ab98` checkpoint report records:
 
 ```text
 status / exit:           passed / 0
@@ -356,11 +356,64 @@ Independent filesystem counts matched the report: zero artifact files and
 cargo-fuzz 0.13.2, Python 3.12.3, and Ubuntu WSL2 environment recorded by the
 structured report.
 
-Exact-head bundle identities:
+`829ab98` checkpoint bundle identities:
 
 ```text
 cf32c5060accd566f51d5154a2bf30cd7d564009b17ed9152468d09cf1b2b65f  run-report.json
 48bdc7bbd2a355458ef1799b6013efc04bf92724748e2c8554f45d7cbee3d55b  fuzz.log
+```
+
+This remains a historical exact-source checkpoint. The later focused
+coverage-finalizer, real-mpv fixture, and Plex fixture commits do not modify
+the in-memory framed-mpv target or its 12 seeds, but strict source provenance
+still required a fresh committed-head campaign rather than relabelling this
+immutable bundle.
+
+## Committed implementation-head refresh
+
+On 2026-08-01 AEST, the complete bounded command ran again against committed
+implementation head `dd3012c1bcefa0a68520b063c5ae06f3e1b96f79` and a new,
+previously absent output root:
+
+```text
+wsl.exe -d Ubuntu --cd /mnt/c/tmp/sorotte-test-coverage-design bash -lc \
+  "python3 fuzz/run_protocol_fuzz.py \
+    --target mpv_framed_transcript \
+    --toolchain nightly-2026-07-29 \
+    --source-sha dd3012c1bcefa0a68520b063c5ae06f3e1b96f79 \
+    --seconds 180 \
+    --seed-corpus crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript \
+    --expected-seed-count 12 \
+    --output-root target/fuzz-ci/mpv-framed-transcript-deep-dd3012c-wsl-v1"
+```
+
+The closed report records:
+
+```text
+status / exit:           passed / 0
+source SHA:              dd3012c1bcefa0a68520b063c5ae06f3e1b96f79
+sanitizer / duration:    address / 180 seconds
+executions:              328,559
+average executions/sec: 1,815
+new units:               3,080
+slowest unit:            0 seconds
+peak RSS:                452 MiB
+final corpus:            1,250 files / 76,115 bytes
+final corpus aggregate:  8f67fe7dcc8fbcf844c4f9f383054d7126111e95c12f368e37f976b07ca2705d
+artifacts:               0 files / 0 bytes
+artifact aggregate:      4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+source files:            65 before / 65 after, stable
+source aggregate:        b15e50a01cfe0e50379372026e01f64882396aee21a0c585790aeea4d777f924
+seed files:              12 before / 12 after, stable
+evidence errors:         0
+minimization:            not required
+```
+
+Independent filesystem counts matched the report. Bundle identities are:
+
+```text
+85c6b70b53910b9d905bf7e0ba9135d286a953ba539fad4249ad44c1b43659db  run-report.json
+c5e91640577e2cddde21ce1a00329db0642399759d6b7fb2e6ac8f301a08811c  fuzz.log
 ```
 
 ## Deterministic and policy validation

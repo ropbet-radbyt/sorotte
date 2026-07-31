@@ -116,21 +116,26 @@ Match lane, a 256-case legacy CLI parser/configuration-composition oracle, and
 a fourth native real-mpv mode for a valid complete-length response that remains
 byte-silent without EOF. `TC-CLI-004`, `TC-CLI-005`, and `TC-PLAYER-005` are
 positive; all local validation and the final implementation-source four-mode
-real-mpv campaigns are green, with stalled bundle
-`20260731T115707208Z-35432` run last. The first
+real-mpv campaigns are green, with final post-build stalled bundle
+`20260731T150829535Z-48288` run last. The first
 hosted run exposed `TC-HARNESS-018` through `TC-HARNESS-024`; the second proved
 generated Media Match, complete live compatibility, semantic, lifecycle,
 Ubuntu server-release, and Windows nextest behavior before exposing
 `TC-HARNESS-025` through `TC-HARNESS-029`. Later fail-closed campaigns exposed
-`TC-HARNESS-030` through `TC-HARNESS-043`: platform reachability, exact
+`TC-HARNESS-030` through `TC-HARNESS-046`: platform reachability, exact
 inventory, bounded fixture timing, legacy checkout/frame/port coordination,
 one context-exact pinned-legacy setter alternate, LLVM exa-scale parsing,
 Linux prerequisite installation, one noncanonical native-ASan environment
 limitation, strict-count updates, two-platform physical-line coverage, and
-cross-platform source-byte identity. All 26 harness findings have focused
-dispositions and positive canonical regressions. The exact-head compatibility,
-WSL fuzz, 54-test Windows process map, and local two-platform coverage replay
-are green; documentation-inclusive hosted acceptance remains pending. Detailed
+cross-platform source-byte identity, coverage-finalizer union binding,
+real-mpv fault arming, and complete Plex fixture headers. All 29
+hosted-continuation findings (`TC-HARNESS-018` through `TC-HARNESS-046`) have
+focused dispositions and positive regressions or exact-artifact replay. The
+committed implementation-head compatibility and WSL fuzz campaigns, 54-test
+Windows process map, and local two-platform coverage replay are green.
+Exact implementation-head workflow `30639113884` also passed every required
+producer, the corrected two-map coverage finalizer, and the aggregate;
+documentation-inclusive hosted acceptance remains pending. Detailed
 records are
 [`client-ping-jitter-drift-schedules-20260731.md`](../docs/evidence/test-coverage/client-ping-jitter-drift-schedules-20260731.md),
 [`media-match-generated-media-capability-20260731.md`](../docs/evidence/test-coverage/media-match-generated-media-capability-20260731.md),
@@ -291,6 +296,15 @@ media-tool process faults. Rust source is forced to LF through `.gitattributes`
 so raw source digests are identical on Windows and Linux. Executable-looking
 changed lines missing from the combined canonical maps remain unmapped and
 fail, so neither platform silently excuses the other's production body.
+The coverage evidence finalizer consumes that same complete ordered
+primary-plus-supplemental tuple and requires the retained diff report to bind
+every exact map in order. Missing, reordered, duplicated, replaced, or
+tampered maps fail closed; `TC-HARNESS-044` preserves the hosted single-map
+coverage-finalization RED and the successful exact-artifact multi-map replay.
+Implementation-head workflow `30639113884` then regenerated both maps, passed
+the finalizer, and accepted 2,403/2,894 combined lines (83.03%), including
+1,841/2,275 ordinary (80.92%) and 562/619 critical (90.79%), with zero
+unmapped lines; its required aggregate also passed.
 Exact local replay and artifact identities are retained in
 [`platform-coverage-map-union-20260731.md`](../docs/evidence/test-coverage/platform-coverage-map-union-20260731.md).
 
@@ -317,9 +331,10 @@ from:
 
 - the locked all-feature workspace;
 - the exact 14-scenario GUI semantic inventory;
-- the complete 20-test strict live-reference inventory against pinned Syncplay
+- the complete 21-test strict live-reference inventory against pinned Syncplay
   commit `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`: 12 fanout scenarios, 4 TLS
-  probes, 2 live state probes, and 2 request-shim contracts;
+  probes, 2 live state probes, 2 request-shim contracts, and one resource-lease
+  regression;
 - a final cargo-llvm-cov merge check.
 
 The wrapper accepts only cargo-llvm-cov 0.8.4, applies its `show-env` contract
@@ -342,15 +357,16 @@ limits are retained in
 [`merged-profile-lanes-20260729.md`](../docs/evidence/test-coverage/merged-profile-lanes-20260729.md).
 
 `scripts/coverage_windows_process_lanes.py` owns a separate
-`windows-x86_64-msvc` profile domain. It requires exactly 50 noninteractive
+`windows-x86_64-msvc` profile domain. It requires exactly 54 noninteractive
 tests across updater transactions, installed-updater self-replacement, mpv
 named-pipe and external-process faults, and media-tool child-process faults.
 Every lane must add a fresh nonempty profile; all profiles must remain
 continuous and merge-compatible; the final merge may not mutate them. Producer
 identity, Rust host, source state, commands, inventories, filtered counts,
 logs, and the native-UI exclusion are schema-bound. The real experiment
-retained 34 profiles in the final local replay and the scheduled Windows job
-always uploads its report
+retained 34 profiles in the historical final local replay. Hosted run
+`30632931277` then executed the exact 54-test producer and retained 75 fresh
+profiles at its exact source checkpoint. The Windows job always uploads its report
 and logs, including on failure. Interactive UI Automation remains a separate
 uninstrumented contract.
 
@@ -838,6 +854,47 @@ healthy and owned-process campaigns. It retained exactly two requests,
 same-PID/same-IPC recovery, no manual retry, and complete player/server/socket
 release.
 
+The fourth native mode keeps a valid complete-length AU response open after a
+deterministic playable prefix, emits no further byte and no EOF for at least 25
+seconds, and requires one bounded same-process cache-stall recovery. Its final
+post-build implementation-source bundle `20260731T150829535Z-48288` ran last after the
+healthy, owned-process, and malformed-HTTP modes and passed 18 assertions with
+11 artifacts. Exact silence, request, process, IPC, media, and digest evidence
+is retained in
+[`native-gui-real-mpv-stalled-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md).
+
+The required Linux `mpv-pr-semantics` lane is a separate minimum-supported-mpv
+contract, not one of those four Windows native GUI modes. After
+`TC-HARNESS-045`, both real-mpv clients must first reach exact `ReadyPaused`
+at revision 1 and exact timeout-free `Playing` at revision 2 with seeking
+clear. Only then does the fixture arm one globally claimed path stall across
+range/retry connections. The affected client may issue at most one seek per
+observed recovery episode, the healthy peer must perform no post-start seek,
+and the stall must apply and complete exactly once. A separate deterministic
+concurrent-request regression requires both parked handlers to resume and
+return their complete response bodies. This preserves the strict
+recovery/isolation oracle while preventing startup timing from triggering the
+fault prematurely.
+
+The required Windows nextest lane also retains its first-attempt flake as
+evidence. In run `30636380151`, job `91174920040` executed 3,775 tests: 3,774
+passed, while the Plex connected-session test failed once and passed on retry;
+fail-on-flaky correctly rejected the job. `TC-HARNESS-046` is distinct from
+the panic-safe shared-environment fix in `TC-HARNESS-004`: the loopback Plex
+fixture's read loop treated every socket error as request completion and could
+count an empty or partial accepted-socket header as a request. The retained
+failed artifact did not capture the request bytes or error kind; that
+mechanism is the source diagnosis. Commit
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79` accepts only a
+complete `CRLFCRLF` header across `Interrupted`, `WouldBlock`, and `TimedOut`
+reads under one deadline. A scripted split-header regression is positive and
+the real-socket test retains its production-path sections -> file lookup ->
+timeline order oracle with stronger failure diagnostics. Exact-head run
+`30639113884` then passed 3,777/3,777 Windows nextest cases with no flaky
+attempt. Every other required producer, coverage-diff job `91190243453`, and
+aggregate job `91192554763` also completed successfully at exact implementation
+head `dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`.
+
 ## Required live Python compatibility evidence
 
 `SYNCPLAY_REQUIRE_LIVE_INTEROP=1` now turns every missing oracle, Python
@@ -855,10 +912,13 @@ oracle path was passed unchanged to Cargo and resolved from the crate working
 directory; the wrapper now passes the absolute already-attested path. After
 adding the generated differential below, the prior committed-source report
 over `e3d8554` listed 144 tests, passed all 137 executable tests, skipped zero,
-and retained the same seven fixture writers. The final implementation-source
+and retained the same seven fixture writers. The current committed
 inventory is 149 tests: 142 executable tests and the same seven fixture
-writers. The final exact-head `829ab98` report passed all 142 with zero
-failures or skips.
+writers. The historical coverage-policy checkpoint at `829ab98` passed all
+142 with zero failures or skips. A fresh local report at `dd3012c` passed the
+same complete accounting in 48.280455 seconds, and exact-head hosted run
+`30639113884` independently passed it again. Neither result relabels the
+immutable `829ab98` artifact.
 The report/log hashes, prerequisite identities, missing-prerequisite
 proof, RED, and local-vs-hosted limitations are retained in
 [`compat-required-live-interop-20260731.md`](../docs/evidence/test-coverage/compat-required-live-interop-20260731.md).

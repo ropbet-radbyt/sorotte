@@ -428,3 +428,26 @@ a08a8310ad1af1ae5ebaae29da74ac820d6365c8ed5726a0b8bea96d0d985ec6  invocation.jso
 - Generated bundles remain ignored. This committed record binds them by exact
   paths, structured fields, and hashes; it does not place multi-megabyte
   screenshots, logs, or media under source control.
+
+## Final post-build four-mode sequence — 2026-08-01 AEST
+
+The malformed-HTTP mode ran third:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T150757355Z-3800
+```
+
+It passed 18 assertions and 11 artifacts in 22,227 ms. GUI PID `39908` kept
+mpv PID `8536` and the same IPC endpoint across exactly two loopback requests:
+720,000 valid AU bytes followed by one malformed chunk boundary, then one
+complete 4,320,024-byte response. Recovery was same-generation and automatic,
+with no manual retry and complete player/server/socket release.
+
+```text
+093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  stable mpv
+17786341fde638e279a4121386c241b85b144391efcb019aa2bed61114c2ba09  harness-report.json
+9f4a9fcf92984773c96dc9ef5af98b063cfa82a9cb6ce6af901023b632af2be4  contract-summary.json
+01994b5801ca05efaea73a8c8b89cfc44456ca51677e32371d35ede921445388  invocation.json
+564e681bea519ffd391200742ce1a6c477e7744dcb8684b1b076bd3f55d0e797  faulting-http-recovery.json
+```

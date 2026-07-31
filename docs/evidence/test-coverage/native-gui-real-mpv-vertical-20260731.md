@@ -178,3 +178,26 @@ python -m unittest scripts.tests.test_gui_real_mpv_vertical_contract -v
 ```
 
 Results at evidence capture: 6 Rust tests passed; focused Clippy passed with warnings denied; 9 Python tests passed.
+
+## Final post-build four-mode sequence — 2026-08-01 AEST
+
+After the complete locked all-feature workspace gate, strict workspace Clippy,
+and actionlint passed, the healthy mode started the requested final sequence:
+
+```text
+target/verification/gui-real-mpv-vertical/20260731T150646167Z-51104
+```
+
+It passed 13 assertions and 10 artifacts in 17,415 ms with GUI PID `3044` and
+owned mpv PID `6648`. The following owned-process, malformed-HTTP, and
+byte-silent-stall modes used the same rebuilt GUI and installed mpv identities;
+the stalled mode ran last.
+
+```text
+093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  mpv
+fd5fdf58e1a2262aaf91f1569e73bfde5877ece4cba23ec5a8926081f237561f  harness-report.json
+3c3cf4b87011457bc2bd0f88ee2ebd130f3e2d97cd7e5d75eab9977635f42b5e  contract-summary.json
+3c67a2e8654871b47dac54c584d43b2d5c1cccc228f12c85eee0c7ed78e8d859  invocation.json
+b990b2f20660460f48c0d88d0a42fd9fa13d7d22dd4dec32a4a12d514aa2ca08  real-mpv-state.json
+```

@@ -2,15 +2,17 @@
 
 Date: 2026-07-31
 
+Hosted closure continuation: 2026-08-01 AEST
+
 Branch: `codex/test-coverage-design`
 
 Primary implementation snapshot: `9f3cb60fbe788575829931b56155f4bc0c19caf0`
 
-Final test-coverage closure snapshot:
+Platform-map implementation snapshot:
 `829ab9824d20bc64b03179646c5e182d5c7a4bfb`
 
 Hosted-harness corrections through:
-`829ab9824d20bc64b03179646c5e182d5c7a4bfb`
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`
 
 ## Status
 
@@ -26,9 +28,14 @@ Ubuntu server-release, and Windows nextest lanes, then exposed
 `TC-HARNESS-025` through `TC-HARNESS-029`. Later fail-closed runs exposed
 `TC-HARNESS-030` through `TC-HARNESS-038` and `TC-HARNESS-040` through
 `TC-HARNESS-043`; the direct native-Windows ASan diagnostic is
-`TC-HARNESS-039`. Every correction has a focused commit and positive local
-regression. The exact-head required-live and WSL fuzz campaigns, 54-test
-Windows process map, and local Linux/Windows coverage union are green. Final
+`TC-HARNESS-039`. Two later runs exposed `TC-HARNESS-044` through
+`TC-HARNESS-046`: aggregate multi-map binding, real-mpv startup/fault phase
+ordering, and complete Plex fixture reads. Every correction has a focused
+commit and positive local regression or exact downloaded-artifact replay. The
+committed implementation-head required-live and WSL fuzz campaigns, 54-test
+Windows process map, and local Linux/Windows coverage union are green. Exact
+implementation-head workflow `30639113884` also passed every required producer,
+the corrected coverage finalizer, and the aggregate. Final
 documentation-inclusive hosted acceptance remains pending.
 
 ## Scope and safety boundary
@@ -66,14 +73,14 @@ Hosted-diagnostic corrections are separately focused:
 | `TC-HARNESS-019` unquoted Git revision expression | `b616cf2` | hosted source check reached the later peeled-identity assertion |
 | `TC-HARNESS-020` incomplete Rust component declarations | `b616cf2`, policy alignment `23d86c9` | hosted Rust setup completed in every required job |
 | `TC-HARNESS-021` legacy permanent-room startup race | `a00b088` | hosted complete live compatibility passed 138/138 |
-| `TC-HARNESS-022` non-Windows test helper import | `912970c`, formatting `0dd6c79` | portable external-launch module 15/15; final Linux all-feature confirmation pending |
-| `TC-HARNESS-023` hosted PowerShell process fixtures | `0b51fb0` | hosted Windows process probes passed before a later player test failed |
+| `TC-HARNESS-022` non-Windows test helper import | `912970c`, formatting `0dd6c79` | portable external-launch module 15/15; hosted Linux all-feature job `91163394469` passed |
+| `TC-HARNESS-023` hosted PowerShell process fixtures | `0b51fb0` | hosted Windows server-release job `91163394510` passed |
 | `TC-HARNESS-024` nextest fixture-role collision | `a5ae5be` | hosted Windows nextest completed successfully |
-| `TC-HARNESS-025` quoted/dynamic coverage environment | `854a805`, exact-token hardening `bcede9c` | both lane modules pass 42/42 against shell quoting and bounded `%Nm` variants |
-| `TC-HARNESS-026` annotated mpv tag object compared with peeled commit | `3e03b70` | actionlint and exact CI source-policy tests pass |
-| `TC-HARNESS-027` non-executable POSIX TLS fixture | `20b02a8` | all three atomic TLS publisher tests pass through explicit `sh` |
-| `TC-HARNESS-028` early-exit named-pipe race | `0502fef`, oracle hardening `c7b134e` | exact regression passes 50/50 consecutively; full player suite passes |
-| `TC-HARNESS-029` stale/non-exclusive latest-publication assertion | `ee7b9e9`, exclusivity hardening `df7df33` | PowerShell policy and YAML-aware workflow policy pass |
+| `TC-HARNESS-025` quoted/dynamic coverage environment | `854a805`, exact-token hardening `bcede9c` | both lane modules pass 42/42; hosted job `91169713196` generated maps and passed policy before TC044 |
+| `TC-HARNESS-026` annotated mpv tag object compared with peeled commit | `3e03b70` | actionlint/source policy and hosted mpv job `91163394486` pass |
+| `TC-HARNESS-027` non-executable POSIX TLS fixture | `20b02a8` | all three publisher tests and hosted Linux job `91163394469` pass |
+| `TC-HARNESS-028` early-exit named-pipe race | `0502fef`, oracle hardening `c7b134e` | exact 50/50 stress, full player suite, and hosted Windows job `91163394472` pass |
+| `TC-HARNESS-029` stale/non-exclusive latest-publication assertion | `ee7b9e9`, exclusivity hardening `df7df33` | both local policies and hosted Windows release job `91163394510` pass |
 | `TC-HARNESS-030` unreachable non-Windows native preflight | `7395cdf` | target-sensitive preflight regression; later hosted Linux lane passed |
 | `TC-HARNESS-031` non-exact compatibility profile inventory | `4fae099` | exact report and fully qualified libtest inventory policy pass |
 | `TC-HARNESS-032` 30 ms duplex model deadline | `8dbc444` | bounded one-second in-memory fault-model deadline passes |
@@ -85,9 +92,12 @@ Hosted-diagnostic corrections are separately focused:
 | `TC-HARNESS-038` released ephemeral legacy server ports | `6ccfd3a` | in-process/cross-process lease regression; two full parallel live runs pass |
 | `TC-HARNESS-039` incompatible native Windows ASan runtime | no source change | failed diagnostic preserved; canonical WSL ASan campaign passes |
 | `TC-HARNESS-040` strict selector count after port-lease test | `9f3cb60` | exact 21 selected / 128 filtered policy and Cargo selector pass |
-| `TC-HARNESS-041` Linux-only map plus overbroad production scope | `829ab98` | two-platform replay passes 82.52% overall, 80.13% ordinary, 90.79% critical, zero unmapped |
+| `TC-HARNESS-041` Linux-only map plus overbroad production scope | `829ab98` | local replay passes; hosted job `91169713196` passes 82.55% overall, 80.18% ordinary, 90.79% critical, zero unmapped |
 | `TC-HARNESS-042` stale Windows process inventory | `829ab98` | exact 54-test instrumented producer passes with reviewed filtered counts |
-| `TC-HARNESS-043` platform-dependent Rust source bytes | `829ab98` | fresh Windows checkout stays LF under global autocrlf and matches Linux source digest |
+| `TC-HARNESS-043` platform-dependent Rust source bytes | `829ab98` | fresh Windows and hosted cross-platform raw-source binding pass; TC044 is the later finalizer defect |
+| `TC-HARNESS-044` single-map coverage evidence finalizer rejected a valid union | `2b8af56` | exact downloaded artifacts replay with the complete ordered two-map tuple; omission/reordering/duplication/tampering regressions pass |
+| `TC-HARNESS-045` HTTP stall armed during real-mpv startup | `bc5ef9d` | prepared -> started -> armed regression, complete sim suite, and hosted mpv job `91184230570` pass |
+| `TC-HARNESS-046` accepted Plex socket read could be incomplete | `dd3012c` | scripted split header, production-path loopback oracle, full CLI package, and 3,777/3,777 hosted nextest cases pass |
 
 ## Slice results
 
@@ -177,21 +187,21 @@ classified `Unknown` when cache pause arrived. Production now preserves and
 replays only the causal successor restart and permits `Unknown` to arm only
 without positive live evidence.
 
-The final implementation-source post-gate GREEN, run last after the full local build-producing
-validation matrix, is:
+The final post-build GREEN, run last after the complete locked all-feature
+workspace, strict Clippy, actionlint, and the preceding three native modes, is:
 
 ```text
-target/verification/gui-real-mpv-stalled-http/20260731T115707208Z-35432
+target/verification/gui-real-mpv-stalled-http/20260731T150829535Z-48288
 ```
 
 | Field | Value |
 |---|---|
 | assertions / artifacts | 18 / 11 |
-| GUI SHA-256 | `439174541d461db90fc66be088152024814e3ba4fe0d0d6b3add464103205d9e` |
+| GUI SHA-256 | `093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3` |
 | mpv SHA-256 | `2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0` |
 | first / recovery bytes | 720,000 / 4,320,024 |
-| server-side silence | 28,962 ms |
-| cache-stall / recovered position | 7.424 / 8.023747 seconds |
+| server-side silence | 29,197 ms |
+| cache-stall / recovered position | 7.424 / 8.013835 seconds |
 | EOF / replacement stop | 0 / 1 |
 | manual retries / invalid identities | 0 / 0 |
 
@@ -273,6 +283,45 @@ hashes are in
 The diagnostic run remains independent from the later
 documentation-inclusive acceptance run.
 
+Workflow run
+[`30632931277`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30632931277)
+at `a2441a30f1e98ba85d2384c2986f09b84a5dcb4f` passed every originating
+behavior and evidence producer. Coverage job `91169713196` executed the exact
+54-test Windows inventory and passed the two-platform policy at 82.55%
+combined, 80.18% ordinary, and 90.79% critical with zero unmapped lines. The
+coverage job then failed in its evidence-finalization phase because that
+finalizer still accepted a single map while the report declared an ordered
+union; the downstream aggregate consequently failed (`TC-HARNESS-044`). Commit
+`2b8af5672cd27c727f3707b71ccd15a1292135c7` binds the complete ordered
+primary-plus-supplemental tuple. The exact downloaded failure replays
+successfully under `target/hosted/30632931277/replay-root`; the failed hosted
+run remains diagnostic evidence.
+
+Workflow run
+[`30636380151`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30636380151)
+at `2b8af5672cd27c727f3707b71ccd15a1292135c7` exposed two independent
+originating harness failures. mpv job `91174919979` allowed its byte-triggered
+stall to begin before both clients reached a healthy startup baseline
+(`TC-HARNESS-045`). Windows job `91174920040` ran 3,775 tests, passed 3,774,
+and retained a first-attempt Plex connected-session failure followed by a
+retry pass; fail-on-flaky correctly returned 100 (`TC-HARNESS-046`). Commit
+`bc5ef9dbcff08d194c449e051c8da46424324b8c` adds exact prepared -> started
+-> armed real-mpv phases and one globally claimed stall. Commit
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79` accumulates only complete Plex
+headers across transient reads. Neither diagnostic run is relabelled as
+acceptance.
+
+Exact implementation-head workflow run
+[`30639113884`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30639113884)
+at `dd3012c1bcefa0a68520b063c5ae06f3e1b96f79` then passed every required
+producer and the aggregate. mpv job `91184230570` passed TC045, Windows job
+`91184230464` passed 3,777/3,777 nextest cases without a flaky or rerun element,
+coverage job `91190243453` accepted the corrected ordered two-map finalizer at
+2,403/2,894 combined (83.03%), 1,841/2,275 ordinary (80.92%), and 562/619
+critical (90.79%) with zero unmapped lines, and aggregate job `91192554763`
+passed. This is the positive implementation-source acceptance run; the earlier
+diagnostic artifacts remain immutable.
+
 No item in this table is a Sorotte product behavior defect. Each correction
 retains the original strict assertion or timeout. None is being converted into
 a skip, retry-only pass, lowered threshold, or normalized parity exception.
@@ -283,7 +332,7 @@ The exact committed implementation snapshot contains:
 
 | Crate | Test attributes | Ignored |
 |---|---:|---:|
-| `sorotte-cli` | 376 | 8 |
+| `sorotte-cli` | 377 | 8 |
 | `sorotte-client-app` | 197 | 0 |
 | `sorotte-client-core` | 728 | 0 |
 | `sorotte-compat` | 149 | 7 |
@@ -296,8 +345,8 @@ The exact committed implementation snapshot contains:
 | `sorotte-protocol` | 94 | 0 |
 | `sorotte-secret` | 20 | 0 |
 | `sorotte-server` | 392 | 0 |
-| `sorotte-sim` | 16 | 4 |
-| **Total** | **3,814** | **23** |
+| `sorotte-sim` | 17 | 4 |
+| **Total** | **3,816** | **23** |
 
 This is the count of plain and parameterized Rust test attributes, not a
 behavioral coverage percentage. The ignored total is unchanged: the generated
@@ -312,7 +361,7 @@ by its required hosted job rather than by ordinary Cargo execution.
 | complete client-core | 728/728 |
 | CLI generated campaign | 256/256 cases |
 | CLI focused module | 6/6 |
-| CLI library / integration | 366 passed, 8 registered ignored / 2 passed |
+| CLI library / integration | 367 passed, 8 registered ignored / 2 passed |
 | complete player-mpv | 427 passed, 2 registered ignored |
 | stalled-HTTP native contract | 18 assertions / 11 artifacts |
 | compatibility default / strict live | 142/142 / 21/21 (128 filtered) |
@@ -325,41 +374,45 @@ by its required hosted job rather than by ordinary Cargo execution.
 | external mpv early-exit stress | 50/50 before and after role-specific oracle hardening |
 | server publication policy | exact PowerShell script and YAML-aware structural policy passed |
 | `cargo fmt --all --check` / `git diff --check` | passed / passed |
-| complete Python policy/infrastructure suite | 525/525 |
+| complete Python policy/infrastructure suite | 531/531 |
 | behavior / ignored / known-defect policy | 20 behaviors and 51 proofs / 23 exact ignores / 0 defects and 0 characterizations |
 | mutation policy | 10 shards; 17 accepted unviable mutations |
 | locked workspace Clippy, all targets/features | passed with warnings denied |
 | locked workspace tests, all features and doctests | passed |
 | GUI semantic suite | 14/14 |
 | Windows native GUI smoke | passed; complete required scenario inventory |
-| final committed-source compatibility | 149 listed; 142 passed; 7 ignored; 0 failed/skipped |
-| final committed-source WSL ASan framing fuzz | 326,303 executions; 0 artifacts; source/seeds stable |
+| committed implementation-head compatibility | 149 listed; 142 passed; 7 ignored; 0 failed/skipped |
+| committed implementation-head WSL ASan framing fuzz | 328,559 executions; 0 artifacts; source/seeds stable |
 | exact Windows process coverage producer | 54/54; physical map 2,518 / 161,761 |
 | Linux/Windows changed-line union replay | 82.52% overall; 80.13% ordinary; 90.79% critical; 0 unmapped |
+| exact downloaded TC044 finalizer replay | ordered Linux/Windows tuple accepted; omission/reordering/duplication/tampering remain rejected |
+| exact implementation-head hosted workflow | every required producer, 83.03% / 80.92% / 90.79% zero-unmapped coverage, corrected finalizer, and aggregate passed |
+| complete `sorotte-sim` after TC045 | 12/12 |
+| Plex fixture TC046 focused / complete CLI package | 3/3 / passed |
 
-The source-bound compatibility report is
-`target/verification/compat-live-committed-829ab98-v1.json`. It validates
+The latest source-bound compatibility report is
+`target/verification/compat-live-committed-dd3012c-v1.json`. It validates
 source and expected source
-`829ab9824d20bc64b03179646c5e182d5c7a4bfb`, the immutable Syncplay oracle
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`, the immutable Syncplay oracle
 `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`, complete 149-test accounting,
-and 48.529611 seconds of execution. Bundle identities are:
+and 48.280455 seconds of execution. Bundle identities are:
 
 ```text
-be641cf0b556e424aede4adf5b848983c3c6aecade388163882cf7328b30b285  report
-b0b11465dfd99640cc1a2be2e9458b1cc230579d953917d8c6c9876f6bda9ff3  stdout
-96d63126df9b96f39864a6a7b322f70bc7014ad9eab9ee5114f26ce458a417a7  stderr
+be21707fe709e3bea95568f85dfef78d497643af1b8bd21d4db08ef489599801  report
+8b3ebce8ecdc21bb6890f70b9016a46a7dfdcec4e09a42de85bbb93cb5c6c6b0  stdout
+6e8e6cb7e00a08ed9f7119fa6e69dcc19730334c94af5a498eca598d13ba7100  stderr
 ```
 
-The canonical framing campaign is
-`target/fuzz-ci/mpv-framed-transcript-deep-829ab98-wsl-v1`. In 180 seconds it
-executed 326,303 units at 1,802/sec, added 3,220 units, retained 1,190 corpus
-files / 66,395 bytes, reached 451 MiB peak RSS, and produced zero artifacts.
+The latest canonical framing campaign is
+`target/fuzz-ci/mpv-framed-transcript-deep-dd3012c-wsl-v1`. In 180 seconds it
+executed 328,559 units at 1,815/sec, added 3,080 units, retained 1,250 corpus
+files / 76,115 bytes, reached 452 MiB peak RSS, and produced zero artifacts.
 All 65 source bindings and all 12 seeds remained stable. Bundle identities are:
 
 ```text
-cf32c5060accd566f51d5154a2bf30cd7d564009b17ed9152468d09cf1b2b65f  run-report.json
-48bdc7bbd2a355458ef1799b6013efc04bf92724748e2c8554f45d7cbee3d55b  fuzz.log
-e9f946720bf6576a8133eddc92d54df7c6eff660daa31ef338e90834e1c0d987  final corpus aggregate
+85c6b70b53910b9d905bf7e0ba9135d286a953ba539fad4249ad44c1b43659db  run-report.json
+c5e91640577e2cddde21ce1a00329db0642399759d6b7fb2e6ac8f301a08811c  fuzz.log
+8f67fe7dcc8fbcf844c4f9f383054d7126111e95c12f368e37f976b07ca2705d  final corpus aggregate
 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945  empty artifact aggregate
 ```
 
@@ -368,28 +421,31 @@ not on PATH. Its compile, ordinary crate tests, registry/catalog policy, and
 strict Clippy passed locally; hosted job `91111808305` supplied the successful
 real-tool proof.
 
-The final implementation-source post-gate real-mpv campaigns used one rebuilt
+The final post-build real-mpv campaigns used one rebuilt
 GUI and one installed mpv identity. They ran only after full source, policy,
 semantic, and native-smoke validation, with the valid stalled-read mode last:
 
 | Mode | Bundle | Assertions / artifacts |
 |---|---|---:|
-| healthy | `target/verification/gui-real-mpv-vertical/20260731T115509993Z-33888` | 13 / 10 |
-| owned-process recovery | `target/verification/gui-real-mpv-owned-process-recovery/20260731T115540382Z-33412` | 20 / 13 |
-| malformed-HTTP recovery | `target/verification/gui-real-mpv-faulting-http-recovery/20260731T115618285Z-49988` | 18 / 11 |
-| valid byte-silent stalled HTTP, run last | `target/verification/gui-real-mpv-stalled-http/20260731T115707208Z-35432` | 18 / 11 |
+| healthy | `target/verification/gui-real-mpv-vertical/20260731T150646167Z-51104` | 13 / 10 |
+| owned-process recovery | `target/verification/gui-real-mpv-owned-process-recovery/20260731T150721289Z-5208` | 20 / 13 |
+| malformed-HTTP recovery | `target/verification/gui-real-mpv-faulting-http-recovery/20260731T150757355Z-3800` | 18 / 11 |
+| valid byte-silent stalled HTTP, run last | `target/verification/gui-real-mpv-stalled-http/20260731T150829535Z-48288` | 18 / 11 |
 
 ```text
-GUI SHA-256: 439174541d461db90fc66be088152024814e3ba4fe0d0d6b3add464103205d9e
+GUI SHA-256: 093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3
 mpv SHA-256: 2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0
 ```
 
-## Pending hosted and publication acceptance
+## Implementation-head hosted acceptance and pending publication
 
-Local implementation, policy, campaign, and documentation integration are
-complete through `829ab9824d20bc64b03179646c5e182d5c7a4bfb` plus this
-evidence update. The branch has not yet been promoted as the final remote head
-at this checkpoint.
+Implementation source and focused corrections are committed and pushed through
+`dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`. The fresh source-bound
+compatibility and framed-mpv campaigns above use that exact implementation
+head. Exact-head workflow `30639113884` passed every originating job, the
+corrected two-map coverage finalizer, and the required aggregate. These
+documentation edits are not yet part of remote HEAD, so the branch has not yet
+been promoted as the final remote head at this checkpoint.
 
 A fresh hosted workflow over the documentation-inclusive source must still
 regenerate and consume both platform maps, pass every originating job and the

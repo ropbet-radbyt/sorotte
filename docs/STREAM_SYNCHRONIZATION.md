@@ -238,6 +238,18 @@ The same required mpv 0.41.0 CI job also runs the longer local-HTTP fault and bo
 cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall -- --ignored --exact --nocapture
 ```
 
+That regression separates player startup from fault injection. Both clients
+must first acknowledge `ReadyPaused` at revision 1 with seeking clear, then
+acknowledge timeout-free `Playing` at revision 2. Only after both exact
+baselines are visible does the fixture arm one globally claimed path stall.
+The fault must apply and complete exactly once across range/retry connections,
+the affected client must issue at most one seek in each observed recovery
+episode, and the healthy peer must perform no post-start seek. A separate
+deterministic concurrent-request regression requires both parked handlers to
+resume and return their complete response bodies after one globally claimed
+stall. This prepared -> started -> armed ordering prevents startup timing from
+being misclassified as cache-stall recovery evidence.
+
 The deterministic harnesses use generated local media and local HTTP fault media, not the public YouTube service or a live Plex server. External extractor availability, YouTube site changes, Plex transcoder behavior, and third-party network conditions remain suitable for opt-in smoke testing rather than required CI.
 
 ## Boundaries

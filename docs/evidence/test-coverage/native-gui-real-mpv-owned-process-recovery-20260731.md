@@ -353,3 +353,25 @@ processes on GUI Exit. No manual retry was used.
   server or external media service is contacted.
 - Generated output remains ignored under `target/`; the committed evidence
   binds the retained bundle by exact paths and hashes.
+
+## Final post-build four-mode sequence — 2026-08-01 AEST
+
+The owned-process mode ran second:
+
+```text
+target/verification/gui-real-mpv-owned-process-recovery/20260731T150721289Z-5208
+```
+
+It passed 20 assertions and 13 artifacts in 25,167 ms. GUI PID `19624`
+automatically replaced exact owned mpv PID `51776` with PID `15612`, changed
+the IPC endpoint, retained the active room, used no manual retry, fenced the
+old generation, and reaped both player generations on GUI Exit.
+
+```text
+093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  initial/replacement mpv
+baf064cc3913a95594ae9d0af4df26247a9fd0a85f5fd54cc056222e0f26a6ae  harness-report.json
+69e94ff8890639f90a2b3e1ec560228c5b126aa33273b5030082d81d4411f974  contract-summary.json
+73b5e2fe8fcfd5721f7363d511aaeb297bf436a8a53a2ad10425074f79dd0f6f  invocation.json
+18e18e9ba65d16a4f8b4c0f952f0522c4a8e2c1eaa52fd30ca534f1af9a6c091  owned-mpv-recovery.json
+```
