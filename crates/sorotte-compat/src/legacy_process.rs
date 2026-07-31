@@ -144,6 +144,115 @@ pub(crate) fn wait_for_legacy_server_startup(
     })
 }
 
+pub(crate) fn wait_for_legacy_permanent_rooms_startup(
+    port: u16,
+    child: &mut Child,
+    permanent_rooms: &[&str],
+) -> Result<(), InteropError> {
+    if permanent_rooms.is_empty() {
+        return Ok(());
+    }
+
+    // Syncplay v1.7.5 starts accepting TCP connections before its Twisted
+    // adbapi callbacks have loaded the room database. A scenario client that
+    // joins a configured permanent room during that window gets a transient
+    // Room with playlistIndex=None instead of the permanent room's seeded
+    // playlistIndex=0. Observe the GUI List contract before beginning the
+    // scenario so the live oracle starts from its intended durable state.
+    let mut probe_room_suffix = 0_u32;
+    let probe_room = loop {
+        let candidate = format!("compat-probe-{probe_room_suffix}-temp");
+        if !permanent_rooms.contains(&candidate.as_str()) {
+            break candidate;
+        }
+        probe_room_suffix += 1;
+    };
+    let mut connection = LegacyServerClientConnection {
+        stream: connect_legacy_client_stream(port, "compat-room-startup-probe")?,
+        pending_bytes: Vec::new(),
+    };
+    let hello = serde_json::to_string(&json!({
+        "Hello": {
+            "username": "compat-probe",
+            "room": {"name": probe_room},
+            "version": "9.9.9",
+            "features": {
+                "chat": false,
+                "featureList": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "sharedPlaylists": true,
+                "uiMode": "GUI"
+            }
+        }
+    }))?;
+    connection.stream.write_all(hello.as_bytes())?;
+    connection.stream.write_all(b"\r\n")?;
+    connection.stream.flush()?;
+
+    let list_request = b"{\"List\":null}\r\n";
+    let startup_deadline = Instant::now() + LEGACY_SERVER_START_TIMEOUT;
+    let mut next_list_request = Instant::now();
+    while Instant::now() <= startup_deadline {
+        ensure_legacy_server_is_running(child)?;
+        for line in drain_legacy_client_lines(&mut connection)? {
+            if legacy_list_contains_permanent_rooms(&line, permanent_rooms) {
+                return close_legacy_startup_probe(connection, port, child);
+            }
+        }
+
+        let now = Instant::now();
+        if now >= next_list_request {
+            connection.stream.write_all(list_request)?;
+            connection.stream.flush()?;
+            next_list_request = now + Duration::from_millis(40);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    Err(InteropError::LegacyServerPersistentRoomsStartTimeout {
+        port,
+        permanent_rooms: permanent_rooms
+            .iter()
+            .map(|room| (*room).to_owned())
+            .collect(),
+    })
+}
+
+fn close_legacy_startup_probe(
+    mut connection: LegacyServerClientConnection,
+    port: u16,
+    child: &mut Child,
+) -> Result<(), InteropError> {
+    connection.stream.shutdown(Shutdown::Write)?;
+    let disconnect_deadline = Instant::now() + LEGACY_SERVER_START_TIMEOUT;
+    let mut discard = [0_u8; 4096];
+    while Instant::now() <= disconnect_deadline {
+        ensure_legacy_server_is_running(child)?;
+        match connection.stream.read(&mut discard) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(InteropError::Io(error)),
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Err(InteropError::LegacyServerStartupProbeDisconnectTimeout { port })
+}
+
+fn legacy_list_contains_permanent_rooms(line: &str, permanent_rooms: &[&str]) -> bool {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    let Some(list) = message.get("List").and_then(Value::as_object) else {
+        return false;
+    };
+    permanent_rooms
+        .iter()
+        .all(|room_name| list.get(*room_name).is_some_and(Value::is_object))
+}
+
 pub(crate) fn ensure_legacy_server_is_running(child: &mut Child) -> Result<(), InteropError> {
     if let Some(status) = child.try_wait()? {
         let (stdout, stderr) = collect_child_pipes(child);
@@ -536,7 +645,8 @@ pub fn interop_prerequisites_missing(error: &InteropError) -> bool {
 #[cfg(test)]
 mod required_live_tests {
     use super::{
-        InteropError, live_interop_required_from_value, required_live_prerequisite_from_mode,
+        InteropError, legacy_list_contains_permanent_rooms, live_interop_required_from_value,
+        required_live_prerequisite_from_mode,
     };
     use std::ffi::OsStr;
     use std::path::PathBuf;
@@ -565,6 +675,23 @@ mod required_live_tests {
         assert!(matches!(
             required_live_prerequisite_from_mode(true, missing()),
             InteropError::RequiredLivePrerequisite { .. }
+        ));
+    }
+
+    #[test]
+    fn permanent_room_startup_requires_a_gui_list_snapshot_with_every_room() {
+        let expected_rooms = ["permanent-room", "second-room"];
+        for line in [
+            "not-json",
+            r#"{"Set":{"playlistIndex":{"index":0}}}"#,
+            r#"{"List":{"permanent-room":{" ":{}}}}"#,
+            r#"{"List":{"permanent-room":null,"second-room":null}}"#,
+        ] {
+            assert!(!legacy_list_contains_permanent_rooms(line, &expected_rooms));
+        }
+        assert!(legacy_list_contains_permanent_rooms(
+            r#"{"List":{"permanent-room":{" ":{}},"second-room":{" ":{}}}}"#,
+            &expected_rooms
         ));
     }
 }

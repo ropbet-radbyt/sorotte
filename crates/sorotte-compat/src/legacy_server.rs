@@ -133,6 +133,7 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
 
     let result = (|| {
         wait_for_legacy_server_startup(port, &mut child)?;
+        wait_for_legacy_permanent_rooms_startup(port, &mut child, permanent_rooms)?;
 
         let mut clients: BTreeMap<String, LegacyServerClientConnection> = BTreeMap::new();
         let mut events = Vec::with_capacity(steps.len());

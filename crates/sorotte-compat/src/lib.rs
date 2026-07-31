@@ -3,7 +3,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -241,6 +241,17 @@ pub enum InteropError {
         stdout: String,
         stderr: String,
     },
+    #[error(
+        "legacy server did not expose permanent rooms {permanent_rooms:?} on port {port} before timeout"
+    )]
+    LegacyServerPersistentRoomsStartTimeout {
+        port: u16,
+        permanent_rooms: Vec<String>,
+    },
+    #[error(
+        "legacy server did not close its room-state startup probe on port {port} before timeout"
+    )]
+    LegacyServerStartupProbeDisconnectTimeout { port: u16 },
     #[error(
         "python live peer process exited before reporting a successful connection (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
     )]
