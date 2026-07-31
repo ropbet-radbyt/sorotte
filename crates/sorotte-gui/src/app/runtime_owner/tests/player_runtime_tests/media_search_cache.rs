@@ -341,10 +341,24 @@ fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) 
     );
 
     owner.refresh_player_state_impl();
-    assert_eq!(
-        owner.playlist_resolution_attempt.as_ref().unwrap().state,
-        PlaylistResolutionAttemptState::Active
-    );
+    let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+    match mode {
+        FirstOpenFailureMode::Synchronous => {
+            assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
+            assert!(!attempt.media_confirmation_pending);
+        }
+        FirstOpenFailureMode::Tracked => {
+            assert_eq!(
+                attempt.state,
+                PlaylistResolutionAttemptState::Loading,
+                "a completed tracked fallback command must remain provisional without a physical media-success observation"
+            );
+            assert!(
+                attempt.media_confirmation_pending,
+                "the tracked fallback must retain its media-confirmation fence"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
