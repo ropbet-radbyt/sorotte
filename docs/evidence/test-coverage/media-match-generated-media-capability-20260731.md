@@ -26,8 +26,10 @@ required lane.
   encoder dependency. A drop guard removes the unique temporary media and
   SQLite cache root on success or unwind.
 - Assertions cover the public manifest parser and runner, fixed report time,
-  algorithm version, candidate retrieval and expectation outcome, extracted
-  audio bytes, retrieval statistics, and a populated decision.
+  algorithm version, exact 30-second ffprobe duration for query and candidate,
+  positive verification/index landmarks and decoded ffmpeg PCM bytes for both,
+  positive retrieval buckets, candidate retrieval and expectation outcome,
+  and a populated decision.
 - `media-match-generated-media` is a required non-scheduled Ubuntu CI job. It
   installs the Ubuntu ffmpeg package, explicitly verifies both executables, and
   invokes the ignored integration test by its exact target and test name.

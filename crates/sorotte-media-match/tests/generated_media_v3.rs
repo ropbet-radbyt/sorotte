@@ -145,6 +145,38 @@ fn v3_manifest_harness_runs_small_synthetic_case() {
         },
     )
     .expect("diagnostic manifest should run");
+    let case = report.cases.first().expect("one diagnostic case");
+    let candidate_fingerprint = &case
+        .candidates
+        .first()
+        .expect("one diagnostic candidate")
+        .fingerprint;
+    for (label, fingerprint) in [("query", &case.query), ("candidate", candidate_fingerprint)] {
+        let diagnostics = &fingerprint.diagnostics;
+        assert_eq!(
+            diagnostics.duration_ms,
+            Some(30_000),
+            "{label} ffprobe duration should match the generated fixture"
+        );
+        assert!(
+            diagnostics.audio_verify_count > 0,
+            "{label} should contain verification audio landmarks"
+        );
+        assert!(
+            diagnostics.audio_index_count > 0,
+            "{label} should contain index audio landmarks"
+        );
+        assert!(
+            diagnostics
+                .ffmpeg_output_pcm_bytes
+                .is_some_and(|bytes| bytes > 0),
+            "{label} should report decoded ffmpeg PCM output"
+        );
+    }
+    assert!(
+        case.retrieval.stats.query_buckets_total > 0,
+        "query landmarks should populate at least one retrieval bucket"
+    );
     let report_json =
         media_match_v3_diagnostic_manifest_report_json(&report).expect("report should serialize");
     let report: serde_json::Value =
@@ -155,17 +187,5 @@ fn v3_manifest_harness_runs_small_synthetic_case() {
     assert_eq!(report["generatedAtUnixMillis"], 123);
     assert_eq!(candidate["expectationPassed"], true);
     assert_eq!(candidate["retrieved"], true);
-    assert!(
-        report["cases"][0]["query"]["diagnostics"]["audioBlobBytes"]
-            .as_u64()
-            .unwrap_or_default()
-            > 0
-    );
-    assert!(
-        report["cases"][0]["retrieval"]["stats"]["queryBucketsTotal"]
-            .as_i64()
-            .unwrap_or_default()
-            >= 0
-    );
     assert!(candidate["decision"].get("class").is_some());
 }
