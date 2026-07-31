@@ -233,7 +233,10 @@ fn mpv_external_process_fixture_entrypoint() {
             server.write_all_fragmented(prefix.as_bytes(), 3);
             server.flush();
         }
-        "early-exit" => std::process::exit(23),
+        "early-exit" => {
+            server.read_request();
+            std::process::exit(23);
+        }
         "hang-after-request" => {
             server.read_request();
             fs::write(fixture_marker(&root, "request-seen"), b"request-seen")
