@@ -70,8 +70,8 @@ use self::client_args::{
 };
 use self::client_args::{
     apply_legacy_client_arg_overrides, emit_legacy_client_arg_compatibility_warnings,
-    parse_legacy_client_arg_overrides, print_legacy_client_help,
-    should_halt_for_stored_force_gui_prompt_legacy_compatible,
+    legacy_unrecognized_arguments_diagnostic_line, parse_legacy_client_arg_overrides,
+    print_legacy_client_help, should_halt_for_stored_force_gui_prompt_legacy_compatible,
     stored_force_gui_prompt_compatibility_line_legacy_compatible,
 };
 use self::client_config::build_client_loop_config_from_env;
@@ -200,8 +200,10 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         return Ok(());
     }
     if !client_arg_overrides.unknown_options.is_empty() {
-        let unknown_options = client_arg_overrides.unknown_options.join(" ");
-        eprintln!("error: unrecognized arguments: {unknown_options}");
+        eprintln!(
+            "{}",
+            legacy_unrecognized_arguments_diagnostic_line(&client_arg_overrides.unknown_options)
+        );
         return Err(anyhow!("unrecognized arguments"));
     }
     set_sorotte_cli_config_cli_overrides(

@@ -22,6 +22,7 @@ mod types;
 
 pub(super) use self::apply::{
     apply_legacy_client_arg_overrides, emit_legacy_client_arg_compatibility_warnings,
+    legacy_unrecognized_arguments_diagnostic_line,
 };
 pub(super) use self::force_gui::{
     legacy_force_gui_prompt_compatibility_line_legacy_compatible,

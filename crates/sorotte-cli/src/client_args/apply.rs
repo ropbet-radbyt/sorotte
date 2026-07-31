@@ -52,3 +52,19 @@ pub(crate) fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyCl
         );
     }
 }
+
+pub(crate) fn legacy_unrecognized_arguments_diagnostic_line(unknown_options: &[String]) -> String {
+    let redacted_options = unknown_options
+        .iter()
+        .map(|option| {
+            option.split_once('=').map_or_else(
+                || option.to_owned(),
+                |(name, _)| format!("{name}={}", sorotte_secret::REDACTED_SECRET),
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "error: unrecognized arguments: {}",
+        redacted_options.join(" ")
+    )
+}

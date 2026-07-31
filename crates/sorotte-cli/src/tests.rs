@@ -14,7 +14,7 @@ use super::{
     apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
     apply_stored_legacy_startup_player_defaults_if_arg_absent,
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
-    chat_notification_message, clear_sorotte_cli_gui_state,
+    build_client_loop_config_from_env, chat_notification_message, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings_legacy_compatible,
     cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
     controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
@@ -31,7 +31,7 @@ use super::{
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_utc_timestamp_string_legacy_compatible,
+    legacy_unrecognized_arguments_diagnostic_line, legacy_utc_timestamp_string_legacy_compatible,
     load_sorotte_cli_stored_settings_mvp_legacy_compatible,
     managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,
     normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
@@ -609,6 +609,7 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
     assert!(!diagnostic_output.contains("?Signature="));
 }
 
+mod cli_argument_configuration_composition;
 mod cli_runtime_overrides;
 mod client_args_compat;
 mod client_runtime;
