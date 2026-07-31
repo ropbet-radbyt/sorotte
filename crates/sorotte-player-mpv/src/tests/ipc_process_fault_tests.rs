@@ -471,7 +471,19 @@ fn external_mpv_large_stdio_and_ipc_frame_do_not_block_command_completion() {
 
 #[test]
 fn external_mpv_partial_response_and_early_exit_fail_terminally_and_boundedly() {
-    for (role, expected_status) in [("partial-response", Some(0)), ("early-exit", Some(23))] {
+    let cases: [(&str, Option<i32>, &[&str]); 2] = [
+        (
+            "partial-response",
+            Some(0),
+            &["failed to read", "unexpected EOF", "invalid mpv IPC JSON"],
+        ),
+        (
+            "early-exit",
+            Some(23),
+            &["failed to read", "unexpected EOF"],
+        ),
+    ];
+    for (role, expected_status, expected_errors) in cases {
         let fixture = ExternalMpvFixture::spawn(role);
         let mut client = connect_client(fixture.pipe_name(), Duration::from_millis(500));
         take_initial_connected(&mut client);
@@ -484,9 +496,9 @@ fn external_mpv_partial_response_and_early_exit_fail_terminally_and_boundedly() 
             "{role} exceeded the bounded command budget"
         );
         assert!(
-            error.contains("failed to read")
-                || error.contains("unexpected EOF")
-                || error.contains("invalid mpv IPC JSON"),
+            expected_errors
+                .iter()
+                .any(|expected| error.contains(expected)),
             "{role}: {error}"
         );
         take_one_terminal_disconnect(&mut client);
