@@ -46,7 +46,14 @@ MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_LLVM_JSON_BYTES = 256 * 1024 * 1024
 MAX_LLVM_TEXT_BYTES = 256 * 1024 * 1024
 MAX_LINE_MAP_BYTES = 128 * 1024 * 1024
+MAX_COVERAGE_MAPS = 8
 KNOWN_OUTCOMES = {"success", "failure", "skipped", "cancelled"}
+PINNED_LINE_MAP_PRODUCER = {
+    "llvm_export_type": "llvm.coverage.json.export",
+    "llvm_export_version": "3.1.0",
+    "cargo_llvm_cov_version": "0.8.4",
+    "manifest_path": "Cargo.toml",
+}
 
 
 class CoverageCiGuardError(Exception):
@@ -470,6 +477,7 @@ def finalize(args: argparse.Namespace) -> int:
         "errors": [],
     }
     phases = report["phases"]
+    retained_line_maps: list[dict[str, Any]] = []
 
     def fail(phase_name: str, error: CoverageCiGuardError) -> None:
         message = str(error)
@@ -513,6 +521,54 @@ def finalize(args: argparse.Namespace) -> int:
         if isinstance(errors, list) and errors:
             return " | ".join(str(item) for item in errors)
         return f"status is {value.get('status')!r}"
+
+    def line_map_summary(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            field: value.get(field)
+            for field in (
+                "schema_version",
+                "kind",
+                "status",
+                "line_model",
+                "inputs",
+                "producer",
+                "summary",
+                "errors",
+            )
+        }
+
+    def validate_line_map_document(
+        value: Mapping[str, Any], *, description: str
+    ) -> Mapping[str, Any]:
+        if (
+            value.get("kind") != LINE_MAP_REPORT_KIND
+            or value.get("schema_version") != 1
+        ):
+            raise CoverageCiGuardError(
+                f"{description} report has an unsupported schema"
+            )
+        if value.get("status") != "passed":
+            raise CoverageCiGuardError(
+                f"{description} conversion did not pass: "
+                + failed_report_detail(value)
+            )
+        if value.get("line_model") != "unique-physical-source-lines":
+            raise CoverageCiGuardError(
+                f"{description} report has an unsupported line model"
+            )
+        if value.get("producer") != PINNED_LINE_MAP_PRODUCER:
+            raise CoverageCiGuardError(
+                f"{description} report has unpinned producer metadata"
+            )
+        inputs = value.get("inputs")
+        if not isinstance(inputs, Mapping):
+            raise CoverageCiGuardError(f"{description} report has no producer inputs")
+        for input_name in ("llvm_json", "llvm_text"):
+            if not isinstance(inputs.get(input_name), Mapping):
+                raise CoverageCiGuardError(
+                    f"{description} report has no {input_name} reference"
+                )
+        return inputs
 
     try:
         validate_outcome(args.base_outcome, phase="base resolution")
@@ -641,50 +697,10 @@ def finalize(args: argparse.Namespace) -> int:
                 description="canonical line-map report",
                 limit=MAX_LINE_MAP_BYTES,
             )
-            phases["line-map"]["report"] = {
-                field: line_map.get(field)
-                for field in (
-                    "schema_version",
-                    "kind",
-                    "status",
-                    "line_model",
-                    "inputs",
-                    "producer",
-                    "summary",
-                    "errors",
-                )
-            }
-            if (
-                line_map.get("kind") != LINE_MAP_REPORT_KIND
-                or line_map.get("schema_version") != 1
-            ):
-                raise CoverageCiGuardError(
-                    "canonical line-map report has an unsupported schema"
-                )
-            if line_map.get("status") != "passed":
-                raise CoverageCiGuardError(
-                    "canonical line-map conversion did not pass: "
-                    + failed_report_detail(line_map)
-                )
-            if line_map.get("line_model") != "unique-physical-source-lines":
-                raise CoverageCiGuardError(
-                    "canonical line-map report has an unsupported line model"
-                )
-            producer = line_map.get("producer")
-            if producer != {
-                "llvm_export_type": "llvm.coverage.json.export",
-                "llvm_export_version": "3.1.0",
-                "cargo_llvm_cov_version": "0.8.4",
-                "manifest_path": "Cargo.toml",
-            }:
-                raise CoverageCiGuardError(
-                    "canonical line-map report has unpinned producer metadata"
-                )
-            inputs = line_map.get("inputs")
-            if not isinstance(inputs, dict):
-                raise CoverageCiGuardError(
-                    "canonical line-map report has no producer inputs"
-                )
+            phases["line-map"]["report"] = line_map_summary(line_map)
+            inputs = validate_line_map_document(
+                line_map, description="canonical line-map"
+            )
             references = {
                 "llvm_json": phases["llvm-json"],
                 "llvm_text": phases["llvm-text"],
@@ -705,8 +721,78 @@ def finalize(args: argparse.Namespace) -> int:
                         f"canonical line-map {input_name} reference does not "
                         "match the retained producer artifact"
                     )
+            retained_line_maps.append(
+                {
+                    "path": args.line_map,
+                    "sha256": phases["line-map"].get("sha256"),
+                    "document": line_map,
+                }
+            )
         except CoverageCiGuardError as error:
             fail("line-map", error)
+
+        supplemental_paths = list(args.supplemental_line_map)
+        if len(supplemental_paths) + 1 > MAX_COVERAGE_MAPS:
+            fail(
+                "line-map",
+                CoverageCiGuardError(
+                    f"coverage evidence supplies more than {MAX_COVERAGE_MAPS} "
+                    "canonical line maps"
+                ),
+            )
+        else:
+            phases["line-map"]["supplemental_maps"] = []
+            seen_paths = {os.path.normcase(os.path.abspath(args.line_map))}
+            seen_digests = {
+                item["sha256"]
+                for item in retained_line_maps
+                if isinstance(item.get("sha256"), str)
+            }
+            for raw_path in supplemental_paths:
+                try:
+                    path = pathlib.Path(raw_path)
+                    normalized_path = os.path.normcase(os.path.abspath(raw_path))
+                    if normalized_path in seen_paths:
+                        raise CoverageCiGuardError(
+                            "supplemental line-map path duplicates a retained map"
+                        )
+                    seen_paths.add(normalized_path)
+                    metadata = file_metadata(
+                        path,
+                        limit=MAX_LINE_MAP_BYTES,
+                        description="supplemental canonical line-map artifact",
+                    )
+                    digest = metadata.get("sha256")
+                    if digest in seen_digests:
+                        raise CoverageCiGuardError(
+                            "supplemental line-map content duplicates a retained map"
+                        )
+                    if isinstance(digest, str):
+                        seen_digests.add(digest)
+                    supplemental = read_json(
+                        path,
+                        description="supplemental canonical line-map report",
+                        limit=MAX_LINE_MAP_BYTES,
+                    )
+                    validate_line_map_document(
+                        supplemental,
+                        description="supplemental canonical line-map",
+                    )
+                    entry = {
+                        "path": raw_path,
+                        **metadata,
+                        "report": line_map_summary(supplemental),
+                    }
+                    phases["line-map"]["supplemental_maps"].append(entry)
+                    retained_line_maps.append(
+                        {
+                            "path": raw_path,
+                            "sha256": digest,
+                            "document": supplemental,
+                        }
+                    )
+                except CoverageCiGuardError as error:
+                    fail("line-map", error)
     pass_if_clean("line-map")
 
     try:
@@ -737,17 +823,41 @@ def finalize(args: argparse.Namespace) -> int:
                 raise CoverageCiGuardError(
                     "diff-coverage report has no input attestation"
                 )
-            expected_line_map_digest = phases["line-map"].get("sha256")
-            if (
-                policy_inputs.get("coverage_kind")
-                != "llvm-physical-line-map"
-                or policy_inputs.get("coverage_map_sha256")
-                != f"sha256:{expected_line_map_digest}"
-            ):
-                raise CoverageCiGuardError(
-                    "diff-coverage report is not bound to the retained "
-                    "canonical line-map artifact"
-                )
+            if args.supplemental_line_map:
+                expected_maps = [
+                    {
+                        "path": item["path"],
+                        "sha256": f"sha256:{item['sha256']}",
+                        "line_model": item["document"].get("line_model"),
+                        "producer": item["document"].get("producer"),
+                        "producer_inputs": item["document"].get("inputs"),
+                    }
+                    for item in retained_line_maps
+                ]
+                if (
+                    len(expected_maps) != len(args.supplemental_line_map) + 1
+                    or policy_inputs.get("coverage_kind")
+                    != "llvm-physical-line-map-union"
+                    or policy_inputs.get("coverage_line_model")
+                    != "unique-physical-source-lines"
+                    or policy_inputs.get("coverage_maps") != expected_maps
+                ):
+                    raise CoverageCiGuardError(
+                        "diff-coverage report is not bound to the complete "
+                        "retained canonical line-map artifact set"
+                    )
+            else:
+                expected_line_map_digest = phases["line-map"].get("sha256")
+                if (
+                    policy_inputs.get("coverage_kind")
+                    != "llvm-physical-line-map"
+                    or policy_inputs.get("coverage_map_sha256")
+                    != f"sha256:{expected_line_map_digest}"
+                ):
+                    raise CoverageCiGuardError(
+                        "diff-coverage report is not bound to the retained "
+                        "canonical line-map artifact"
+                    )
         except CoverageCiGuardError as error:
             fail("diff-policy", error)
     pass_if_clean("diff-policy")
@@ -799,6 +909,7 @@ def build_parser() -> argparse.ArgumentParser:
     phase.add_argument("--llvm-json", required=True)
     phase.add_argument("--llvm-text", required=True)
     phase.add_argument("--line-map", required=True)
+    phase.add_argument("--supplemental-line-map", action="append", default=[])
     phase.add_argument("--policy-report", required=True)
     phase.add_argument("--profile-lanes", required=True)
     phase.add_argument("--output", required=True)

@@ -760,6 +760,7 @@ class CiPolicyTests(unittest.TestCase):
             --llvm-json target/diff-coverage.json
             --llvm-text target/diff-coverage.txt
             --line-map target/verification/coverage-line-map.json
+            --supplemental-line-map target/windows-process-coverage/verification/coverage-windows-process-line-map.json
             --policy-report target/verification/diff-coverage.json
             --profile-lanes target/verification/coverage-profile-lanes.json
             --output target/verification/coverage-ci-phases.json

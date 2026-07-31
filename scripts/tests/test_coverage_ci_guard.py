@@ -225,6 +225,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         self.llvm_json = self.root / "coverage.json"
         self.llvm_text = self.root / "coverage.txt"
         self.line_map = self.root / "line-map.json"
+        self.supplemental_line_map = self.root / "windows-line-map.json"
         self.policy = self.root / "policy.json"
         self.output = self.root / "phases.json"
         self.base.write_text(
@@ -382,10 +383,13 @@ class CoverageFinalizerTests(unittest.TestCase):
     def write_line_map(
         self,
         *,
+        path: pathlib.Path | None = None,
         status: str = "passed",
         errors: list[str] | None = None,
+        covered_lines: int = 1,
     ) -> None:
-        self.line_map.write_text(
+        target = path or self.line_map
+        target.write_text(
             json.dumps(
                 {
                     "schema_version": 1,
@@ -416,6 +420,7 @@ class CoverageFinalizerTests(unittest.TestCase):
                         "cargo_llvm_cov_version": "0.8.4",
                         "manifest_path": "Cargo.toml",
                     },
+                    "summary": {"covered_lines": covered_lines},
                     "errors": errors or [],
                 }
             ),
@@ -428,20 +433,41 @@ class CoverageFinalizerTests(unittest.TestCase):
         status: str = "passed",
         errors: list[str] | None = None,
         line_map_digest: str | None = None,
+        line_maps: list[pathlib.Path] | None = None,
     ) -> None:
-        digest = line_map_digest or guard.hashlib.sha256(
-            self.line_map.read_bytes()
-        ).hexdigest()
+        def coverage_map_input(path: pathlib.Path) -> dict[str, object]:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            return {
+                "path": str(path),
+                "sha256": "sha256:"
+                + guard.hashlib.sha256(path.read_bytes()).hexdigest(),
+                "line_model": document["line_model"],
+                "producer": document["producer"],
+                "producer_inputs": document["inputs"],
+            }
+
+        maps = line_maps or [self.line_map]
+        if len(maps) == 1:
+            digest = line_map_digest or guard.hashlib.sha256(
+                maps[0].read_bytes()
+            ).hexdigest()
+            coverage_inputs: dict[str, object] = {
+                "coverage_kind": "llvm-physical-line-map",
+                "coverage_map_sha256": f"sha256:{digest}",
+            }
+        else:
+            coverage_inputs = {
+                "coverage_kind": "llvm-physical-line-map-union",
+                "coverage_line_model": "unique-physical-source-lines",
+                "coverage_maps": [coverage_map_input(path) for path in maps],
+            }
         self.policy.write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "kind": guard.DIFF_REPORT_KIND,
                     "status": status,
-                    "inputs": {
-                        "coverage_kind": "llvm-physical-line-map",
-                        "coverage_map_sha256": f"sha256:{digest}",
-                    },
+                    "inputs": coverage_inputs,
                     "errors": errors or [],
                 }
             ),
@@ -460,6 +486,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         llvm_text_outcome: str = "success",
         line_map_outcome: str = "success",
         policy_outcome: str = "success",
+        supplemental_line_maps: list[pathlib.Path] | None = None,
     ) -> tuple[int, dict[str, object]]:
         argv = [
             "finalize",
@@ -483,13 +510,19 @@ class CoverageFinalizerTests(unittest.TestCase):
             str(self.llvm_text),
             "--line-map",
             str(self.line_map),
-            "--policy-report",
-            str(self.policy),
-            "--profile-lanes",
-            str(self.profile_lanes),
-            "--output",
-            str(self.output),
         ]
+        for path in supplemental_line_maps or []:
+            argv.extend(["--supplemental-line-map", str(path)])
+        argv.extend(
+            [
+                "--policy-report",
+                str(self.policy),
+                "--profile-lanes",
+                str(self.profile_lanes),
+                "--output",
+                str(self.output),
+            ]
+        )
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
             io.StringIO()
         ):
@@ -679,6 +712,179 @@ class CoverageFinalizerTests(unittest.TestCase):
             any(
                 "not bound" in error
                 for error in report["phases"]["diff-policy"]["errors"]
+            )
+        )
+
+    def test_union_policy_binds_every_retained_line_map(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        result, report = self.invoke(
+            supplemental_line_maps=[self.supplemental_line_map]
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(report["status"], "passed")
+        supplemental = report["phases"]["line-map"]["supplemental_maps"]
+        self.assertEqual(len(supplemental), 1)
+        self.assertEqual(
+            supplemental[0]["sha256"],
+            guard.hashlib.sha256(
+                self.supplemental_line_map.read_bytes()
+            ).hexdigest(),
+        )
+
+    def test_union_policy_rejects_an_omitted_retained_line_map(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        document = json.loads(self.policy.read_text(encoding="utf-8"))
+        document["inputs"]["coverage_maps"].pop()
+        self.policy.write_text(json.dumps(document), encoding="utf-8")
+        result, report = self.invoke(
+            supplemental_line_maps=[self.supplemental_line_map]
+        )
+        self.assertEqual(result, 1)
+        self.assertTrue(
+            any(
+                "complete retained" in error
+                for error in report["phases"]["diff-policy"]["errors"]
+            )
+        )
+
+    def test_union_policy_rejects_supplemental_map_tampering(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        self.supplemental_line_map.write_text(
+            self.supplemental_line_map.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        result, report = self.invoke(
+            supplemental_line_maps=[self.supplemental_line_map]
+        )
+        self.assertEqual(result, 1)
+        self.assertTrue(
+            any(
+                "complete retained" in error
+                for error in report["phases"]["diff-policy"]["errors"]
+            )
+        )
+
+    def test_union_policy_rejects_shape_and_order_drift(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        valid = json.loads(self.policy.read_text(encoding="utf-8"))
+        mutations = {
+            "single-map kind": lambda value: value["inputs"].update(
+                {"coverage_kind": "llvm-physical-line-map"}
+            ),
+            "wrong line model": lambda value: value["inputs"].update(
+                {"coverage_line_model": "llvm-regions"}
+            ),
+            "reordered maps": lambda value: value["inputs"][
+                "coverage_maps"
+            ].reverse(),
+            "extra map": lambda value: value["inputs"]["coverage_maps"].append(
+                value["inputs"]["coverage_maps"][0]
+            ),
+            "malformed map list": lambda value: value["inputs"].update(
+                {"coverage_maps": {}}
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                document = json.loads(json.dumps(valid))
+                mutate(document)
+                self.policy.write_text(json.dumps(document), encoding="utf-8")
+                result, report = self.invoke(
+                    supplemental_line_maps=[self.supplemental_line_map]
+                )
+                self.assertEqual(result, 1)
+                self.assertTrue(
+                    any(
+                        "complete retained" in error
+                        for error in report["phases"]["diff-policy"]["errors"]
+                    )
+                )
+
+    def test_union_rejects_duplicate_retained_map_path_or_content(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        result, report = self.invoke(
+            supplemental_line_maps=[
+                self.supplemental_line_map,
+                self.supplemental_line_map,
+            ]
+        )
+        self.assertEqual(result, 1)
+        self.assertTrue(
+            any(
+                "duplicates a retained map" in error
+                for error in report["phases"]["line-map"]["errors"]
+            )
+        )
+
+        self.supplemental_line_map.write_bytes(self.line_map.read_bytes())
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        result, report = self.invoke(
+            supplemental_line_maps=[self.supplemental_line_map]
+        )
+        self.assertEqual(result, 1)
+        self.assertTrue(
+            any(
+                "content duplicates a retained map" in error
+                for error in report["phases"]["line-map"]["errors"]
+            )
+        )
+
+    def test_union_rejects_unpinned_supplemental_map_provenance(self) -> None:
+        self.write_line_map(
+            path=self.supplemental_line_map,
+            covered_lines=2,
+        )
+        document = json.loads(
+            self.supplemental_line_map.read_text(encoding="utf-8")
+        )
+        document["producer"]["cargo_llvm_cov_version"] = "0.8.5"
+        self.supplemental_line_map.write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+        self.write_policy(
+            line_maps=[self.line_map, self.supplemental_line_map]
+        )
+        result, report = self.invoke(
+            supplemental_line_maps=[self.supplemental_line_map]
+        )
+        self.assertEqual(result, 1)
+        self.assertTrue(
+            any(
+                "unpinned producer metadata" in error
+                for error in report["phases"]["line-map"]["errors"]
             )
         )
 
