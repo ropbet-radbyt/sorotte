@@ -110,6 +110,35 @@ two GUI media-resolution defects plus the player recovery gap where
 `keep-open=always` publishes a premature `eof-reached` without `end-file`.
 All three are ordinary positive regressions, so the current product registry
 remains explicitly empty.
+The current 2026-07-31 four-slice tranche adds deterministic client
+jitter/drift/playback schedules, a required real-ffmpeg/ffprobe generated Media
+Match lane, a 256-case legacy CLI parser/configuration-composition oracle, and
+a fourth native real-mpv mode for a valid complete-length response that remains
+byte-silent without EOF. `TC-CLI-004`, `TC-CLI-005`, and `TC-PLAYER-005` are
+positive; all local validation and the final implementation-source four-mode
+real-mpv campaigns are green, with stalled bundle
+`20260731T115707208Z-35432` run last. The first
+hosted run exposed `TC-HARNESS-018` through `TC-HARNESS-024`; the second proved
+generated Media Match, complete live compatibility, semantic, lifecycle,
+Ubuntu server-release, and Windows nextest behavior before exposing
+`TC-HARNESS-025` through `TC-HARNESS-029`. Later fail-closed campaigns exposed
+`TC-HARNESS-030` through `TC-HARNESS-043`: platform reachability, exact
+inventory, bounded fixture timing, legacy checkout/frame/port coordination,
+one context-exact pinned-legacy setter alternate, LLVM exa-scale parsing,
+Linux prerequisite installation, one noncanonical native-ASan environment
+limitation, strict-count updates, two-platform physical-line coverage, and
+cross-platform source-byte identity. All 26 harness findings have focused
+dispositions and positive canonical regressions. The exact-head compatibility,
+WSL fuzz, 54-test Windows process map, and local two-platform coverage replay
+are green; documentation-inclusive hosted acceptance remains pending. Detailed
+records are
+[`client-ping-jitter-drift-schedules-20260731.md`](../docs/evidence/test-coverage/client-ping-jitter-drift-schedules-20260731.md),
+[`media-match-generated-media-capability-20260731.md`](../docs/evidence/test-coverage/media-match-generated-media-capability-20260731.md),
+[`cli-argument-configuration-composition-20260731.md`](../docs/evidence/test-coverage/cli-argument-configuration-composition-20260731.md),
+[`native-gui-real-mpv-stalled-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md),
+and the integrated
+[`next-four-test-slices-20260731.md`](../docs/evidence/test-coverage/next-four-test-slices-20260731.md)
+ledger.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
@@ -218,11 +247,12 @@ Base resolution is event-aware and fail-closed:
 
 The JSON evidence preserves raw event inputs, ref type, default-branch
 name/ref/SHA when used, requested base, effective base, and every merge base.
-An always-run finalizer records six independently named phases—base resolution,
-profile generation, JSON export, native text export, line-map conversion, and
-diff policy—even when an earlier phase fails. It hashes all three retained
-coverage artifacts, checks that the line map refers to the exact JSON and text
-bytes, and checks that the diff report refers to the exact line-map bytes.
+An always-run finalizer records six independently named Linux phases—base
+resolution, profile generation, JSON export, native text export, line-map
+conversion, and diff policy—even when an earlier phase fails. It hashes the
+primary JSON, text, and line-map artifacts and checks their exact producer
+chain. The diff report separately records the exact digest and producer
+metadata for every supplied platform map.
 
 The policy requires 80% coverage over ordinary changed production lines and
 exactly 90% over paths in `diff-coverage-policy.toml`. Its 20 non-overlapping
@@ -240,15 +270,31 @@ rejects a patch that changes the policy because it has no trusted base policy.
 Ordinary and critical results, both policy digests, rule policy origins, the
 matching rule, and the path match origin are reported independently.
 
-Obvious test-only paths are reported but excluded from the denominator.
-Complete inline `#[cfg(test)] mod ... { ... }` ranges in production files are
-also reported separately and excluded; the scanner masks comments and Rust
-literals before brace matching and fails closed on ambiguous or unclosed
-module bodies. Other `cfg(test)` items remain production scope. Comments,
-attributes, imports, signatures, and structural punctuation are non-coverable.
-Executable-looking changed lines missing from the canonical physical-line map
-are unmapped and fail, so a Linux report cannot silently excuse a new
-platform-gated body. `scripts/diff_coverage.py --lcov` remains a diagnostic
+Conventional test/benchmark/example paths and exact repository-owned native,
+semantic, startup-benchmark, and fuzz harness entry points are reported but
+excluded from the denominator. Complete attached items under exact
+test/test-support/fuzz-support cfg attributes in production files are also
+reported separately and excluded. The scanner masks comments and Rust
+literals, tracks delimiters, and fails closed on ambiguous or unclosed items;
+unrelated platform cfg items remain production scope. Comments, attributes,
+imports, signatures, compile-time declarations, structural expression/pattern
+glue, and punctuation are non-coverable only when the conservative lexical
+classifier can prove a complete structural form.
+
+The required gate consumes the union of the broad Linux merged-profile map and
+an exact-head targeted Windows process map. Each map is source-bound and
+validated independently; duplicate content is rejected, and identical
+physical source lines are combined once using their maximum binary hit value.
+The Windows producer is a closed 54-test inventory covering updater
+transactions/self-replacement, named-pipe and external-mpv processes, and
+media-tool process faults. Rust source is forced to LF through `.gitattributes`
+so raw source digests are identical on Windows and Linux. Executable-looking
+changed lines missing from the combined canonical maps remain unmapped and
+fail, so neither platform silently excuses the other's production body.
+Exact local replay and artifact identities are retained in
+[`platform-coverage-map-union-20260731.md`](../docs/evidence/test-coverage/platform-coverage-map-union-20260731.md).
+
+`scripts/diff_coverage.py --lcov` remains a diagnostic
 compatibility mode. It now declares `unique-da-source-lines` as the only
 changed-line model and retains contradictory `LF`/`LH` summaries as a separate
 structured audit. Malformed or duplicate `DA`, impossible summaries, stale
@@ -287,8 +333,8 @@ and the merge may not mutate them. The wrapper also validates the semantic
 JSON and exact libtest counts, selectors, skip markers, commands, environment,
 logs, producer, and pinned reference revision.
 
-The broad live-reference selector passes 20/20 with no ignored cases and a
-fail-closed expected inventory. A historical discovery replay passed 129 tests
+The broad live-reference selector passes 21/21 with no ignored cases and 128
+filtered out under a fail-closed expected inventory. A historical discovery replay passed 129 tests
 and failed six; that red evidence and the subsequent product/harness
 remediation are both retained rather than normalized away. Native interactive
 Windows profiles remain a separate evidence boundary. Exact experiments and
@@ -746,9 +792,10 @@ impossible.
 The opt-in `scripts/gui-real-mpv-vertical.ps1` lane crosses the actual native
 GUI and managed-player boundary with an exact digest-bound mpv binary,
 generated local WAV, isolated configuration, IPv4-loopback session fixture,
-physical Open Media and Exit leaves, and real mpv Play/Pause observations. A
-final post-gate local run passed its exact 13-assertion, 10-artifact contract
-in bundle `20260731T044916649Z-67112`; the missing-mpv preflight failed closed
+physical Open Media and Exit leaves, and real mpv Play/Pause observations. At
+the prior three-mode checkpoint, a post-gate local run passed its exact
+13-assertion, 10-artifact contract in bundle
+`20260731T044916649Z-67112`; the missing-mpv preflight failed closed
 before build or launch. This is local Windows evidence, not a new CI gate. The
 pass, retained red bundles, strict path/Hello/process identity, and limitations
 are recorded in
@@ -764,11 +811,11 @@ generations and the GUI. The healthy default remains its original
 13-assertion/10-artifact contract; recovery is an explicit
 20-assertion/13-artifact opt-in. The preserved RED disproved a manual-modal
 oracle because production automatically relaunched the managed player. Exact
-final bundle identities and limitations are retained in
+bundle identities and limitations are retained in
 [`native-gui-real-mpv-owned-process-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-owned-process-recovery-20260731.md).
-The final post-gate bundle `20260731T045019794Z-49868` replaced exact attested
-PID `61396` with PID `48892`, used distinct managed IPC endpoints, and released
-both generations.
+At the prior three-mode checkpoint, post-gate bundle
+`20260731T045019794Z-49868` replaced exact attested PID `61396` with PID
+`48892`, used distinct managed IPC endpoints, and released both generations.
 
 The faulting-HTTP inventory serves generated PCM AU media bytes from a strict
 ephemeral IPv4-loopback listener. The AU header declares the complete
@@ -785,10 +832,11 @@ closed at 18 assertions and 11 artifacts; healthy and owned-process modes
 remain unchanged. The preserved REDs and all three resolved findings are
 retained in
 [`native-gui-real-mpv-faulting-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md).
-The final post-gate bundle `20260731T045105652Z-43360` ran last and passed with
-the same GUI digest as the healthy and owned-process campaigns. It retained
-exactly two requests, same-PID/same-IPC recovery, no manual retry, and complete
-player/server/socket release.
+At that prior three-mode checkpoint, bundle
+`20260731T045105652Z-43360` ran last and passed with the same GUI digest as the
+healthy and owned-process campaigns. It retained exactly two requests,
+same-PID/same-IPC recovery, no manual retry, and complete player/server/socket
+release.
 
 ## Required live Python compatibility evidence
 
@@ -805,11 +853,14 @@ passed all 136 executable tests, skipped zero, and matched the seven exact
 fixture writers. A preserved committed-run RED found that an attested relative
 oracle path was passed unchanged to Cargo and resolved from the crate working
 directory; the wrapper now passes the absolute already-attested path. After
-adding the generated differential below, the current committed-source report
-over `e3d8554` lists 144 tests, passes all 137 executable tests, skips zero,
-and retains the same seven fixture writers. The report/log hashes,
-prerequisite identities, missing-prerequisite proof, RED, and local-vs-hosted
-limitations are retained in
+adding the generated differential below, the prior committed-source report
+over `e3d8554` listed 144 tests, passed all 137 executable tests, skipped zero,
+and retained the same seven fixture writers. The final implementation-source
+inventory is 149 tests: 142 executable tests and the same seven fixture
+writers. The final exact-head `829ab98` report passed all 142 with zero
+failures or skips.
+The report/log hashes, prerequisite identities, missing-prerequisite
+proof, RED, and local-vs-hosted limitations are retained in
 [`compat-required-live-interop-20260731.md`](../docs/evidence/test-coverage/compat-required-live-interop-20260731.md).
 
 ## Generated Rust/Python JSON framing differential evidence

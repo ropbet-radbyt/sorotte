@@ -18,6 +18,7 @@ Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz up
 Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
 Required-live, owned-process recovery, updater durability, and framed-mpv update: 2026-07-31
 Generated compatibility, Unix kernel IPC/durability, and faulting-HTTP update: 2026-07-31
+Client timing, generated Media Match, CLI composition, stalled-HTTP, and hosted-harness update: 2026-07-31
 
 Branch: `codex/test-coverage-design`
 
@@ -118,6 +119,23 @@ slice isolated their ownership, fixed the product and harness defects, added
 one ordering defect found by the strengthened oracle, and converted every case
 into positive regression evidence. No expected failure, compatibility
 exception, retry, or skip is used to make the required lane green.
+The current four-slice continuation adds deterministic client jitter/drift and
+playback schedules, promotes generated-media Media Match diagnostics into a
+required capability lane, crosses the legacy CLI parser with a 256-case
+configuration-composition oracle, and adds a distinct valid-framing,
+byte-silent real-mpv recovery vertical. The CLI slice exposed and fixed
+`TC-CLI-004` and `TC-CLI-005`; the native vertical exposed and fixed
+`TC-PLAYER-005`. The independently approved final-source proof and the final
+implementation-checkpoint stalled-read campaign are green. The first hosted diagnostic run also exposed
+`TC-HARNESS-018` through `TC-HARNESS-024`. The second diagnostic proved the
+corrected generated-media, complete live-compatibility, semantic, lifecycle,
+Ubuntu server-release, and Windows nextest lanes, then exposed
+`TC-HARNESS-025` through `TC-HARNESS-029`. Later fail-closed execution exposed
+`TC-HARNESS-030` through `TC-HARNESS-038` and `TC-HARNESS-040` through
+`TC-HARNESS-043`; `TC-HARNESS-039` records the noncanonical native-Windows
+ASan environment diagnostic. All 26 findings have focused dispositions and
+positive canonical regressions. None is a product behavior defect, and the
+product-defect registry remains explicitly empty.
 
 ## 2026-07-31 bounded system-boundary tranche
 
@@ -267,6 +285,61 @@ in:
 - [`player-unix-socket-ipc-kernel-20260731.md`](evidence/test-coverage/player-unix-socket-ipc-kernel-20260731.md)
 - [`native-gui-real-mpv-faulting-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-faulting-http-recovery-20260731.md)
 
+## 2026-07-31 client timing, generated-media, CLI composition, and stalled-HTTP tranche
+
+Status: **Four primary slices implemented; three product defects found and
+fixed; hosted harness corrections await final hosted confirmation**
+
+The four bounded slices are:
+
+- Four deterministic client-core schedules cross explicit ping observation,
+  separate receipt/reply clocks, affine drift, outliers, nonmonotonic and
+  non-finite values, scheduler delay, room projection, and legacy playback
+  decisions against an independent arithmetic/state oracle. They use no sleep,
+  socket, process, or wall-clock dependency. The focused 4/4 schedule and full
+  728/728 client-core suite passed without a product or harness finding.
+- The former optional generated-media check is now a required Ubuntu
+  `sorotte-media-match` integration target using real ffmpeg/ffprobe, generated
+  local media, fixed report time, and a closed fingerprint/retrieval/decision
+  oracle. `TC-HARNESS-018` corrected the first hosted fixture and its opaque
+  failure diagnostic without lowering the `Probable` threshold. The corrected
+  job still requires a final hosted execution before its runtime proof can be
+  called green.
+- The CLI parser/composition slice drives 256 fixed-seed cases through real
+  environment, stored-setting, argument parsing, and override application.
+  `TC-CLI-004` adds explicit per-occurrence replace/clear/invalid semantics,
+  accepts attached long/short values, couples host and port atomically, and
+  fails closed on missing required values. `TC-CLI-005` removes attached values
+  from unknown-option diagnostics. The six focused tests, all 256 cases, the
+  complete CLI suite, and strict crate Clippy are positive.
+- The fourth native inventory serves a valid `Content-Length` response on
+  strict IPv4 loopback, transmits exactly 720,000 bytes, then remains byte
+  silent for at least 25 seconds without EOF. `TC-PLAYER-005` preserves the
+  causal deferred start/restart edge and permits finite unknown-classified VOD
+  to arm recovery only in the absence of positive live evidence. The final
+  final implementation-source bundle `20260731T115707208Z-35432` passed 18 assertions and 11 artifacts with
+  the same GUI-owned mpv PID/IPC identity, zero pre-recovery EOFs, exactly one
+  replacement `end-file` reason `stop`, a complete second GET, and complete
+  cleanup. The full player suite passed 427 tests with two registered ignores.
+
+The first hosted run was retained as diagnostic evidence rather than being
+normalized into green. In addition to `TC-HARNESS-018`, it found an unquoted
+Git revision expression, incomplete Rust component declarations, a
+permanent-room oracle startup race, a Linux-only test re-export gate, and two
+independent Windows process-fixture assumptions. These are
+`TC-HARNESS-019` through `TC-HARNESS-024` below. Focused local regressions and
+policy checks pass; the final hosted rerun remains the acceptance boundary for
+their hosted claims.
+
+Exact primary evidence and the tranche-level pending/complete ledger are
+retained in:
+
+- [`client-ping-jitter-drift-schedules-20260731.md`](evidence/test-coverage/client-ping-jitter-drift-schedules-20260731.md)
+- [`media-match-generated-media-capability-20260731.md`](evidence/test-coverage/media-match-generated-media-capability-20260731.md)
+- [`cli-argument-configuration-composition-20260731.md`](evidence/test-coverage/cli-argument-configuration-composition-20260731.md)
+- [`native-gui-real-mpv-stalled-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md)
+- [`next-four-test-slices-20260731.md`](evidence/test-coverage/next-four-test-slices-20260731.md)
+
 ## Experimental baseline
 
 Before the shrinkable suite was added:
@@ -284,6 +357,24 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The current client-timing/generated-media/CLI/stalled-HTTP tranche has
+  passed every locally available validation gate at this documentation
+  checkpoint. Client-core passed
+  728/728; the CLI composition module passed 6/6 including all 256 generated
+  cases and its owning library passed 366 tests with eight registered ignores;
+  the player suite passed 427 tests with two registered ignores; and the final
+  stalled-read native bundle passed its closed 18-assertion/11-artifact
+  contract. The final committed-source compatibility campaign listed 149,
+  passed all 142 executable tests, and accounted for seven ignored writers;
+  the complete strict selector passed 21/21 with 128 filtered out. The nextest-specific process module
+  passed 8/8. Formatting, warning-denied locked workspace Clippy, locked
+  all-feature workspace tests and doctests, 525 Python policy/infrastructure
+  tests, the 180-second exact-head WSL ASan campaign, 54/54 exact Windows
+  process coverage tests, a zero-unmapped Linux/Windows union replay, 14/14
+  semantic scenarios, and native smoke passed. The final four-mode real-mpv sequence
+  passed against one GUI/mpv digest, with stalled bundle
+  `20260731T115707208Z-35432` last. Documentation-inclusive hosted acceptance
+  is recorded only at its actual completion boundary.
 - The generated-compatibility/Unix-durability/Unix-IPC/faulting-HTTP
   continuation passed its fixed-seed 256-case Rust/Python differential with
   zero mismatches; the committed-source required-live report over `e3d8554`
@@ -301,12 +392,14 @@ After the coverage tranche was integrated:
   0-defect/0-characterization registry. Warning-denied locked
   all-target/all-feature workspace Clippy passed in 7.28 seconds; the complete
   locked all-feature workspace passed in 220.1 seconds with only registered
-  ignores. After every build-producing gate, the final GUI digest
+  ignores. At that prior three-mode checkpoint, after every build-producing
+  gate, one GUI digest
   `673dda5226c433950d3074cb4f1b2b6d222802eda6e30cc8a9b5d6e0ef12271c`
   passed the healthy 13-assertion/10-artifact bundle
   `20260731T044916649Z-67112`, the owned-process 20-assertion/13-artifact
-  bundle `20260731T045019794Z-49868`, and, last, the faulting-HTTP
-  18-assertion/11-artifact bundle `20260731T045105652Z-43360`. The last run
+  bundle `20260731T045019794Z-49868`, and, last at that checkpoint, the
+  faulting-HTTP 18-assertion/11-artifact bundle
+  `20260731T045105652Z-43360`. The last run
   retained the malformed transfer, one complete recovery request,
   same-PID/same-IPC recovery, and complete player/server/socket release.
 - The 2026-07-31 required-live/recovery/updater/framed-mpv continuation passed
@@ -3015,3 +3108,627 @@ consecutive runs (2,000 activation cycles). The known-defect registry remains
 empty. The complete workspace, policy, and final three-mode real-mpv results
 are retained in
 [`outstanding-known-issues-closure-20260731.md`](evidence/test-coverage/outstanding-known-issues-closure-20260731.md).
+
+## TC-CLI-004: CLI argument composition did not preserve legacy occurrence semantics
+
+Status: **Resolved 2026-07-31; generated parser/composition regression is
+positive**
+
+Severity: **Medium (valid legacy arguments could be rejected or compose into a
+different startup configuration)**
+
+Detection: five exact parser regressions plus a 256-case independent
+configuration-composition oracle
+
+The handwritten legacy parser accumulated final optional values without
+representing the result of each occurrence. That produced four related
+failures:
+
+- attached long/short values such as `--host=value` were treated as unknown;
+- a later empty optional value could not clear an earlier CLI-layer override;
+- a later host without a port retained the earlier CLI port; and
+- missing required host/name values were silently accepted.
+
+The parser now represents each occurrence as unchanged, replace, clear, or
+invalid. Host and optional port are one atomic CLI-layer value. Attached
+long/short forms enter the same path as separated values; an empty attached
+optional value can clear only the preceding CLI override; optional missing
+room/password values retain legacy fall-through; and required host/name
+occurrences without a value fail closed.
+
+The fixed-seed campaign renders 16 scenario patterns 16 times, producing 208
+valid and 48 invalid cases. Its model independently applies environment,
+stored-setting, and CLI precedence without importing the production parser,
+host parser, controlled-room normalizer, or override helper. The complete
+focused module passes 6/6 and the owning CLI library passes 366 tests with its
+eight registered ignores. Exact RED/GREEN counts and limits are retained in
+[`cli-argument-configuration-composition-20260731.md`](evidence/test-coverage/cli-argument-configuration-composition-20260731.md).
+
+## TC-CLI-005: Unknown attached option diagnostics reflected raw values
+
+Status: **Resolved 2026-07-31; attached values are redacted at the diagnostic
+boundary**
+
+Severity: **High for diagnostic privacy (an unrecognized credential-shaped
+value could be reproduced in user-visible output)**
+
+Detection: generated credential canary in an unknown attached option
+
+Before the correction,
+`--api-token=CLI_UNKNOWN_OPTION_SECRET_CANARY` was retained verbatim in the
+unknown-option diagnostic. Parser rejection was correct, but reflecting the
+full token crossed the diagnostic redaction boundary.
+
+Unknown arguments now retain bounded option identity while replacing
+everything after the first `=`. Startup uses that same formatter. The focused
+regression and every generated case require all server-password,
+controlled-room-password, explicit-password, and unknown attached-value
+canaries to be absent from production `Debug` and diagnostic output. This is
+separate from `TC-CLI-004`: even a deliberately unsupported option must not
+reflect an attached secret.
+
+## TC-PLAYER-005: Sustained cache stalls did not trigger bounded same-generation recovery
+
+Status: **Resolved 2026-07-31; independently approved deterministic and real-mpv
+proofs are positive**
+
+Severity: **High for stalled remote VOD recovery (valid framed input could stop
+making progress indefinitely while Sorotte remained attached)**
+
+Detection: strict valid-framing, byte-silent IPv4-loopback HTTP response through
+the native GUI and exact installed mpv
+
+The first campaign declared the complete 45-second AU length, sent exactly
+720,000 valid bytes, retained the open response, and then emitted no byte or
+EOF. mpv reached `paused-for-cache=true` near the deterministic playable-prefix
+boundary, but Sorotte issued no second GET or reload. A second RED after the
+first ordering correction proved that response acceptance alone had not
+retained enough lifecycle evidence.
+
+Two orderings contributed. `start-file` and `playback-restart` can precede the
+authoritative playlist snapshot that binds an accepted attempt. The restart
+could be discarded with no active attempt or projected onto a retained
+predecessor and then cleared while binding its successor. At the first cache
+pause, finite duration/path evidence could also leave classification `Unknown`;
+requiring an already settled `Vod` label prevented a real finite VOD from
+arming the watchdog.
+
+Production now retains only the restart causally newer than the exact deferred
+start, gives the accepted deferred successor priority over a retained
+predecessor, and replays that restart once after authoritative binding. A
+finite `Unknown` timeline can arm only when neither `SlidingLive` nor
+generation-bound `ytdl_is_live` is positive. Attachment, generation, attempt,
+network path, duration, position, remaining duration, cache pause, and retry
+budget remain required.
+
+The full player suite passed 427 tests with two registered ignores. The final
+post-gate native bundle
+`target/verification/gui-real-mpv-stalled-http/20260731T115707208Z-35432`
+passed 18 assertions and 11 artifacts using GUI SHA-256
+`a680ec8323011e4083c51b2de64473f8a4b9ef1aef8507131d03eb721e22bab3`
+and mpv SHA-256
+`2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0`.
+It retained 29,423 milliseconds of server-side silence, zero EOF observations
+before recovery, exactly one same-process `end-file` reason `stop`, one
+complete recovery GET, resumed progress, native pause, and complete cleanup.
+All REDs and the closed validator contract are retained in
+[`native-gui-real-mpv-stalled-http-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md).
+
+## TC-HARNESS-018: Generated Media Match fixture could not satisfy its required tier
+
+Status: **Resolved 2026-07-31; hosted real-tool execution is positive**
+
+Severity: **Harness correctness (the new required real-tool lane failed without
+distinguishing fixture reachability from product matching)**
+
+Detection: hosted required generated-media job `91093403053` in workflow run
+`30610965479`
+
+The first 30-second 440 Hz fixture reached real ffmpeg/ffprobe extraction and
+retrieval but could schedule only one 20-second sampled-fast window. Its STFT
+landmark span could not satisfy the `Probable` same-cut minimum, and its
+stationary periodic signal populated competing offsets. The final assertion
+reported only a JSON boolean, hiding the decision tier/class and retrieval
+margin that explained the RED.
+
+The corrected fixture is 120 seconds of fixed-seed broadband noise using
+built-in FFV1/PCM codecs. It exercises all three non-overlapping sampled-fast
+windows and retains the `Probable` requirement. A typed assertion now reports
+reason, retrieval, rank, tier, class, decision notes, and top retrieval
+diagnostics before JSON serialization is checked. The integration target
+compiles and the ordinary 84-test media-match suite plus strict crate Clippy
+pass locally. Hosted job `91111808305` in workflow run `30616813538`
+successfully executed the corrected real ffmpeg/ffprobe capability body.
+
+## TC-HARNESS-019: Unquoted Git commit dereference failed hosted shell policy
+
+Status: **Resolved 2026-07-31; hosted preflight reached its next assertion**
+
+Severity: **Harness portability (required Linux checks and mpv semantics stopped
+before behavior execution)**
+
+Detection: actionlint/ShellCheck and hosted mpv source-revision preflight in
+workflow run `30610965479`
+
+The workflow passed `HEAD^{commit}` unquoted inside a shell command
+substitution. Shell parsing/policy rejected the brace-bearing revision before
+the intended identity comparison. The preflight now calls
+`git rev-parse 'HEAD^{commit}'`, and a workflow-policy regression binds that
+form. Local actionlint and the focused CI policy suite pass. The correction
+changes only source-identity verification. Workflow run `30616813538` passed
+this quoted dereference and reached the separate annotated-tag object
+comparison recorded as `TC-HARNESS-026`.
+
+## TC-HARNESS-020: Partial Rust component setup conflicted with repository toolchain activation
+
+Status: **Resolved 2026-07-31; hosted component setup is positive**
+
+Severity: **Harness provisioning (required semantic and coverage jobs failed
+before their behavior lanes)**
+
+Detection: hosted GUI semantic and coverage jobs in workflow run
+`30610965479`
+
+Several jobs installed the pinned toolchain with either no components or only
+`llvm-tools-preview`. Later repository toolchain activation attempted a lazy
+component install and encountered the `rustfmt-preview`/`cargo-fmt` component
+conflict. Every Rust setup in the CI, coverage, and mutation workflows now
+declares `rustfmt, clippy`; coverage producers additionally declare
+`llvm-tools-preview`. Static workflow tests require the complete component
+sets. Local workflow policy and actionlint pass; hosted confirmation remains
+positive in workflow run `30616813538`, where every required Rust setup
+completed before its behavior or later independent harness assertion.
+
+## TC-HARNESS-021: Legacy permanent-room scenarios could start before room loading completed
+
+Status: **Resolved 2026-07-31; hosted complete live compatibility is positive**
+
+Severity: **Harness correctness (strict parity could compare transient legacy
+startup state with Sorotte durable state)**
+
+Detection: hosted Ubuntu server-release verifier job `91093403065` in workflow
+run `30610965479`
+
+Pinned Syncplay v1.7.5 begins accepting TCP connections before its asynchronous
+Twisted `adbapi` room-loading callback necessarily finishes. The hosted
+scenario joined `permanent-room` during that window and received a transient
+ordinary-room null playlist index rather than the configured permanent room's
+seeded index zero.
+
+When permanent rooms are configured, the live runner now connects a GUI probe
+in a collision-safe `-temp` room, polls public `List` responses until every
+configured key is an object, half-closes its write side, and waits for peer EOF
+before scenario clients connect. Readiness and cleanup share the existing
+six-second fail-closed bound. No sleep-only stabilization, trace normalization,
+or Sorotte product change was added. The default compatibility suite passes
+138/138 and the complete strict live selector passes 20/20 locally. Exact
+evidence is retained in
+[`legacy-permanent-room-startup-readiness-20260731.md`](evidence/test-coverage/legacy-permanent-room-startup-readiness-20260731.md);
+hosted job `91111808378` passed all 138 executable compatibility tests with
+seven exact writing fixtures and no unaccounted skip.
+
+## TC-HARNESS-022: Portable external-player tests hid their helper on non-Windows hosts
+
+Status: **Resolved 2026-07-31; hosted process probes are positive**
+
+Severity: **Harness compilation (the Linux all-feature lane could not compile
+portable external-launch tests)**
+
+Detection: lifecycle evidence compilation in workflow run `30610965479`
+
+`spawn_legacy_external_player_from_spec_legacy_compatible` was imported at the
+CLI crate root only under `cfg(all(test, windows))`, while portable
+external-launch tests use it on Linux. The helper itself is test-only but not
+Windows-only. Its import is now gated by `cfg(test)`; only genuinely
+Windows-specific IPC helpers retain the platform gate. The complete
+external-launch module passes 15/15 locally. This is a test visibility fix, not
+a production launch change; hosted confirmation remains pending.
+
+## TC-HARNESS-023: Hosted PowerShell media-tool fixtures exceeded their process deadline
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness portability (two Windows process-probe tests timed out
+under hosted load)**
+
+Detection: hosted Windows server-release verification in workflow run
+`30610965479`
+
+The Windows media-tool version fixtures launched a new PowerShell process for
+small stdout/stderr cases. Hosted startup and quoting cost could exceed the
+five-second process bound even though the production timeout/reap behavior was
+not at fault. Windows fixtures now use `cmd.exe` for the finite banner, empty,
+unrelated, and nonzero-exit cases. Invalid UTF-8 is passed directly to the
+extracted production parser, preserving that oracle without another shell.
+The exact version-probe tests pass 4/4 and strict GUI-library Clippy passes
+locally. The Windows server-release verifier in workflow run `30616813538`
+passed those probes before a later independent player fixture exposed
+`TC-HARNESS-028`.
+
+## TC-HARNESS-024: Nextest could execute the parked child fixture as the parent test
+
+Status: **Resolved 2026-07-31; hosted Windows nextest is positive**
+
+Severity: **Harness liveness (the Windows all-feature nextest job could hang
+inside a fixture role instead of running its owning assertion)**
+
+Detection: hosted Windows all-feature nextest execution in workflow run
+`30610965479`
+
+The media-tool process fixtures recognized a child role solely from
+`--exact <test-name>`. Nextest itself launches each ordinary test with that
+shape, so the real parked-fixture test process could enter its intentional
+infinite park before the owning timeout/reap test had copied and launched it.
+
+Fixture dispatch now requires both the exact target arguments and the
+nonce-owned copied executable stem `fake-media-match-tool`. A regression proves
+that an ordinary `sorotte_gui` nextest invocation cannot become either child
+role, while the copied image with the exact target can. The complete process
+module passes 8/8 and strict GUI-library Clippy passes locally. The correction
+is commit `a5ae5be`; the complete Windows nextest step passed in workflow run
+`30616813538`.
+
+## TC-HARNESS-025: Hosted coverage environment parsing retained shell syntax and a fixed merge-pool width
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness portability and provenance (the required changed-line
+coverage lane stopped before profile generation)**
+
+Detection: coverage-diff job `91111808430` in workflow run `30616813538`
+
+Pinned cargo-llvm-cov 0.8.4 emitted stable environment content whose
+`LLVM_PROFILE_FILE` was POSIX-quoted and used `%4m`, derived from hosted
+parallelism. The consumer retained the quotes as path bytes and required the
+local `%32m` spelling. After quote removal, either condition independently
+rejected the producer-owned target path.
+
+Both coverage producers now request `cargo llvm-cov show-env --sh`, require
+exact `export KEY=VALUE` lines, decode exactly one nonempty POSIX word with
+`shlex` and no evaluation, and accept one producer-selected positive `%Nm`.
+The profile basename is parsed left-to-right like an LLVM percent-token
+stream: exactly one real `%p`, exactly one canonical positive uint32 `%Nm`, no
+doubled or unknown percent token, and a `.profraw` suffix. Regressions cover
+quoted spaces/apostrophes, pool widths 1, 3, 4, 32, and `UINT32_MAX`, malformed
+quotes, multiple words/tokens, doubled escapes, leading zero, zero, and
+overflow. Both focused lane modules pass 42/42.
+
+## TC-HARNESS-026: Annotated mpv tag identity was compared with its peeled commit
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness source identity (the required real-mpv lane stopped before
+building its immutable supported source)**
+
+Detection: mpv-pr-semantics job `91111808391` in workflow run `30616813538`
+
+The workflow pinned annotated tag object
+`2c219aa822df18a1b7fd9abe3e151cd93ad67307`. Checkout correctly detached at
+its peeled commit `41f6a645068483470267271e1d09966ca3b9f413`, but the verifier
+compared `HEAD^{commit}` with the tag-object SHA. Both objects were immutable;
+the comparison mixed object types.
+
+Checkout and exact verification now pin the peeled commit directly. The CI
+policy test binds the same SHA to both fields, and actionlint plus the focused
+policy suite pass.
+
+## TC-HARNESS-027: POSIX TLS publisher tests assumed an executable checkout bit
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness portability (Linux behavior self-tests failed before the
+all-feature Rust gate)**
+
+Detection: Linux all-feature job `91111808436` in workflow run `30616813538`
+
+`scripts/copy-swag-sorotte-certs.sh` is intentionally tracked mode `100644`,
+and its documented invocation is through `sh`. The nested test launcher used
+`exec "$2"`, so all three atomic publisher scenarios exited 126 on Linux.
+
+The launcher now uses `exec sh "$2"` while preserving its fixture PATH,
+argument quoting, environment, and exit status. Success, interruption, and
+rejection tests pass 3/3; no executable-bit or production-script change was
+introduced.
+
+## TC-HARNESS-028: Early-exit fake mpv could close before the client request write
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness scheduling (a Windows named-pipe regression could fail at
+the wrong boundary)**
+
+Detection: Windows server-release job `91111808474` in workflow run
+`30616813538`
+
+The early-exit fixture accepted the named-pipe connection and immediately
+exited with code 23. A hosted scheduling window allowed the pipe to close
+before the production client wrote its first JSON request, while the test was
+intended to prove bounded terminal response handling after a valid request.
+
+The child now consumes exactly one newline-terminated valid JSON request
+before exit 23. The test still requires the exact exit code, bounded command
+completion, unhealthy transport, one command failure, one disconnect, process
+reap, and executable release. Its error oracle is role-specific: early exit
+accepts only read/EOF outcomes, while the deliberately partial JSON role can
+also report invalid JSON. The exact regression passed 50/50 consecutive runs
+before and after oracle hardening, and the full all-feature player suite
+passes.
+
+## TC-HARNESS-029: Server latest-publication policy test used stale input syntax and proved only existence
+
+Status: **Corrected locally 2026-07-31; final hosted confirmation pending**
+
+Severity: **Harness policy accuracy (the Windows all-feature gate rejected the
+current guarded workflow and did not exclude a second unguarded latest tag)**
+
+Detection: Windows all-feature job `91111808399` in workflow run
+`30616813538`
+
+The workflow uses the valid unified `inputs.push_latest` context, but the
+PowerShell regression still expected `github.event.inputs.push_latest`.
+Separately, checking for one guarded substring and an unrelated
+`default: "false"` would not reject an additional unconditional `latest`
+metadata entry.
+
+The PowerShell policy normalizes line endings, requires exactly one raw
+`latest` tag entry equal to the guarded dispatch expression, and binds the
+complete disabled-by-default string choice declaration. A YAML-aware Python
+policy independently asserts the exact input object and exclusive tag
+inventory. Both policy paths pass locally.
+
+## TC-HARNESS-030: Non-Windows native preflight made the remaining runner body unreachable
+
+Status: **Resolved 2026-07-31; later hosted Linux all-feature execution is positive**
+
+Severity: **Harness portability (warning-denied Linux compilation stopped
+before the workspace behavior gate)**
+
+Detection: Linux all-feature job `91117196202` in workflow run
+`30618496116`
+
+The native real-mpv runner returned from an inline non-Windows `cfg` block,
+leaving the rest of the function statically unreachable on Linux. The
+platform restriction was intentional, but warning-denied Clippy correctly
+rejected that layout.
+
+Commit `7395cdf` extracts a typed platform preflight that returns `Ok(())` on
+Windows and the exact fail-closed diagnostic elsewhere. A target-sensitive
+unit regression keeps both branches reachable to their respective compilers.
+The corrected Linux all-feature job in workflow run `30626889218` passed.
+
+## TC-HARNESS-031: Compatibility coverage accounting was suffix-based and lower-bounded
+
+Status: **Resolved 2026-07-31; exact source-bound accounting is positive**
+
+Severity: **Harness completeness (new or ambiguously named compatibility
+tests could evade the strict profile oracle)**
+
+Detection: coverage-diff job `91117196164` in workflow run `30618496116`
+
+The required-live report accepted any inventory above a minimum, while the
+coverage selector searched for shortened test-name suffixes and carried a
+handwritten filtered-out count. That was not a closed proof after the
+compatibility inventory grew.
+
+Commit `4fae099` binds the complete discovered inventory exactly, uses fully
+qualified libtest identities, derives the filtered count from the same source
+tuple, and rejects duplicate, missing, ignored, failed, or extra results.
+Focused report-schema and coverage-oracle regressions are positive.
+
+## TC-HARNESS-032: Duplex fault-model command deadline was below hosted scheduling noise
+
+Status: **Resolved 2026-07-31; bounded fault-model regression is positive**
+
+Severity: **Harness timing (the model could fail because its test thread was
+descheduled, not because the transport violated the command contract)**
+
+Detection: all-feature nextest execution in workflow run `30620966526`
+
+The in-memory duplex history model used a 30-millisecond wall-clock command
+deadline. Under hosted parallel load, an otherwise immediate scripted history
+could lose that entire budget before the assertion observed its terminal
+state. Commit `8dbc444` raises only this test-model deadline to one second;
+production deadlines and the exact transport outcomes are unchanged.
+
+## TC-HARNESS-033: Legacy step collection could finish before its first delayed frame
+
+Status: **Resolved 2026-07-31; delayed-first-frame regression and complete
+compatibility matrix are positive**
+
+Severity: **Harness observation (valid asynchronous legacy output could be
+recorded as absent)**
+
+Detection: hosted compatibility/coverage execution in workflow run
+`30620966526`
+
+The collector applied its short post-activity idle window before observing any
+activity. A first legacy frame delayed beyond that window therefore produced
+an empty step even though it remained within the step's total bound. Commits
+`d844d2e` and `ad410fc` separate the wait-for-first-frame phase from the
+post-frame quiescence phase and retain the total deadline. A loopback
+regression delays the first framed line beyond the idle interval and requires
+its exact recovery.
+
+## TC-HARNESS-034: Concurrent legacy checkout bootstrap was not process-safe
+
+Status: **Resolved 2026-07-31; process-lock regression and hosted Linux lane
+are positive**
+
+Severity: **Harness setup integrity (parallel test processes could mutate the
+same pinned-oracle checkout)**
+
+Detection: all-feature execution in workflow run `30620966526`
+
+The bootstrap was protected only by a process-local mutex. Separate nextest
+processes could simultaneously create or replace the shared repository-local
+legacy checkout. Commits `5d5e77a` and `ad410fc` add a bounded cross-process
+file lock around readiness/bootstrap, retain the in-process guard, and make
+the Linux workflow check out the immutable oracle before tests. An isolated
+two-process regression proves non-overlapping ownership and release.
+
+## TC-HARNESS-035: Pinned legacy permanent-room snapshots can alternate delayed playlist setters
+
+Status: **Resolved 2026-07-31; context-exact canonicalization regression and
+full live matrix are positive**
+
+Severity: **Compatibility oracle determinism (one delayed legacy watcher
+could attribute equivalent permanent-room playlist setters to Alice or Bob)**
+
+Detection: repeated default-parallel required-live compatibility execution
+
+In the exact permanent-room rejoin fixture, the pinned legacy server's delayed
+watcher can emit the same playlist payload with only
+`playlistChange.user`/`playlistIndex.user` alternating between Alice and Bob.
+Rust remains strictly Alice. Commit `0e7a9bc` canonicalizes only the decoded
+Bob Hello at scenario step 8, recipient `client-3`, in the permanent room,
+and only those two setter fields. Wrong scenario, step, sender, recipient,
+room, payload, index, non-Hello, and already-canonical cases remain unchanged.
+This is not a general parity normalization.
+
+## TC-HARNESS-036: LLVM exa-scale coverage counts were rejected as malformed
+
+Status: **Resolved 2026-07-31; exact LLVM token grammar regressions are
+positive**
+
+Severity: **Harness parser completeness (valid high-count native coverage
+could stop the required coverage lane)**
+
+Detection: coverage-diff job `91137572870` in workflow run `30624838791`
+
+The source-view parser recognized suffixes only through peta-scale, while the
+pinned LLVM producer emitted the valid exa-scale token `18.4E`. Commit
+`cea5fb7` implements the producer grammar through `E`, keeps annotation
+handling symmetric, and rejects unsupported case, precision, suffix, and
+unabbreviated forms. The focused coverage-profile module is positive.
+
+## TC-HARNESS-037: Linux all-feature CI omitted pinned legacy Python prerequisites
+
+Status: **Resolved 2026-07-31; later hosted Linux all-feature execution is positive**
+
+Severity: **Harness provisioning (required live compatibility tests could
+compile but fail before importing the pinned oracle stack)**
+
+Detection: Linux all-feature job `91137572905` in workflow run
+`30624838791`
+
+The Linux job installed only CI-policy dependencies. Tests selected by the
+all-feature workspace also require the pinned Twisted, pyOpenSSL, and
+service-identity stack. Commit `404039b` installs both locked requirement
+files after Python setup and before nextest; policy tests bind that exact
+order and command. The corrected Linux all-feature job in workflow run
+`30626889218` passed.
+
+## TC-HARNESS-038: Released ephemeral ports could collide across parallel legacy servers
+
+Status: **Resolved 2026-07-31; repeated default-parallel live matrices are positive**
+
+Severity: **Harness concurrency (two local test processes could select the
+same released startup port)**
+
+Detection: full default-parallel required-live compatibility execution on
+Windows (`WSAEADDRINUSE` / 10048)
+
+The harness asked the OS for an ephemeral port, closed that listener, and
+later launched the legacy server on the numeric port. Another parallel test
+could obtain the same address in between. Commit `6ccfd3a` introduces a
+listener-backed lease, an in-process mutex, and a bounded cross-process lock;
+the listener is released only immediately before spawn and the guards remain
+held through readiness. All six legacy server launch paths use it. The
+regression proves listener retention, same-process exclusion,
+cross-process exclusion, bounded completion, and post-release reuse.
+
+## TC-HARNESS-039: Native Windows ASan fuzz invocation lacked a compatible runtime
+
+Status: **Diagnostic only 2026-07-31; canonical Ubuntu WSL campaign is positive**
+
+Severity: **Operator-environment limitation (no Sorotte source or target
+failure)**
+
+Detection: direct native-Windows invocation of the documented framing fuzz
+runner at `6ccfd3a`
+
+The noncanonical native invocation built the target but exited with
+`STATUS_DLL_NOT_FOUND`; adding an older Visual Studio ASan directory changed
+the result to `DLL_INIT_FAILED`, confirming that the pinned LLVM 22 target and
+old runtime were incompatible. The failed bundle is preserved at
+`target/fuzz-ci/mpv-framed-transcript-deep-6ccfd3a-v1`. No source, seed, or
+artifact mutation occurred. The documented Ubuntu WSL campaign passed at the
+same checkpoint and again at final implementation SHA `9f3cb60`.
+
+## TC-HARNESS-040: Port-lease regression changed the strict compatibility count
+
+Status: **Resolved 2026-07-31; exact 21-test selector regression is positive**
+
+Severity: **Harness inventory maintenance (a new matching test correctly
+failed the closed coverage oracle until explicitly reviewed)**
+
+Detection: coverage-diff job in workflow run `30626889218`
+
+The new `legacy_server_port_lease_serializes_startup_allocation` regression
+matches the strict `legacy_server_` coverage selector. Cargo therefore ran 21
+tests with 128 filtered out, while the source-bound oracle still required
+20/129. All 21 tests passed; only the exact inventory assertion failed.
+Commit `9f3cb60` adds the reviewed identity to the canonical tuple. The focused
+policy module passes 27/27 and the strict Cargo selector passes 21/21.
+
+## TC-HARNESS-041: Linux-only changed-line coverage mixed QA structure and Windows production bodies
+
+Status: **Resolved locally 2026-07-31; exact two-platform replay is positive,
+final hosted confirmation pending**
+
+Severity: **Harness scope and platform completeness (the required gate
+reported 47.39% with 1,883 unmapped lines after every originating behavior job
+except coverage had passed)**
+
+Detection: coverage-diff job `91147825269` in workflow run `30627601938`
+
+The Linux map was asked to represent Windows-only updater, named-pipe,
+process, and GUI bodies. The consumer also counted dedicated smoke, benchmark,
+semantic, fuzz, complete test-support cfg items, and compiler-structural Rust
+lines as production-executable scope. That combination inflated the
+denominator and converted absent platform mappings into failures.
+
+Commit `829ab98` keeps both ratchets unchanged and joins independently
+source-validated Linux and exact-head Windows physical-line maps. It excludes
+only exact repository QA paths, complete attached test/test-support/fuzz-support
+items, and conservatively recognized compile-time or structural lines.
+Duplicate map content, stale source bytes, ambiguous test-support items, and
+executable-looking unmapped lines remain failures. The exact local replay
+passes at 80.13% ordinary and 90.79% critical, 82.52% combined, with zero
+unmapped lines.
+
+## TC-HARNESS-042: Windows process coverage inventory omitted four reviewed tests
+
+Status: **Resolved 2026-07-31; exact 54-test producer is positive**
+
+Severity: **Harness inventory maintenance (the source-bound Windows producer
+correctly rejected new matching tests until their ownership was reviewed)**
+
+Detection: exact local Windows process coverage generation while correcting
+`TC-HARNESS-041`
+
+The strict inventory still described 50 tests. Current source contains three
+additional updater storage/directory-sync regressions and one nonce-owned
+media-tool fixture identity regression. Commit `829ab98` adds those exact
+identities and updates only the corresponding filtered-out counts. The clean
+exact-head producer passes 54/54: 33 updater transaction, two installed
+updater, eight named-pipe, three external-mpv, and eight media-tool tests.
+Extra, missing, ignored, failed, or partially selected results remain fatal.
+
+## TC-HARNESS-043: Windows CRLF source hashes could not be consumed by Linux coverage
+
+Status: **Resolved locally 2026-07-31; fresh-checkout cross-platform binding is
+positive, final hosted confirmation pending**
+
+Severity: **Harness provenance portability (a valid Windows map could be
+rejected as stale solely because Git materialized different line endings)**
+
+Detection: pre-hosted exact-map union review at `829ab98`
+
+Canonical maps hash represented source bytes exactly as stored. Windows Git
+with global `core.autocrlf=true` materialized some Rust files as CRLF, while
+the Linux consumer materialized LF. Commit `829ab98` adds the repository rule
+`*.rs text eol=lf` and a policy regression binding it. A fresh Windows clone
+retained global autocrlf but reported LF for the sampled Rust source and
+matched the Linux artifact's digest. This preserves raw-byte source binding;
+the map schema was not weakened or normalized after production.

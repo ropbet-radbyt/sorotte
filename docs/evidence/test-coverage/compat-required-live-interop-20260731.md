@@ -288,6 +288,86 @@ The exact generated campaign, oracle, stdout/stderr identities, and limitations
 are retained in
 [`compat-generated-json-framing-differential-20260731.md`](compat-generated-json-framing-differential-20260731.md).
 
+### Final four-slice committed-source matrix
+
+The later four-slice continuation strengthened legacy process synchronization,
+added one context-exact delayed permanent-room setter canonicalizer, and leased
+legacy server startup ports across threads and processes. Historical report
+`target/verification/compat-live-committed-ad410fc-v1.json` is preserved as an
+intermediate 147-test checkpoint: 140 passed, seven ignored, zero failed or
+skipped, and complete accounting in 48.914050 seconds.
+
+After every implementation and strict-inventory correction was committed, the
+canonical command used a fresh output path:
+
+```text
+C:\Python313\python.exe scripts/compat_live_interop.py run --repo-root . \
+  --output target/verification/compat-live-committed-9f3cb60-v1.json
+C:\Python313\python.exe scripts/compat_live_interop.py validate \
+  --report target/verification/compat-live-committed-9f3cb60-v1.json
+```
+
+The validated report binds source and expected source to
+`9f3cb60fbe788575829931b56155f4bc0c19caf0` and the observed/expected pinned
+oracle to `d1c5f85af377c960c5a940707c4d01bc84fd9c3f`. It records:
+
+- 149 listed tests;
+- 142 executed and passed;
+- zero failed and zero skipped;
+- the same seven exact ignored fixture writers;
+- complete accounting and execution return code zero;
+- runtime 48.612783 seconds;
+- CPython 3.13.5, Twisted 25.5, pyOpenSSL 25.3, and
+  service-identity 24.2; and
+- all prerequisite, source, oracle, probe, fixture, inventory, execution, and
+  accounting records required by the closed schema.
+
+Canonical bundle identities:
+
+```text
+bc3699097ad534930fff7adccb93435c1a1e72d78cc9f127712e65d6722f2793  compat-live-committed-9f3cb60-v1.json
+7bd52a6859305a99adf3632cc0d38735855ee3368894db1b5484623d029b65b3  compat-live-committed-9f3cb60-v1.stdout.log
+8668abd1e866f904e9415d308885129f9c70491fd2ab80bd746806314eff7dce  compat-live-committed-9f3cb60-v1.stderr.log
+```
+
+Two separate default-parallel executions at the port-lease checkpoint also
+listed 149, passed 142, ignored seven, and failed/skipped zero. This repetition
+is important: it exercised the checkout, delayed-frame, and server-port
+coordination under ordinary parallel scheduling rather than a serial-only
+mode.
+
+### Exact-head coverage-policy refresh
+
+The later coverage-policy correction changed no compatibility Rust source but
+did change the repository head and its source-binding policy. A fresh output
+therefore re-ran the complete strict matrix rather than inheriting the
+`9f3cb60` result:
+
+```text
+SYNCPLAY_REQUIRE_LIVE_INTEROP=1
+SYNCPLAY_LEGACY_ROOT=.interop-cache/syncplay-legacy
+SYNCPLAY_PYTHON_BIN=C:\Python313\python.exe
+C:\Python313\python.exe scripts/compat_live_interop.py run --repo-root . \
+  --output target/verification/compat-live-committed-829ab98-v1.json
+C:\Python313\python.exe scripts/compat_live_interop.py validate \
+  --report target/verification/compat-live-committed-829ab98-v1.json
+```
+
+The independently validated report binds both source fields to
+`829ab9824d20bc64b03179646c5e182d5c7a4bfb`. It listed 149 tests,
+executed and passed all 142 non-writing tests, retained the same seven exact
+ignored writers, failed and skipped zero, returned zero, and completed in
+48.529611 seconds. Closed prerequisite, oracle, fixture, inventory, execution,
+and accounting records remain complete.
+
+Exact-head bundle identities:
+
+```text
+be641cf0b556e424aede4adf5b848983c3c6aecade388163882cf7328b30b285  compat-live-committed-829ab98-v1.json
+b0b11465dfd99640cc1a2be2e9458b1cc230579d953917d8c6c9876f6bda9ff3  compat-live-committed-829ab98-v1.stdout.log
+96d63126df9b96f39864a6a7b322f70bc7014ad9eab9ee5114f26ce458a417a7  compat-live-committed-829ab98-v1.stderr.log
+```
+
 ### Final integrated gates
 
 After the committed matrix and evidence integration, repository formatting,
@@ -301,12 +381,15 @@ on its first attempt in 257.5 seconds.
 
 ## Limitations
 
-- The committed workflow policy and local actionlint checks passed, but this
-  task did not execute GitHub-hosted Python `3.11`.
+- The local canonical report uses CPython 3.13.5. Hosted workflow run
+  `30626889218` separately passed the complete 142-test executable inventory
+  with the workflow's Python 3.11 environment; neither result claims every
+  supported Python/platform combination.
 - The canonical JSON and logs are local ignored `target/verification`
   artifacts. Their exact identities are recorded above; CI will produce and
   upload its own SHA-bound copies.
 - The seven trace writers were inventoried but not executed because they mutate
   committed fixtures. Their generated content was not refreshed or claimed.
-- The canonical run uses local CPython 3.13.5 and the pinned local oracle. It
-  does not stand in for the workflow's still-required hosted Python 3.11 run.
+- The canonical run uses local CPython 3.13.5 and the pinned local oracle. The
+  hosted Python 3.11 pass is separate evidence rather than a substitute for
+  that source-bound local bundle.

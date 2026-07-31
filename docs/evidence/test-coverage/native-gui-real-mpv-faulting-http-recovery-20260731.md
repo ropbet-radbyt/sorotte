@@ -238,12 +238,12 @@ stable mpv PID, image, digest, IPC, URL, and duration across recovery.
 `owned_mpv_terminated_after_gui_exit`, `server_thread_released`, and
 `socket_released` are all true.
 
-## Final canonical post-gate campaigns
+## Prior three-mode post-gate campaigns
 
-After every build-producing validation gate completed, the healthy,
-owned-process-recovery, and faulting-HTTP modes were run sequentially. The
-faulting transfer ran last. All three passed against the same final GUI and
-mpv bytes:
+At the then-current three-mode checkpoint, after every build-producing
+validation gate completed, the healthy, owned-process-recovery, and
+faulting-HTTP modes were run sequentially. The faulting transfer ran last at
+that checkpoint. All three passed against the same GUI and mpv bytes:
 
 ```text
 GUI SHA-256: 673dda5226c433950d3074cb4f1b2b6d222802eda6e30cc8a9b5d6e0ef12271c
@@ -251,7 +251,7 @@ mpv SHA-256: 2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0
 mpv version: mpv v0.41.0-877-ge5486b96d
 ```
 
-| Mode | Canonical bundle | Result |
+| Mode | Prior-checkpoint bundle | Result |
 |---|---|---|
 | Healthy | `target/verification/gui-real-mpv-vertical/20260731T044916649Z-67112` | 13 assertions, 10 artifacts, GUI/mpv PIDs `57104`/`64968`, 16,713 ms |
 | Owned-process recovery | `target/verification/gui-real-mpv-owned-process-recovery/20260731T045019794Z-49868` | 20 assertions, 13 artifacts, GUI PID `22372`, mpv PID `61396` automatically replaced by `48892`, 25,435 ms |
@@ -262,7 +262,8 @@ automatic replacement with a distinct PID and IPC endpoint, re-attested the
 same image and digest, exercised Play/Pause on the replacement, fenced the old
 process, and reaped the replacement on native GUI Exit.
 
-The final fault run retained exactly two media requests. The first transmitted
+That checkpoint's fault run retained exactly two media requests. The first
+transmitted
 `720,000` valid body bytes and the malformed chunk boundary. The second
 transmitted the complete `4,320,024`-byte AU object. It observed
 `eof-reached=true` at `7.095267` seconds of the declared 45 seconds, reloaded
@@ -273,7 +274,7 @@ and digest stayed stable. There was no manual retry or foreign post-fault
 observation. Evidence was retained before cleanup; owned mpv termination,
 server-thread release, and socket release are all true.
 
-Selected final bundle hashes:
+Selected prior-checkpoint bundle hashes:
 
 ```text
 2735324df56ca5476780341a2d08237ba2a57050b8e218624e265fcd32528ab6  healthy/harness-report.json
@@ -361,6 +362,52 @@ dc90540646c0b081259354832cc53e9e13bc4b062a4b8a2679ca2aca8ac92da2  crates/sorotte
 cb8a91781e4152f7abc4c3ceb02c815cc3bedd49fbc6333426d6096100a14de3  crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/native_smoke_runner/real_mpv_vertical.rs
 4ab34c4e21e7c3a782048ba4d95da52b7a2b73c1ac303156fb6dbc3b064104f2  scripts/gui_real_mpv_vertical_contract.py
 ba1d4d27aa66f82660e28032cfe85b17e9e5ee18ac162a07a0236f237a83eb58  scripts/tests/test_gui_real_mpv_vertical_contract.py
+```
+
+## Four-mode tranche post-gate reconfirmation
+
+The later client-timing/generated-media/CLI/stalled-HTTP tranche reran the
+faulting mode after every local build-producing gate:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T082027700Z-58664
+```
+
+It passed 18 assertions and 11 artifacts in 22,952 ms. GUI PID `64404` kept
+mpv PID `60056` and the same IPC endpoint across one malformed 720,000-byte
+chunked response and one complete 4,320,024-byte recovery response. The
+valid-framing byte-silent mode then ran last against the same GUI/mpv digests.
+
+```text
+a680ec8323011e4083c51b2de64473f8a4b9ef1aef8507131d03eb721e22bab3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  stable mpv
+d094904f2973aeea7ff2addfdfd6b89b11e6b9326acc11b29639b5b61490b39b  harness-report.json
+c300692085f24d806bc3167717c8310ae2e6b3ba513f07cf0070152bd2f8171c  contract-summary.json
+376caadfc8faf306ebdc37aef53f07a8c1e136e5769a9d01ada9143fde1800c8  invocation.json
+```
+
+## Final implementation-source four-mode campaign
+
+The final sequence's malformed-HTTP mode is:
+
+```text
+target/verification/gui-real-mpv-faulting-http-recovery/20260731T115618285Z-49988
+```
+
+It passed 18 assertions and 11 artifacts in 34,017 ms. GUI PID `4588` kept
+mpv PID `15328` and IPC endpoint
+`\\.\pipe\sorotte-gui-mpv-4588-1785498983223` across exactly two loopback
+requests: the first delivered 720,000 valid AU bytes before the malformed
+chunk boundary, and the second delivered the complete 4,320,024-byte object.
+Recovery was same-generation, automatic, and fully released the player,
+server thread, and socket. The valid byte-silent mode ran after this campaign.
+
+```text
+439174541d461db90fc66be088152024814e3ba4fe0d0d6b3add464103205d9e  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  stable mpv
+2b7a7ba711fc577a2bb8426f4448576127a4f4ce671b61a229e283355bd1c8ce  harness-report.json
+8b389bf96b711009073f8c96d961df0646091179f9b44f1a69063d9eed7eaee5  contract-summary.json
+a08a8310ad1af1ae5ebaae29da74ac820d6365c8ed5726a0b8bea96d0d985ec6  invocation.json
 ```
 
 ## Limitations

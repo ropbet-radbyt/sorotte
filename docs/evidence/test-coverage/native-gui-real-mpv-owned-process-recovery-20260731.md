@@ -185,10 +185,10 @@ same `b805d7745e43245fd0941aa33170df710cfa048d13810d5d40f7d34e6ce0e279`
 digest before and after execution, and completed its runner in 16,503 ms
 (16,480 ms inside the report).
 
-## Final post-gate confirmation
+## Prior three-mode post-gate confirmation
 
-After the later generated-compatibility, Unix-kernel, and faulting-HTTP
-coverage slices completed every build-producing validation gate, the
+At the later generated-compatibility/Unix-kernel/faulting-HTTP three-mode
+checkpoint, after every then-current build-producing validation gate, the
 owned-process inventory was executed again:
 
 ```text
@@ -290,6 +290,53 @@ Final implementation bindings:
 c265588d54fcc83f13b991d243375db62f33f0fccd1524b85f2f20de924465cc  gui-real-mpv-vertical.ps1
 cc6d7fc009bf43ddde003f877f874622878c32ccf4b6cea493c73c516bcd7a5f  gui_real_mpv_vertical_contract.py
 e5c1bbf27d7a51509973d04456c6d874c80610e848e6309f5f2c5bed072b1ebf  test_gui_real_mpv_vertical_contract.py
+```
+
+## Four-mode tranche post-gate reconfirmation
+
+The later client-timing/generated-media/CLI/stalled-HTTP tranche reran this
+owned-process mode after every build-producing local gate:
+
+```text
+target/verification/gui-real-mpv-owned-process-recovery/20260731T081949894Z-60272
+```
+
+It passed 20 assertions and 13 artifacts in 26,704 ms. GUI PID `48880`
+automatically replaced exact owned mpv PID `63056` with PID `62976`, changed
+the managed IPC endpoint, kept the active room, replayed media and transport,
+and reaped both generations. The digest-matched healthy mode ran immediately
+before it; malformed-HTTP and valid stalled-HTTP modes ran afterward.
+
+```text
+a680ec8323011e4083c51b2de64473f8a4b9ef1aef8507131d03eb721e22bab3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  initial/replacement mpv
+5de7661a8bd10dbf3ce73b8a38bca5b0a73af3f14e68b8aca1af620820325808  harness-report.json
+5ac672be35e7445587c436a9df7003a507df8715a88dc9c17d810e251ad03680  contract-summary.json
+38a1fff3b7fc2645fd4ebe5f85cdabba0198c47272bf31ac416fc0d673963df1  invocation.json
+```
+
+## Final implementation-source four-mode campaign
+
+The final sequence's owned-process mode is:
+
+```text
+target/verification/gui-real-mpv-owned-process-recovery/20260731T115540382Z-33412
+```
+
+It passed 20 assertions and 13 artifacts in 25,136 ms. GUI PID `48204`
+automatically replaced exact owned mpv PID `3448` with PID `45672`, changed
+the IPC endpoint from
+`\\.\pipe\sorotte-gui-mpv-48204-1785498945164` to
+`\\.\pipe\sorotte-gui-mpv-48204-1785498953640`, retained the active room,
+replayed media/transport state, fenced the old generation, and reaped both
+processes on GUI Exit. No manual retry was used.
+
+```text
+439174541d461db90fc66be088152024814e3ba4fe0d0d6b3add464103205d9e  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  initial/replacement mpv
+0c4550f9647dde59857f245abb6ab017d8527fa769088fc47549b32dc3cfa993  harness-report.json
+9c2494e0857b5897d3082096ee2c5ad46db6012f0b16df4887085924284894c8  contract-summary.json
+5fc5181077116db7e3667e7f2a0fd838e0b1bd70142398264f95ebc1cc47ae22  invocation.json
 ```
 
 ## Limitations

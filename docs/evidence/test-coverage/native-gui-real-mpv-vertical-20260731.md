@@ -61,11 +61,11 @@ earlier pre-gate build.
 
 The earlier producer-complete bundle at `target\verification\gui-real-mpv-vertical\20260730T213424802Z-42412` was preserved unchanged. Its producer passed the same substantive vertical; the original validator rejected only equivalent Windows extended-length versus ordinary path spelling. After the documented-path normalization regression fix, that unchanged bundle revalidated with 13 assertions and 10 artifacts; the revalidation summary is outside the bundle at `target\verification\gui-real-mpv-vertical-revalidation-20260731.json`.
 
-## Final post-gate confirmation
+## Prior three-mode post-gate confirmation
 
-After the later generated-compatibility, Unix-kernel, and faulting-HTTP
-coverage slices completed every build-producing validation gate, the unchanged
-healthy inventory was executed again:
+At the later generated-compatibility/Unix-kernel/faulting-HTTP three-mode
+checkpoint, after every then-current build-producing validation gate, the
+unchanged healthy inventory was executed again:
 
 ```text
 target/verification/gui-real-mpv-vertical/20260731T044916649Z-67112
@@ -83,6 +83,56 @@ and GUI and released the session fixture.
 2735324df56ca5476780341a2d08237ba2a57050b8e218624e265fcd32528ab6  harness-report.json
 6de31c5042d2d76ccb81cbb9227dd30c24752c73200daeb7463df300d5056c96  contract-summary.json
 9cb240c153b201db3a713f7285c33ff4941e7a4be5e7703e25e37c26b74366c9  invocation.json
+```
+
+## Four-mode tranche post-gate reconfirmation
+
+The later client-timing/generated-media/CLI/stalled-HTTP tranche reran the
+healthy mode after its final workspace, semantic, native-smoke, and GUI build
+gates:
+
+```text
+target/verification/gui-real-mpv-vertical/20260731T081916515Z-57224
+```
+
+It passed 13 assertions and 10 artifacts in 16,483 ms. GUI PID `63552` owned
+mpv PID `55740` through
+`\\.\pipe\sorotte-gui-mpv-63552-1785485961613`; the session endpoints were
+`127.0.0.1:64048` and `127.0.0.1:64049`. The same GUI and mpv digests then
+passed owned-process, malformed-HTTP, and valid byte-silent stalled-HTTP
+campaigns, with stalled HTTP deliberately last.
+
+```text
+a680ec8323011e4083c51b2de64473f8a4b9ef1aef8507131d03eb721e22bab3  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  mpv v0.41.0-877-ge5486b96d
+a6336398ea5dec2f41cf2a05f50f2c950a0706c55e29318fc2b747af393ff526  harness-report.json
+ae885c0ecc3b7a720070b231404fc3e5a01255fd6770af748c871ac9661703d4  contract-summary.json
+41771e8386b082a9029cecc81a1de81c471c79c3cdeeae4c258895196b8f40cc  invocation.json
+```
+
+## Final implementation-source four-mode campaign
+
+After the final source-bound compatibility/fuzz campaigns, all 519 Python
+self-tests, warning-denied workspace Clippy, the complete locked all-feature
+workspace, a fresh GUI build, 14/14 semantic scenarios, and native smoke, the
+healthy mode started the final four-mode sequence:
+
+```text
+target/verification/gui-real-mpv-vertical/20260731T115509993Z-33888
+```
+
+It passed 13 assertions and 10 artifacts in 15,566 ms. GUI PID `50072` owned
+mpv PID `7832` through
+`\\.\pipe\sorotte-gui-mpv-50072-1785498914884`; the loopback session used
+`127.0.0.1:59405` / `127.0.0.1:59406`. Owned-process, malformed-HTTP, and
+valid byte-silent stalled-HTTP modes followed, with stalled HTTP last.
+
+```text
+439174541d461db90fc66be088152024814e3ba4fe0d0d6b3add464103205d9e  final GUI before/after
+2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0  mpv v0.41.0-877-ge5486b96d
+4dc04a0e3c266bb6eefb00e17fdd09f39e1a742fab7d9a06044274c6831ca350  harness-report.json
+6c0379af88ba593a0b9e0f7589ccca90c04d575b7d58203184559919090e50b9  contract-summary.json
+8c322d3f70c189c7a828f6f8c78f110315405a587c3abf397cf636e2cf4e0254  invocation.json
 ```
 
 ## Fail-closed prerequisite evidence

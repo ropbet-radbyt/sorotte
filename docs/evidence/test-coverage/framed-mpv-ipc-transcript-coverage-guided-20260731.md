@@ -226,6 +226,143 @@ Python 3.12.3
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64, glibc 2.39
 ```
 
+## Four-slice continuation and final implementation-source campaign
+
+All intermediate bundles remain preserved. The first continuation attempt at
+`ad410fc` was stopped by an outer 120-second operator bound while Cargo was
+still building. Its report therefore remains honestly `running` with no live
+process and is diagnostic only:
+
+```text
+target/fuzz-ci/mpv-framed-transcript-deep-ad410fc-v1
+9c1b45316fcb1a749e5d24def3f75ee7681f184445e8f6802b0cc6683e6fc162  run-report.json
+760778c53709e37db710839bb6efbde1ad8f60e5f47298f50edf0b9ece86b5e2  fuzz.log
+```
+
+A direct native-Windows attempt at `6ccfd3a` built successfully and then
+failed before executing a unit because the target process could not load its
+ASan runtime (`0xc0000135`, `STATUS_DLL_NOT_FOUND`). Pointing it at an older
+Visual Studio ASan directory produced `DLL_INIT_FAILED`, confirming an
+incompatible local runtime rather than a target result. The report retained
+12 seed files, stable 65-file source bindings, and zero artifacts:
+
+```text
+target/fuzz-ci/mpv-framed-transcript-deep-6ccfd3a-v1
+1628b29a2af23c71c76e29a0cf28c0da5645e35a2245ea209905538d275ad1f3  run-report.json
+705946f59d18be928328dead3179ef44aef246f3f5af909b0f8eeff588528506  fuzz.log
+```
+
+This is `TC-HARNESS-039`, an operator-environment diagnostic. Native Windows
+was not the documented canonical execution platform, so no source or workflow
+was changed to make that attempt green.
+
+The documented Ubuntu WSL command then passed at `6ccfd3a`: 260,930
+executions, 2,754 new units, 1,113 corpus files / 60,648 bytes, 452 MiB peak
+RSS, stable source and seeds, and zero artifacts. Its checkpoint identities
+are:
+
+```text
+84983b5d40d168c6b6c577251b4599d1d4c8a44af821e805ec2bf978c01cde57  run-report.json
+7c03fa8ec4d73f5b3cc82cb5eda0d5e66df8351ada645c89184e747590f9c496  fuzz.log
+69e40436393f2289206d4b93843dc071739415e43c7729f08f18f6642e549fa1  final corpus aggregate
+```
+
+After the last implementation correction was committed, a fresh canonical
+path bound the full SHA:
+
+```text
+wsl.exe -d Ubuntu --cd /mnt/c/tmp/sorotte-test-coverage-design bash -lc \
+  "python3 fuzz/run_protocol_fuzz.py \
+    --target mpv_framed_transcript \
+    --toolchain nightly-2026-07-29 \
+    --source-sha 9f3cb60fbe788575829931b56155f4bc0c19caf0 \
+    --seconds 180 \
+    --seed-corpus crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript \
+    --expected-seed-count 12 \
+    --output-root target/fuzz-ci/mpv-framed-transcript-deep-9f3cb60-wsl-v1"
+```
+
+The final implementation-source report records:
+
+```text
+status / exit:           passed / 0
+source SHA:              9f3cb60fbe788575829931b56155f4bc0c19caf0
+sanitizer / duration:    address / 180 seconds
+executions:              277,044
+average executions/sec: 1,530
+new units:               2,775
+slowest unit:            0 seconds
+peak RSS:                451 MiB
+final corpus:            1,105 files / 68,351 bytes
+final corpus aggregate:  851e0de6fcb558e6ba981a73e55f4b73ab3d1620d2c3da72dec340f37ea5ba57
+artifacts:               0 files / 0 bytes
+artifact aggregate:      4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+source files:            65 before / 65 after, stable
+source aggregate:        b15e50a01cfe0e50379372026e01f64882396aee21a0c585790aeea4d777f924
+seed files:              12 before / 12 after, stable
+evidence errors:         0
+minimization:            not required
+```
+
+Final bundle identities:
+
+```text
+4a29518400180e5bb49adee30d40292be9596da800c5132d4bb443a4acafa744  run-report.json
+42cbeca1ac73f6040317991e8a6b5dccf7313d2b0fdb09a69cb71759967bcfe0  fuzz.log
+```
+
+## Exact-head coverage-policy refresh campaign
+
+The later coverage-map policy correction changed no framed-mpv target source,
+but exact source provenance required a new campaign at the resulting commit.
+The fresh bounded command was:
+
+```text
+wsl.exe -d Ubuntu --cd /mnt/c/tmp/sorotte-test-coverage-design bash -lc \
+  "python3 fuzz/run_protocol_fuzz.py \
+    --target mpv_framed_transcript \
+    --toolchain nightly-2026-07-29 \
+    --source-sha 829ab9824d20bc64b03179646c5e182d5c7a4bfb \
+    --seconds 180 \
+    --seed-corpus crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript \
+    --expected-seed-count 12 \
+    --output-root target/fuzz-ci/mpv-framed-transcript-deep-829ab98-wsl-v1"
+```
+
+The exact-head report records:
+
+```text
+status / exit:           passed / 0
+source SHA:              829ab9824d20bc64b03179646c5e182d5c7a4bfb
+sanitizer / duration:    address / 180 seconds
+executions:              326,303
+average executions/sec: 1,802
+new units:               3,220
+slowest unit:            0 seconds
+peak RSS:                451 MiB
+final corpus:            1,190 files / 66,395 bytes
+final corpus aggregate:  e9f946720bf6576a8133eddc92d54df7c6eff660daa31ef338e90834e1c0d987
+artifacts:               0 files / 0 bytes
+artifact aggregate:      4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+source files:            65 before / 65 after, stable
+source aggregate:        b15e50a01cfe0e50379372026e01f64882396aee21a0c585790aeea4d777f924
+seed files:              12 before / 12 after, stable
+evidence errors:         0
+minimization:            not required
+```
+
+Independent filesystem counts matched the report: zero artifact files and
+1,190 corpus files. The tool identities remain the pinned nightly LLVM 22.1.8,
+cargo-fuzz 0.13.2, Python 3.12.3, and Ubuntu WSL2 environment recorded by the
+structured report.
+
+Exact-head bundle identities:
+
+```text
+cf32c5060accd566f51d5154a2bf30cd7d564009b17ed9152468d09cf1b2b65f  run-report.json
+48bdc7bbd2a355458ef1799b6013efc04bf92724748e2c8554f45d7cbee3d55b  fuzz.log
+```
+
 ## Deterministic and policy validation
 
 The owning deterministic tests and target build passed:
