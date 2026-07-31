@@ -17,11 +17,12 @@ physical line. It is not used by the required changed-line gate.
 
 Obvious test-only Rust paths are reported but excluded from the production
 percentage. The classification is path-based (tests/src/tests, tests.rs,
-*_tests.rs, test_support.rs, benches, and examples). Complete inline
-``#[cfg(test)] mod ... { ... }`` ranges are also reported and excluded using a
-fail-closed lexical scanner that masks comments and Rust literals before
-matching braces. Other cfg-gated items inside production files remain
-production scope.
+*_tests.rs, test_support.rs, benches, examples, and repository-owned smoke,
+benchmark, and fuzz harness entry points). Complete inline ``#[cfg(test)]``,
+``test-support``, and ``fuzz-support`` item ranges are also reported and
+excluded using a fail-closed lexical scanner that masks comments and Rust
+literals before matching delimiters. Other cfg-gated items inside production
+files remain production scope.
 
 Production lines are evaluated as two disjoint classes. Ordinary production
 uses ``--minimum``; paths declared by the repository-owned critical-path policy
@@ -66,6 +67,7 @@ SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-diff-coverage"
 MAX_LCOV_BYTES = 512 * 1024 * 1024
 MAX_COVERAGE_MAP_BYTES = 128 * 1024 * 1024
+MAX_COVERAGE_MAP_INPUTS = 8
 MAX_COVERAGE_SOURCE_BYTES = 16 * 1024 * 1024
 LLVM_LINE_MAP_SCHEMA_VERSION = 1
 LLVM_LINE_MAP_KIND = "sorotte-llvm-line-map"
@@ -95,7 +97,7 @@ HUNK_HEADER = re.compile(
     r" \+(?P<new_start>[0-9]+)(?:,(?P<new_count>[0-9]+))? @@(?: .*)?$"
 )
 PERCENT = re.compile(r"^(?:100(?:\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\.[0-9]{1,2})?)$")
-PUNCTUATION_ONLY = re.compile(r"^[{}\[\](),;]+$")
+PUNCTUATION_ONLY = re.compile(r"^[{}\[\](),;|&]+$")
 FUNCTION_SIGNATURE_START = re.compile(
     r"^(?:pub(?:\([^)]*\))?\s+)?"
     r"(?:(?:async|const|unsafe)\s+)*"
@@ -115,6 +117,20 @@ RUST_CHAR_LITERAL = re.compile(
 EXACT_CFG_TEST_ATTRIBUTE = re.compile(
     r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]",
     re.DOTALL,
+)
+DATA_TYPE_BLOCK_START = re.compile(
+    r"^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|union)\b"
+)
+CONST_OR_STATIC_START = re.compile(
+    r"^(?:pub(?:\([^)]*\))?\s+)?(?:const|static(?:\s+mut)?)\b"
+)
+TYPE_ALIAS_START = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?type\b")
+TEST_SUPPORT_CFG_ATTRIBUTES = frozenset(
+    {
+        "#[cfg(test)]",
+        '#[cfg(feature="test-support")]',
+        '#[cfg(feature="fuzz-support")]',
+    }
 )
 INLINE_MODULE_DECLARATION = re.compile(
     r"(?:(?:pub(?:\s*\([^)]*\))?)\s+)?mod\s+"
@@ -706,11 +722,25 @@ def parse_unified_diff(text: str) -> list[ChangedFile]:
 
 
 def is_test_only_rust_path(path: str) -> bool:
-    """Classify only conventional, unambiguous test/benchmark/example paths."""
+    """Classify only conventional or repository-owned unambiguous QA paths."""
 
     pure = pathlib.PurePosixPath(path)
     parts = tuple(part.casefold() for part in pure.parts)
     if any(part in {"tests", "benches", "examples"} for part in parts[:-1]):
+        return True
+    normalized = "/".join(parts)
+    if normalized.startswith("fuzz/fuzz_targets/"):
+        return True
+    gui_harness_root = "crates/sorotte-gui/src/bin/sorotte-gui-native-smoke"
+    if normalized == f"{gui_harness_root}.rs" or normalized.startswith(
+        f"{gui_harness_root}/"
+    ):
+        return True
+    if normalized in {
+        "crates/sorotte-gui/src/bin/sorotte-gui-semantic-smoke.rs",
+        "crates/sorotte-gui/src/bin/sorotte-gui-semantic-suite.rs",
+        "crates/sorotte-gui/src/bin/sorotte-gui-startup-bench.rs",
+    }:
         return True
     name = parts[-1]
     return (
@@ -2167,17 +2197,33 @@ def rust_attribute_spans(masked: str, *, source: str) -> list[tuple[int, int]]:
     return spans
 
 
+def normalized_rust_attribute(attribute: str) -> str:
+    return re.sub(r"\s+", "", attribute)
+
+
+def is_test_support_cfg_attribute(attribute: str) -> bool:
+    normalized = normalized_rust_attribute(attribute)
+    if normalized in TEST_SUPPORT_CFG_ATTRIBUTES:
+        return True
+    if normalized == '#[cfg(any(test,feature="gui-semantic-smoke"))]':
+        return True
+    return bool(re.fullmatch(r"#\[cfg\(all\(test,.+\)\)\]", normalized))
+
+
 def inline_cfg_test_module_lines(
     source_lines: Sequence[str],
     *,
     source: str,
 ) -> set[int]:
-    """Return complete inline ``#[cfg(test)] mod`` line ranges.
+    """Return complete inline test-support item line ranges.
 
     Braces inside comments, ordinary/byte/C strings, raw strings, and character
-    literals are masked first. An exact cfg(test) attribute followed by an
-    external ``mod name;`` declaration has no inline range. Once an inline
-    module declaration is recognized, a missing or ambiguous body fails closed.
+    literals are masked first. Exact ``cfg(test)``, ``test-support``, and
+    ``fuzz-support`` attributes are recognized; target/platform cfg expressions
+    remain production scope. An exact cfg(test) attribute followed by an
+    external ``mod name;`` declaration has no inline range because the module's
+    conventional test-only path is classified separately. Ambiguous or
+    unterminated attached items fail closed.
     """
 
     text = "\n".join(source_lines)
@@ -2194,8 +2240,10 @@ def inline_cfg_test_module_lines(
 
     excluded: set[int] = set()
     for attribute_start, attribute_end in spans:
-        attribute = masked[attribute_start:attribute_end]
-        if EXACT_CFG_TEST_ATTRIBUTE.fullmatch(attribute) is None:
+        attribute = text[attribute_start:attribute_end]
+        if not is_test_support_cfg_attribute(attribute):
+            continue
+        if line_number(attribute_start) in excluded:
             continue
 
         cursor = attribute_end
@@ -2208,34 +2256,62 @@ def inline_cfg_test_module_lines(
             cursor = following_attribute[1]
 
         declaration = INLINE_MODULE_DECLARATION.match(masked, cursor)
-        if declaration is None:
-            # cfg(test) is also legitimately used for functions, impl members,
-            # imports, and other test seams. Those remain production-file scope.
-            continue
-        cursor = declaration.end()
-        while cursor < len(masked) and masked[cursor].isspace():
-            cursor += 1
-        if cursor < len(masked) and masked[cursor] == ";":
-            continue
-        if cursor >= len(masked) or masked[cursor] != "{":
-            line = line_number(attribute_start)
-            raise DiffCoverageError(
-                f"{source}:{line} has an ambiguous inline #[cfg(test)] module "
-                "declaration; expected '{' or ';'"
-            )
+        if declaration is not None:
+            module_cursor = declaration.end()
+            while module_cursor < len(masked) and masked[module_cursor].isspace():
+                module_cursor += 1
+            if module_cursor < len(masked) and masked[module_cursor] == ";":
+                continue
+            if module_cursor >= len(masked) or masked[module_cursor] != "{":
+                line = line_number(attribute_start)
+                raise DiffCoverageError(
+                    f"{source}:{line} has an ambiguous inline #[cfg(test)] module "
+                    "declaration; expected '{' or ';'"
+                )
 
-        depth = 1
-        closing = cursor + 1
-        while closing < len(masked) and depth:
-            if masked[closing] == "{":
-                depth += 1
-            elif masked[closing] == "}":
-                depth -= 1
+        parentheses = 0
+        brackets = 0
+        closing = cursor
+        found_end = False
+        while closing < len(masked):
+            character = masked[closing]
+            if character == "(":
+                parentheses += 1
+            elif character == ")":
+                parentheses -= 1
+                if parentheses < 0:
+                    break
+            elif character == "[":
+                brackets += 1
+            elif character == "]":
+                brackets -= 1
+                if brackets < 0:
+                    break
+            elif character == "{" and parentheses == 0 and brackets == 0:
+                depth = 1
+                closing += 1
+                while closing < len(masked) and depth:
+                    if masked[closing] == "{":
+                        depth += 1
+                    elif masked[closing] == "}":
+                        depth -= 1
+                    closing += 1
+                if depth:
+                    line = line_number(attribute_start)
+                    raise DiffCoverageError(
+                        f"{source}:{line} has an unclosed inline test-support item"
+                    )
+                found_end = True
+                break
+            elif character in {";", ","} and parentheses == 0 and brackets == 0:
+                closing += 1
+                found_end = True
+                break
             closing += 1
-        if depth:
+        if not found_end:
             line = line_number(attribute_start)
             raise DiffCoverageError(
-                f"{source}:{line} has an unclosed inline #[cfg(test)] module"
+                f"{source}:{line} has an ambiguous inline test-support item"
             )
         start_line = line_number(attribute_start)
         end_line = line_number(closing - 1)
@@ -2243,7 +2319,11 @@ def inline_cfg_test_module_lines(
     return excluded
 
 
-def lexical_non_coverable_lines(source_lines: Sequence[str]) -> set[int]:
+def lexical_non_coverable_lines(
+    source_lines: Sequence[str],
+    *,
+    source: str = "Rust source",
+) -> set[int]:
     """Return lines that are conservatively structural rather than executable.
 
     This is intentionally not a Rust parser. It exempts only whitespace,
@@ -2254,13 +2334,50 @@ def lexical_non_coverable_lines(source_lines: Sequence[str]) -> set[int]:
     so ordinary formatting does not create false failures.
     """
 
+    masked_text = mask_rust_comments_and_literals(
+        "\n".join(source_lines),
+        source=source,
+    )
+    masked_lines = masked_text.split("\n") if source_lines else []
+    if len(masked_lines) != len(source_lines):
+        raise DiffCoverageError(f"{source} changed line count while masking Rust tokens")
+
     result: set[int] = set()
+    previous_code = [""] * len(masked_lines)
+    latest = ""
+    for index, masked_line in enumerate(masked_lines):
+        previous_code[index] = latest
+        if masked_line.strip():
+            latest = masked_line.strip()
+    next_code = [""] * len(masked_lines)
+    latest = ""
+    for index in range(len(masked_lines) - 1, -1, -1):
+        next_code[index] = latest
+        if masked_lines[index].strip():
+            latest = masked_lines[index].strip()
     in_block_comment = False
     attribute_depth = 0
     in_import = False
     in_signature = False
-    for number, line in enumerate(source_lines, start=1):
+    pending_data_type = False
+    data_type_depth = 0
+    compile_time_depth = [0, 0, 0]
+    in_compile_time_item = False
+
+    def update_compile_time_depth(code: str) -> None:
+        compile_time_depth[0] += code.count("(") - code.count(")")
+        compile_time_depth[1] += code.count("[") - code.count("]")
+        compile_time_depth[2] += code.count("{") - code.count("}")
+
+    for number, (line, masked_line) in enumerate(
+        zip(source_lines, masked_lines, strict=True),
+        start=1,
+    ):
         stripped = line.strip()
+        code_stripped = masked_line.strip()
+        compact_code = re.sub(r"\s+", "", code_stripped)
+        preceding_code = previous_code[number - 1]
+        following_code = next_code[number - 1]
         if not stripped:
             result.add(number)
             continue
@@ -2281,6 +2398,26 @@ def lexical_non_coverable_lines(source_lines: Sequence[str]) -> set[int]:
                 result.add(number)
             elif not stripped.split("*/", 1)[1].strip():
                 result.add(number)
+            continue
+        if data_type_depth:
+            result.add(number)
+            data_type_depth += code_stripped.count("{") - code_stripped.count("}")
+            if data_type_depth <= 0:
+                data_type_depth = 0
+            continue
+        if pending_data_type:
+            result.add(number)
+            if "{" in code_stripped:
+                data_type_depth = code_stripped.count("{") - code_stripped.count("}")
+                pending_data_type = False
+            elif ";" in code_stripped:
+                pending_data_type = False
+            continue
+        if in_compile_time_item:
+            result.add(number)
+            update_compile_time_depth(code_stripped)
+            if ";" in code_stripped and not any(compile_time_depth):
+                in_compile_time_item = False
             continue
         if attribute_depth:
             result.add(number)
@@ -2306,6 +2443,22 @@ def lexical_non_coverable_lines(source_lines: Sequence[str]) -> set[int]:
             result.add(number)
             if ";" in stripped:
                 in_import = False
+            continue
+        if DATA_TYPE_BLOCK_START.match(code_stripped):
+            result.add(number)
+            if "{" in code_stripped:
+                data_type_depth = code_stripped.count("{") - code_stripped.count("}")
+            elif ";" not in code_stripped:
+                pending_data_type = True
+            continue
+        if CONST_OR_STATIC_START.match(code_stripped) or TYPE_ALIAS_START.match(
+            code_stripped
+        ):
+            result.add(number)
+            compile_time_depth[:] = [0, 0, 0]
+            update_compile_time_depth(code_stripped)
+            if ";" not in code_stripped or any(compile_time_depth):
+                in_compile_time_item = True
             continue
         if IMPORT_START.match(stripped):
             result.add(number)
@@ -2342,10 +2495,74 @@ def lexical_non_coverable_lines(source_lines: Sequence[str]) -> set[int]:
             if "{" not in stripped or not stripped.split("{", 1)[1].strip():
                 result.add(number)
             continue
-        if PUNCTUATION_ONLY.fullmatch(stripped):
+        if not code_stripped or PUNCTUATION_ONLY.fullmatch(compact_code):
             result.add(number)
             continue
-        if re.fullmatch(r"}\s*else\s*{", stripped):
+        if re.fullmatch(r"(?:}\s*)?else\s*{", code_stripped):
+            result.add(number)
+            continue
+        if re.fullmatch(r"loop\s*{", code_stripped):
+            result.add(number)
+            continue
+        if "=>" in code_stripped and " if " not in f" {code_stripped} ":
+            _pattern, arm = code_stripped.split("=>", maxsplit=1)
+            if arm.strip() in {"", "{"}:
+                result.add(number)
+                continue
+        if re.fullmatch(
+            r"(?:Self|[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*{",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*,",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", code_stripped)
+            and preceding_code.endswith(",")
+            and re.match(r"^[)\]}]", following_code)
+        ):
+            result.add(number)
+            continue
+        if code_stripped.endswith("="):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"(?:return\s+)?(?:Ok|Err|Some)\b.*[({]",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        match_pattern = re.fullmatch(
+            r"(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?:\([^;=]*\)|\s*\{\s*\.\.\s*\})?,?",
+            code_stripped,
+        )
+        if match_pattern is not None and (
+            following_code.startswith("|")
+            or re.match(r"^[)\]}]", following_code)
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?:\([^;=]*\)|\s*\{\s*\.\.\s*\})?,?",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"[+-]?(?:0[xob][0-9A-Fa-f_]+|[0-9][0-9_]*(?:\.[0-9_]+)?)"
+            r"(?:[iu](?:8|16|32|64|128|size)|f(?:32|64))?,",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(r"\.[A-Za-z_][A-Za-z0-9_]*[;?,]", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(
@@ -2485,7 +2702,7 @@ def analyze_coverage(
                 raise DiffCoverageError(
                     f"cannot read unmapped Rust source {path}: {error}"
                 ) from error
-            lexical = lexical_non_coverable_lines(source_lines)
+            lexical = lexical_non_coverable_lines(source_lines, source=path)
             inline_test = inline_cfg_test_module_lines(
                 source_lines,
                 source=path,
@@ -2510,7 +2727,7 @@ def analyze_coverage(
             }
             if changed_line.number in inline_test:
                 item["status"] = "excluded-inline-test"
-                item["reason"] = "cfg-test-inline-module"
+                item["reason"] = "cfg-test-support-inline-item"
                 file_counts["inline_test"] += 1
                 line_reports.append(item)
                 continue
@@ -2808,6 +3025,33 @@ def atomic_write_json(path: pathlib.Path, value: Mapping[str, Any]) -> None:
             temporary.unlink()
 
 
+def union_source_coverage_maps(
+    maps: Sequence[Mapping[str, SourceCoverage]],
+) -> dict[str, SourceCoverage]:
+    if not maps:
+        raise DiffCoverageError("at least one canonical coverage map is required")
+    combined: dict[str, tuple[str, dict[int, int]]] = {}
+    for sources in maps:
+        for path, coverage in sources.items():
+            identity = path.casefold() if os.name == "nt" else path
+            existing = combined.get(identity)
+            if existing is None:
+                combined[identity] = (path, dict(coverage.lines))
+                continue
+            existing_path, lines = existing
+            if existing_path != path and os.name != "nt":
+                raise DiffCoverageError(
+                    "canonical coverage maps disagree on source path identity: "
+                    f"{existing_path!r} versus {path!r}"
+                )
+            for line, hits in coverage.lines.items():
+                lines[line] = max(lines.get(line, 0), hits)
+    return {
+        path: SourceCoverage(path, dict(sorted(lines.items())))
+        for path, lines in sorted(combined.values(), key=lambda item: item[0])
+    }
+
+
 def build_report(
     *,
     repo_root: pathlib.Path,
@@ -2818,35 +3062,82 @@ def build_report(
     minimum_text: str,
     critical_policy_path: pathlib.Path | None = None,
     coverage_map_path: pathlib.Path | None = None,
+    coverage_map_paths: Sequence[pathlib.Path] | None = None,
 ) -> dict[str, Any]:
     root = repo_root.resolve()
     if not root.is_dir():
         raise DiffCoverageError(f"repository root is not a directory: {root}")
     minimum = parse_minimum(minimum_text)
-    if (lcov_path is None) == (coverage_map_path is None):
+    if coverage_map_path is not None and coverage_map_paths is not None:
+        raise DiffCoverageError(
+            "coverage_map_path and coverage_map_paths cannot be combined"
+        )
+    canonical_paths = tuple(
+        coverage_map_paths
+        if coverage_map_paths is not None
+        else (() if coverage_map_path is None else (coverage_map_path,))
+    )
+    if len(canonical_paths) > MAX_COVERAGE_MAP_INPUTS:
+        raise DiffCoverageError(
+            "canonical coverage map count exceeds the "
+            f"{MAX_COVERAGE_MAP_INPUTS}-input safety limit"
+        )
+    if (lcov_path is None) == (not canonical_paths):
         raise DiffCoverageError(
             "exactly one of LCOV or the canonical coverage map must be supplied"
         )
-    coverage_document: dict[str, Any] | None = None
-    if coverage_map_path is not None:
-        coverage_bytes = read_bounded(
-            coverage_map_path,
-            limit=MAX_COVERAGE_MAP_BYTES,
-            description="coverage map",
+    if canonical_paths:
+        parsed_maps: list[Mapping[str, SourceCoverage]] = []
+        map_inputs: list[dict[str, Any]] = []
+        seen_digests: set[str] = set()
+        for index, path in enumerate(canonical_paths, start=1):
+            coverage_bytes = read_bounded(
+                path,
+                limit=MAX_COVERAGE_MAP_BYTES,
+                description=f"coverage map {index}",
+            )
+            digest = sha256_bytes(coverage_bytes)
+            if digest in seen_digests:
+                raise DiffCoverageError(
+                    "canonical coverage maps contain duplicate content"
+                )
+            seen_digests.add(digest)
+            parsed_sources, coverage_document = parse_coverage_map(
+                coverage_bytes,
+                repo_root=root,
+            )
+            parsed_maps.append(parsed_sources)
+            map_inputs.append(
+                {
+                    "path": str(path),
+                    "sha256": digest,
+                    "line_model": coverage_document["line_model"],
+                    "producer": coverage_document["producer"],
+                    "producer_inputs": coverage_document["inputs"],
+                }
+            )
+        sources = union_source_coverage_maps(parsed_maps)
+        coverage_map_label = (
+            "canonical-coverage"
+            if len(map_inputs) == 1
+            else "canonical-coverage-union"
         )
-        sources, coverage_document = parse_coverage_map(
-            coverage_bytes,
-            repo_root=root,
-        )
-        coverage_map_label = "canonical-coverage"
-        coverage_inputs: dict[str, Any] = {
-            "coverage_kind": "llvm-physical-line-map",
-            "coverage_map": str(coverage_map_path),
-            "coverage_map_sha256": sha256_bytes(coverage_bytes),
-            "coverage_line_model": coverage_document["line_model"],
-            "coverage_producer": coverage_document["producer"],
-            "coverage_producer_inputs": coverage_document["inputs"],
-        }
+        if len(map_inputs) == 1:
+            only = map_inputs[0]
+            coverage_inputs = {
+                "coverage_kind": "llvm-physical-line-map",
+                "coverage_map": only["path"],
+                "coverage_map_sha256": only["sha256"],
+                "coverage_line_model": only["line_model"],
+                "coverage_producer": only["producer"],
+                "coverage_producer_inputs": only["producer_inputs"],
+            }
+        else:
+            coverage_inputs = {
+                "coverage_kind": "llvm-physical-line-map-union",
+                "coverage_line_model": LLVM_LINE_MODEL,
+                "coverage_maps": map_inputs,
+            }
     else:
         assert lcov_path is not None
         coverage_bytes = read_bounded(
@@ -2958,8 +3249,13 @@ def argument_parser() -> argparse.ArgumentParser:
     coverage = parser.add_mutually_exclusive_group(required=True)
     coverage.add_argument(
         "--coverage-map",
+        action="append",
+        dest="coverage_maps",
         type=pathlib.Path,
-        help="source-bound Sorotte LLVM physical-line map",
+        help=(
+            "source-bound Sorotte LLVM physical-line map; repeat to union "
+            "compatible platform maps"
+        ),
     )
     coverage.add_argument(
         "--lcov",
@@ -3008,7 +3304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = build_report(
             repo_root=args.repo_root,
             lcov_path=args.lcov,
-            coverage_map_path=args.coverage_map,
+            coverage_map_paths=args.coverage_maps,
             diff_path=args.diff,
             base=args.base,
             head=args.head,

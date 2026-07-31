@@ -12,6 +12,7 @@ import yaml
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-ci.yml"
 COVERAGE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
 MUTATION_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-mutation.yml"
@@ -322,12 +323,24 @@ class CiPolicyTests(unittest.TestCase):
                     self.assertEqual(comment, expected_comment)
                     self.assertIn(f"{action}@{revision}", parsed_uses)
 
+    def test_rust_coverage_sources_are_canonical_lf_on_every_platform(self) -> None:
+        self.assertEqual(
+            GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8").splitlines(),
+            [
+                "# Cross-platform LLVM line maps bind to identical Rust source bytes.",
+                "*.rs text eol=lf",
+            ],
+        )
+
     def test_required_jobs_install_repository_rust_components_eagerly(self) -> None:
         setup_by_job = {
             "checks": ("Setup Rust", "rustfmt, clippy"),
             "lifecycle_contract": ("Setup Rust", "rustfmt, clippy"),
             "gui_semantic": ("Setup Rust", "rustfmt, clippy"),
-            "rust_windows": ("Setup Rust", "rustfmt, clippy"),
+            "rust_windows": (
+                "Setup Rust",
+                "rustfmt, clippy, llvm-tools-preview",
+            ),
             "coverage_diff": (
                 "Setup Rust coverage toolchain",
                 "rustfmt, clippy, llvm-tools-preview",
@@ -560,12 +573,29 @@ class CiPolicyTests(unittest.TestCase):
         )
 
         coverage_job = self.jobs["coverage_diff"]
+        self.assertEqual(coverage_job.get("needs"), "rust_windows")
         self.assertEqual(
             coverage_job.get("env"),
             {
                 "SYNCPLAY_LEGACY_ROOT": (
                     "${{ github.workspace }}/.interop-cache/syncplay-legacy"
                 )
+            },
+        )
+        windows_coverage_download = named_step(
+            self.jobs,
+            "coverage_diff",
+            "Download exact Windows process coverage evidence",
+        )
+        self.assertEqual(
+            windows_coverage_download.get("uses"),
+            PINNED_USES["actions/download-artifact"],
+        )
+        self.assertEqual(
+            windows_coverage_download.get("with"),
+            {
+                "name": "verification-windows-process-coverage",
+                "path": "target/windows-process-coverage",
             },
         )
         coverage_legacy = named_step(
@@ -700,6 +730,7 @@ class CiPolicyTests(unittest.TestCase):
             python scripts/diff_coverage.py
             --repo-root .
             --coverage-map target/verification/coverage-line-map.json
+            --coverage-map target/windows-process-coverage/verification/coverage-windows-process-line-map.json
             --critical-policy coverage/diff-coverage-policy.toml
             --base "$COVERAGE_BASE_SHA"
             --head "$VERIFICATION_SHA"
@@ -862,6 +893,21 @@ class CiPolicyTests(unittest.TestCase):
                 "fallback": "none",
             },
         )
+        windows_coverage_installer = named_step(
+            self.jobs,
+            "rust_windows",
+            "Install pinned cargo-llvm-cov for Windows process coverage",
+        )
+        self.assertNotIn("if", windows_coverage_installer)
+        self.assertNotIn("continue-on-error", windows_coverage_installer)
+        self.assertEqual(
+            windows_coverage_installer.get("uses"),
+            PINNED_USES["taiki-e/install-action"],
+        )
+        self.assertEqual(
+            windows_coverage_installer.get("with"),
+            {"tool": "cargo-llvm-cov@0.8.4"},
+        )
         windows_nextest = self.assert_exact_run(
             self.jobs,
             "rust_windows",
@@ -920,6 +966,131 @@ class CiPolicyTests(unittest.TestCase):
             "./scripts/release-publication-policy-tests.ps1",
             continue_on_error="true",
         )
+        windows_coverage_checkout = named_step(
+            self.jobs,
+            "rust_windows",
+            "Checkout exact Windows coverage revision",
+        )
+        self.assertEqual(
+            windows_coverage_checkout.get("uses"),
+            PINNED_USES["actions/checkout"],
+        )
+        self.assertEqual(
+            windows_coverage_checkout.get("with"),
+            {
+                "ref": HEAD_REF,
+                "path": "coverage-source",
+                "persist-credentials": "false",
+            },
+        )
+        windows_coverage = self.assert_exact_run(
+            self.jobs,
+            "rust_windows",
+            "Generate exact Windows process coverage profiles",
+            """
+            python scripts/coverage_windows_process_lanes.py run
+            --repo-root .
+            --output target/verification/coverage-windows-process-lanes.json
+            """,
+            continue_on_error="true",
+        )
+        self.assertEqual(windows_coverage.get("id"), "windows_coverage")
+        self.assertEqual(
+            windows_coverage.get("working-directory"),
+            "coverage-source",
+        )
+        windows_llvm_json = self.assert_exact_run(
+            self.jobs,
+            "rust_windows",
+            "Export Windows LLVM JSON",
+            "cargo llvm-cov report --json --skip-functions "
+            "--output-path target/coverage-windows-process.json",
+            continue_on_error="true",
+            allowed_if="steps.windows_coverage.outcome == 'success'",
+        )
+        self.assertEqual(windows_llvm_json.get("id"), "windows_llvm_json")
+        self.assertEqual(
+            windows_llvm_json.get("working-directory"),
+            "coverage-source",
+        )
+        self.assertEqual(
+            windows_llvm_json.get("env"),
+            {"CARGO_TARGET_DIR": "target/llvm-cov-windows-process"},
+        )
+        windows_llvm_text = self.assert_exact_run(
+            self.jobs,
+            "rust_windows",
+            "Export Windows native LLVM source view",
+            "cargo llvm-cov report --text "
+            "--output-path target/coverage-windows-process.txt",
+            continue_on_error="true",
+            allowed_if="steps.windows_coverage.outcome == 'success'",
+        )
+        self.assertEqual(windows_llvm_text.get("id"), "windows_llvm_text")
+        self.assertEqual(
+            windows_llvm_text.get("working-directory"),
+            "coverage-source",
+        )
+        self.assertEqual(
+            windows_llvm_text.get("env"),
+            {"CARGO_TARGET_DIR": "target/llvm-cov-windows-process"},
+        )
+        windows_line_map = self.assert_exact_run(
+            self.jobs,
+            "rust_windows",
+            "Build Windows source-bound physical line map",
+            """
+            python scripts/llvm_cov_line_map.py
+            --repo-root .
+            --llvm-json target/coverage-windows-process.json
+            --llvm-text target/coverage-windows-process.txt
+            --output target/verification/coverage-windows-process-line-map.json
+            """,
+            continue_on_error="true",
+            allowed_if=(
+                "steps.windows_llvm_json.outcome == 'success' && "
+                "steps.windows_llvm_text.outcome == 'success'"
+            ),
+        )
+        self.assertEqual(windows_line_map.get("id"), "windows_line_map")
+        self.assertEqual(
+            windows_line_map.get("working-directory"),
+            "coverage-source",
+        )
+        windows_coverage_upload = named_step(
+            self.jobs,
+            "rust_windows",
+            "Upload Windows process coverage evidence",
+        )
+        self.assertEqual(windows_coverage_upload.get("if"), "always()")
+        self.assertEqual(
+            windows_coverage_upload.get("uses"),
+            PINNED_USES["actions/upload-artifact"],
+        )
+        windows_upload_settings = windows_coverage_upload.get("with", {})
+        self.assertEqual(
+            {
+                key: value
+                for key, value in windows_upload_settings.items()
+                if key != "path"
+            },
+            {
+                "name": "verification-windows-process-coverage",
+                "if-no-files-found": "warn",
+                "retention-days": "14",
+                "overwrite": "true",
+            },
+        )
+        self.assertEqual(
+            windows_upload_settings["path"].splitlines(),
+            [
+                "coverage-source/target/coverage-windows-process.json",
+                "coverage-source/target/coverage-windows-process.txt",
+                "coverage-source/target/verification/coverage-windows-process-line-map.json",
+                "coverage-source/target/verification/coverage-windows-process-lanes.json",
+                "coverage-source/target/verification/coverage-windows-process-logs/",
+            ],
+        )
         windows_enforcement = self.assert_exact_run(
             self.jobs,
             "rust_windows",
@@ -930,6 +1101,10 @@ class CiPolicyTests(unittest.TestCase):
             if ($env:RELEASE_BUILD_OUTCOME -ne "success") { throw "release build failed" }
             if ($env:PACKAGE_PATHS_OUTCOME -ne "success") { throw "package path tests failed" }
             if ($env:RELEASE_POLICY_OUTCOME -ne "success") { throw "release policy tests failed" }
+            if ($env:WINDOWS_COVERAGE_OUTCOME -ne "success") { throw "Windows process coverage profiles failed" }
+            if ($env:WINDOWS_LLVM_JSON_OUTCOME -ne "success") { throw "Windows LLVM JSON export failed" }
+            if ($env:WINDOWS_LLVM_TEXT_OUTCOME -ne "success") { throw "Windows LLVM source export failed" }
+            if ($env:WINDOWS_LINE_MAP_OUTCOME -ne "success") { throw "Windows physical line map failed" }
             """,
             allowed_if="always()",
         )
@@ -941,6 +1116,10 @@ class CiPolicyTests(unittest.TestCase):
                 "RELEASE_BUILD_OUTCOME": "${{ steps.release_build.outcome }}",
                 "PACKAGE_PATHS_OUTCOME": "${{ steps.package_paths.outcome }}",
                 "RELEASE_POLICY_OUTCOME": "${{ steps.release_policy.outcome }}",
+                "WINDOWS_COVERAGE_OUTCOME": "${{ steps.windows_coverage.outcome }}",
+                "WINDOWS_LLVM_JSON_OUTCOME": "${{ steps.windows_llvm_json.outcome }}",
+                "WINDOWS_LLVM_TEXT_OUTCOME": "${{ steps.windows_llvm_text.outcome }}",
+                "WINDOWS_LINE_MAP_OUTCOME": "${{ steps.windows_line_map.outcome }}",
             },
         )
 
@@ -1259,7 +1438,6 @@ class CiPolicyTests(unittest.TestCase):
     def test_general_pr_gates_use_merge_revision_and_evidence_uses_head(self) -> None:
         for job_id in (
             "checks",
-            "rust_windows",
             "compat-live-tls",
             "media-match-generated-media",
             "mpv-pr-semantics",
@@ -1267,6 +1445,13 @@ class CiPolicyTests(unittest.TestCase):
             checkouts = self.sorotte_checkouts(job_id)
             self.assertEqual(len(checkouts), 1)
             self.assertNotIn("ref", checkouts[0].get("with", {}))
+
+        windows = self.sorotte_checkouts("rust_windows")
+        self.assertEqual(len(windows), 2)
+        self.assertNotIn("ref", windows[0].get("with", {}))
+        self.assertEqual(windows[1]["with"]["ref"], HEAD_REF)
+        self.assertEqual(windows[1]["with"]["path"], "coverage-source")
+        self.assertNotIn("clean", windows[1]["with"])
 
         lifecycle = self.sorotte_checkouts("lifecycle_contract")
         coverage = self.sorotte_checkouts("coverage_diff")
@@ -1322,6 +1507,7 @@ class CiPolicyTests(unittest.TestCase):
                         "target/verification/coverage-profile-logs/",
                         "target/verification/coverage-line-map.json",
                         "target/verification/diff-coverage.json",
+                        "target/windows-process-coverage/verification/coverage-windows-process-line-map.json",
                         "target/diff-coverage.json",
                         "target/diff-coverage.txt",
                     ],

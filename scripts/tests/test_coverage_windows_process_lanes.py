@@ -350,7 +350,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     sorted(lanes.EXPECTED_TESTS[lane]),
                 )
                 total += oracle["passed"]
-        self.assertEqual(total, 50)
+        self.assertEqual(total, 54)
 
     def test_libtest_oracle_rejects_zero_partial_extra_and_skip(self) -> None:
         lane = "mpv-external-process"

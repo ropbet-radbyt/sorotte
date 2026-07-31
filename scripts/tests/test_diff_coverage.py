@@ -360,7 +360,7 @@ class DiffCoverageTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                line.get("reason") == "cfg-test-inline-module"
+                line.get("reason") == "cfg-test-support-inline-item"
                 for line in report["files"][0]["lines"][1:]
             )
         )
@@ -447,7 +447,7 @@ class DiffCoverageTests(unittest.TestCase):
     def test_inline_cfg_test_scanner_fails_closed_on_unclosed_module(self) -> None:
         with self.assertRaisesRegex(
             coverage.DiffCoverageError,
-            r"src/lib\.rs:1 has an unclosed inline #\[cfg\(test\)\] module",
+            r"src/lib\.rs:1 has an unclosed inline test-support item",
         ):
             coverage.inline_cfg_test_module_lines(
                 ["#[cfg(test)]", "mod tests {", "    fn behavior() {}"],
@@ -464,7 +464,7 @@ class DiffCoverageTests(unittest.TestCase):
             ),
             "unclosed": (
                 ["#[cfg(test)]", "mod tests {", "    fn behavior() {}"],
-                r"unclosed inline #\[cfg\(test\)\] module",
+                r"unclosed inline test-support item",
             ),
         }
         for name, (source_lines, message) in cases.items():
@@ -488,6 +488,96 @@ class DiffCoverageTests(unittest.TestCase):
         )
 
         self.assertEqual(inline_test, set())
+
+    def test_complete_inline_test_support_items_are_excluded_without_platform_code(self) -> None:
+        source_lines = [
+            "struct ProductState {",
+            "    #[cfg(test)]",
+            "    observer: Option<bool>,",
+            "    live: bool,",
+            "}",
+            "#[cfg(feature = \"test-support\")]",
+            "fn test_helper() {",
+            "    observe_test();",
+            "}",
+            "#[cfg(feature = \"fuzz-support\")]",
+            "const FUZZ_LIMIT: usize = 4;",
+            "#[cfg(all(test, windows))]",
+            "mod windows_tests {",
+            "    fn process_fixture() {}",
+            "}",
+            "#[cfg(any(test, feature = \"gui-semantic-smoke\"))]",
+            "pub use crate::semantic::Scenario;",
+            "#[cfg(windows)]",
+            "fn production_windows() {",
+            "    launch_windows_player();",
+            "}",
+        ]
+
+        inline_test = coverage.inline_cfg_test_module_lines(
+            source_lines,
+            source="src/lib.rs",
+        )
+
+        self.assertEqual(
+            inline_test,
+            set(range(2, 4))
+            | set(range(6, 10))
+            | set(range(10, 12))
+            | set(range(12, 16))
+            | set(range(16, 18)),
+        )
+        self.assertTrue(set(range(18, 22)).isdisjoint(inline_test))
+
+    def test_compile_time_items_literals_and_pattern_headers_are_structural(self) -> None:
+        source_lines = [
+            "enum Mode {",
+            "    First,",
+            "    Second(u8),",
+            "}",
+            "struct Snapshot {",
+            "    value: usize,",
+            "}",
+            "const LIMIT: usize =",
+            "    64 * 1024;",
+            "type Callback =",
+            "    Arc<dyn Fn() + Send>;",
+            '    "format-only argument",',
+            "    callback,",
+            "    0,",
+            "    loop {",
+            "        Some(_) => {",
+            "        } else {",
+        ]
+
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+
+        self.assertEqual(structural, set(range(1, len(source_lines) + 1)))
+
+    def test_multiline_expression_glue_is_structural_without_hiding_complete_calls(self) -> None:
+        source_lines = [
+            "    invoke(",
+            "        argument",
+            "    );",
+            "    previous =",
+            "        current;",
+            "    Ok(",
+            "        Resolution::Pending",
+            "            | Resolution::Missing,",
+            "    ) => {",
+            "    return Err(InteropError::Invalid(",
+            "        detail,",
+            "    ));",
+            "    final_value",
+            "    do_work();",
+        ]
+
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+
+        self.assertTrue({3, 4, 6, 7, 8, 9, 10, 12}.issubset(structural))
+        self.assertNotIn(2, structural)
+        self.assertNotIn(13, structural)
+        self.assertNotIn(14, structural)
 
     def test_wholly_unmapped_executable_new_file_fails_closed(self) -> None:
         new_source = self.repo / "src" / "new.rs"
@@ -580,6 +670,12 @@ class DiffCoverageTests(unittest.TestCase):
             "crates/example/src/lifecycle/property_tests.rs",
             "crates/example/benches/throughput.rs",
             "crates/example/examples/demo.rs",
+            "crates/sorotte-gui/src/bin/sorotte-gui-native-smoke.rs",
+            "crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/platform_driver/windows_impl.rs",
+            "crates/sorotte-gui/src/bin/sorotte-gui-semantic-smoke.rs",
+            "crates/sorotte-gui/src/bin/sorotte-gui-semantic-suite.rs",
+            "crates/sorotte-gui/src/bin/sorotte-gui-startup-bench.rs",
+            "fuzz/fuzz_targets/framed_session.rs",
         )
         for path in cases:
             with self.subTest(path=path):
@@ -589,6 +685,14 @@ class DiffCoverageTests(unittest.TestCase):
         )
         self.assertFalse(
             coverage.is_test_only_rust_path("crates/example/src/lib.rs")
+        )
+        self.assertFalse(
+            coverage.is_test_only_rust_path(
+                "crates/sorotte-gui/src/bin/sorotte-gui-native-smoker.rs"
+            )
+        )
+        self.assertFalse(
+            coverage.is_test_only_rust_path("fuzz/src/production.rs")
         )
 
     def test_covered_test_addition_cannot_rescue_uncovered_production_line(self) -> None:

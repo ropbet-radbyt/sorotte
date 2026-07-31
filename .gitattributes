@@ -1,0 +1,2 @@
+# Cross-platform LLVM line maps bind to identical Rust source bytes.
+*.rs text eol=lf

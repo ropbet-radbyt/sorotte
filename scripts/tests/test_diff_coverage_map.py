@@ -187,6 +187,66 @@ class DiffCoverageMapTests(unittest.TestCase):
             "0.8.4",
         )
 
+    def test_platform_maps_union_physical_lines_without_double_counting(self) -> None:
+        linux_path = self.repo / "coverage-linux.json"
+        windows_path = self.repo / "coverage-windows.json"
+        linux_path.write_text(
+            json.dumps(
+                self.map_document(lines=[[1, 1], [2, 0], [4, 0], [5, 1]])
+            ),
+            encoding="utf-8",
+        )
+        windows_path.write_text(
+            json.dumps(
+                self.map_document(lines=[[1, 0], [2, 1], [4, 1], [5, 0]])
+            ),
+            encoding="utf-8",
+        )
+
+        report = coverage.build_report(
+            repo_root=self.repo,
+            lcov_path=None,
+            coverage_map_paths=[linux_path, windows_path],
+            diff_path=self.diff_path,
+            base=None,
+            head=None,
+            minimum_text="100",
+        )
+
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["summary"]["coverable_lines"], 4)
+        self.assertEqual(report["summary"]["covered_lines"], 4)
+        self.assertEqual(
+            report["inputs"]["coverage_kind"],
+            "llvm-physical-line-map-union",
+        )
+        self.assertEqual(len(report["inputs"]["coverage_maps"]), 2)
+        self.assertEqual(
+            [item["path"] for item in report["inputs"]["coverage_maps"]],
+            [str(linux_path), str(windows_path)],
+        )
+
+    def test_platform_map_union_rejects_duplicate_content(self) -> None:
+        first = self.repo / "coverage-first.json"
+        second = self.repo / "coverage-second.json"
+        payload = json.dumps(self.map_document())
+        first.write_text(payload, encoding="utf-8")
+        second.write_text(payload, encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            coverage.DiffCoverageError,
+            "duplicate content",
+        ):
+            coverage.build_report(
+                repo_root=self.repo,
+                lcov_path=None,
+                coverage_map_paths=[first, second],
+                diff_path=self.diff_path,
+                base=None,
+                head=None,
+                minimum_text="50",
+            )
+
     def test_canonical_uncovered_and_unmapped_lines_fail_policy_not_input(self) -> None:
         uncovered = self.build(minimum="80")
         self.assertEqual(uncovered["status"], "failed")

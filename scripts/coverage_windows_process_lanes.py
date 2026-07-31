@@ -165,6 +165,7 @@ EXPECTED_TESTS = {
         "tests::authenticated_prepared_replacements_are_disposable_or_cleanable_by_mode",
         "tests::committed_cleanup_validates_targets_before_deleting_journal",
         "tests::committed_plan_removes_obsolete_files",
+        "tests::deterministic_updater_storage_fault_matrix_recovers_complete_old_or_new_installs",
         "tests::elevated_execution_is_rejected_before_all_updater_modes",
         "tests::every_before_and_after_replacement_failure_boundary_rolls_back_the_matrix",
         "tests::extracted_manifest_revalidates_every_payload_digest_and_exact_file_set",
@@ -190,8 +191,10 @@ EXPECTED_TESTS = {
         "tests::tampered_later_replacement_does_not_block_rollback_of_prior_file",
         "tests::tampered_prepared_replacement_is_discarded_during_safe_rollback",
         "tests::target_update_lock_serializes_live_updaters_for_the_same_install",
+        "tests::tc_updater_002_parent_directory_sync_failure_retains_authenticated_recovery",
         "tests::uncommitted_rollback_processes_entries_in_reverse_order",
         "tests::verified_package_snapshot_rejects_substitution_and_is_used_immutably",
+        "tests::windows_parent_directory_sync_reports_reversible_share_denial",
     ),
     "updater-installed-self-replacement": (
         "running_installed_updater_can_replace_its_own_installed_path",
@@ -215,6 +218,7 @@ EXPECTED_TESTS = {
     "media-tool-process": (
         "app::media_match_support::process_fault_tests::media_match_large_stdout_process_fixture",
         "app::media_match_support::process_fault_tests::media_match_parked_process_fixture",
+        "app::media_match_support::process_fault_tests::process_fixture_requires_copied_image_and_exact_target",
         "app::media_match_support::process_fault_tests::timed_out_version_probe_reaps_process_and_releases_executable",
         "app::media_match_support::process_fault_tests::version_probe_drains_finite_output_larger_than_pipe_capacity",
         "app::media_match_support::process_fault_tests::version_probe_preserves_nonzero_exit_status",
@@ -225,9 +229,9 @@ EXPECTED_TESTS = {
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": 415,
-    "mpv-external-process": 420,
-    "media-tool-process": 1116,
+    "mpv-named-pipe": 419,
+    "mpv-external-process": 424,
+    "media-tool-process": 1125,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {
