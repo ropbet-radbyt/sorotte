@@ -134,8 +134,9 @@ use self::mpv_startup::{
 use self::mpv_startup::{
     connect_mpv_adapter_with_retry,
     retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
-    spawn_legacy_external_player_from_spec_legacy_compatible,
 };
+#[cfg(test)]
+use self::mpv_startup::spawn_legacy_external_player_from_spec_legacy_compatible;
 #[cfg(test)]
 use self::notifications::{
     autoplay_countdown_notification_message_localized_legacy_compatible, chat_notification_message,
