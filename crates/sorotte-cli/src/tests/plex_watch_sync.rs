@@ -6,6 +6,46 @@ use std::sync::mpsc;
 use std::thread;
 use tokio::sync::oneshot;
 
+fn read_test_plex_request(
+    stream: &mut std::net::TcpStream,
+    overall_timeout: Duration,
+) -> Option<String> {
+    stream.set_nonblocking(false).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .ok()?;
+    read_test_plex_request_with(overall_timeout, |buffer| stream.read(buffer))
+}
+
+fn read_test_plex_request_with(
+    overall_timeout: Duration,
+    mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + overall_timeout;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while request.len() < 64 * 1024 && std::time::Instant::now() < deadline {
+        match read(&mut buffer) {
+            Ok(0) => return None,
+            Ok(read) => {
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    return Some(String::from_utf8_lossy(&request).into_owned());
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 fn spawn_test_plex_server() -> (
     String,
     mpsc::Receiver<String>,
@@ -30,23 +70,11 @@ fn spawn_test_plex_server() -> (
                 thread::sleep(Duration::from_millis(10));
                 continue;
             };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let Some(request) = read_test_plex_request(&mut stream, remaining) else {
+                continue;
+            };
             accepted += 1;
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        request.extend_from_slice(&buffer[..read]);
-                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let request = String::from_utf8_lossy(&request).into_owned();
             let _ = request_tx.send(request.clone());
             let request_line = request.lines().next().unwrap_or_default();
             let body = if request_line.starts_with("GET /library/sections ") {
@@ -78,6 +106,37 @@ fn spawn_test_plex_server() -> (
         timeline_served_rx,
         handle,
     )
+}
+
+#[test]
+fn plex_fixture_accumulates_complete_headers_across_transient_reads() {
+    let mut reads = std::collections::VecDeque::from([
+        Err(std::io::ErrorKind::Interrupted),
+        Err(std::io::ErrorKind::WouldBlock),
+        Ok(b"GET /library/sections HTTP/1.1\r\nHost:".to_vec()),
+        Err(std::io::ErrorKind::TimedOut),
+        Ok(b" localhost\r\nX-Test: yes\r\n\r\n".to_vec()),
+    ]);
+    let mut read_count = 0_usize;
+    let request = read_test_plex_request_with(Duration::from_secs(1), |buffer| {
+        read_count += 1;
+        match reads
+            .pop_front()
+            .expect("scripted fixture reader should not need another read")
+        {
+            Ok(bytes) => {
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+            Err(kind) => Err(std::io::Error::from(kind)),
+        }
+    })
+    .expect("fixture should retain partial headers across transient read errors");
+
+    assert_eq!(read_count, 5);
+    assert!(request.starts_with("GET /library/sections HTTP/1.1"));
+    assert!(request.ends_with("X-Test: yes\r\n\r\n"));
+    assert!(reads.is_empty());
 }
 
 #[test]
@@ -237,7 +296,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         .expect("Plex timeline request should be sent");
     assert!(
         sections_request.starts_with("GET /library/sections "),
-        "first Plex request should list library sections"
+        "first Plex request should list library sections, got {sections_request:?}"
     );
     assert!(
         sections_request
@@ -246,12 +305,12 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     );
     assert!(
         file_lookup_request.starts_with("GET /library/sections/1/all?"),
-        "second Plex request should look up the local file"
+        "second Plex request should look up the local file, got {file_lookup_request:?}"
     );
     assert!(file_lookup_request.contains("file=Movie+Name.mkv"));
     assert!(
         timeline_request.starts_with("GET /:/timeline?"),
-        "third Plex request should report timeline"
+        "third Plex request should report timeline, got {timeline_request:?}"
     );
     assert!(timeline_request.contains("ratingKey=99"));
     assert!(timeline_request.contains("state=playing"));
