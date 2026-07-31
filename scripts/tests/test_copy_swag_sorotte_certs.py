@@ -160,7 +160,7 @@ exec /usr/bin/mv "$@"
                     'fixture_bin="$1"; '
                     'if command -v cygpath >/dev/null 2>&1; then '
                     'fixture_bin="$(cygpath -u "$fixture_bin")"; fi; '
-                    'PATH="$fixture_bin:$PATH"; export PATH; exec "$2"'
+                    'PATH="$fixture_bin:$PATH"; export PATH; exec sh "$2"'
                 ),
                 "atomic-tls-publisher-test",
                 posix_command_path(self.fake_bin),
