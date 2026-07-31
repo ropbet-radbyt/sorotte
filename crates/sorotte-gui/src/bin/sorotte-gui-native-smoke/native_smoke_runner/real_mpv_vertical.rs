@@ -1629,14 +1629,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let mut http_stall_evidence: Option<HttpStallEvidence> = None;
 
     let run_result = (|| -> Result<RealMpvVerticalReport, String> {
-        #[cfg(not(target_os = "windows"))]
-        {
-            return Err(
-                "the genuine native GUI-to-real-mpv vertical currently requires Windows UI Automation and Windows mpv IPC"
-                    .to_owned(),
-            );
-        }
-
+        require_real_mpv_vertical_platform()?;
         let binary_path = resolve_binary_path(&options.binary_path)?;
         let mpv_path = fs::canonicalize(&options.mpv_path).map_err(|error| {
             format!(
@@ -3399,6 +3392,20 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     }
 }
 
+fn require_real_mpv_vertical_platform() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(
+            "the genuine native GUI-to-real-mpv vertical currently requires Windows UI Automation and Windows mpv IPC"
+                .to_owned(),
+        )
+    }
+}
+
 fn parse_real_mpv_vertical_options(args: &[String]) -> Result<RealMpvVerticalOptions, String> {
     let mut binary_path = None;
     let mut mpv_path = None;
@@ -4510,6 +4517,18 @@ fn terminate_test_process(_pid: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_mpv_platform_preflight_matches_the_compiled_target() {
+        let result = require_real_mpv_vertical_platform();
+        #[cfg(target_os = "windows")]
+        assert!(result.is_ok());
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            result.expect_err("non-Windows targets must fail before launch"),
+            "the genuine native GUI-to-real-mpv vertical currently requires Windows UI Automation and Windows mpv IPC"
+        );
+    }
 
     #[test]
     fn real_mpv_options_require_explicit_paths_and_positive_timeout() {
