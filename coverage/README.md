@@ -788,6 +788,17 @@ path and SHA-256, preserves raw output and producer exit state, rejects skips,
 duplicate JSON keys, unexpected stderr, and binary mutation, and kills a hung
 process tree on a derived wall-clock deadline.
 
+For ordinary local development, `-InputMode UiaOnly` runs a fixed menu
+inventory and UIA File -> Exit lifecycle without desktop-wide mouse, keyboard,
+or cursor injection. The driver rejects `SendInput` and cursor movement before
+dispatch, fails if any such attempt is reached, emits explicit
+`optional-skip(reason=local-uia-mode)` outcomes for physical and focused-keyboard
+capabilities, and stamps the summary `local-pass` plus `authoritative=false`.
+The strict validator requires `input_mode=strict-physical`, so local evidence
+cannot be substituted for CI proof. The implementation and first live bundle
+are recorded in
+[`native-interactive-local-uia-development-20260801.md`](../docs/evidence/test-coverage/native-interactive-local-uia-development-20260801.md).
+
 `.github/workflows/gui-native-interactive.yml` now owns a dispatch-only,
 fail-closed contract for running that exact inventory on a separately
 provisioned, one-job, ephemeral interactive Windows runner. It checks the

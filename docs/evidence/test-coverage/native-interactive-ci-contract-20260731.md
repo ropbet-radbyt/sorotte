@@ -10,8 +10,10 @@ provisioned, or that the native suite ran in this slice.
 The lane is intentionally limited to `workflow_dispatch` with a required full
 trusted commit SHA. It is not a pull-request, scheduled, merge-queue, or
 required-branch gate while ephemeral interactive runner infrastructure is
-unavailable and unverified. The existing native harness and strict evidence
-validator are unchanged.
+unavailable and unverified. The strict ten-scenario inventory is unchanged. A
+2026-08-01 follow-up makes its input policy explicit and adds a separate local,
+non-authoritative UIA-only development mode; see
+`native-interactive-local-uia-development-20260801.md`.
 
 Files added:
 
@@ -95,6 +97,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File scripts/gui-native-smoke.ps1 `
   -Json `
   -TimeoutMs 80000 `
+  -InputMode StrictPhysical `
   --scenario baseline `
   --scenario relaunch `
   --scenario drag-drop `
@@ -110,6 +113,11 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 Policy compares this exact ordered list with
 `gui_native_smoke_contract.DEFAULT_REQUIRED_SCENARIOS`. Therefore validator
 inventory drift or removal of one workflow scenario fails policy.
+
+The workflow policy also requires exactly one `-InputMode StrictPhysical` and
+rejects `UiaOnly`. The strict report validator requires
+`input_mode=strict-physical`, so a locally green UIA-only bundle cannot satisfy
+this lane.
 
 The existing wrapper derives a 910,000 ms maximum native process wait for ten
 80,000 ms scenarios, its global completion boundary, and its 30,000 ms grace

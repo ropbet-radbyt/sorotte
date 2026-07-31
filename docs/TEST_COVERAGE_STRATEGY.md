@@ -1331,6 +1331,14 @@ to trusted merge-queue commits rather than executing untrusted pull-request
 code on a persistent machine. Keep the semantic model as the hosted-runner PR
 gate.
 
+Local development may instead select `-InputMode UiaOnly`. That fixed inventory
+uses UI Automation for menu discovery and File -> Exit, rejects desktop-wide
+`SendInput` and cursor movement before dispatch, and fails if a physical or
+focused-keyboard fallback is reached. Its physical capability outcomes are
+explicit optional skips, its summary is non-authoritative, and the strict
+workflow binds `-InputMode StrictPhysical`; therefore this convenience lane
+does not close or weaken the outstanding isolated-runner proof.
+
 ### P0 — Compatibility can be green without its oracle
 
 The all-feature compatibility run printed 16 assertion-skipped messages yet

@@ -146,6 +146,23 @@ minimum-mpv HTTP stall only after both clients reach exact prepared and started
 baselines; and `TC-HARNESS-046` waits for a complete Plex request header across
 transient socket reads.
 
+## 2026-08-01 local native UIA development mode
+
+Status: **Implemented and locally executed; deliberately non-authoritative**
+
+The native driver now has explicit `strict-physical` and `uia-only` input
+modes. Strict physical remains the default and the dispatch-only interactive
+workflow binds it explicitly. UIA-only runs a fixed AccessKit menu inventory
+and UIA File -> Exit lifecycle, blocks Win32 `SendInput` and cursor movement
+before dispatch, and fails if any blocked desktop-input attempt is reached.
+Its physical-menu and focused-keyboard outcomes are exact
+`optional-skip(reason=local-uia-mode)` records, and its validator emits
+`local-pass` with `authoritative=false`. A local live run passed with zero
+desktop-input attempts and zero stderr. This improves developer convenience;
+it is not physical-input evidence and does not change the remaining external
+ephemeral interactive-runner requirement. See
+`docs/evidence/test-coverage/native-interactive-local-uia-development-20260801.md`.
+
 ## 2026-07-31 bounded system-boundary tranche
 
 Status: **Implemented with explicit capability boundaries; no product defect
