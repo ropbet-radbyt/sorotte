@@ -306,6 +306,7 @@ pub(crate) fn collect_legacy_server_step_outputs(
     let mut outputs = Vec::new();
     let step_start = Instant::now();
     let mut last_activity = Instant::now();
+    let mut saw_any_output = false;
     loop {
         let mut saw_new_output = false;
         for (client_id, connection) in clients.iter_mut() {
@@ -323,10 +324,12 @@ pub(crate) fn collect_legacy_server_step_outputs(
             }
         }
         if saw_new_output {
+            saw_any_output = true;
             last_activity = Instant::now();
         }
 
-        if step_start.elapsed() >= LEGACY_SERVER_STEP_MIN_WAIT
+        if saw_any_output
+            && step_start.elapsed() >= LEGACY_SERVER_STEP_MIN_WAIT
             && last_activity.elapsed() >= LEGACY_SERVER_STEP_IDLE_WAIT
         {
             break;

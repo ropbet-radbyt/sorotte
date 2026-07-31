@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Cursor, Read, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
     sync::Arc,
@@ -24,9 +24,10 @@ use super::trace_capture::{
     capture_python_trace_fixture_with_full_overrides,
 };
 use super::{
-    DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LegacyClientChatSendContractCase,
-    LegacyServerClientConnection, ServerRuntimeScenarioEvent, ServerRuntimeScenarioStep,
-    all_protocol_fixture_names, connect_legacy_client_stream, decode_fixture, decode_protocol_file,
+    DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LEGACY_SERVER_STEP_IDLE_WAIT,
+    LegacyClientChatSendContractCase, LegacyServerClientConnection, ServerRuntimeScenarioEvent,
+    ServerRuntimeScenarioStep, all_protocol_fixture_names, collect_legacy_server_step_outputs,
+    connect_legacy_client_stream, decode_fixture, decode_protocol_file,
     default_rust_client_hello_for_interop, default_rust_client_hello_for_legacy_live_tls,
     ensure_legacy_server_is_running, ensure_legacy_syncplay_checkout_available, fixture_decodes,
     fixture_path, legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
@@ -66,6 +67,45 @@ use self::scenario_constants::*;
 use self::tls_fixture_support::*;
 mod assertions;
 use self::assertions::*;
+
+#[test]
+fn legacy_server_step_collector_waits_for_a_delayed_first_frame() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("loopback listener should be available");
+    let address = listener
+        .local_addr()
+        .expect("loopback listener address should resolve");
+    let mut writer = TcpStream::connect(address).expect("loopback writer should connect");
+    let (reader, _) = listener
+        .accept()
+        .expect("loopback collector stream should connect");
+    reader
+        .set_nonblocking(true)
+        .expect("collector stream should become nonblocking");
+    let mut clients = BTreeMap::from([(
+        "late-client".to_owned(),
+        LegacyServerClientConnection {
+            stream: reader,
+            pending_bytes: Vec::new(),
+        },
+    )]);
+
+    let delayed_writer = thread::spawn(move || {
+        thread::sleep(LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(40));
+        writer
+            .write_all(b"{\"List\":null}\n")
+            .expect("delayed framed output should be written");
+    });
+    let outputs = collect_legacy_server_step_outputs(&mut clients)
+        .expect("the delayed first frame should be collected");
+    delayed_writer
+        .join()
+        .expect("the delayed writer should complete");
+
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].client_id, "late-client");
+    assert_eq!(outputs[0].line, r#"{"List":null}"#);
+}
 
 #[test]
 fn compatibility_scenario_debug_does_not_print_raw_protocol_lines() {
