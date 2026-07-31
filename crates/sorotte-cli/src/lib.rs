@@ -104,6 +104,8 @@ use self::language_support::{
 use self::local_runtime_actions::{
     publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
 };
+#[cfg(test)]
+use self::mpv_startup::spawn_legacy_external_player_from_spec_legacy_compatible;
 use self::mpv_startup::spawn_legacy_external_player_if_requested_legacy_compatible;
 #[cfg(test)]
 use self::mpv_startup::{
@@ -132,11 +134,8 @@ use self::mpv_startup::{
 };
 #[cfg(all(test, windows))]
 use self::mpv_startup::{
-    connect_mpv_adapter_with_retry,
-    retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
+    connect_mpv_adapter_with_retry, retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
 };
-#[cfg(test)]
-use self::mpv_startup::spawn_legacy_external_player_from_spec_legacy_compatible;
 #[cfg(test)]
 use self::notifications::{
     autoplay_countdown_notification_message_localized_legacy_compatible, chat_notification_message,
