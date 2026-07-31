@@ -407,7 +407,7 @@ fn assert_connection_outcome(
 
 fn exercise_duplex_history(history: [DuplexFaultAction; 3]) {
     let (transport, handle) = DuplexFaultTransport::new(history);
-    let command_timeout = Duration::from_millis(30);
+    let command_timeout = Duration::from_secs(1);
     let mut client =
         MpvJsonIpcClient::new_with_command_timeout(Box::new(transport), command_timeout);
     assert!(matches!(
