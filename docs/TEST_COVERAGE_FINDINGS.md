@@ -16,6 +16,7 @@ Final CLI/protocol defect resolution update: 2026-07-30
 Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
 Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
+Required-live, owned-process recovery, updater durability, and framed-mpv update: 2026-07-31
 
 Branch: `codex/test-coverage-design`
 
@@ -89,6 +90,16 @@ real-mpv vertical executed its full capability path. The external interactive
 runner, privileged block replay, and Docker/Syft/Cosign/GHCR chain remain
 unexecuted and are not reported as green runtime evidence. No product behavior
 changed and the product-defect registry remains explicitly empty.
+The next 2026-07-31 continuation completed four more bounded slices. Required
+live compatibility now has exhaustive skip-free accounting; native real-mpv
+coverage now crosses one attested automatic owned-process replacement; updater
+transactions now request parent-directory durability at every owned
+directory-entry mutation; and a third source-bound randomized target covers
+framed mpv IPC, transcript projection, and lifecycle fencing. The updater
+characterization surfaced `TC-UPDATER-002`, which is fixed and positive in the
+same tranche. The preserved framed-target and committed-run compatibility REDs
+were independent oracle/wrapper defects, not product defects. The registry
+remains explicitly empty.
 The merged-profile work subsequently surfaced one intermittent player
 observation failure and six strict legacy-parity failures. The remediation
 slice isolated their ownership, fixed the product and harness defects, added
@@ -146,6 +157,58 @@ steps are retained in:
 - [`persistence-disposable-block-replay-harness-20260731.md`](evidence/test-coverage/persistence-disposable-block-replay-harness-20260731.md)
 - [`server-container-build-load-publication-contract-20260731.md`](evidence/test-coverage/server-container-build-load-publication-contract-20260731.md)
 
+## 2026-07-31 required-live, recovery, updater, and framed-mpv tranche
+
+Status: **Implemented, source-bound, and locally green; one product durability
+defect found and fixed**
+
+The four slices and their independent findings are:
+
+- The required-live wrapper pins the local Syncplay oracle commit, supported
+  CPython family, exact package versions, both probes, and all 89 tracked
+  fixtures. It discovers 143 tests, executes all 136 non-writing tests
+  serially with zero skips, and accounts for the seven exact fixture writers.
+  A preserved first committed-source run found a wrapper defect: the relative
+  oracle path was attested from the repository but passed unchanged to Cargo,
+  where crate-local working-directory resolution made 61 live tests fail.
+  Passing the absolute already-attested path fixed the wrapper; the next
+  source-bound matrix passed 136/136 in 47.394740 seconds.
+- The native real-mpv recovery inventory terminates only an exact
+  path/digest/parent-attested GUI child, observes product-owned automatic
+  replacement with a new PID and IPC endpoint, reopens generated media through
+  physical UI, observes replacement Play/Pause, rejects stale/foreign
+  post-boundary events, and uses native Exit to reap both player generations.
+  Its preserved RED disproved the assumed manual Retry modal because the
+  active-session runtime automatically relaunched the managed player.
+  Production behavior did not change.
+- `TC-UPDATER-002` proved that flushed transaction files were not followed by
+  containing-directory sync after entry creation, replace/rename, rollback,
+  cleanup, or journal deletion. The updater now requests that boundary. A
+  13-schedule disk-full/access-denied analogue matrix, real reversible Windows
+  directory-share denial, 33/33 updater suite, all 11 process-termination
+  boundaries, and the two installed-updater integration tests are positive.
+- The framed-mpv target crosses the production line reader through a bounded
+  in-memory transport, then transcript and lifecycle projections. Four chunk
+  schedules, five terminal modes, and 12 seeds drive an independent oracle.
+  Its first RED proved the reference incorrectly decoded trailing partial
+  bytes on read disconnect; production only does so on EOF. After narrowing
+  only that oracle rule, the committed-source 180-second campaign passed
+  322,973 executions with 3,219 new units, stable 64-file source and 12-file
+  seed bindings, and zero artifacts or evidence errors.
+
+The compatibility and framed-mpv REDs were retained and were not normalized
+into green results. Neither required a product behavior change. The updater
+finding is resolved by production code and an ordinary positive regression,
+so `coverage/known-defects.toml` remains explicitly empty.
+
+Exact reports, hashes, commands, prerequisites, and limitations are retained
+in:
+
+- [`compat-required-live-interop-20260731.md`](evidence/test-coverage/compat-required-live-interop-20260731.md)
+- [`native-gui-real-mpv-owned-process-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-owned-process-recovery-20260731.md)
+- [`updater-transaction-storage-durability-20260731.md`](evidence/test-coverage/updater-transaction-storage-durability-20260731.md)
+- [`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md)
+
 ## Experimental baseline
 
 Before the shrinkable suite was added:
@@ -163,6 +226,22 @@ Before the shrinkable suite was added:
 
 After the coverage tranche was integrated:
 
+- The 2026-07-31 required-live/recovery/updater/framed-mpv continuation passed
+  all 496 Python policy and infrastructure tests in 22.380 seconds,
+  repository formatting and diff checks, both changed workflows under
+  actionlint, the ten-shard mutation policy with 17 exact accepted unviables,
+  and the explicitly empty 0-defect/0-characterization registry.
+  Warning-denied all-target/all-feature workspace Clippy passed in 15.8
+  seconds. The complete locked all-feature workspace suite passed on its first
+  attempt in 257.5 seconds, including updater integration, real-Python server
+  release verification, and doctests. The committed required-live report
+  passed 136/136 executable tests with zero skips; the committed framed-mpv
+  ASan campaign passed 322,973 executions with zero artifacts. After every
+  build-producing gate, the final real-mpv recovery bundle
+  `20260731T000220834Z-11868` passed 20 assertions/13 artifacts, and the same
+  `b805d774...` GUI binary passed the healthy 13-assertion/10-artifact bundle
+  `20260731T000311349Z-65428`. Both GUI PIDs and all three mpv PIDs were
+  independently absent afterward.
 - The final four-slice system-boundary integration passed 471/471 Python
   policy and infrastructure tests, warning-denied all-target/all-feature
   workspace Clippy in 23.7 seconds, and the complete locked all-feature
@@ -2574,3 +2653,55 @@ mutates the second prepared file after the first target was replaced and proves
 both originals and every transaction artifact are restored. Quarantining
 corrupt scratch for forensics was rejected as unnecessary state for this local
 updater.
+
+## TC-UPDATER-002: Updater transaction directory entries lacked a durability boundary
+
+Status: **Resolved 2026-07-31; parent-directory sync is required after owned
+entry mutations**
+
+Severity: **High for storage durability (file contents could be acknowledged
+without making the containing directory entry durable)**
+
+Detection: narrow parent-directory-sync characterization followed by a
+13-schedule deterministic storage-fault matrix and a real reversible Windows
+share-denial probe
+
+The updater wrote, flushed, and `sync_all`ed its recovery journal and prepared
+files. It did not synchronize their containing directories after creating the
+journal or prepared files, replacing/renaming targets, restoring rollback
+state, deleting transaction artifacts, or removing the journal. The existing
+11-boundary process-interruption suite therefore proved recovery after visible
+file-content flushes but could not establish an OS-requested durability
+boundary for the corresponding directory entries.
+
+Before the fix, the narrow characterization failed with:
+
+```text
+TC-UPDATER-002: updater transaction completed without reaching a parent-directory sync boundary
+```
+
+Production now opens and `sync_all`s the parent after every updater-owned
+entry mutation. Unix opens the directory directly. Windows uses a
+write-capable directory handle with `FILE_FLAG_BACKUP_SEMANTICS` and
+read/write/delete sharing, reaching `FlushFileBuffers`. Incomplete initial
+journal writes remain disposable; a failure after a complete authenticated
+uncommitted journal retains it for rollback; failures after the synced commit
+record retain committed state for forward cleanup.
+
+The positive regression injects failure at the first directory-sync boundary
+and requires authenticated rollback and idempotent cleanup. The wider matrix
+crosses 13 write, file-flush, replacement, removal, and parent-sync schedules
+and requires complete old or complete new target bytes, authenticated journal
+state, two successful recovery passes, an unchanged sibling sentinel, and no
+remaining artifacts. A nonce-owned Windows directory held with exclusive
+sharing produces the real sync denial; after the handle is released, the same
+directory sync succeeds. The complete updater binary passes 33/33, including
+all 11 real process-termination boundaries, and the installed-updater
+integration retains both exact passing tests.
+
+This closes the missing production syscall boundary. It does not claim that a
+successful OS flush survives controller write-back caches, torn sectors,
+kernel panic, physical power loss, or filesystems/storage stacks not executed
+here. Exact schedules, commands, Microsoft API references, and limitations are
+retained in
+[`updater-transaction-storage-durability-20260731.md`](evidence/test-coverage/updater-transaction-storage-durability-20260731.md).

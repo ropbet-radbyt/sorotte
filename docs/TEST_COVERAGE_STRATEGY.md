@@ -16,6 +16,7 @@ Final CLI/protocol defect resolution update: 2026-07-30
 Framed transport, migration, updater handshake, and CLI mutation update: 2026-07-30
 Controlled-room, platform-syscall, playlist-mutation, and framed-session fuzz update: 2026-07-30
 Bounded native, real-mpv, disposable-replay, and container-publication update: 2026-07-31
+Required-live, owned-process recovery, updater durability, and framed-mpv update: 2026-07-31
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -75,7 +76,17 @@ contract. The native real-mpv vertical is locally green. The external
 interactive runner, privileged `dm-log-writes` replay, and container
 publication chain were not available locally and remain explicitly
 unexecuted; their repository policies and fail-closed preflights are green.
-No product defect surfaced, and the registry remains explicitly empty:
+The next four slices make the complete live-Python matrix fail closed, extend
+the real-mpv lane through one attested owned-process replacement, add updater
+parent-directory durability boundaries with deterministic storage faults, and
+add source-bound coverage-guided framed-mpv IPC/transcript testing. The
+updater slice surfaced `TC-UPDATER-002` and fixed it at the production
+directory-entry boundary. Preserved REDs in the framed target and
+committed-run compatibility wrapper were oracle/harness defects; both were
+corrected without weakening their product claims. The canonical required-live
+matrix passed 136/136 executable tests with zero skips, and the canonical
+framed-mpv campaign passed 322,973 executions with zero artifacts. The product
+registry remains explicitly empty:
 
 - a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
@@ -162,6 +173,11 @@ No product defect surfaced, and the registry remains explicitly empty:
   control/seam seeds, independent framing/cancellation/EOF/UTF-8/size/session
   oracles, and a clean-source 292,528-execution canonical campaign with stable
   881-file source and 14-file seed bindings and zero artifacts;
+- a third source-bound libFuzzer/AddressSanitizer target over the production
+  mpv line-reader seam plus transcript and lifecycle projections, with four
+  chunk schedules, five terminal modes, 12 exact seeds, an independently
+  corrected EOF/read-error oracle, and a committed-source 322,973-execution
+  campaign with stable 64-file source and seed bindings and zero artifacts;
 - a black-box 30-field configuration-composition property suite crossing INI
   upsert/parse, runtime snapshot, and environment-aware startup planning, with
   6,144 scheduled and 30,000 stress cases;
@@ -178,6 +194,10 @@ No product defect surfaced, and the registry remains explicitly empty:
   session state, with 50/50 post-ratchet serial focused replays;
 - an atomic, content-acknowledged updater process boundary marker that closes
   `TC-HARNESS-016` and passes 100/100 exact 11-boundary process replays;
+- updater parent-directory synchronization after journal/prepared creation,
+  replacement/rename, rollback, cleanup, and journal deletion; a 13-schedule
+  deterministic disk-full/access-denied matrix, reversible live Windows
+  directory-share denial, and the positive `TC-UPDATER-002` regression;
 - a scheduled persisted-runtime-configuration mutation shard that improved
   from 52/101 to 98/98 viable mutations caught through whole-plan environment
   precedence, controlled-room, and blank-value contracts;
@@ -203,6 +223,15 @@ No product defect surfaced, and the registry remains explicitly empty:
   enforcement, a bounded process-tree watchdog, acknowledged physical menu
   input, two-sided live-Python readiness, fail-closed loopback ownership, and
   observable bounded File -> Exit shutdown;
+- a separate digest-bound real-mpv recovery inventory that terminates only an
+  attested GUI child, requires a distinct automatically relaunched PID and IPC
+  endpoint, replays native Open/Play/Pause, rejects stale/foreign
+  post-boundary observations, and reaps both player generations on native
+  Exit while preserving the healthy default inventory;
+- a selector-free required-live compatibility wrapper that pins the legacy
+  commit, Python/package identities, probes and 89 fixtures, discovers all 143
+  tests, executes/passes all 136 non-writing tests with zero optional skips,
+  and accounts for the seven exact fixture writers;
 - positive regressions and lean production fixes for terminal reactivation,
   SQLite migration atomicity, concurrent durable-secret initialization, and
   all three credential-redaction families;
@@ -249,6 +278,13 @@ No product defect surfaced, and the registry remains explicitly empty:
   installed-updater self-replacement, and rollback after a real filesystem
   replacement failure, then reconsumes downloaded bytes before publication.
 
+The four current slice records are
+[`compat-required-live-interop-20260731.md`](evidence/test-coverage/compat-required-live-interop-20260731.md),
+[`native-gui-real-mpv-owned-process-recovery-20260731.md`](evidence/test-coverage/native-gui-real-mpv-owned-process-recovery-20260731.md),
+[`updater-transaction-storage-durability-20260731.md`](evidence/test-coverage/updater-transaction-storage-durability-20260731.md),
+and
+[`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md).
+
 Experimentation surfaced seven reproducible product defect classes: two
 lifecycle invariant failures, two persistence initialization/migration
 atomicity failures, and three credential-redaction failures. They are
@@ -266,10 +302,10 @@ disablement, attached stable-ID invocation, and exact player receipt; the
 detached baseline no longer performs startup network I/O. Remaining
 deterministic clocks/network scheduling outside the CLI, TLS rotation, and
 ping arithmetic boundaries, physical power-loss and device durability,
-coverage-guided targets beyond the protocol and framed-session lanes,
-additional sanitizers, interactive native CI, a genuine GUI-to-real-mpv
-vertical harness, server-container consumption, and public digest comparison
-remain proposed follow-on work.
+coverage-guided targets beyond the protocol, framed-session, and framed-mpv
+lanes, additional sanitizers, interactive native CI, faulting-HTTP real-mpv
+recovery, server-container consumption, and public digest comparison remain
+proposed follow-on work.
 The later compatibility-remediation experiment isolated four server parity
 defects, one server message-ordering defect, and four harness/oracle defects.
 All are resolved without a skip, retry, expected failure, or parity
@@ -801,22 +837,22 @@ boundaries rather than adding hundreds more nearby examples.
 
 | Surface | Existing strengths | Current enforcement or gap | Target assurance |
 |---|---|---|---|
-| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, a six-test public parser suite with 16 corpus files plus 6,144 fixed-seed scheduled-depth cases, a source-bound protocol ASan/libFuzzer target whose post-fix exact-oracle campaign passed 1,994,358 executions, and a second source-bound framed-session target whose canonical campaign passed 292,528 executions | independent streaming order/value and exact raw/typed roundtrip oracles are enforced; in-memory CLI framing/session scheduling is coverage-guided; framed mpv IPC and the Python differential remain absent | retain both deterministic corpora and coverage-guided lanes, then add framed-mpv and differential Python oracles |
-| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, and real-network proofs | loose mode remains compatibility-only; live matrix and non-TLS wall-clock tests remain limited | retain atomic publisher/reader proof, add deterministic network simulation, strict live compatibility, and load bounds |
+| Protocol codec/wire order | fixtures, additive extensions, malformed envelopes, ordering, redaction, generated DTO properties, a 654-case raw-wire adversarial matrix, a six-test public parser suite with 16 corpus files plus 6,144 fixed-seed scheduled-depth cases, a source-bound protocol ASan/libFuzzer target whose post-fix exact-oracle campaign passed 1,994,358 executions, a framed-session target whose canonical campaign passed 292,528 executions, and a framed-mpv target whose canonical campaign passed 322,973 executions | independent streaming order/value and exact raw/typed roundtrip oracles are enforced; in-memory CLI and mpv framing/session scheduling is coverage-guided; the broader Python differential remains a distinct fixed-scenario matrix | retain all deterministic corpora and coverage-guided lanes; add only new differential targets at materially distinct parser/transport boundaries |
+| Server network/auth/rooms | broad session, TLS, queue, permission, readiness tests; TLS rotation has content identity, immutable authenticated generations, atomic selector switching, deterministic/real-filesystem fault models, real-network proofs, and a complete 136-test required-live Python/legacy matrix | strict local compatibility accounting is source/prerequisite/fixture bound and skip-free; non-TLS wall-clock tests and broader load remain limited | retain atomic publisher/reader and complete required-live proofs; add deterministic network simulation and load bounds |
 | Server persistence | actor ordering, saturation, stale-version and degradation tests; positive corrupt-secret, concurrent-creation, atomic row-migration, 15 process-interruption stages, deterministic pre-transaction arbitration, a 25/25 viable arbitration mutation ratchet, store- and worker-owned `SQLITE_FULL`, worker write denial, real VFS open-failure proofs, real Windows/Unix pathname-denial and recovery probes, and a nonce-owned disposable `dm-log-writes` replay capability | transaction atomicity, desired-state retention, same-connection recovery, raw-row equality, integrity, and ordinary host open/rename/delete denial are proven; the replay safety policy and plain-file phase model pass, but the privileged block replay did not run, so parent-directory sync, kernel power loss, device-cache behavior, and physical durability remain unproven | retain worker/platform fault and mutation regressions; execute the bounded disposable replay only on a capable reviewed Linux host and report only its three observed cuts |
 | Client-core lifecycle | broad reducer/projection/reconnect examples, required shrinkable reconnect and post-emission acknowledgement models, ten real loopback connected-session generations, a complete 24-seed reset projection/idempotence oracle, a 30/30 viable reconnect mutation ratchet, and a 5/5 inbound `Set` ordering ratchet | reset transaction invalidation, stale-completion rejection, and command-order completion are positive; adapter clock schedules remain incomplete | retain both zero-survivor shards and add clock-controlled adapter schedules |
 | Client ping/time | explicit-time validation, zero/equality boundaries, hand-calculated moving-average/forward-delay contracts, bracketed wall-clock wrappers, and a 47/47 viable mutation ratchet | arithmetic and public clock delegation are mechanically encoded; clock monotonicity, cross-host authenticity, jitter, scheduler latency, and playback outcomes are not | retain the zero-survivor shard; add deterministic jitter/drift simulation and real synchronization telemetry |
 | Client configuration | legacy-compatible host/room/identity normalization and whole-plan persisted-setting/environment precedence, with a 98/98 viable mutation ratchet, a black-box 30-field INI/runtime/environment composition property suite, generated legacy scalar/container/malformed-value migration properties, and four independent-model controlled-room properties | mutation covers all 31 persisted runtime overrides in both precedence directions, generated composition covers all 30 environment-overridable fields, migration is canonical/idempotent, and controlled-room normalization/credentials/precedence/redaction are generated; CLI argument parsing remains separate | retain the mutation, composition, migration, and controlled-room proofs; add only CLI-layer composition where it crosses a distinct parser boundary |
 | CLI connected session | extensive reconnect/desync scenarios plus real-loopback coalescing, valid-prefix/fault-suffix, truncation, half-close, deterministic partial-read cancellation matrices, generated byte schedules through committed session state, a 33/33 viable framing mutation ratchet, and source-bound in-memory coverage-guided framing/session application | session-owned framing state and positive cancellation regressions close `TC-CLI-003`; deterministic schedules and the 292,528-execution canonical campaign cover cancellation, EOF, UTF-8, payload seams, and session projections, while real-network timing and 142 older test-path sleeps remain gaps | retain the cancellation barriers, generated schedules, zero-survivor shard, and framed-session fuzz lane; continue clock/barrier replacement and real transport timing proof |
-| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, real child-process large-pipe/exit/hang/handle-release proofs, and one locally green digest-bound native GUI-to-real-mpv Open/Play/Pause/Exit vertical | the new real-mpv vertical proves one healthy generated-media path; fault injection still uses a deterministic peer and Windows named pipes cannot express independent socket half-close | retain the kernel/process matrix and healthy real-mpv vertical; add the Unix-socket equivalent, minimum/newest-supported mpv, and real fault/recovery traces |
+| Player adapter | strong reducer/adapter tests, four real-mpv simulations, production-worker framed faults, real Windows named-pipe fragmentation/correlation/disconnect/deadline coverage, real child-process large-pipe/exit/hang/handle-release proofs, a source-bound framed-mpv IPC/transcript target, and locally green digest-bound healthy plus owned-process-recovery native verticals | generated local media now proves one healthy path and one automatic managed-player replacement; the framed target remains in-memory, Windows named pipes cannot express independent socket half-close, and HTTP/media transport faults remain synthetic | retain the kernel/process, framed, healthy, and recovery proofs; add the Unix-socket equivalent, minimum/newest-supported mpv, and faulting-loopback-HTTP traces |
 | GUI runtime owner | direct state/projection tests plus real threaded-pump proofs for poisoned legacy getters, contradictory payloads, atomic ordered projection, exact ACK replay/recovery, and bounded joined shutdown | most state combinations still bypass the pump; executor/clock scheduling remains partly real | retain the poison/replay contract and introduce deterministic executor/clock control for broader schedules |
 | GUI semantic model | 14 scenarios, an exact required evidence lane, and explicit live-Python roster readiness | preview bridge rather than native render; one preserved historical timing failure | retain strict prerequisites and share the readiness protocol with native proof |
-| Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, pre-termination failure capture, a dispatch-only ephemeral-runner workflow contract, and one locally green genuine real-mpv vertical | the ten-scenario and real-mpv contracts are locally green; the external one-job interactive runner has not been provisioned or executed, so the workflow is not a required gate | execute and retain repeated green runs on the attested ephemeral interactive runner before promotion; keep the real-mpv vertical as a distinct capability lane |
+| Native GUI | typed AccessKit IDs, strict UIA inventory, acknowledged physical input, structured outcomes, detached/attached Open Media proof, two-sided Python readiness, fail-closed loopback fixtures, bounded observable shutdown, pre-termination failure capture, a dispatch-only ephemeral-runner workflow contract, and locally green healthy and owned-process-recovery real-mpv verticals | the ten-scenario, healthy 13-assertion, and recovery 20-assertion contracts are locally green; the external one-job interactive runner has not been provisioned or executed, so the workflow is not a required gate | execute and retain repeated green runs on the attested ephemeral interactive runner before promotion; keep healthy and recovery real-mpv inventories distinct |
 | GUI render surface | many view-model tests | large low/zero-covered renderer files | structural accessibility tests and selected deterministic image baselines |
 | Media match/stream helper | extensive index/extraction examples plus real child nonzero/timeout/reap, strict banner, unterminated-output, and bounded dual-pipe large-output proofs | generated-media ffmpeg harness remains opt-in | require generated media in a capability CI lane |
 | Plex media resolution | metadata/search/cache fixtures, URI roundtrips, async automatic fallback, candidate-order adversarial part tests, evidence-ranked selection, genuine-tie controls, and terminal-context retry proofs | uniquely identified versions resolve; genuine ambiguity fails once and projects terminal state | add an explicit version/part picker for genuinely indistinguishable or multipart media |
-| Python compatibility | fixtures and live TLS job | 16 assertions skipped in a green run; 77 skip-message sites | global require-live mode, pinned oracle revision, structured skip accounting |
-| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, an atomic content-acknowledged boundary marker, and a separate 50-test Windows/MSVC coverage domain are strong | `TC-HARNESS-016` is closed by 100/100 exact process replays; kernel power-loss, filesystem durability, and updater-specific disk-full and permission gaps remain | retain the exact handshake regression; add updater-specific failure probes, parent-dir sync, and platform restart proof |
+| Python compatibility | fixtures, live TLS/fanout/process scenarios, and a selector-free required-live wrapper with pinned oracle/Python/packages/probes/89 fixtures and exact 143-test discovery | the committed local matrix passed all 136 executable tests with zero skips and accounted for seven exact writing fixtures; hosted Python 3.11 still supplies the independent CI execution | retain closed required accounting and source-bound reports; expand only when a new compatibility behavior or supported Python family requires it |
+| Settings/storage/update | atomic replace, path safety, before/after replacement hooks, a committed/uncommitted multi-file recovery model, 11 real forced-process-termination boundaries with two-process recovery, an atomic content-acknowledged boundary marker, parent-directory sync at owned entry mutations, a 13-schedule storage-fault matrix, reversible Windows directory-share denial, and a separate 50-test Windows/MSVC coverage domain are strong | `TC-HARNESS-016` and `TC-UPDATER-002` are closed; OS-accepted file/directory flush, authenticated recovery, and complete old/new state are proven, but controller caches, torn writes, physical power loss, and other filesystems are not | retain the exact handshake, directory-sync, fault-matrix, and process regressions; add platform/device restart proof only on bounded disposable infrastructure |
 | Packaging/releases | closed archive manifests plus fresh extraction and exact packaged GUI/server execution; the server consumer proves isolated state, protocol Hello, graceful drain, SQLite integrity, and post-run immutability; the container workflow now encodes digest/SBOM/signature/public-reference cross-binding | archive publication and the new container chain have separate contracts; the container chain has not yet executed in CI or against public GHCR | run the container publication workflow, retain its complete green artifact, and keep archive/container signing claims distinct |
 | Server container | non-root runtime plus a pinned build-once/load/inspect/plaintext-TLS-persistence/SBOM/push/sign/anonymous-public-compare contract | offline policy is green; no local Docker/Syft/Cosign/GHCR execution occurred, so runtime and publication assurance remain unproven until CI produces every report | execute the exact CI-owned chain and require its final cross-identity gate before treating any tag as published |
 
@@ -1155,6 +1191,16 @@ assertion is a failure. Pin the Python Syncplay revision and prerequisite
 versions. Emit structured executed/skipped counts. Run the complete required
 matrix on PR; move only truly expensive or external canaries to nightly.
 
+Implementation status (2026-07-31): complete. The selector-free wrapper pins
+the legacy commit, supported Python family and exact executable/package
+versions, hashes both probes and all 89 fixtures, discovers 143 tests, and
+requires exhaustive disjoint executed/skipped/ignored accounting. The
+committed local campaign passed all 136 executable tests, skipped zero, and
+matched the seven exact fixture writers. Required mode converts every known
+missing-prerequisite/disabled-parity path into a failure; ordinary optional
+developer mode is unchanged. A preserved committed-run RED found and fixed
+relative oracle-path resolution in the wrapper before the canonical run.
+
 ### Audit-baseline P0 — Windows behavior was compiled, not tested
 
 The source contains at least 133 Windows-gated matches across 38 files. At the
@@ -1219,14 +1265,17 @@ target over every public protocol-line decoder and encoder. It found
 a post-fix exact-oracle campaign passed 1,994,358 executions with no artifact.
 The exact production CLI line accumulator and public session application now
 have a second source-bound in-memory target whose clean-source canonical run
-passed 292,528 executions with no artifact. Framed mpv IPC and transcript
-decoding still do not have coverage-guided targets.
+passed 292,528 executions with no artifact. The production mpv line-reader
+seam, transcript projection, and attachment/media-generation fencing now have
+a third source-bound in-memory target. Its first campaign preserved and
+corrected an EOF-vs-read-disconnect reference-oracle defect; its committed
+canonical run passed 322,973 executions with stable 64-file source and 12-file
+seed bindings and no artifact.
 
-**Decision:** record and replay a sanitized duplex boundary with outgoing
-command, command ID, synchronous response, incoming event, frame boundaries,
-disconnect/error, attachment/generation, and monotonic offset. Add an in-memory
-framed transport supporting split/coalesced/truncated frames, malformed JSON,
-response/event reorder, duplicate/drop/delay, half-close, and reconnect.
+**Decision:** retain all three coverage-guided targets and their checked-in
+corpora. The next distinct mpv investment is the real Unix-socket/kernel
+boundary and faulting loopback media transport; do not duplicate the in-memory
+chunk/timeout/disconnect oracle with nearby examples.
 
 ### P1 — Persistence and atomic storage lack crash protocols
 
@@ -1243,15 +1292,19 @@ disk-full/write/open/rename/delete layer. A nonce-owned disposable
 same complete-old-or-complete-new oracle. Its safety policy, nonprivileged
 preflight, and plain-file production-worker model pass, but the privileged
 replay did not run. The remaining durability gap therefore still begins below
-the ordinary host layer: parent-directory sync, observed device/cache replay,
-torn writes, and physical power loss, plus queued actor intent that has not
-entered desired state.
+the ordinary host layer. The updater now has explicit parent-directory sync
+after its owned transaction entry mutations plus a deterministic 13-schedule
+storage-fault matrix and reversible Windows denial proof. Server persistence
+does not inherit that updater-specific proof. Observed device/cache replay,
+torn writes, physical power loss, other filesystems, and queued actor intent
+that has not entered desired state remain gaps.
 
 **Decision:** retain the implemented SQLite process-restart matrix, ordinary
 platform-denial probes, and fail-closed disposable capability. Execute the
 privileged harness only on a reviewed capable Linux host and report the exact
-observed cuts; do not infer parent-directory, hardware-cache, torn-sector, or
-physical-power durability from the unexecuted contract.
+observed cuts; do not infer server parent-directory coverage, hardware-cache,
+torn-sector, or physical-power durability from the unexecuted contract or
+from the updater's successful OS flush requests.
 
 ### P1 — Release artifacts are not consumed before publication
 
@@ -1493,7 +1546,7 @@ parallel; weekly runs can be longer.
 
 Reference: [Rust Fuzz Book](https://rust-fuzz.github.io/book/).
 
-Implementation status (updated 2026-07-30): target 1 is implemented as a
+Implementation status (updated 2026-07-31): target 1 is implemented as a
 standalone, exact-pinned cargo-fuzz package over every public protocol-line
 decoder and encoder. The runner binds 29 source/policy files and 16 seed files,
 enforces 64 KiB input, 5-second per-input, 2 GiB RSS, and 900-second campaign
@@ -1509,11 +1562,18 @@ production CLI framing accumulator and public session application entirely in
 memory. Its 14 control/seam seeds, independent framing/cancellation/EOF/UTF-8/
 size/session oracles, and clean-source canonical campaign passed 292,528
 executions with stable 881-file source and 14-file seed bindings and no
-artifact. The framed-mpv/transcript/config/media/lifecycle/server targets and
-the Python differential remain future work. See
+artifact. Targets 2 and 3 are now combined in a third source-bound in-memory
+target over the production mpv line reader plus transcript and lifecycle
+projections. Four chunk schedules, five terminal modes, 12 seeds, and an
+independent response/event oracle produced a canonical 322,973-execution
+campaign with stable 64-file source and seed manifests and zero artifacts.
+The config/media/broader-lifecycle/server targets and coverage-guided Python
+differential remain future work. See
 [`protocol-coverage-guided-20260730.md`](evidence/test-coverage/protocol-coverage-guided-20260730.md)
 and
-[`framed-session-coverage-guided-20260730.md`](evidence/test-coverage/framed-session-coverage-guided-20260730.md).
+[`framed-session-coverage-guided-20260730.md`](evidence/test-coverage/framed-session-coverage-guided-20260730.md),
+plus
+[`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md).
 
 ### 9.3 Deterministic network and concurrency schedules
 
@@ -1704,16 +1764,22 @@ generated local PCM media and an isolated configuration, attests both
 IPv4-loopback session endpoints and exact Hello objects, physically selects
 Open Media and Exit, observes ordered real-mpv Play/Pause state, and requires
 natural GUI/mpv/session cleanup. A strict validator checks its exact
-13-assertion, 10-artifact inventory. This healthy-path capability is not yet a
-CI gate and does not implement the fault-injecting HTTP or recovery matrix
-below.
+13-assertion, 10-artifact inventory. A separate opt-in recovery inventory now
+terminates only the already attested direct-child mpv, requires bounded
+automatic relaunch with a different PID and IPC endpoint, re-attests
+parent/path/digest/arguments, reopens generated media through the native UI,
+observes replacement-mpv Play/Pause, rejects stale/foreign post-boundary
+events, and reaps both player generations through native Exit. Its strict
+contract has 20 assertions and 13 artifacts. These local capabilities are not
+yet a CI gate and do not implement the fault-injecting HTTP matrix below.
 
 Future required PR or pre-merge scenarios after a suitable capability lane is
 available:
 
 - open local media and reach active/readiness state;
 - replace A with B while A emits late events;
-- kill mpv and verify bounded GUI/runtime recovery;
+- retain the now-positive single managed-mpv kill/relaunch recovery path on
+  every supported Windows/mpv identity;
 - premature EOF or stalled HTTP read without logical-media corruption.
 
 Nightly scenarios:
@@ -2197,9 +2263,12 @@ persistence continuation applies capacity and write-denial faults to the
 actual worker-owned connection and forces a real SQLite VFS open failure. This
 now includes source-bound coverage-guided protocol-line and in-memory CLI
 framed-session targets, plus real Windows and Unix production-path denial and
-recovery probes. A framed-mpv/Unix-domain-socket equivalent, kernel/power-loss
-and disposable-block-device proof, parent-directory/device-cache durability,
-and a durability contract for actor intent that has not entered desired state
+recovery probes. A third source-bound target now covers in-memory framed-mpv
+IPC, transcript projection, and lifecycle fencing. Updater-owned
+parent-directory durability boundaries and storage-fault schedules are also
+positive. The Unix-domain-socket equivalent, executed kernel/power-loss and
+disposable-block-device proof, device-cache durability, other filesystems, and
+a durability contract for actor intent that has not entered desired state
 remain open.
 
 ### Tranche D — real system and deep analysis
@@ -2372,9 +2441,9 @@ new bounded capabilities:
 1. provision and independently attest a one-job ephemeral interactive Windows
    runner, execute the dispatch-only zero-stderr native lane repeatedly, and
    promote it only after retained green evidence;
-2. retain the locally green GUI-to-real-mpv healthy vertical, then add real-mpv
-   replacement, failure, and recovery traces without weakening its exact
-   process/Hello/artifact identity;
+2. retain the locally green GUI-to-real-mpv healthy and owned-process-recovery
+   verticals, then add faulting-loopback-HTTP and repeated/minimum/newest-mpv
+   traces without weakening exact process/Hello/artifact identity;
 3. install the reviewed `replay-log` capability on a disposable capable Linux
    host and execute the three nonce-owned block-replay cuts before making any
    observed durability claim;

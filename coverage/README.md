@@ -95,6 +95,13 @@ an atomic selector, with a documented double-capture compatibility fallback
 for static loose files. The reconnect acknowledgement fence and TLS max-mtime
 collision are also positive regressions, as are `TC-PLAYER-003` and
 `TC-COMPAT-001` through `TC-COMPAT-007`.
+The 2026-07-31 continuation added complete required-live compatibility
+accounting, real-mpv owned-process recovery, updater parent-directory sync,
+and coverage-guided framed-mpv testing. It exposed and fixed
+`TC-UPDATER-002`, the missing updater directory-entry durability boundary.
+The two randomized/committed-run REDs were test-oracle or wrapper defects and
+were corrected without changing compatible product behavior. The product
+registry remains explicitly empty.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
@@ -386,6 +393,27 @@ Exact commands, manifests, hashes, tool/resource pins, statistics, and
 limitations are retained in
 [`framed-session-coverage-guided-20260730.md`](../docs/evidence/test-coverage/framed-session-coverage-guided-20260730.md).
 
+## Coverage-guided framed mpv IPC and transcript evidence
+
+A third source-bound libFuzzer/AddressSanitizer target now drives the
+production mpv line reader through an in-memory scripted transport, then
+checks queued-event/response ordering, transcript projection, and
+attachment/media-generation fencing. Four deterministic chunk schedules cross
+five terminal modes. A separate reference decoder retains event duplicates
+and response barriers, while 12 checked-in seeds cover success, rejection,
+invalid JSON, reordered IDs, duplicate events, dropped responses, timeout,
+disconnect, and trailing post-response corruption.
+
+The first campaign preserved an oracle counterexample: partial buffered bytes
+must be decoded on EOF, not on a non-EOF read disconnect. The corrected oracle
+keeps newline-complete malformed JSON and trailing malformed EOF data as
+protocol corruption. The clean committed-source 180-second campaign over
+`3cd64ce2e2f0a51a7e31b9862a6bde9cd40c6f16` passed 322,973 executions,
+added 3,219 units, retained stable 64-file source and 12-file seed bindings,
+and produced zero artifacts or evidence errors. Exact RED/GREEN identities,
+commands, hashes, limits, and limitations are retained in
+[`framed-mpv-ipc-transcript-coverage-guided-20260731.md`](../docs/evidence/test-coverage/framed-mpv-ipc-transcript-coverage-guided-20260731.md).
+
 ## Configuration composition property evidence
 
 A black-box `sorotte-client-app` integration suite generates all 30
@@ -447,6 +475,25 @@ This resolves `TC-HARNESS-016` without changing production updater behavior or
 claiming parent-directory sync or power-loss durability. Root cause, commands,
 hashes, and limits are retained in
 [`updater-boundary-marker-handshake-20260730.md`](../docs/evidence/test-coverage/updater-boundary-marker-handshake-20260730.md).
+
+## Updater transaction storage durability evidence
+
+`TC-UPDATER-002` characterized the updater's missing containing-directory
+flush after journal/prepared-file creation, replacement/rename, rollback,
+cleanup, and journal removal. Production now synchronizes the parent directory
+at each owned directory-entry durability boundary, retaining an authenticated
+uncommitted journal on a failed journal-directory sync and retaining committed
+cleanup state after the commit record.
+
+A thread-local one-shot fault seam crosses 13 disk-full/access-denied schedules
+and requires complete old or complete new bytes, authenticated recovery,
+idempotent second recovery, no artifacts, and an untouched sibling sentinel.
+A real reversible Windows share denial reaches the directory-sync syscall.
+The final updater suite passed 33/33, including all 11 process-termination
+boundaries, and the installed-updater integration still passed its two exact
+tests. This proves requested OS flush boundaries, not physical power-loss or
+device-cache persistence. Exact commands and limitations are retained in
+[`updater-transaction-storage-durability-20260731.md`](../docs/evidence/test-coverage/updater-transaction-storage-durability-20260731.md).
 
 ## Persistence worker fault evidence
 
@@ -660,6 +707,38 @@ the missing-mpv preflight failed closed before build or launch. This is local
 Windows evidence, not a new CI gate. The pass, retained red bundles, strict
 path/Hello/process identity, and limitations are recorded in
 [`native-gui-real-mpv-vertical-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-vertical-20260731.md).
+
+The separate recovery inventory terminates only an mpv PID already attested as
+the GUI's direct child with the exact preflight image path and digest. It then
+requires bounded automatic replacement with a new PID and IPC endpoint,
+re-attests parent/path/digest/arguments, reopens generated local media through
+physical native UI, observes replacement-mpv Play/Pause, rejects stale or
+foreign post-boundary observations, and proves native Exit reaps both player
+generations and the GUI. The healthy default remains its original
+13-assertion/10-artifact contract; recovery is an explicit
+20-assertion/13-artifact opt-in. The preserved RED disproved a manual-modal
+oracle because production automatically relaunched the managed player. Exact
+final bundle identities and limitations are retained in
+[`native-gui-real-mpv-owned-process-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-owned-process-recovery-20260731.md).
+
+## Required live Python compatibility evidence
+
+`SYNCPLAY_REQUIRE_LIVE_INTEROP=1` now turns every missing oracle, Python
+process/package, legacy process, TLS, fixture, and disabled-parity path into a
+closed failure while preserving optional developer behavior when absent. A
+selector-free wrapper pins the legacy commit and Python package versions,
+hashes probes and all 89 fixtures, discovers the complete/ignored inventory,
+executes every non-writing all-feature test serially, and validates exhaustive
+disjoint accounting plus exact-key JSON.
+
+The canonical committed-source local report over `3cd64ce` listed 143 tests,
+passed all 136 executable tests, skipped zero, and matched the seven exact
+fixture writers. A preserved committed-run RED found that an attested relative
+oracle path was passed unchanged to Cargo and resolved from the crate working
+directory; the wrapper now passes the absolute already-attested path. The
+report/log hashes, prerequisite identities, missing-prerequisite proof, RED,
+and local-vs-hosted limitations are retained in
+[`compat-required-live-interop-20260731.md`](../docs/evidence/test-coverage/compat-required-live-interop-20260731.md).
 
 ## Disposable persistence replay capability
 
