@@ -244,7 +244,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
 
     def test_show_env_decodes_posix_quotes_and_dynamic_merge_pool(self) -> None:
-        for pool_size in (1, 3, 4, 32):
+        for pool_size in (1, 3, 4, 32, (1 << 32) - 1):
             with self.subTest(pool_size=pool_size):
                 pattern_name = (
                     f"fixture's profile-%p-%{pool_size}m.profraw"
@@ -308,11 +308,18 @@ class CoverageProfileLaneTests(unittest.TestCase):
             "fixture-%p-%m.profraw",
             "fixture-%p-%4m-%8m.profraw",
             "fixture-%p-%4m-%m.profraw",
+            "fixture-%%p-%4m.profraw",
+            "fixture-%p-%%4m.profraw",
+            "fixture-%%p-%%4m.profraw",
+            "fixture-%p-%p-%4m.profraw",
+            "fixture-%p-%01m.profraw",
+            "fixture-%p-%4294967296m.profraw",
+            "fixture-%p-%4m-%x.profraw",
         ):
             with self.subTest(pattern_name=pattern_name):
                 with self.assertRaisesRegex(
                     lanes.CoverageProfileLaneError,
-                    "one %Nm merge pool",
+                    "exactly one real %p",
                 ):
                     lanes.parse_show_env(
                         command_result(

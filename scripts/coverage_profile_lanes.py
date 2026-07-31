@@ -42,8 +42,7 @@ MAX_LOG_BYTES = 128 * 1024 * 1024
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 ENVIRONMENT_KEY = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-LLVM_MERGE_POOL_TOKEN = re.compile(r"%[0-9]*m")
-LLVM_VALID_MERGE_POOL_TOKEN = re.compile(r"%[1-9][0-9]*m")
+LLVM_PROFILE_MERGE_POOL_MAX = (1 << 32) - 1
 
 VERSION_COMMAND = ("cargo", "llvm-cov", "--version")
 SHOW_ENV_COMMAND = ("cargo", "llvm-cov", "show-env", "--sh")
@@ -358,16 +357,48 @@ def decode_show_env_value(value: str, *, key: str) -> str:
 
 
 def validate_profile_pattern_name(pattern_name: str) -> None:
-    merge_pools = list(LLVM_MERGE_POOL_TOKEN.finditer(pattern_name))
-    if (
-        not pattern_name.endswith(".profraw")
-        or "%p" not in pattern_name
-        or len(merge_pools) != 1
-        or not LLVM_VALID_MERGE_POOL_TOKEN.fullmatch(merge_pools[0].group())
-    ):
+    pid_tokens = 0
+    merge_pools: list[int] = []
+    index = 0
+    valid = pattern_name.endswith(".profraw")
+    while valid and index < len(pattern_name):
+        if pattern_name[index] != "%":
+            index += 1
+            continue
+        if index + 1 >= len(pattern_name):
+            valid = False
+            break
+        marker = pattern_name[index + 1]
+        if marker == "p":
+            pid_tokens += 1
+            index += 2
+            continue
+        if marker not in "123456789":
+            valid = False
+            break
+        digits_end = index + 2
+        while (
+            digits_end < len(pattern_name)
+            and pattern_name[digits_end] in "0123456789"
+        ):
+            digits_end += 1
+        digits = pattern_name[index + 1 : digits_end]
+        if (
+            digits_end >= len(pattern_name)
+            or pattern_name[digits_end] != "m"
+            or str(int(digits)) != digits
+            or int(digits) > LLVM_PROFILE_MERGE_POOL_MAX
+        ):
+            valid = False
+            break
+        merge_pools.append(int(digits))
+        index = digits_end + 1
+
+    if not valid or pid_tokens != 1 or len(merge_pools) != 1:
         raise CoverageProfileLaneError(
-            "LLVM profile pattern must contain %p and one %Nm merge pool "
-            "and end in .profraw"
+            "LLVM profile pattern must contain exactly one real %p and one "
+            "canonical positive uint32 %Nm merge pool, contain no other "
+            "percent tokens, and end in .profraw"
         )
 
 
