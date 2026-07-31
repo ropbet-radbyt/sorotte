@@ -79,12 +79,44 @@ try {
     $serverWorkflow = Get-Content -Raw -LiteralPath (
         Join-Path $RepoRoot ".github\workflows\publish-server-container.yml"
     )
+    $serverWorkflow = $serverWorkflow -replace "`r`n?", "`n"
     $explicitLatestPolicy = 'type=raw,value=latest,enable=${{ github.event_name == ''workflow_dispatch'' && inputs.push_latest == ''true'' }}'
-    if (-not $serverWorkflow.Contains($explicitLatestPolicy)) {
+    $latestTagEntries = @(
+        $serverWorkflow -split "`n" |
+            ForEach-Object { $_.Trim() } |
+            Where-Object {
+                $_ -match '(^|,)type=raw(,|$)' -and
+                $_ -match '(^|,)value=latest(,|$)'
+            }
+    )
+    if (
+        $latestTagEntries.Count -ne 1 -or
+        $latestTagEntries[0] -cne $explicitLatestPolicy
+    ) {
         throw "server latest publication is not restricted to explicit workflow dispatch"
     }
-    if (-not $serverWorkflow.Contains('default: "false"')) {
-        throw "manual server latest promotion must default to disabled"
+    $expectedPushLatestInput = @(
+        "  workflow_dispatch:",
+        "    inputs:",
+        "      push_latest:",
+        '        description: "Also promote this exact tested digest to latest"',
+        "        required: true",
+        '        default: "false"',
+        "        type: choice",
+        "        options:",
+        '          - "true"',
+        '          - "false"'
+    ) -join "`n"
+    if (
+        -not $serverWorkflow.Contains($expectedPushLatestInput) -or
+        (
+            [regex]::Matches(
+                $serverWorkflow,
+                '(?m)^      push_latest:\s*$'
+            ).Count -ne 1
+        )
+    ) {
+        throw "manual server latest promotion input is not an exact disabled-by-default choice"
     }
 
     Write-Host "Release publication policy regressions passed."

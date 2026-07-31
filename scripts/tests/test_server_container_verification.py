@@ -1076,6 +1076,41 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(build["provenance"], "false")
         self.assertEqual(build["sbom"], "false")
 
+    def test_latest_promotion_is_one_explicit_disabled_dispatch_choice(
+        self,
+    ) -> None:
+        push_latest = self.workflow["on"]["workflow_dispatch"]["inputs"][
+            "push_latest"
+        ]
+        self.assertEqual(
+            push_latest,
+            {
+                "description": (
+                    "Also promote this exact tested digest to latest"
+                ),
+                "required": "true",
+                "default": "false",
+                "type": "choice",
+                "options": ["true", "false"],
+            },
+        )
+        tag_lines = []
+        for line in self.by_name[
+            "Define publication tags and OCI labels"
+        ]["with"]["tags"].splitlines():
+            stripped = line.strip()
+            fields = stripped.split(",")
+            if "type=raw" in fields and "value=latest" in fields:
+                tag_lines.append(stripped)
+        self.assertEqual(
+            tag_lines,
+            [
+                "type=raw,value=latest,enable=${{ "
+                "github.event_name == 'workflow_dispatch' && "
+                "inputs.push_latest == 'true' }}"
+            ],
+        )
+
     def test_smoke_and_sbom_finish_before_registry_login_or_push(self) -> None:
         names = [step["name"] for step in self.steps]
         smoke = names.index("Consume the loaded image through real server boundaries")
