@@ -12,7 +12,8 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         ));
     }
 
-    let port = super::reserve_ephemeral_tcp_port()?;
+    let mut port_lease = super::reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
@@ -32,6 +33,7 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    port_lease.release_socket_for_child();
     let mut child = command
         .spawn()
         .map_err(|source| InteropError::PythonSpawn {
@@ -41,6 +43,7 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
 
     let result = (|| {
         super::wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
         super::ensure_legacy_server_is_running(&mut child)?;
 
         let stream = super::connect_legacy_client_stream(port, "legacy-tls-client")?;
@@ -126,7 +129,8 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
         ));
     }
 
-    let port = super::reserve_ephemeral_tcp_port()?;
+    let mut port_lease = super::reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
@@ -146,6 +150,7 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    port_lease.release_socket_for_child();
     let mut child = command
         .spawn()
         .map_err(|source| InteropError::PythonSpawn {
@@ -155,6 +160,7 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
 
     let result = (|| {
         super::wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
         super::ensure_legacy_server_is_running(&mut child)?;
 
         // First verify TLS is actually available for unlogged clients in this legacy setup.
@@ -254,7 +260,8 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
         ));
     }
 
-    let port = super::reserve_ephemeral_tcp_port()?;
+    let mut port_lease = super::reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
@@ -274,6 +281,7 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    port_lease.release_socket_for_child();
     let mut child = command
         .spawn()
         .map_err(|source| InteropError::PythonSpawn {
@@ -283,6 +291,7 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
 
     let result = (|| {
         super::wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
         super::ensure_legacy_server_is_running(&mut child)?;
 
         let initial_stream = super::connect_legacy_client_stream(port, "legacy-tls-initial")?;
@@ -365,7 +374,8 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
         ));
     }
 
-    let port = super::reserve_ephemeral_tcp_port()?;
+    let mut port_lease = super::reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
@@ -385,6 +395,7 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    port_lease.release_socket_for_child();
     let mut child = command
         .spawn()
         .map_err(|source| InteropError::PythonSpawn {
@@ -394,6 +405,7 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
 
     let result = (|| {
         super::wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
         super::ensure_legacy_server_is_running(&mut child)?;
 
         let tls_request_line =

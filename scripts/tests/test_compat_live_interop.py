@@ -317,7 +317,7 @@ class InventoryAndAccountingTests(unittest.TestCase):
             ),
             interop.REQUIRED_LIVE_SENTINELS,
         )
-        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 148)
+        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 149)
 
     def test_complete_and_ignored_inventories_are_exact(self) -> None:
         tests = complete_test_inventory()

@@ -173,11 +173,13 @@ const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(6);
 const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
 const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
+const LEGACY_SERVER_STARTUP_LOCK_WAIT: Duration = Duration::from_secs(30);
 const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
 const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
 const LEGACY_SYNCPLAY_BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
 
 static LEGACY_SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static LEGACY_SERVER_STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug)]
 struct LegacyServerClientConnection {

@@ -60,11 +60,80 @@ fn numeric_version_meets_minimum(version: &str, minimum: &str) -> bool {
     version >= minimum
 }
 
-pub(crate) fn reserve_ephemeral_tcp_port() -> Result<u16, InteropError> {
+pub(crate) struct LegacyServerPortLease {
+    port: u16,
+    listener: Option<TcpListener>,
+    _process_guard: fs::File,
+    _thread_guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl LegacyServerPortLease {
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) fn release_socket_for_child(&mut self) {
+        drop(self.listener.take());
+    }
+}
+
+pub(crate) fn reserve_legacy_server_port() -> Result<LegacyServerPortLease, InteropError> {
+    let lock_path = syncplay_repo_root_dir()
+        .join("target")
+        .join("sorotte-legacy-server-startup.lock");
+    reserve_legacy_server_port_with_lock(&lock_path, LEGACY_SERVER_STARTUP_LOCK_WAIT, || {})
+}
+
+pub(crate) fn reserve_legacy_server_port_with_lock<F>(
+    lock_path: &Path,
+    lock_timeout: Duration,
+    mut on_contention: F,
+) -> Result<LegacyServerPortLease, InteropError>
+where
+    F: FnMut(),
+{
+    let thread_guard = LEGACY_SERVER_STARTUP_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_parent = lock_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "legacy server startup lock must have a parent directory",
+        )
+    })?;
+    fs::create_dir_all(lock_parent)?;
+    let process_guard = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    let deadline = Instant::now() + lock_timeout;
+    loop {
+        match process_guard.try_lock() {
+            Ok(()) => break,
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                on_contention();
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(InteropError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out waiting for the legacy server startup lock",
+                )));
+            }
+            Err(fs::TryLockError::Error(error)) => return Err(InteropError::Io(error)),
+        }
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+    Ok(LegacyServerPortLease {
+        port,
+        listener: Some(listener),
+        _process_guard: process_guard,
+        _thread_guard: thread_guard,
+    })
 }
 
 pub(crate) fn write_legacy_motd_template_file(template: &str) -> Result<PathBuf, InteropError> {

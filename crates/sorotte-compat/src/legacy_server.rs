@@ -65,7 +65,8 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
         ));
     }
 
-    let port = reserve_ephemeral_tcp_port()?;
+    let mut port_lease = reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let motd_template_file_path = motd_template
@@ -111,6 +112,7 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
             .arg("--permanent-rooms-file")
             .arg(permanent_rooms_path);
     }
+    port_lease.release_socket_for_child();
     let child_spawn = command.spawn();
     let mut child = match child_spawn {
         Ok(child) => child,
@@ -133,6 +135,7 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
 
     let result = (|| {
         wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
         wait_for_legacy_permanent_rooms_startup(port, &mut child, permanent_rooms)?;
 
         let mut clients: BTreeMap<String, LegacyServerClientConnection> = BTreeMap::new();

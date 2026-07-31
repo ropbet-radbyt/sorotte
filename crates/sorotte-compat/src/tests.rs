@@ -38,7 +38,8 @@ use super::{
     replay_server_runtime_scenario_fixture, replay_server_runtime_scenario_steps,
     replay_server_runtime_scenario_steps_with_motd_template,
     replay_server_runtime_scenario_steps_with_overrides, required_live_interop_enabled,
-    reserve_ephemeral_tcp_port, run_legacy_server_fanout_roundtrip, run_python_fanout_roundtrip,
+    reserve_legacy_server_port, reserve_legacy_server_port_with_lock,
+    run_legacy_server_fanout_roundtrip, run_python_fanout_roundtrip,
     run_python_fanout_roundtrip_with_tls_available, run_python_handshake_roundtrip,
     run_python_legacy_client_chat_send_contract_batch,
     run_python_legacy_client_set_file_contract_probe,
@@ -69,6 +70,146 @@ use self::scenario_constants::*;
 use self::tls_fixture_support::*;
 mod assertions;
 use self::assertions::*;
+
+#[test]
+fn legacy_server_port_lease_serializes_startup_allocation() {
+    const ROLE_ENV: &str = "SOROTTE_COMPAT_SERVER_PORT_LOCK_ROLE";
+    const ROOT_ENV: &str = "SOROTTE_COMPAT_SERVER_PORT_LOCK_ROOT";
+    const TEST_NAME: &str = "tests::legacy_server_port_lease_serializes_startup_allocation";
+    const FIXTURE_TIMEOUT: Duration = Duration::from_secs(15);
+
+    if let Some(role) = std::env::var_os(ROLE_ENV) {
+        let root = PathBuf::from(
+            std::env::var_os(ROOT_ENV).expect("port-lock fixture child must receive its root"),
+        );
+        let lock_path = root.join("legacy-server-startup.lock");
+        match role.to_string_lossy().as_ref() {
+            "holder" => {
+                let lease =
+                    reserve_legacy_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {})
+                        .expect("holder should acquire the startup lease");
+                fs::write(root.join("holder-entered"), b"held")
+                    .expect("holder should publish lock acquisition");
+                assert!(
+                    wait_for_compat_lock_fixture_marker(
+                        &root.join("release-holder"),
+                        FIXTURE_TIMEOUT,
+                    ),
+                    "holder timed out waiting for release"
+                );
+                drop(lease);
+                fs::write(root.join("holder-released"), b"released")
+                    .expect("holder should publish release");
+            }
+            "contender" => {
+                let contention_marker = root.join("contender-contended");
+                let lease =
+                    reserve_legacy_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {
+                        fs::write(&contention_marker, b"contended")
+                            .expect("contender should publish actual process-lock contention");
+                    })
+                    .expect("contender should acquire after holder release");
+                fs::write(root.join("contender-acquired"), lease.port().to_string())
+                    .expect("contender should publish acquisition");
+            }
+            unexpected => panic!("unknown port-lock fixture role {unexpected:?}"),
+        }
+        return;
+    }
+
+    let first = reserve_legacy_server_port().expect("first startup lease should be available");
+    assert!(
+        TcpListener::bind(("127.0.0.1", first.port())).is_err(),
+        "the lease must retain the socket reservation until child spawn"
+    );
+
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let contender = thread::spawn(move || {
+        let second =
+            reserve_legacy_server_port().expect("contending startup lease should become available");
+        acquired_tx
+            .send(second.port())
+            .expect("contending lease result should be observed");
+    });
+    assert!(
+        acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "a second startup allocator must remain blocked while the first lease is held"
+    );
+
+    drop(first);
+    acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("contending startup lease should acquire after release");
+    contender.join().expect("contending allocator should exit");
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "sorotte-compat-server-port-lock-{}-{suffix}",
+        process::id()
+    ));
+    fs::create_dir(&root).expect("port-lock fixture root should be created");
+    let executable = std::env::current_exe().expect("compatibility test image should resolve");
+    let spawn_child = |role: &str| {
+        Command::new(&executable)
+            .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+            .env(ROLE_ENV, role)
+            .env(ROOT_ENV, &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("port-lock fixture child should spawn")
+    };
+
+    let holder = spawn_child("holder");
+    let holder_entered =
+        wait_for_compat_lock_fixture_marker(&root.join("holder-entered"), FIXTURE_TIMEOUT);
+    let contender = spawn_child("contender");
+    let contender_contended =
+        wait_for_compat_lock_fixture_marker(&root.join("contender-contended"), FIXTURE_TIMEOUT);
+    let contender_acquired_before_release = root.join("contender-acquired").exists();
+    fs::write(root.join("release-holder"), b"release").expect("holder release barrier should open");
+    let holder_released =
+        wait_for_compat_lock_fixture_marker(&root.join("holder-released"), FIXTURE_TIMEOUT);
+    let contender_acquired =
+        wait_for_compat_lock_fixture_marker(&root.join("contender-acquired"), FIXTURE_TIMEOUT);
+    let (holder_bounded, holder_output) =
+        wait_for_compat_lock_fixture_child(holder, FIXTURE_TIMEOUT);
+    let (contender_bounded, contender_output) =
+        wait_for_compat_lock_fixture_child(contender, FIXTURE_TIMEOUT);
+    fs::remove_dir_all(&root).expect("port-lock fixture root should be removable");
+
+    assert!(holder_entered, "holder never acquired the process lock");
+    assert!(
+        contender_contended,
+        "contender never observed the holder's process lock"
+    );
+    assert!(
+        !contender_acquired_before_release,
+        "contender acquired before the holder released the process lock"
+    );
+    assert!(holder_released, "holder did not publish lock release");
+    assert!(
+        contender_acquired,
+        "contender did not acquire after holder release"
+    );
+    for (role, bounded, output) in [
+        ("holder", holder_bounded, holder_output),
+        ("contender", contender_bounded, contender_output),
+    ] {
+        assert!(
+            bounded && output.status.success(),
+            "{role} child failed or exceeded its bound\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 
 #[test]
 fn step_collector_waits_for_a_delayed_required_first_frame() {
