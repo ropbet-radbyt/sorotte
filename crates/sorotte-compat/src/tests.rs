@@ -26,11 +26,12 @@ use super::trace_capture::{
 use super::{
     DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LEGACY_SERVER_STEP_IDLE_WAIT,
     LegacyClientChatSendContractCase, LegacyServerClientConnection, ServerRuntimeScenarioEvent,
-    ServerRuntimeScenarioStep, all_protocol_fixture_names, collect_legacy_server_step_outputs,
-    connect_legacy_client_stream, decode_fixture, decode_protocol_file,
-    default_rust_client_hello_for_interop, default_rust_client_hello_for_legacy_live_tls,
-    ensure_legacy_server_is_running, ensure_legacy_syncplay_checkout_available, fixture_decodes,
-    fixture_path, legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
+    ServerRuntimeScenarioStep, acquire_legacy_syncplay_checkout_process_lock,
+    all_protocol_fixture_names, collect_legacy_server_step_outputs, connect_legacy_client_stream,
+    decode_fixture, decode_protocol_file, default_rust_client_hello_for_interop,
+    default_rust_client_hello_for_legacy_live_tls, ensure_legacy_server_is_running,
+    ensure_legacy_syncplay_checkout_available, fixture_decodes, fixture_path,
+    legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
     load_server_runtime_scenario_fixture, parse_server_runtime_scenario_steps,
     prepare_legacy_server_request_line, python_bin_from_env, python_live_peer_probe_script_path,
     replay_server_runtime_scenario_fixture, replay_server_runtime_scenario_steps,
@@ -105,6 +106,113 @@ fn legacy_server_step_collector_waits_for_a_delayed_first_frame() {
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].client_id, "late-client");
     assert_eq!(outputs[0].line, r#"{"List":null}"#);
+}
+
+#[test]
+fn legacy_checkout_bootstrap_lock_serializes_processes() {
+    const CHILD_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_CHILD";
+    const ROOT_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_ROOT";
+    const CHILD_ID_ENV: &str = "SOROTTE_COMPAT_BOOTSTRAP_LOCK_CHILD_ID";
+    const TEST_NAME: &str = "tests::legacy_checkout_bootstrap_lock_serializes_processes";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let root = PathBuf::from(
+            std::env::var_os(ROOT_ENV).expect("lock fixture child must receive its root"),
+        );
+        let child_id =
+            std::env::var(CHILD_ID_ENV).expect("lock fixture child must receive its identifier");
+        fs::write(root.join(format!("ready-{child_id}")), b"ready")
+            .expect("lock fixture child should publish readiness");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join("go").is_file() {
+            assert!(
+                Instant::now() < deadline,
+                "lock fixture child timed out waiting for the start barrier"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let _guard = acquire_legacy_syncplay_checkout_process_lock(&root.join("checkout"))
+            .expect("lock fixture child should acquire the process lock");
+        let mut events = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("events"))
+            .expect("lock fixture child should open the event log");
+        writeln!(events, "enter {child_id}").expect("entry event should be recorded");
+        events.flush().expect("entry event should be visible");
+        thread::sleep(Duration::from_millis(200));
+        writeln!(events, "exit {child_id}").expect("exit event should be recorded");
+        events.flush().expect("exit event should be visible");
+        return;
+    }
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "sorotte-compat-bootstrap-lock-{}-{suffix}",
+        process::id()
+    ));
+    fs::create_dir(&root).expect("lock fixture root should be created");
+    let executable = std::env::current_exe().expect("compatibility test image should resolve");
+    let mut children = (0..2)
+        .map(|child_id| {
+            Command::new(&executable)
+                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .env(ROOT_ENV, &root)
+                .env(CHILD_ID_ENV, child_id.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("lock fixture child should spawn")
+        })
+        .collect::<Vec<_>>();
+
+    let ready_deadline = Instant::now() + Duration::from_secs(5);
+    for child_id in 0..2 {
+        while !root.join(format!("ready-{child_id}")).is_file() {
+            assert!(
+                Instant::now() < ready_deadline,
+                "lock fixture parent timed out waiting for child {child_id}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    fs::write(root.join("go"), b"go").expect("lock fixture start barrier should open");
+
+    for (child_id, child) in children.drain(..).enumerate() {
+        let output = child
+            .wait_with_output()
+            .expect("lock fixture child should complete");
+        assert!(
+            output.status.success(),
+            "lock fixture child {child_id} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let events =
+        fs::read_to_string(root.join("events")).expect("lock fixture event log should be readable");
+    let events = events.lines().collect::<Vec<_>>();
+    assert_eq!(events.len(), 4, "unexpected lock events: {events:?}");
+    assert!(events[0].starts_with("enter "));
+    assert_eq!(
+        events[1],
+        events[0].replacen("enter ", "exit ", 1),
+        "a second process entered before the first released the lock: {events:?}"
+    );
+    assert!(events[2].starts_with("enter "));
+    assert_eq!(
+        events[3],
+        events[2].replacen("enter ", "exit ", 1),
+        "the second process did not retain exclusive ownership: {events:?}"
+    );
+    fs::remove_dir_all(&root).expect("lock fixture root should be removable");
 }
 
 #[test]

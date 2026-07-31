@@ -79,7 +79,7 @@ REQUIRED_LIVE_SENTINELS = frozenset(
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
     }
 )
-EXPECTED_DISCOVERED_TESTS = 146
+EXPECTED_DISCOVERED_TESTS = 147
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60

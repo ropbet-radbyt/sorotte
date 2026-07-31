@@ -515,6 +515,36 @@ pub(crate) fn legacy_syncplay_checkout_bootstrap_lock() -> &'static Mutex<()> {
     LEGACY_SYNCPLAY_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+pub(crate) fn acquire_legacy_syncplay_checkout_process_lock(
+    checkout_path: &Path,
+) -> Result<fs::File, InteropError> {
+    let parent = checkout_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "legacy Syncplay checkout must have a parent directory",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let checkout_name = checkout_path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "legacy Syncplay checkout must have a file name",
+        )
+    })?;
+    let lock_path = parent.join(format!(
+        "{}.bootstrap.lock",
+        checkout_name.to_string_lossy()
+    ));
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock()?;
+    Ok(lock_file)
+}
+
 pub(crate) fn legacy_syncplay_checkout_is_ready(path: &Path) -> bool {
     path.join("syncplayServer.py").is_file()
 }
@@ -587,6 +617,8 @@ pub(crate) fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, Int
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let legacy_checkout = repo_local_legacy_syncplay_checkout_dir();
+    let _process_guard = acquire_legacy_syncplay_checkout_process_lock(&legacy_checkout)
+        .map_err(required_live_prerequisite_error)?;
     if legacy_syncplay_checkout_is_ready(&legacy_checkout) {
         return Ok(legacy_checkout);
     }

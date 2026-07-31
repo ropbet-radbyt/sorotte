@@ -378,6 +378,39 @@ class CiPolicyTests(unittest.TestCase):
         }
         self.assertTrue(expected_jobs <= set(self.jobs))
 
+        linux_job = self.jobs["checks"]
+        self.assertEqual(
+            linux_job.get("env"),
+            {
+                "SYNCPLAY_LEGACY_ROOT": (
+                    "${{ github.workspace }}/.interop-cache/syncplay-legacy"
+                )
+            },
+        )
+        linux_legacy_checkout = named_step(
+            self.jobs,
+            "checks",
+            "Checkout pinned legacy reference for Linux tests",
+        )
+        self.assertEqual(
+            linux_legacy_checkout.get("uses"),
+            PINNED_USES["actions/checkout"],
+        )
+        self.assertEqual(
+            linux_legacy_checkout.get("with"),
+            {
+                "repository": "Syncplay/syncplay",
+                "ref": LEGACY_SYNCPLAY_SHA,
+                "path": ".interop-cache/syncplay-legacy",
+                "persist-credentials": "false",
+            },
+        )
+        linux_step_names = [step.get("name") for step in linux_job["steps"]]
+        self.assertLess(
+            linux_step_names.index("Checkout pinned legacy reference for Linux tests"),
+            linux_step_names.index("Nextest fail-on-flaky workspace tests"),
+        )
+
         self.assert_exact_run(
             self.jobs,
             "checks",
@@ -1300,7 +1333,7 @@ class CiPolicyTests(unittest.TestCase):
             if step.get("uses") == PINNED_USES["actions/checkout"]
             and step.get("with", {}).get("repository") == "Syncplay/syncplay"
         ]
-        self.assertEqual(len(syncplay_checkouts), 5)
+        self.assertEqual(len(syncplay_checkouts), 6)
         self.assertTrue(
             all(
                 checkout["with"]["ref"] == LEGACY_SYNCPLAY_SHA

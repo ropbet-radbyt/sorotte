@@ -33,6 +33,8 @@ jobs:
     name: Rust all-feature contract (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
     defaults:
       run:
         working-directory: .
@@ -40,6 +42,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+
+      - name: Checkout pinned legacy reference for Linux tests
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Syncplay/syncplay
+          ref: d1c5f85af377c960c5a940707c4d01bc84fd9c3f
+          path: .interop-cache/syncplay-legacy
           persist-credentials: false
 
       - name: Setup Rust
