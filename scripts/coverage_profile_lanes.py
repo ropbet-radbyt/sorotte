@@ -124,28 +124,31 @@ EXPECTED_SEMANTIC_SCENARIOS = (
     "readiness-v2-flow",
 )
 EXPECTED_COMPAT_TESTS = (
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
-    "legacy_server_request_shim_preserves_explicit_features",
-    "legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features",
-    "legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
-    "legacy_server_live_tls_send_is_denied_for_logged_client",
-    "legacy_server_live_tls_rotation_invalidates_subsequent_send",
-    "legacy_server_live_tls_rotation_recovers_after_bundle_restored",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_outdated_client_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_lifecycle_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_notice_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_username_conflict_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario",
-    "legacy_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario",
-    "legacy_server_state_latency_metrics_matches_runtime_core_behavior",
-    "legacy_server_state_propagation_matches_runtime_core_behavior",
+    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
+    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
+    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
+    "tests::legacy_server_request_shim_preserves_explicit_features",
+    "tests::legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features",
+    "tests::legacy_tls_tests::legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
+    "tests::legacy_tls_tests::legacy_server_live_tls_send_is_denied_for_logged_client",
+    "tests::legacy_tls_tests::legacy_server_live_tls_rotation_invalidates_subsequent_send",
+    "tests::legacy_tls_tests::legacy_server_live_tls_rotation_recovers_after_bundle_restored",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_outdated_client_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_lifecycle_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_notice_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_username_conflict_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_latency_metrics_matches_runtime_core_behavior",
+    "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_propagation_matches_runtime_core_behavior",
 )
-EXPECTED_COMPAT_FILTERED_OUT = 123
+EXPECTED_COMPAT_TOTAL_TESTS = 145
+EXPECTED_COMPAT_FILTERED_OUT = (
+    EXPECTED_COMPAT_TOTAL_TESTS - len(EXPECTED_COMPAT_TESTS)
+)
 COMPAT_SKIP_MARKERS = (
     "assertion skipped",
     "test skipped",
@@ -715,24 +718,49 @@ def compatibility_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
         raise CoverageProfileLaneError(
             f"compatibility output contains skipped-oracle markers {found_markers}"
         )
-    observed_tests: list[str] = []
-    for test_name in EXPECTED_COMPAT_TESTS:
-        pattern = re.compile(
-            rf"(?m)^test .*::{re.escape(test_name)} \.\.\. ok$"
+    lines = text.splitlines()
+    expected_running = f"running {len(EXPECTED_COMPAT_TESTS)} tests"
+    running_lines = [
+        line for line in lines if re.fullmatch(r"running \d+ tests?", line)
+    ]
+    if running_lines != [expected_running]:
+        raise CoverageProfileLaneError(
+            "compatibility suite did not report exactly one source-bound "
+            f"run header {expected_running!r}"
         )
-        matches = pattern.findall(text)
-        if len(matches) != 1:
-            raise CoverageProfileLaneError(
-                f"strict live reference test {test_name!r} did not pass exactly once"
-            )
-        observed_tests.append(test_name)
+    test_result = re.compile(
+        r"^test (?P<name>.+) \.\.\. "
+        r"(?P<status>ok|FAILED|ignored)(?:, [^\r\n]+)?$"
+    )
+    observed_results = [
+        (match.group("name"), match.group("status"))
+        for line in lines
+        if (match := test_result.fullmatch(line)) is not None
+    ]
+    observed_tests = [name for name, _ in observed_results]
+    if (
+        len(observed_results) != len(EXPECTED_COMPAT_TESTS)
+        or any(status != "ok" for _, status in observed_results)
+        or sorted(observed_tests) != sorted(EXPECTED_COMPAT_TESTS)
+    ):
+        raise CoverageProfileLaneError(
+            "strict live reference test results differ from the exact "
+            "source-bound selection"
+        )
+    summary_lines = [
+        line for line in lines if line.startswith("test result:")
+    ]
+    if len(summary_lines) != 1:
+        raise CoverageProfileLaneError(
+            "compatibility suite did not emit exactly one libtest summary"
+        )
     summary = re.compile(
         rf"test result: ok\. {len(EXPECTED_COMPAT_TESTS)} passed; "
         rf"0 failed; 0 ignored; 0 measured; "
         rf"{EXPECTED_COMPAT_FILTERED_OUT} filtered out"
+        rf"(?:; finished in [^\r\n]+)?"
     )
-    matches = summary.findall(text)
-    if len(matches) != 1:
+    if summary.fullmatch(summary_lines[0]) is None:
         raise CoverageProfileLaneError(
             "compatibility suite did not report exactly "
             f"{len(EXPECTED_COMPAT_TESTS)} strict live reference tests"
@@ -743,7 +771,7 @@ def compatibility_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
         "failed": 0,
         "ignored": 0,
         "filtered_out": EXPECTED_COMPAT_FILTERED_OUT,
-        "tests": observed_tests,
+        "tests": list(EXPECTED_COMPAT_TESTS),
         "skip_markers": [],
     }
 

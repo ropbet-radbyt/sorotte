@@ -79,7 +79,7 @@ REQUIRED_LIVE_SENTINELS = frozenset(
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
     }
 )
-MINIMUM_DISCOVERED_TESTS = 144
+EXPECTED_DISCOVERED_TESTS = 145
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60
@@ -641,10 +641,10 @@ def verify_inventory(
     ignored = parse_test_list(
         ignored_list_result.stdout, label="ignored test listing"
     )
-    if len(listed) < MINIMUM_DISCOVERED_TESTS:
+    if len(listed) != EXPECTED_DISCOVERED_TESTS:
         raise InteropContractError(
-            "complete compatibility inventory is unexpectedly small: "
-            f"{len(listed)} < {MINIMUM_DISCOVERED_TESTS}"
+            "complete compatibility inventory differs from the source-bound "
+            f"expectation: {len(listed)} != {EXPECTED_DISCOVERED_TESTS}"
         )
     missing_sentinels = sorted(REQUIRED_LIVE_SENTINELS - set(listed))
     if missing_sentinels:
@@ -1137,8 +1137,21 @@ def validate_report_document(value: Any) -> Mapping[str, Any]:
             inventory["listed_count"], label="listed_count"
         ) != len(listed):
             raise InteropContractError("listed_count differs from listed_tests")
+        if len(listed) != EXPECTED_DISCOVERED_TESTS:
+            raise InteropContractError(
+                "listed compatibility inventory differs from the source-bound "
+                f"expectation: {len(listed)} != {EXPECTED_DISCOVERED_TESTS}"
+            )
+        for index, name in enumerate(listed):
+            require_string(name, label=f"listed test {index}")
         if listed != sorted(set(listed)):
             raise InteropContractError("listed_tests must be unique and sorted")
+        missing_sentinels = sorted(REQUIRED_LIVE_SENTINELS - set(listed))
+        if missing_sentinels:
+            raise InteropContractError(
+                "listed compatibility inventory omits required live sentinels "
+                f"{missing_sentinels}"
+            )
         ignored = require_list(inventory["ignored_tests"], label="ignored_tests")
         if require_nonnegative_int(
             inventory["ignored_count"], label="ignored_count"
@@ -1155,6 +1168,12 @@ def validate_report_document(value: Any) -> Mapping[str, Any]:
         ]
         if ignored != expected_ignored:
             raise InteropContractError("ignored test inventory drifted")
+        if not {
+            item["test"] for item in expected_ignored
+        }.issubset(listed):
+            raise InteropContractError(
+                "ignored compatibility tests must belong to the complete inventory"
+            )
 
     accounting = require_object(report["accounting"], label="accounting")
     require_exact_keys(
@@ -1273,6 +1292,42 @@ def validate_report_document(value: Any) -> Mapping[str, Any]:
             raise InteropContractError("execution duration_seconds is invalid")
         validate_file_record(execution["stdout"], label="execution stdout")
         validate_file_record(execution["stderr"], label="execution stderr")
+        if report["status"] == "passed" and execution["returncode"] != 0:
+            raise InteropContractError(
+                "passed compatibility report must have a zero execution return code"
+            )
+    if report["mode"] == "required" and report["status"] == "passed":
+        required_evidence = (
+            "source",
+            "oracle",
+            "prerequisites",
+            "fixtures",
+            "inventory",
+            "execution",
+        )
+        missing_evidence = [
+            field for field in required_evidence if report[field] is None
+        ]
+        if missing_evidence:
+            raise InteropContractError(
+                "required passed report omits successful execution evidence "
+                f"{missing_evidence}"
+            )
+        expected_passed = EXPECTED_DISCOVERED_TESTS - len(
+            EXPECTED_IGNORED_TESTS
+        )
+        expected_counts = {
+            "executed_count": expected_passed,
+            "passed_count": expected_passed,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "ignored_count": len(EXPECTED_IGNORED_TESTS),
+        }
+        if not accounting["complete"] or counts != expected_counts:
+            raise InteropContractError(
+                "required passed report does not contain the exact successful "
+                "compatibility accounting"
+            )
     return report
 
 

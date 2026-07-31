@@ -37,7 +37,7 @@ def complete_test_inventory() -> list[str]:
     tests = set(interop.EXPECTED_IGNORED_TESTS)
     tests.update(interop.REQUIRED_LIVE_SENTINELS)
     index = 0
-    while len(tests) < interop.MINIMUM_DISCOVERED_TESTS:
+    while len(tests) < interop.EXPECTED_DISCOVERED_TESTS:
         tests.add(f"tests::policy_fixture_{index:03d}")
         index += 1
     return sorted(tests)
@@ -84,8 +84,8 @@ def file_identity(path: str, digest: str = "a" * 64) -> dict[str, object]:
 
 def valid_report() -> dict[str, object]:
     ignored = sorted(interop.EXPECTED_IGNORED_TESTS)
-    executed = "tests::required_live_contract"
-    tests = sorted([executed, *ignored])
+    tests = complete_test_inventory()
+    executed = sorted(set(tests) - set(ignored))
     fixture_files = sorted(
         (
             file_identity(f"{root}/policy-{index:03d}.json")
@@ -168,12 +168,12 @@ def valid_report() -> dict[str, object]:
         },
         "accounting": {
             "complete": True,
-            "executed_count": 1,
-            "passed_count": 1,
+            "executed_count": len(executed),
+            "passed_count": len(executed),
             "failed_count": 0,
             "skipped_count": 0,
             "ignored_count": len(ignored),
-            "executed_tests": [executed],
+            "executed_tests": executed,
             "failed_tests": [],
             "skipped": [],
         },
@@ -317,7 +317,7 @@ class InventoryAndAccountingTests(unittest.TestCase):
             ),
             interop.REQUIRED_LIVE_SENTINELS,
         )
-        self.assertEqual(interop.MINIMUM_DISCOVERED_TESTS, 144)
+        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 145)
 
     def test_complete_and_ignored_inventories_are_exact(self) -> None:
         tests = complete_test_inventory()
@@ -334,6 +334,29 @@ class InventoryAndAccountingTests(unittest.TestCase):
             [item["test"] for item in inventory["ignored_tests"]],
             sorted(interop.EXPECTED_IGNORED_TESTS),
         )
+
+    def test_complete_inventory_rejects_count_drift_in_either_direction(
+        self,
+    ) -> None:
+        tests = complete_test_inventory()
+        ignored_output = "".join(
+            f"{name}: test\n" for name in sorted(interop.EXPECTED_IGNORED_TESTS)
+        ).encode()
+        for drifted in (tests[:-1], [*tests, "tests::unexpected_extra_test"]):
+            all_output = "".join(
+                f"{name}: test\n" for name in sorted(drifted)
+            ).encode()
+            with self.subTest(discovered=len(drifted)), self.assertRaisesRegex(
+                interop.InteropContractError,
+                "differs from the source-bound expectation",
+            ):
+                interop.verify_inventory(
+                    command_result(interop.LIST_COMMAND, all_output),
+                    command_result(
+                        interop.IGNORED_LIST_COMMAND,
+                        ignored_output,
+                    ),
+                )
 
     def test_partial_or_unexpected_ignored_inventory_is_rejected(self) -> None:
         tests = complete_test_inventory()
@@ -507,16 +530,79 @@ class ClosedSchemaTests(unittest.TestCase):
                 duplicate.encode(), label="duplicate report"
             )
 
+    def test_persisted_report_requires_exact_inventory_and_live_sentinels(
+        self,
+    ) -> None:
+        truncated = valid_report()
+        removed = truncated["inventory"]["listed_tests"].pop()
+        truncated["inventory"]["listed_count"] -= 1
+        if removed in truncated["accounting"]["executed_tests"]:
+            truncated["accounting"]["executed_tests"].remove(removed)
+            truncated["accounting"]["executed_count"] -= 1
+            truncated["accounting"]["passed_count"] -= 1
+        with self.assertRaisesRegex(
+            interop.InteropContractError,
+            "source-bound expectation",
+        ):
+            interop.validate_report_document(truncated)
+
+        missing_sentinel = valid_report()
+        sentinel = sorted(interop.REQUIRED_LIVE_SENTINELS)[0]
+        sentinel_index = missing_sentinel["inventory"]["listed_tests"].index(
+            sentinel
+        )
+        replacement = "tests::replacement_non_sentinel"
+        missing_sentinel["inventory"]["listed_tests"][sentinel_index] = replacement
+        missing_sentinel["inventory"]["listed_tests"].sort()
+        missing_sentinel["accounting"]["executed_tests"].remove(sentinel)
+        missing_sentinel["accounting"]["executed_tests"].append(replacement)
+        missing_sentinel["accounting"]["executed_tests"].sort()
+        with self.assertRaisesRegex(
+            interop.InteropContractError,
+            "omits required live sentinels",
+        ):
+            interop.validate_report_document(missing_sentinel)
+
+    def test_required_pass_requires_complete_success_evidence(self) -> None:
+        missing_state = valid_report()
+        missing_state["inventory"] = None
+        missing_state["execution"] = None
+        missing_state["accounting"] = copy.deepcopy(
+            interop.failed_report(mode="required")["accounting"]
+        )
+        with self.assertRaisesRegex(
+            interop.InteropContractError,
+            "omits successful execution evidence",
+        ):
+            interop.validate_report_document(missing_state)
+
+        for field in ("source", "oracle", "prerequisites", "fixtures"):
+            report = valid_report()
+            report[field] = None
+            with self.subTest(field=field), self.assertRaisesRegex(
+                interop.InteropContractError,
+                "omits successful execution evidence",
+            ):
+                interop.validate_report_document(report)
+
+        nonzero = valid_report()
+        nonzero["execution"]["returncode"] = 101
+        with self.assertRaisesRegex(
+            interop.InteropContractError,
+            "zero execution return code",
+        ):
+            interop.validate_report_document(nonzero)
+
     def test_required_pass_cannot_contain_a_skip(self) -> None:
         report = valid_report()
-        report["accounting"]["executed_count"] = 0
-        report["accounting"]["passed_count"] = 0
-        report["accounting"]["executed_tests"] = []
+        skipped_test = report["accounting"]["executed_tests"].pop()
+        report["accounting"]["executed_count"] -= 1
+        report["accounting"]["passed_count"] -= 1
         report["accounting"]["skipped_count"] = 1
         report["accounting"]["skipped"] = [
             {
                 "scope": "test",
-                "test": "tests::required_live_contract",
+                "test": skipped_test,
                 "code": "missing-prerequisite",
                 "reason": "required assertion skipped due to missing prerequisites",
             }
