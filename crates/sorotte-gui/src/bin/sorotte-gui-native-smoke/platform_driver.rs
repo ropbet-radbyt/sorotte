@@ -139,13 +139,18 @@ type PlatformWindowHandle = ();
 
 #[derive(Default)]
 pub(super) struct PlatformNativeGuiDriver {
+    #[cfg(any(target_os = "windows", test))]
     input_mode: NativeInputMode,
     desktop_input_attempts: Cell<usize>,
 }
 
 impl PlatformNativeGuiDriver {
     pub(super) fn new(input_mode: NativeInputMode) -> Self {
+        #[cfg(all(not(target_os = "windows"), not(test)))]
+        let _ = input_mode;
+
         Self {
+            #[cfg(any(target_os = "windows", test))]
             input_mode,
             desktop_input_attempts: Cell::new(0),
         }
@@ -155,6 +160,7 @@ impl PlatformNativeGuiDriver {
         self.desktop_input_attempts.get()
     }
 
+    #[cfg(any(target_os = "windows", test))]
     pub(super) fn begin_desktop_input(&self) -> Result<(), String> {
         self.desktop_input_attempts
             .set(self.desktop_input_attempts.get().saturating_add(1));
