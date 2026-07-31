@@ -74,11 +74,12 @@ REQUIRED_LIVE_SENTINELS = frozenset(
         "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
         "tests::legacy_client_contract_tests::legacy_client_chat_send_contract_matches_client_core_behavior",
         "tests::legacy_tls_tests::legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
+        "tests::python_protocol_tests::generated_json_framing_matches_pinned_python_oracle",
         "tests::python_protocol_tests::python_interop_roundtrip_returns_server_hello",
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
     }
 )
-MINIMUM_DISCOVERED_TESTS = 143
+MINIMUM_DISCOVERED_TESTS = 144
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60

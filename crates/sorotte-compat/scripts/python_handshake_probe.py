@@ -1426,6 +1426,130 @@ def _run_batch_mode(session):
     return 0
 
 
+def _run_json_framing_oracle_batch_mode(legacy_root):
+    """Exercise the pinned Syncplay JSONCommandProtocol without network I/O."""
+    body = sys.stdin.read()
+    if not body:
+        _emit_json({"Error": {"message": "missing-input"}})
+        return 3
+
+    try:
+        batch = json.loads(body)
+    except json.decoder.JSONDecodeError:
+        _emit_json({"Error": {"message": "not-json-server-error"}})
+        return 4
+
+    expected_keys = {"schemaVersion", "seed", "budget", "cases"}
+    if not isinstance(batch, dict) or set(batch) != expected_keys:
+        _emit_json({"Error": {"message": "invalid-json-framing-batch-format"}})
+        return 8
+
+    schema_version = batch.get("schemaVersion")
+    seed = batch.get("seed")
+    budget = batch.get("budget")
+    cases = batch.get("cases")
+    if (
+        schema_version != 1
+        or not isinstance(seed, str)
+        or not isinstance(budget, int)
+        or isinstance(budget, bool)
+        or budget < 1
+        or not isinstance(cases, list)
+        or budget != len(cases)
+    ):
+        _emit_json({"Error": {"message": "invalid-json-framing-batch-format"}})
+        return 8
+
+    _add_legacy_root_to_sys_path(legacy_root)
+    try:
+        from syncplay.protocols import JSONCommandProtocol  # type: ignore
+    except Exception:
+        _emit_json({"Error": {"message": "legacy-json-framing-import-failed"}})
+        return 9
+
+    class RecordingJSONCommandProtocol(JSONCommandProtocol):
+        def __init__(self):
+            self.events = []
+            self.error_count = 0
+
+        def _record(self, command, payload):
+            self.events.append({"command": command, "payload": payload})
+
+        def handleHello(self, payload):
+            self._record("Hello", payload)
+
+        def handleSet(self, payload):
+            self._record("Set", payload)
+
+        def handleList(self, payload):
+            self._record("List", payload)
+
+        def handleState(self, payload):
+            self._record("State", payload)
+
+        def handleError(self, payload):
+            self._record("Error", payload)
+
+        def handleChat(self, payload):
+            self._record("Chat", payload)
+
+        def handleTLS(self, payload):
+            self._record("TLS", payload)
+
+        def showDebugMessage(self, _line):
+            return None
+
+        def dropWithError(self, _error):
+            self.error_count += 1
+
+    seen_ids = set()
+    results = []
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != {"id", "lineHex"}:
+            _emit_json({"Error": {"message": "invalid-json-framing-case"}})
+            return 8
+        case_id = case.get("id")
+        line_hex = case.get("lineHex")
+        if (
+            not isinstance(case_id, str)
+            or not case_id
+            or case_id in seen_ids
+            or not isinstance(line_hex, str)
+            or re.fullmatch(r"(?:[0-9a-f]{2})*", line_hex) is None
+        ):
+            _emit_json({"Error": {"message": "invalid-json-framing-case"}})
+            return 8
+        seen_ids.add(case_id)
+
+        protocol = RecordingJSONCommandProtocol()
+        raised = False
+        try:
+            protocol.lineReceived(bytes.fromhex(line_hex))
+        except Exception:
+            raised = True
+
+        results.append(
+            {
+                "id": case_id,
+                "accepted": (not raised) and protocol.error_count == 0,
+                "events": protocol.events,
+                "errorCount": protocol.error_count,
+                "raised": raised,
+            }
+        )
+
+    _emit_json(
+        {
+            "schemaVersion": schema_version,
+            "seed": seed,
+            "budget": budget,
+            "processed": len(results),
+            "results": results,
+        }
+    )
+    return 0
+
+
 def _run_fanout_batch_mode(
     server_version,
     controlled_room_salt,
@@ -2192,6 +2316,11 @@ def main():
                 _emit_json({"Error": {"message": "unknown-argument"}})
                 return 2
             mode = "batch"
+        elif argument == "--json-framing-oracle-batch":
+            if mode != "single":
+                _emit_json({"Error": {"message": "unknown-argument"}})
+                return 2
+            mode = "json-framing-oracle-batch"
         elif argument == "--same-filename-batch":
             if mode != "single":
                 _emit_json({"Error": {"message": "unknown-argument"}})
@@ -2252,6 +2381,8 @@ def main():
             permanent_rooms,
             tls_available,
         )
+    if mode == "json-framing-oracle-batch":
+        return _run_json_framing_oracle_batch_mode(legacy_root)
     if mode == "same-filename-batch":
         return _run_same_filename_batch_mode(legacy_root)
     if mode == "same-filesize-batch":

@@ -307,6 +307,18 @@ class RequirementPolicyTests(unittest.TestCase):
 
 
 class InventoryAndAccountingTests(unittest.TestCase):
+    def test_generated_json_framing_differential_is_required_and_counted(
+        self,
+    ) -> None:
+        self.assertIn(
+            (
+                "tests::python_protocol_tests::"
+                "generated_json_framing_matches_pinned_python_oracle"
+            ),
+            interop.REQUIRED_LIVE_SENTINELS,
+        )
+        self.assertEqual(interop.MINIMUM_DISCOVERED_TESTS, 144)
+
     def test_complete_and_ignored_inventories_are_exact(self) -> None:
         tests = complete_test_inventory()
         all_output = "".join(f"{name}: test\n" for name in tests).encode()
