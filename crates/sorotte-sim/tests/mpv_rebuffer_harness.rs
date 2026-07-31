@@ -561,8 +561,10 @@ fn real_mpv_premature_http_disconnect_recovers_same_media_generation() {
 #[test]
 #[ignore = "scheduled integration test; requires the mpv binary"]
 fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
+    const PREPARE_REVISION: u64 = 1;
+    const START_REVISION: u64 = 2;
     let media = pcm_wav(30);
-    let server = FaultInjectingHttpServer::start(BTreeMap::from([
+    let server = FaultInjectingHttpServer::start_with_deferred_burst_stalls(BTreeMap::from([
         (
             "/healthy.wav".to_owned(),
             HttpMediaFixture::static_bytes("audio/wav", media.clone()).with_faults(
@@ -581,9 +583,8 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
             HttpMediaFixture::static_bytes("audio/wav", media).with_faults(NetworkFaultProfile {
                 bytes_per_second: Some(220_000),
                 burst_stalls: vec![BurstStall {
-                    // Delay the injected fault until both clients have
-                    // completed startup and their ordinary convergence
-                    // episodes have closed.
+                    // The server's explicit gate, rather than this byte
+                    // threshold, establishes when the fault may begin.
                     after_body_bytes: 1_000_000,
                     duration: Duration::from_secs(4),
                 }],
@@ -593,19 +594,68 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
     ]))
     .expect("fault-injecting HTTP server should start");
 
-    let mut healthy = RealMpvClient::start(0, &server.url("/healthy.wav"));
-    let mut stalling = RealMpvClient::start(1, &server.url("/stalling.wav"));
-    let startup = Instant::now();
-    while startup.elapsed() < SEMANTICS_TIMEOUT
-        && (!healthy.post_start_baseline_ready() || !stalling.post_start_baseline_ready())
+    let mut healthy = RealMpvClient::start_with_desired(
+        0,
+        &server.url("/healthy.wav"),
+        MediaTransportKind::NetworkVod,
+        DesiredRoomPlayback {
+            media_generation: 0,
+            state_revision: PREPARE_REVISION,
+            paused: true,
+            anchor_position_seconds: 0.0,
+            anchor_observed_at_seconds: 0.0,
+            force_seek: false,
+        },
+        DesiredRoomPlaybackUpdateKind::Ordinary,
+    );
+    let mut stalling = RealMpvClient::start_with_desired(
+        1,
+        &server.url("/stalling.wav"),
+        MediaTransportKind::NetworkVod,
+        DesiredRoomPlayback {
+            media_generation: 0,
+            state_revision: PREPARE_REVISION,
+            paused: true,
+            anchor_position_seconds: 0.0,
+            anchor_observed_at_seconds: 0.0,
+            force_seek: false,
+        },
+        DesiredRoomPlaybackUpdateKind::Ordinary,
+    );
+    let prepare_started = Instant::now();
+    while prepare_started.elapsed() < SEMANTICS_TIMEOUT
+        && (!healthy.prepared_baseline_ready(PREPARE_REVISION)
+            || !stalling.prepared_baseline_ready(PREPARE_REVISION))
     {
         healthy.poll();
         stalling.poll();
         sleep(POLL_INTERVAL);
     }
     assert!(
-        healthy.post_start_baseline_ready() && stalling.post_start_baseline_ready(),
-        "clients did not establish a post-start transport/recovery-decision baseline before the injected stall; healthy={:?} healthy_recovery={:?} healthy_metrics={:?} stalling={:?} stalling_recovery={:?} stalling_metrics={:?}",
+        healthy.prepared_baseline_ready(PREPARE_REVISION)
+            && stalling.prepared_baseline_ready(PREPARE_REVISION),
+        "clients did not establish an exact paused preparation gate before starting; healthy={:?} healthy_metrics={:?} stalling={:?} stalling_metrics={:?}",
+        healthy.latest_transport,
+        healthy.coordinator.metrics(),
+        stalling.latest_transport,
+        stalling.coordinator.metrics(),
+    );
+
+    healthy.set_desired(START_REVISION, false, 0.0, false);
+    stalling.set_desired(START_REVISION, false, 0.0, false);
+    let start_started = Instant::now();
+    while start_started.elapsed() < SEMANTICS_TIMEOUT
+        && (!healthy.post_start_baseline_ready(START_REVISION)
+            || !stalling.post_start_baseline_ready(START_REVISION))
+    {
+        healthy.poll();
+        stalling.poll();
+        sleep(POLL_INTERVAL);
+    }
+    assert!(
+        healthy.post_start_baseline_ready(START_REVISION)
+            && stalling.post_start_baseline_ready(START_REVISION),
+        "clients did not establish an exact post-start baseline before the injected stall; healthy={:?} healthy_recovery={:?} healthy_metrics={:?} stalling={:?} stalling_recovery={:?} stalling_metrics={:?}",
         healthy.latest_transport,
         healthy.coordinator.recovery_episode(),
         healthy.coordinator.metrics(),
@@ -615,6 +665,12 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
     );
     let healthy_startup_position_commands = healthy.begin_steady_state_observation_window();
     let stalling_startup_position_commands = stalling.begin_steady_state_observation_window();
+    assert_eq!(
+        server.burst_stall_count(),
+        0,
+        "the HTTP fault must remain gated until both clients reach their post-start baseline"
+    );
+    server.arm_burst_stalls();
 
     let started = Instant::now();
     while started.elapsed() < TEST_DURATION {
@@ -631,14 +687,37 @@ fn real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall() {
     }
 
     assert!(
-        healthy.started_revisions.contains(&1),
+        server.wait_for_burst_stalls(1, Duration::from_secs(1)),
+        "the explicitly armed HTTP fixture never applied its bounded burst stall"
+    );
+    assert!(
+        server.wait_for_completed_burst_stalls(1, Duration::from_secs(5)),
+        "the explicitly armed HTTP fixture never completed its bounded burst stall"
+    );
+    assert_eq!(
+        server.burst_stall_count(),
+        1,
+        "retry or range connections must not apply the globally one-shot stall more than once"
+    );
+    assert!(
+        healthy.started_revisions.contains(&START_REVISION),
         "healthy mpv client never produced an observation-backed start acknowledgment: {:?}",
         healthy.coordinator.metrics()
     );
     assert!(
-        stalling.started_revisions.contains(&1),
+        stalling.started_revisions.contains(&START_REVISION),
         "stalling mpv client never produced an observation-backed start acknowledgment: {:?}",
         stalling.coordinator.metrics()
+    );
+    assert_eq!(
+        healthy.coordinator.metrics().command_timeouts,
+        0,
+        "the healthy client must not time out a command during the prepared/start/stall sequence"
+    );
+    assert_eq!(
+        stalling.coordinator.metrics().command_timeouts,
+        0,
+        "the stalling client must not time out a command during the prepared/start/stall sequence"
     );
     assert!(
         stalling.coordinator.metrics().buffer_episode_count >= 1,
@@ -859,7 +938,7 @@ fn verify_mid_play_unbuffered_seek_is_bounded_with_real_mpv() {
         "playing baseline with the explicit seek target outside mpv's cache",
         SEMANTICS_TIMEOUT,
         |state| {
-            state.post_start_baseline_ready()
+            state.post_start_baseline_ready(1)
                 && state
                     .latest_transport
                     .seekable_ranges
@@ -1622,7 +1701,16 @@ impl RealMpvClient {
         self.observed_rebuffer && !self.position_commands_by_episode.is_empty()
     }
 
-    fn post_start_baseline_ready(&self) -> bool {
+    fn prepared_baseline_ready(&self, state_revision: u64) -> bool {
+        self.applied_revisions.contains(&state_revision)
+            && self.latest_transport.phase == Some(PlayerTransportPhase::ReadyPaused)
+            && self.latest_transport.logical_pause == Some(true)
+            && self.latest_transport.paused_for_cache == Some(false)
+            && self.latest_transport.seeking == Some(false)
+            && self.coordinator.metrics().command_timeouts == 0
+    }
+
+    fn post_start_baseline_ready(&self, state_revision: u64) -> bool {
         let recovery_decision_observed =
             self.coordinator.recovery_episode().is_none_or(|episode| {
                 episode.catchup_deadline_seconds.is_some()
@@ -1630,12 +1718,13 @@ impl RealMpvClient {
                     || episode.stable_since_seconds.is_some()
                     || episode.degraded
             });
-        self.started_revisions.contains(&1)
+        self.started_revisions.contains(&state_revision)
             && recovery_decision_observed
             && self.latest_transport.phase == Some(PlayerTransportPhase::Playing)
             && self.latest_transport.logical_pause == Some(false)
             && self.latest_transport.paused_for_cache == Some(false)
             && self.latest_transport.seeking == Some(false)
+            && self.coordinator.metrics().command_timeouts == 0
     }
 
     fn begin_steady_state_observation_window(&mut self) -> BTreeMap<u64, usize> {
