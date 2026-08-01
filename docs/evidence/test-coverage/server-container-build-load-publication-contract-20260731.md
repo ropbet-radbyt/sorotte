@@ -108,8 +108,8 @@ error rather than silently warning.
 
 The workflow action pins are full commits:
 
-- `actions/checkout` v4.4.0:
-  `11d5960a326750d5838078e36cf38b85af677262`
+- `actions/checkout` v7.0.1:
+  `3d3c42e5aac5ba805825da76410c181273ba90b1`
 - `docker/setup-buildx-action` v3.11.1:
   `e468171a9de216ec08956ac3ada2f0791b6bd435`
 - `docker/metadata-action` v5.9.0:
@@ -122,8 +122,8 @@ The workflow action pins are full commits:
   `5e57cd118135c172c3672efd75eb46360885c0ef`
 - `sigstore/cosign-installer` v4.1.2:
   `6f9f17788090df1f26f669e9d70d6ae9567deba6`
-- `actions/upload-artifact` v4.6.2:
-  `ea165f8d65b6e75b540449e92b4886f43607fa02`
+- `actions/upload-artifact` v7.0.0:
+  `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`
 
 The Dockerfile frontend and both base images are pinned by OCI index digest:
 
@@ -131,8 +131,9 @@ The Dockerfile frontend and both base images are pinned by OCI index digest:
 - `rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa`
 - `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818`
 
-These pins were resolved from the official action repositories and container
-registries on 2026-07-31. Updating a dependency requires an intentional pin
+The initial pins were resolved from the official action repositories and
+container registries on 2026-07-31; the Node 24 checkout and artifact pins were
+refreshed on 2026-08-01. Updating a dependency requires an intentional pin
 change and rerun of this contract.
 
 ## Offline validation executed
@@ -193,13 +194,29 @@ while the server's production default is 16 characters. Sorotte correctly
 canonicalized those identities, but the join matcher waited for the impossible
 untruncated watcher name until its bounded deadline.
 
-The final correction uses distinctive usernames within the production limit,
+The identity correction uses distinctive usernames within the production limit,
 rejects an overlong test identity before opening a socket, and requires the
 Hello response to echo the exact requested username and room. Cleanup now
 preserves the primary scenario failure and appends any independent diagnostic
 or removal failure. The shutdown log marker remains mandatory after a
 completed SIGINT stop, together with the direct clean-state, session-drain,
-SQLite-integrity, and same-image restart evidence. All three failed runs
+SQLite-integrity, and same-image restart evidence.
+
+Exact-merge publication run
+[`30694770477`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30694770477)
+then completed the plaintext write, clean SIGINT stop, and raw persistence
+inspection, but the same-image restart failed because the host inspection
+opened the WAL-mode database with SQLite `mode=ro`. SQLite created `-wal` and
+`-shm` files in the bind-mounted live state as the GitHub runner user. The
+non-root image user (UID 10001) could not write that host-owned shared-memory
+file, so schema initialization correctly failed with `attempt to write a
+readonly database`.
+
+The final correction opens the already-stopped database with SQLite
+`mode=ro&immutable=1`. This retains exact row and integrity inspection without
+creating or changing WAL sidecars in the state directory that the second
+container must reuse. A WAL-mode regression now proves both generic integrity
+and exact-row inspection leave `-wal` and `-shm` absent. All four failed runs
 skipped registry login, push, signing, and attestation, so none could mutate
 GHCR.
 
@@ -224,10 +241,10 @@ git diff --check
   PASS
 ```
 
-## CI-owned execution still required
+## CI-owned completion criteria
 
-A successful run of `.github/workflows/publish-server-container.yml` is still
-required before claiming container publication assurance. That run must
+A successful run of `.github/workflows/publish-server-container.yml` is
+required before claiming container publication assurance. Every such run must
 produce and retain:
 
 - plaintext write and restart logs, the TLS log, both SQLite state sets, and
