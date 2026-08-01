@@ -29,13 +29,8 @@ fn malformed_final_host_blocks_endpoint_composition() {
 fn unknown_attached_values_are_secret_safe_in_diagnostics() {
     const SECRET: &str = "CLI_UNKNOWN_OPTION_SECRET_CANARY";
     let overrides = parse_legacy_client_arg_overrides([format!("--api-token={SECRET}")]);
-    assert_eq!(
-        overrides.unknown_options,
-        vec![LegacyClientArgumentIssue::UnknownOption {
-            name: "--api-token".to_owned(),
-            attached_value_present: true,
-        }]
-    );
+    assert_eq!(overrides.unknown_options.len(), 1);
+    assert!(overrides.unknown_options[0].matches_rejected_token(&format!("--api-token={SECRET}")));
     assert!(
         !format!("{:?}", overrides.unknown_options).contains(SECRET),
         "the structural parser issue must not retain the attached value"

@@ -22,11 +22,39 @@ impl std::fmt::Display for HostArgumentError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegacyUnknownOptionIssue {
+    name: String,
+    attached_value_present: bool,
+}
+
+impl LegacyUnknownOptionIssue {
+    fn new(name: String, attached_value_present: bool) -> Self {
+        Self {
+            name,
+            attached_value_present,
+        }
+    }
+
+    fn diagnostic_fragment(&self) -> String {
+        if self.attached_value_present {
+            format!("{}={}", self.name, sorotte_secret::REDACTED_SECRET)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    #[cfg(test)]
+    fn matches_rejected_token(&self, token: &str) -> bool {
+        token.split_once('=').map_or_else(
+            || self.name == token && !self.attached_value_present,
+            |(expected_name, _)| self.name == expected_name && self.attached_value_present,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LegacyClientArgumentIssue {
-    UnknownOption {
-        name: String,
-        attached_value_present: bool,
-    },
+    UnknownOption(LegacyUnknownOptionIssue),
     MissingValue {
         name: String,
     },
@@ -41,17 +69,17 @@ impl LegacyClientArgumentIssue {
         let (name, attached_value_present) = argument
             .split_once('=')
             .map_or((argument, false), |(name, _)| (name, true));
-        Self::UnknownOption {
-            name: name.to_owned(),
+        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+            name.to_owned(),
             attached_value_present,
-        }
+        ))
     }
 
     pub(crate) fn unknown_short_option(name: char, attached_value_present: bool) -> Self {
-        Self::UnknownOption {
-            name: format!("-{name}"),
+        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+            format!("-{name}"),
             attached_value_present,
-        }
+        ))
     }
 
     pub(crate) fn missing_value(name: &str) -> Self {
@@ -71,25 +99,9 @@ impl LegacyClientArgumentIssue {
         matches!(self, Self::InvalidHost { .. })
     }
 
-    fn unknown_option_has_attached_value(&self) -> bool {
-        match self {
-            Self::UnknownOption {
-                attached_value_present,
-                ..
-            } => *attached_value_present,
-            _ => false,
-        }
-    }
-
     pub(crate) fn diagnostic_fragment(&self) -> String {
         match self {
-            Self::UnknownOption { name, .. } => {
-                if self.unknown_option_has_attached_value() {
-                    format!("{name}={}", sorotte_secret::REDACTED_SECRET)
-                } else {
-                    name.clone()
-                }
-            }
+            Self::UnknownOption(option) => option.diagnostic_fragment(),
             Self::MissingValue { name } => name.clone(),
             Self::InvalidHost { name, error } => format!("{name} ({error})"),
         }
@@ -98,13 +110,7 @@ impl LegacyClientArgumentIssue {
     #[cfg(test)]
     pub(crate) fn matches_rejected_token(&self, token: &str) -> bool {
         match self {
-            Self::UnknownOption {
-                name,
-                attached_value_present,
-            } => token.split_once('=').map_or_else(
-                || name == token && !attached_value_present,
-                |(expected_name, _)| name == expected_name && *attached_value_present,
-            ),
+            Self::UnknownOption(option) => option.matches_rejected_token(token),
             Self::MissingValue { name } => name == token,
             Self::InvalidHost { .. } => false,
         }
