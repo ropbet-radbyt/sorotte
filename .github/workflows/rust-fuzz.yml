@@ -69,10 +69,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
 
       - name: Install pinned cargo-fuzz
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
-        with:
-          tool: cargo-fuzz@0.13.2
-          fallback: none
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
 
       - name: Verify exact fuzz toolchain
         run: |
@@ -135,10 +135,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
 
       - name: Install pinned cargo-fuzz
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
-        with:
-          tool: cargo-fuzz@0.13.2
-          fallback: none
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
 
       - name: Verify exact fuzz toolchain
         run: |
@@ -202,10 +202,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
 
       - name: Install pinned cargo-fuzz
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
-        with:
-          tool: cargo-fuzz@0.13.2
-          fallback: none
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
 
       - name: Verify exact fuzz toolchain
         run: |

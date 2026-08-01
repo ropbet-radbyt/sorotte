@@ -52,6 +52,15 @@ MPV_FRAMED_TRANSCRIPT_CORPUS_DIRECTORY = (
     REPO_ROOT / MPV_FRAMED_TRANSCRIPT_CORPUS_PATH
 )
 FUZZ_TOOLCHAIN = "nightly-2026-07-29"
+CARGO_FUZZ_INSTALL_COMMAND = [
+    "cargo",
+    f"+{FUZZ_TOOLCHAIN}",
+    "install",
+    "cargo-fuzz",
+    "--version",
+    "0.13.2",
+    "--locked",
+]
 FUZZ_SECONDS_EXPRESSION = (
     "${{ (github.event_name == 'pull_request' || github.event_name == 'push') "
     "&& '45' || '900' }}"
@@ -72,9 +81,6 @@ PINNED_USES = {
     ),
     "Setup Python": (
         "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
-    ),
-    "Install pinned cargo-fuzz": (
-        "taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf"
     ),
     "Upload protocol fuzz evidence": (
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -162,6 +168,15 @@ def command_tokens(step: dict[str, Any]) -> list[str]:
     command = step.get("run")
     require(isinstance(command, str), "run step must contain a command string")
     return shlex.split(command, posix=True)
+
+
+def assert_cargo_fuzz_installer(step: dict[str, Any], context: str) -> None:
+    require(
+        command_tokens(step) == CARGO_FUZZ_INSTALL_COMMAND,
+        f"{context} cargo-fuzz installation must remain exact and locked",
+    )
+    require("uses" not in step, f"{context} must not use an unsupported installer action")
+    require("with" not in step, f"{context} installer must not carry action inputs")
 
 
 def workflow_path_covers(path: str) -> bool:
@@ -254,11 +269,7 @@ def assert_workflow_contract(text: str) -> None:
     python = named_step(job, "Setup Python")
     require(python.get("with") == {"python-version": "3.11"}, "Python pin changed")
     installer = named_step(job, "Install pinned cargo-fuzz")
-    require(
-        installer.get("with")
-        == {"tool": "cargo-fuzz@0.13.2", "fallback": "none"},
-        "cargo-fuzz installation must remain exact and fail closed",
-    )
+    assert_cargo_fuzz_installer(installer, "protocol fuzz")
 
     require(
         command_tokens(named_step(job, "Install CI policy prerequisites"))
@@ -365,7 +376,6 @@ def assert_workflow_contract(text: str) -> None:
         "Checkout",
         "Setup pinned nightly Rust",
         "Setup Python",
-        "Install pinned cargo-fuzz",
     ):
         require(
             named_step(framed_job, step_name).get("uses")
@@ -392,10 +402,9 @@ def assert_workflow_contract(text: str) -> None:
         == {"python-version": "3.11"},
         "framed-session Python pin changed",
     )
-    require(
-        named_step(framed_job, "Install pinned cargo-fuzz").get("with")
-        == {"tool": "cargo-fuzz@0.13.2", "fallback": "none"},
-        "framed-session cargo-fuzz installation changed",
+    assert_cargo_fuzz_installer(
+        named_step(framed_job, "Install pinned cargo-fuzz"),
+        "framed-session fuzz",
     )
     require(
         command_tokens(named_step(framed_job, "Install CI policy prerequisites"))
@@ -510,7 +519,6 @@ def assert_workflow_contract(text: str) -> None:
         "Checkout",
         "Setup pinned nightly Rust",
         "Setup Python",
-        "Install pinned cargo-fuzz",
     ):
         require(
             named_step(mpv_job, step_name).get("uses")
@@ -540,10 +548,9 @@ def assert_workflow_contract(text: str) -> None:
         == {"python-version": "3.11"},
         "mpv framed-transcript Python pin changed",
     )
-    require(
-        named_step(mpv_job, "Install pinned cargo-fuzz").get("with")
-        == {"tool": "cargo-fuzz@0.13.2", "fallback": "none"},
-        "mpv framed-transcript cargo-fuzz installation changed",
+    assert_cargo_fuzz_installer(
+        named_step(mpv_job, "Install pinned cargo-fuzz"),
+        "mpv framed-transcript fuzz",
     )
     require(
         command_tokens(named_step(mpv_job, "Install CI policy prerequisites"))
