@@ -4137,8 +4137,8 @@ aggregate passed all 21 catalog behaviors.
 
 ## TC-HARNESS-050: Pinned installer did not support pinned cargo-fuzz
 
-Status: **Resolved locally 2026-08-01; fresh PR checks and exact-head hosted
-acceptance are required**
+Status: **Resolved 2026-08-01; all three PR fuzz jobs and exact-head hosted
+acceptance are positive**
 
 Severity: **CI bootstrap (all three bounded fuzz jobs failed before target
 compilation, so no fuzz behavior was evaluated)**
@@ -4166,3 +4166,74 @@ executable fuzz policy now rejects an installer action, action inputs, version
 drift, a missing lock constraint, or a toolchain change in every fuzz job.
 Actionlint, all 20 protocol-fuzz policy tests, and all 19 central CI-policy
 tests pass locally. No fallback or fail-open path was introduced.
+
+PR run `30686532855` at
+`d8e18dabebff6b7ea245c342992eb73cdfc8756d` passed all three jobs. Each job
+installed and verified the exact tool, validated the executable policy, built
+its target, completed the bounded fuzz campaign, and uploaded evidence. PR CI
+run `30686532852` and explicit-base run `30686547027` also passed. The latter
+reported 82.58% combined, 80.59% ordinary, and 90.79% critical changed-line
+coverage with zero unmapped lines; its 21-behavior aggregate passed.
+
+## TC-HARNESS-051: Elevated GUI runner blocked updater mutation smoke
+
+Status: **Resolved locally 2026-08-01; fresh PR GUI release verification is
+required**
+
+Severity: **Release harness environment (the packaged updater correctly
+refused elevation, but the verifier treated that security oracle as a generic
+failure)**
+
+Detection: PR-triggered GUI release run `30686532847`, job `91333375316`
+
+The exact package at
+`d8e18dabebff6b7ea245c342992eb73cdfc8756d` built successfully, then the
+runtime verifier invoked the installed packaged updater from GitHub's elevated
+Windows runner. The updater exited 1 with its required automatic-replacement
+refusal before creating a transaction. The verifier previously required the
+non-elevated success experiment unconditionally and therefore rejected the
+correct security behavior.
+
+Commit `4c64211ddbbb85066d96543db69c4fbeff3b3342` independently reads the
+verifier process token and makes the runtime proof environment-specific:
+
+- an elevated run must receive the exact packaged-updater refusal, retain an
+  unchanged pre-update snapshot, and leave no transaction state;
+- an elevated updater that accepts replacement is an explicit verification
+  failure;
+- a non-elevated run still must complete installed-bootstrap self-replacement,
+  exact package installation, injected rollback, restoration, and cleanup.
+
+No production updater override, privilege manipulation, or guard weakening
+was added. The complete GUI artifact suite covers both routes and the
+fail-closed elevated-success case.
+
+## TC-HARNESS-052: Windows PowerShell 5 added a package-manifest BOM
+
+Status: **Resolved and exercised locally 2026-08-01; fresh hosted package
+verification is required**
+
+Severity: **Packaging portability (the exact archive was not canonical JSON
+when produced through the documented Windows PowerShell host)**
+
+Detection: local exact-package verification at
+`4c64211ddbbb85066d96543db69c4fbeff3b3342`
+
+`package-gui-release.ps1` already used an atomic BOM-free writer for the update
+manifest and checksums, but wrote `sorotte-install.json` through
+`Set-Content -Encoding UTF8`. Windows PowerShell 5 consequently placed a BOM
+inside the archive, and the strict consumer rejected it before runtime smoke.
+The failed bundle and report remain under `target/gui-release/`.
+
+Commit `b6a1b76dce6fd20e39ef0e015c055a0038fa8215` routes the install manifest
+through the same atomic `UTF8Encoding(false)` writer and adds a producer-policy
+regression. A new Windows PowerShell 5 package under
+`target/gui-release-ps5-fixed/` is BOM-free and verified at exact source SHA.
+Archive SHA-256 is
+`830b08c9a1a849f999bab98250dbe70e3604709c9b3460059ea9ce596123259b`.
+
+The local token was independently non-elevated, so this was the full mutation
+route: visible GUI launch, installed-bootstrap self-replacement, exact package
+installation, read-only-target fault injection, original-install restoration,
+and transaction cleanup all passed. The report is retained at
+`target/gui-release-ps5-fixed/local-artifact-verification.json`.

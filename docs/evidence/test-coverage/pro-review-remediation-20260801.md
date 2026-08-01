@@ -288,8 +288,51 @@ The subsequent exact runtime-version check remains required. The executable
 workflow policy rejects any installer action or action inputs and binds the
 toolchain, crate version, and lock constraint in all three jobs. Actionlint,
 20 protocol-fuzz policy tests, and 19 central CI-policy tests pass locally.
-`TC-HARNESS-050` retains the diagnostic; fresh PR checks and a fresh exact-head
-matrix remain required after this workflow-only correction.
+`TC-HARNESS-050` retains the diagnostic.
+
+Corrected PR fuzz run `30686532855` at
+`d8e18dabebff6b7ea245c342992eb73cdfc8756d` passed all three jobs, including
+exact tool identity, policy validation, target build, bounded execution, and
+evidence upload. PR CI run `30686532852` and explicit-base run `30686547027`
+also passed. The explicit report measured 82.58% combined, 80.59% ordinary,
+and 90.79% critical changed-line coverage with zero unmapped lines, and its
+required aggregate passed all 21 behaviors. Artifacts are retained under
+`target/hosted/30686547027/`.
+
+## PR-triggered elevated GUI release diagnostic
+
+GUI release run `30686532847`, job `91333375316`, built the exact package at
+`d8e18dabebff6b7ea245c342992eb73cdfc8756d` and then failed during updater
+runtime smoke. GitHub's Windows runner was elevated, so the packaged updater
+correctly refused automatic replacement before mutation. The verifier had
+treated that security oracle as a generic bootstrap failure.
+
+Commit `4c64211ddbbb85066d96543db69c4fbeff3b3342` independently queries the
+verifier token. Elevated verification now requires the exact packaged refusal,
+an unchanged install snapshot, and no transaction artifacts, and explicitly
+fails if replacement is accepted. Non-elevated verification still requires
+full self-replacement and rollback. This adds no updater override, token
+manipulation, or production-policy exception. The focused artifact suite
+covers both routes and the elevated-success rejection.
+
+The first real local package rerun then exposed a separate producer issue:
+Windows PowerShell 5 added a UTF-8 BOM to `sorotte-install.json` because that
+one member still used `Set-Content -Encoding UTF8`. The strict consumer
+correctly rejected the archive. Commit
+`b6a1b76dce6fd20e39ef0e015c055a0038fa8215` routes both manifests through
+the existing atomic `UTF8Encoding(false)` writer and adds a policy regression.
+
+A fresh Windows PowerShell 5 bundle at exact source SHA
+`b6a1b76dce6fd20e39ef0e015c055a0038fa8215` is BOM-free and fully verified.
+Its archive SHA-256 is
+`830b08c9a1a849f999bab98250dbe70e3604709c9b3460059ea9ce596123259b`.
+The local verifier token was non-elevated, so visible GUI launch,
+installed-bootstrap self-replacement, exact package installation, faulted
+rollback, original-install restoration, and cleanup all executed. The failed
+and corrected bundles remain under `target/gui-release/` and
+`target/gui-release-ps5-fixed/`; `TC-HARNESS-051` and `TC-HARNESS-052` retain
+both diagnostics. Fresh PR and exact-head hosted acceptance remain required
+after these final harness-only corrections.
 
 ## Safety and scope
 
