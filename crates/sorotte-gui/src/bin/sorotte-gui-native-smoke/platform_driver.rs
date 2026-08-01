@@ -1,10 +1,25 @@
-use std::path::Path;
+use std::{cell::Cell, path::Path};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum NativeInputMode {
+    #[default]
+    StrictPhysical,
+    UiaOnly,
+}
+
+impl NativeInputMode {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::StrictPhysical => "strict-physical",
+            Self::UiaOnly => "uia-only",
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeControlKind {
     Any,
     Button,
-    MenuItem,
 }
 
 impl NativeControlKind {
@@ -12,7 +27,6 @@ impl NativeControlKind {
         match self {
             Self::Any => "control",
             Self::Button => "button",
-            Self::MenuItem => "menu-item",
         }
     }
 }
@@ -39,6 +53,7 @@ pub(super) trait NativeGuiDriver {
         width: i32,
         height: i32,
     ) -> Result<(), String>;
+    fn press_escape(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_named_control_down(
@@ -59,7 +74,6 @@ pub(super) trait NativeGuiDriver {
         &self,
         window: Self::WindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String>;
-    fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String>;
     fn count_named_controls(
         &self,
         window: Self::WindowHandle,
@@ -98,6 +112,17 @@ pub(super) trait NativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String>;
+    fn activate_named_control_by_keyboard(
+        &self,
+        _window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Err(format!(
+            "focused keyboard activation is unavailable for {} named {name:?}",
+            control_kind.label()
+        ))
+    }
     fn capture_window_png(
         &self,
         window: Self::WindowHandle,
@@ -113,7 +138,41 @@ type PlatformWindowHandle = windows_sys::Win32::Foundation::HWND;
 type PlatformWindowHandle = ();
 
 #[derive(Default)]
-pub(super) struct PlatformNativeGuiDriver;
+pub(super) struct PlatformNativeGuiDriver {
+    #[cfg(any(target_os = "windows", test))]
+    input_mode: NativeInputMode,
+    desktop_input_attempts: Cell<usize>,
+}
+
+impl PlatformNativeGuiDriver {
+    pub(super) fn new(input_mode: NativeInputMode) -> Self {
+        #[cfg(all(not(target_os = "windows"), not(test)))]
+        let _ = input_mode;
+
+        Self {
+            #[cfg(any(target_os = "windows", test))]
+            input_mode,
+            desktop_input_attempts: Cell::new(0),
+        }
+    }
+
+    pub(super) fn desktop_input_attempt_count(&self) -> usize {
+        self.desktop_input_attempts.get()
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    pub(super) fn begin_desktop_input(&self) -> Result<(), String> {
+        self.desktop_input_attempts
+            .set(self.desktop_input_attempts.get().saturating_add(1));
+        if self.input_mode == NativeInputMode::UiaOnly {
+            return Err(
+                "desktop-wide Win32 input is disabled by --input-mode uia-only (SendInput and cursor movement)"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
 
 #[cfg(not(target_os = "windows"))]
 #[path = "platform_driver/non_windows_impl.rs"]
@@ -154,3 +213,23 @@ mod png;
 #[cfg(target_os = "windows")]
 #[path = "platform_driver/windows_impl.rs"]
 mod windows_impl;
+
+#[cfg(test)]
+mod input_policy_tests {
+    use super::*;
+
+    #[test]
+    fn strict_physical_mode_allows_and_counts_desktop_input() {
+        let driver = PlatformNativeGuiDriver::new(NativeInputMode::StrictPhysical);
+        driver.begin_desktop_input().unwrap();
+        assert_eq!(driver.desktop_input_attempt_count(), 1);
+    }
+
+    #[test]
+    fn uia_only_mode_blocks_and_counts_desktop_input_before_dispatch() {
+        let driver = PlatformNativeGuiDriver::new(NativeInputMode::UiaOnly);
+        let error = driver.begin_desktop_input().unwrap_err();
+        assert!(error.contains("Win32 input is disabled"));
+        assert_eq!(driver.desktop_input_attempt_count(), 1);
+    }
+}

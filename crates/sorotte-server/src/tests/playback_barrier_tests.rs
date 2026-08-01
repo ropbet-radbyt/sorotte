@@ -942,7 +942,7 @@ fn recovery_rebinds_and_fences_old_connection_that_is_still_present() {
     runtime
         .handle_line("alice-new", &hello("alice", "room", true))
         .expect("replacement should join before the old transport disappears");
-    assert_eq!(runtime.sessions["alice-new"].username, "alice_2");
+    assert_eq!(runtime.sessions["alice-new"].username, "alice_");
     let recovered = runtime
         .handle_line_fanout(
             "alice-new",
@@ -957,7 +957,7 @@ fn recovery_rebinds_and_fences_old_connection_that_is_still_present() {
     );
     let barrier = &runtime.room_playback_barriers["room"];
     assert_eq!(barrier.initiator_client_id, "alice-new");
-    assert_eq!(barrier.initiator_username, "alice_2");
+    assert_eq!(barrier.initiator_username, "alice_");
     assert_eq!(barrier.participants.len(), 1);
     assert!(barrier.participants.contains_key("alice-new"));
     assert!(!barrier.participants.contains_key("alice-old"));
@@ -1326,7 +1326,7 @@ fn fenced_transport_cached_sample_is_excluded_from_periodic_room_derivation() {
     let (set_by, position) = runtime
         .slowest_room_playback_client_at("room", false, 50.0)
         .expect("replacement sample should remain eligible");
-    assert_eq!(set_by, "alice_2");
+    assert_eq!(set_by, "alice_");
     assert_eq!(position, 10.0);
     assert_eq!(
         runtime.client_playback_states["alice-old"].position,

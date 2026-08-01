@@ -18,11 +18,6 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
             .find("menu.open_media")
             .is_some_and(|node| !node.enabled)
     );
-    assert!(
-        initial_tree
-            .find("shell:quick:open-media-file")
-            .is_some_and(|node| !node.enabled)
-    );
     assert!(GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -55,11 +50,6 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
     assert!(
         runtime_tree
             .find("menu.open_media")
-            .is_some_and(|node| node.enabled)
-    );
-    assert!(
-        runtime_tree
-            .find("shell:quick:open-media-file")
             .is_some_and(|node| node.enabled)
     );
     assert!(GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));

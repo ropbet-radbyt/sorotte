@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn scripted_server_runtime_username_conflict_scenario_uses_bounded_numbered_suffixes() {
+fn scripted_server_runtime_username_conflict_scenario_uses_bounded_legacy_suffixes() {
     let events = replay_server_runtime_scenario_fixture("server_runtime_username_conflict.jsonl")
         .expect("username conflict scenario fixture should replay through server runtime");
     assert_eq!(events.len(), 4);
@@ -19,7 +19,7 @@ fn scripted_server_runtime_username_conflict_scenario_uses_bounded_numbered_suff
                 .and_then(|message| extract_hello_from_message(message).ok())
         })
         .expect("step 2 should include hello response for client-2");
-    assert_eq!(second_hello_response.username, "alice_2");
+    assert_eq!(second_hello_response.username, "alice_");
 
     let third_hello_event = events
         .get(2)
@@ -34,7 +34,7 @@ fn scripted_server_runtime_username_conflict_scenario_uses_bounded_numbered_suff
                 .and_then(|message| extract_hello_from_message(message).ok())
         })
         .expect("step 3 should include hello response for client-3");
-    assert_eq!(third_hello_response.username, "alice_");
+    assert_eq!(third_hello_response.username, "alice__");
 
     let list_event = events.get(3).expect("step 4 list event should be present");
     let list_response = decode_message_line(
@@ -50,8 +50,8 @@ fn scripted_server_runtime_username_conflict_scenario_uses_bounded_numbered_suff
             ListPayload::Rooms(rooms) => {
                 let room = rooms.get("room1").expect("room1 should be listed");
                 assert!(room.contains_key("alice"));
-                assert!(room.contains_key("alice_2"));
                 assert!(room.contains_key("alice_"));
+                assert!(room.contains_key("alice__"));
             }
             other => panic!("expected list room snapshot at step 4, got {other:?}"),
         },
@@ -291,7 +291,10 @@ fn scripted_server_runtime_permanent_rooms_file_scenario_retains_room_and_gui_du
                 .set
                 .playlist_change
                 .as_ref()
-                .is_some_and(|playlist_change| playlist_change.files.is_empty())
+                .is_some_and(|playlist_change| {
+                    playlist_change.files.is_empty()
+                        && playlist_change.user.as_deref() == Some("alice")
+                })
             {
                 saw_playlist_snapshot = true;
             }

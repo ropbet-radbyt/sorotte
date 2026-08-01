@@ -341,10 +341,24 @@ fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) 
     );
 
     owner.refresh_player_state_impl();
-    assert_eq!(
-        owner.playlist_resolution_attempt.as_ref().unwrap().state,
-        PlaylistResolutionAttemptState::Active
-    );
+    let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+    match mode {
+        FirstOpenFailureMode::Synchronous => {
+            assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
+            assert!(!attempt.media_confirmation_pending);
+        }
+        FirstOpenFailureMode::Tracked => {
+            assert_eq!(
+                attempt.state,
+                PlaylistResolutionAttemptState::Loading,
+                "a completed tracked fallback command must remain provisional without a physical media-success observation"
+            );
+            assert!(
+                attempt.media_confirmation_pending,
+                "the tracked fallback must retain its media-confirmation fence"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -3352,7 +3366,7 @@ fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_matc
         .as_mut()
         .expect("the initial active Plex miss should schedule an independent retry");
     assert_eq!(miss.attempt_count, 1);
-    miss.next_retry_at = std::time::Instant::now();
+    miss.next_retry_at = Some(std::time::Instant::now());
     assert!(owner.active_plex_miss_retry_due(&state));
     // The runtime pump invalidates the cached automatic trigger when this
     // independent deadline becomes due before asking the coordinator to retry.
@@ -3480,7 +3494,10 @@ fn gui_runtime_owner_reruns_active_automatic_miss_when_plex_server_context_chang
         .as_ref()
         .expect("the initial Plex miss should enter independent backoff");
     assert_eq!(miss.attempt_count, 1);
-    assert!(miss.next_retry_at > std::time::Instant::now());
+    assert!(
+        miss.next_retry_at
+            .is_some_and(|next_retry_at| next_retry_at > std::time::Instant::now())
+    );
     assert!(
         !owner.active_plex_miss_retry_due(&state),
         "the ordinary miss deadline must still be in the future"

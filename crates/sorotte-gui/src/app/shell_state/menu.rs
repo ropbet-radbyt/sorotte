@@ -1,4 +1,51 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::app) enum MenuSectionId {
+    File,
+    Playback,
+    Advanced,
+    Window,
+    Help,
+}
+
+impl MenuSectionId {
+    #[cfg(test)]
+    pub(in crate::app) const ALL: [Self; 5] = [
+        Self::File,
+        Self::Playback,
+        Self::Advanced,
+        Self::Window,
+        Self::Help,
+    ];
+
+    pub(in crate::app) const fn automation_id(self) -> &'static str {
+        match self {
+            Self::File => "menu.section.file",
+            Self::Playback => "menu.section.playback",
+            Self::Advanced => "menu.section.advanced",
+            Self::Window => "menu.section.window",
+            Self::Help => "menu.section.help",
+        }
+    }
+
+    pub(in crate::app) const fn label(self) -> &'static str {
+        match self {
+            Self::File => "File",
+            Self::Playback => "Playback",
+            Self::Advanced => "Advanced",
+            Self::Window => "Window",
+            Self::Help => "Help",
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn from_automation_id(automation_id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|section_id| section_id.automation_id() == automation_id)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::app) enum MenuActionId {
     OpenMedia,
     OpenMediaSearch,
@@ -183,6 +230,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn menu_section_ids_have_unique_stable_automation_ids_and_labels() {
+        let automation_ids = MenuSectionId::ALL
+            .into_iter()
+            .map(MenuSectionId::automation_id)
+            .collect::<HashSet<_>>();
+        let labels = MenuSectionId::ALL
+            .into_iter()
+            .map(MenuSectionId::label)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(automation_ids.len(), MenuSectionId::ALL.len());
+        assert_eq!(labels.len(), MenuSectionId::ALL.len());
+        assert!(
+            automation_ids
+                .iter()
+                .all(|id| id.starts_with("menu.section."))
+        );
+        for section_id in MenuSectionId::ALL {
+            assert_eq!(
+                MenuSectionId::from_automation_id(section_id.automation_id()),
+                Some(section_id)
+            );
+        }
+    }
+
+    #[test]
     fn menu_action_ids_have_unique_stable_automation_ids() {
         let automation_ids = MenuActionId::ALL
             .into_iter()
@@ -214,6 +287,20 @@ mod tests {
     fn menu_action_ids_cover_every_presented_menu_action() {
         let menus = super::super::MenuDialogShellState::from_stored_settings(
             &StoredClientSettingsMvp::default(),
+        );
+        assert_eq!(
+            menus
+                .sections
+                .iter()
+                .map(|section| section.id)
+                .collect::<Vec<_>>(),
+            MenuSectionId::ALL
+        );
+        assert!(
+            menus
+                .sections
+                .iter()
+                .all(|section| section.title == section.id.label())
         );
         let presented = menus
             .sections

@@ -8,6 +8,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+fuzz-support = []
+
 [dependencies]
 anyhow.workspace = true
 rustls.workspace = true
@@ -24,3 +27,4 @@ webpki-roots.workspace = true
 
 [dev-dependencies]
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }

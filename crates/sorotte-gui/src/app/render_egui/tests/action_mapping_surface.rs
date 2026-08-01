@@ -199,7 +199,6 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let seek_menu_action = shell_tree.find("menu.seek").unwrap();
     let undo_seek_menu_action = shell_tree.find("menu.undo_seek").unwrap();
     let set_offset_menu_action = shell_tree.find("menu.set_offset").unwrap();
-    let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
     let playlist_row = shell_tree.find("main-window:playlist:0").unwrap();
     let room_toggle_button = shell_tree.find("main-window:room-actions:toggle").unwrap();
     let room_set_button = shell_tree.find("main-window:room:set").unwrap();
@@ -270,12 +269,6 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
             },
             GuiShellAction::InvokeMenuAction(MenuActionId::Exit),
         ]
-    );
-    assert_eq!(quick_open_media.kind, GuiWidgetKind::Button);
-    assert!(quick_open_media.enabled);
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, quick_open_media),
-        vec![GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia)]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_list_item_node(playlist_row),
@@ -603,12 +596,12 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
     context.enable_accesskit();
     let mut renderer = GuiWidgetEguiRenderer::default();
 
+    state.render_shell_widgets(&mut renderer);
     let output = context.run_ui(egui::RawInput::default(), |ui| {
-        egui::CentralPanel::default().show(ui, |ui| {
-            for node in &menu_nodes {
-                renderer.render_button_like(ui, node, &state);
-            }
-        });
+        for node in &menu_nodes {
+            renderer.render_button_like(ui, node, &state);
+        }
+        let _ = renderer.show(ui, &state, false);
     });
     let accesskit_update = output
         .platform_output
@@ -625,6 +618,13 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
             author_ids.contains(&node.id.as_str()),
             "{} should be exposed as the UI Automation ID",
             node.id,
+        );
+    }
+    for section_id in MenuSectionId::ALL {
+        assert!(
+            author_ids.contains(&section_id.automation_id()),
+            "{} should be exposed as the top-level menu UI Automation ID",
+            section_id.automation_id(),
         );
     }
 }

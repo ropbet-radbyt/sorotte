@@ -1,6 +1,46 @@
 use super::*;
 
 impl ServerRuntime {
+    fn observe_tls_certificate_bundle(
+        &self,
+        path: &Path,
+    ) -> Option<(
+        TlsCertificateBundleFingerprint,
+        Option<TlsCertificateBundleSnapshot>,
+    )> {
+        #[cfg(test)]
+        if let Some(clock) = self.tls_certificate_bundle_metadata_clock.as_ref() {
+            return Some((clock.fingerprint(), None));
+        }
+        let snapshot = read_tls_certificate_bundle_snapshot(path).ok()?;
+        Some((snapshot.fingerprint(), Some(snapshot)))
+    }
+
+    fn apply_tls_certificate_bundle_observation(
+        &mut self,
+        path: &Path,
+        fingerprint: TlsCertificateBundleFingerprint,
+        snapshot: Option<TlsCertificateBundleSnapshot>,
+    ) {
+        self.tls_certificate_bundle_fingerprint = Some(fingerprint);
+        let loaded = match snapshot.as_ref() {
+            Some(snapshot) => load_tls_server_config_from_snapshot(path, snapshot),
+            None => load_tls_server_config(path),
+        };
+        match loaded {
+            Ok(server_config) => {
+                self.tls_server_config = Some(server_config);
+                self.tls_context_available = true;
+                self.server_accepts_tls = true;
+            }
+            Err(_) => {
+                self.tls_server_config = None;
+                self.tls_context_available = false;
+                self.server_accepts_tls = false;
+            }
+        }
+    }
+
     pub(crate) fn current_time_seconds(&self) -> f64 {
         self.time_now_override_seconds
             .unwrap_or_else(current_unix_timestamp_seconds)
@@ -32,46 +72,32 @@ impl ServerRuntime {
             self.tls_server_config = None;
             self.tls_context_available = false;
             self.server_accepts_tls = false;
-            self.tls_last_edit_cert_time = None;
+            self.tls_certificate_bundle_fingerprint = None;
             return;
         };
-        if !tls_certificate_bundle_is_available(path) {
+        let path = path.clone();
+        let Some((fingerprint, snapshot)) = self.observe_tls_certificate_bundle(&path) else {
             self.tls_server_config = None;
             self.tls_context_available = false;
             self.server_accepts_tls = false;
-            self.tls_last_edit_cert_time = None;
+            self.tls_certificate_bundle_fingerprint = None;
             return;
-        }
-        self.tls_last_edit_cert_time = tls_certificate_bundle_modified_time(path);
-        match load_tls_server_config(path) {
-            Ok(server_config) => {
-                self.tls_server_config = Some(server_config);
-                self.tls_context_available = true;
-                self.server_accepts_tls = true;
-            }
-            Err(_) => {
-                self.tls_server_config = None;
-                self.tls_context_available = false;
-                self.server_accepts_tls = false;
-            }
-        }
+        };
+        self.apply_tls_certificate_bundle_observation(&path, fingerprint, snapshot);
     }
 
     pub(crate) fn refresh_tls_context_after_cert_rotation_if_needed(&mut self) {
         let Some(path) = self.tls_cert_path.as_ref() else {
             return;
         };
-        let Some(current_edit_time) = tls_certificate_bundle_modified_time(path) else {
+        let path = path.clone();
+        let Some((fingerprint, snapshot)) = self.observe_tls_certificate_bundle(&path) else {
             return;
         };
-        if Some(current_edit_time) == self.tls_last_edit_cert_time {
+        if Some(fingerprint) == self.tls_certificate_bundle_fingerprint {
             return;
         }
-        self.refresh_tls_context_after_rotation_attempt();
-    }
-
-    pub(crate) fn refresh_tls_context_after_rotation_attempt(&mut self) {
-        self.refresh_tls_context_from_cert_path();
+        self.apply_tls_certificate_bundle_observation(&path, fingerprint, snapshot);
         self.tls_rotation_attempts = self.tls_rotation_attempts.saturating_add(1);
         if self.tls_rotation_attempts < TLS_CERT_ROTATION_MAX_RETRIES {
             self.server_accepts_tls = true;
@@ -441,7 +467,11 @@ impl ServerRuntime {
                 .entry(room_name.clone())
                 .or_insert_with(|| RoomPlaylistState {
                     files: Vec::new(),
-                    index: None,
+                    // Syncplay seeds file-backed permanent room placeholders
+                    // with index zero even while their playlist is empty.
+                    // Preserve that wire-visible join snapshot until a client
+                    // explicitly changes the index.
+                    index: Some(0),
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
             self.room_playback_states
@@ -1427,34 +1457,24 @@ impl ServerRuntime {
             return Some(username.to_owned());
         }
 
-        let mut generated_candidates = BTreeSet::new();
-        for ordinal in 2_u64.. {
-            let suffix = format!("_{ordinal}");
-            let suffix_chars = suffix.chars().count();
-            let chosen_username = if suffix_chars <= self.max_username_length {
-                let prefix_chars = self.max_username_length - suffix_chars;
-                format!(
-                    "{}{}",
-                    username.chars().take(prefix_chars).collect::<String>(),
-                    suffix
-                )
-            } else {
-                // Extremely small configured limits cannot fit the separator.
-                // Keep the least-significant scalar digits, which still gives
-                // a deterministic bounded namespace until it is exhausted.
-                ordinal
-                    .to_string()
-                    .chars()
-                    .rev()
-                    .take(self.max_username_length)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect()
-            };
-            if !generated_candidates.insert(chosen_username.clone()) {
-                return None;
-            }
+        // Legacy Syncplay strips a colliding trailing-underscore run back to
+        // its stem, then appends underscores until the name is free. Keep that
+        // externally visible allocation order, but reserve suffix space inside
+        // the advertised scalar limit so a hostile collision sequence remains
+        // finite and bounded.
+        let trimmed = username.trim_end_matches('_');
+        let collision_stem = if username.ends_with('_') {
+            if trimmed.is_empty() { "_" } else { trimmed }
+        } else {
+            username
+        };
+        for suffix_chars in 1..=self.max_username_length {
+            let prefix_chars = self.max_username_length - suffix_chars;
+            let mut chosen_username = collision_stem
+                .chars()
+                .take(prefix_chars)
+                .collect::<String>();
+            chosen_username.extend(std::iter::repeat_n('_', suffix_chars));
             if !all_names.contains(&chosen_username.to_ascii_lowercase()) {
                 return Some(chosen_username);
             }

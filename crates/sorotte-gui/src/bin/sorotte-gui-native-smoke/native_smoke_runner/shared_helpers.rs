@@ -1,5 +1,121 @@
 use super::*;
 
+const NATIVE_SMOKE_ARTIFACT_DIR_ENV: &str = "SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR";
+
+pub(super) fn capture_native_failure_artifacts<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    scope: &str,
+    failure: &str,
+) {
+    let Some(artifact_directory) = std::env::var_os(NATIVE_SMOKE_ARTIFACT_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return;
+    };
+    capture_native_failure_artifacts_at(driver, window, &artifact_directory, scope, failure);
+}
+
+pub(super) fn capture_native_failure_artifacts_at<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    artifact_directory: &Path,
+    scope: &str,
+    failure: &str,
+) {
+    let mut capture_errors = Vec::new();
+    if let Err(error) = fs::create_dir_all(artifact_directory) {
+        eprintln!(
+            "failed to create native-smoke failure artifact directory {}: {error}",
+            artifact_directory.display()
+        );
+        return;
+    }
+
+    let screenshot_path = artifact_directory.join(format!("failure-{scope}.png"));
+    if let Err(error) = driver.capture_window_png(window, &screenshot_path) {
+        capture_errors.push(format!("screenshot: {error}"));
+    }
+
+    let accessibility_path = artifact_directory.join(format!("failure-{scope}-accessibility.json"));
+    match driver.accessibility_nodes(window) {
+        Ok(nodes) => {
+            let serialized_nodes = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| {
+                    let (name, automation_id) = redacted_native_failure_node_identity(node);
+                    serde_json::json!({
+                        "index": index,
+                        "name": name,
+                        "automation_id": automation_id,
+                        "control_type": node.control_type,
+                        "enabled": node.enabled,
+                        "focused": node.focused,
+                        "offscreen": node.offscreen,
+                        "bounds": node.bounds,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let safe_failure = redact_native_failure_text(failure);
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "kind": "sorotte-gui-native-smoke-failure-accessibility",
+                "scope": scope,
+                "source": "Windows UI Automation / AccessKit",
+                "failure": safe_failure,
+                "nodes": serialized_nodes,
+            });
+            match serde_json::to_vec_pretty(&payload) {
+                Ok(mut json) => {
+                    json.push(b'\n');
+                    if let Err(error) = fs::write(&accessibility_path, json) {
+                        capture_errors.push(format!("accessibility write: {error}"));
+                    }
+                }
+                Err(error) => capture_errors.push(format!("accessibility serialization: {error}")),
+            }
+        }
+        Err(error) => capture_errors.push(format!("accessibility snapshot: {error}")),
+    }
+
+    if !capture_errors.is_empty() {
+        let capture_error_path =
+            artifact_directory.join(format!("failure-{scope}-capture-errors.txt"));
+        let mut payload = capture_errors.join("\n");
+        payload.push('\n');
+        if let Err(error) = fs::write(&capture_error_path, payload) {
+            eprintln!(
+                "failed to write native-smoke capture errors {}: {error}",
+                capture_error_path.display()
+            );
+        }
+    }
+}
+
+fn redact_native_failure_text(value: &str) -> String {
+    if sorotte_secret::text_may_contain_credentials(value) {
+        sorotte_secret::REDACTED_SECRET.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn redacted_native_failure_node_identity(node: &NativeAccessibilityNode) -> (String, String) {
+    let automation_id_lower = node.automation_id.to_ascii_lowercase();
+    let identity_is_secret = ["password", "secret", "credential", "authorization", "token"]
+        .iter()
+        .any(|marker| automation_id_lower.contains(marker));
+    let name = if identity_is_secret || sorotte_secret::text_may_contain_credentials(&node.name) {
+        sorotte_secret::REDACTED_SECRET.to_owned()
+    } else {
+        node.name.clone()
+    };
+    let automation_id = redact_native_failure_text(&node.automation_id);
+    (name, automation_id)
+}
+
 fn user_row_wait_error<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -468,22 +584,48 @@ pub(super) fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
 }
 
 impl MockSessionServer {
+    pub(super) fn recv_peer(&self, timeout: Duration, label: &str) -> Result<String, String> {
+        self.peer_rx.recv_timeout(timeout).map_err(|error| {
+            format!("timed out waiting for {label} peer endpoint from mock TCP server: {error}")
+        })
+    }
+
     pub(super) fn recv_hello(&self, timeout: Duration, label: &str) -> Result<String, String> {
         self.hello_rx.recv_timeout(timeout).map_err(|error| {
             format!("timed out waiting for {label} hello line from mock TCP server: {error}")
         })
     }
 
+    pub(super) fn recv_playlist_exchange(
+        &self,
+        timeout: Duration,
+        label: &str,
+    ) -> Result<(String, String, String, String), String> {
+        let receiver = self.playlist_exchange_rx.as_ref().ok_or_else(|| {
+            format!("{label} mock TCP server does not expose playlist exchange evidence")
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!("timed out waiting for {label} playlist exchange evidence: {error}")
+        })
+    }
+
     pub(super) fn release(mut self, label: &str) -> Result<(), String> {
+        let address = self.address.clone();
         let _ = self.release_tx.send(());
-        let Some(join_handle) = self.join_handle.take() else {
-            return Ok(());
-        };
-        match join_handle.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(format!("{label} mock TCP server failed: {error}")),
-            Err(_) => Err(format!("{label} mock TCP server thread panicked")),
+        if let Some(join_handle) = self.join_handle.take() {
+            match join_handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    return Err(format!("{label} mock TCP server failed: {error}"));
+                }
+                Err(_) => return Err(format!("{label} mock TCP server thread panicked")),
+            }
         }
+        let rebound = TcpListener::bind(&address).map_err(|error| {
+            format!("{label} mock TCP server did not release exact endpoint {address}: {error}")
+        })?;
+        drop(rebound);
+        Ok(())
     }
 }
 
@@ -517,11 +659,11 @@ pub(super) fn start_mock_session_server(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
-    start_mock_session_server_with_hold_timeout(
+    start_mock_session_server_with_release_policy(
         initial_lines,
         first_chat_followup_lines,
         second_chat_followup_lines,
-        Duration::from_secs(10),
+        None,
     )
 }
 
@@ -530,6 +672,20 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
     hold_timeout: Duration,
+) -> Result<MockSessionServer, String> {
+    start_mock_session_server_with_release_policy(
+        initial_lines,
+        first_chat_followup_lines,
+        second_chat_followup_lines,
+        Some(hold_timeout),
+    )
+}
+
+fn start_mock_session_server_with_release_policy(
+    initial_lines: &'static [&'static str],
+    first_chat_followup_lines: &'static [&'static str],
+    second_chat_followup_lines: &'static [&'static str],
+    hold_timeout: Option<Duration>,
 ) -> Result<MockSessionServer, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
@@ -541,11 +697,12 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
         .map_err(|error| format!("failed to read mock TCP listener address: {error}"))?;
     let port = address.port();
 
+    let (peer_tx, peer_rx) = mpsc::channel();
     let (hello_tx, hello_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::spawn(move || -> Result<(), String> {
         let accept_deadline = Instant::now() + Duration::from_secs(25);
-        let (mut stream, _) = loop {
+        let (mut stream, peer) = loop {
             if release_rx.try_recv().is_ok() {
                 return Ok(());
             }
@@ -565,6 +722,14 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
                 }
             }
         };
+        if !peer.is_ipv4() || !peer.ip().is_loopback() {
+            return Err(format!(
+                "mock TCP server rejected non-IPv4-loopback peer {peer}"
+            ));
+        }
+        peer_tx.send(peer.to_string()).map_err(|error| {
+            format!("mock TCP server failed to report connected peer endpoint: {error}")
+        })?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("mock TCP server failed to restore blocking mode: {error}"))?;
@@ -648,14 +813,27 @@ pub(super) fn start_mock_session_server_with_hold_timeout(
         process_followup("first", first_chat_followup_lines)?;
         process_followup("second", second_chat_followup_lines)?;
 
-        let _ = release_rx.recv_timeout(hold_timeout);
+        match hold_timeout {
+            Some(hold_timeout) => {
+                let _ = release_rx.recv_timeout(hold_timeout);
+            }
+            None => {
+                // Scenario-owned fixtures stay connected until the scenario
+                // has closed and joined the GUI process. This prevents slow
+                // native interaction from turning a test fixture's timeout
+                // into a product reconnect failure.
+                let _ = release_rx.recv();
+            }
+        }
         Ok(())
     });
 
     Ok(MockSessionServer {
         address: address.to_string(),
         port,
+        peer_rx,
         hello_rx,
+        playlist_exchange_rx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -674,11 +852,12 @@ pub(super) fn start_phased_mock_session_server(
         .map_err(|error| format!("failed to read mock TCP listener address: {error}"))?;
     let port = address.port();
 
+    let (peer_tx, peer_rx) = mpsc::channel();
     let (hello_tx, hello_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::spawn(move || -> Result<(), String> {
         let accept_deadline = Instant::now() + Duration::from_secs(25);
-        let (mut stream, _) = loop {
+        let (mut stream, peer) = loop {
             if release_rx.try_recv().is_ok() {
                 return Ok(());
             }
@@ -698,6 +877,14 @@ pub(super) fn start_phased_mock_session_server(
                 }
             }
         };
+        if !peer.is_ipv4() || !peer.ip().is_loopback() {
+            return Err(format!(
+                "mock TCP server rejected non-IPv4-loopback peer {peer}"
+            ));
+        }
+        peer_tx.send(peer.to_string()).map_err(|error| {
+            format!("mock TCP server failed to report connected peer endpoint: {error}")
+        })?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("mock TCP server failed to restore blocking mode: {error}"))?;
@@ -730,14 +917,452 @@ pub(super) fn start_phased_mock_session_server(
 
         write_lines("initial", initial_lines)?;
 
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // This fixture owns a live transport, so its lifetime must be tied to
+        // the scenario rather than an arbitrary wall-clock delay. A slow UIA
+        // pass can legitimately take longer than ten seconds; closing the
+        // socket here used to manufacture a connection reset and reconnect
+        // attempt while the GUI was still under test.
+        let _ = release_rx.recv();
         Ok(())
     });
 
     Ok(MockSessionServer {
         address: address.to_string(),
         port,
+        peer_rx,
         hello_rx,
+        playlist_exchange_rx: None,
+        release_tx,
+        join_handle: Some(join_handle),
+    })
+}
+
+fn redacted_playlist_echo_frame_shape(value: &serde_json::Value) -> &'static str {
+    let Some(top_level) = value.as_object() else {
+        return "non-object";
+    };
+    if top_level.len() != 1 {
+        return "multi-field-top-level";
+    }
+    if let Some(set) = top_level.get("Set") {
+        let Some(set) = set.as_object() else {
+            return "Set.non-object";
+        };
+        if set.len() != 1 {
+            return "Set.multi-field";
+        }
+        if set.contains_key("playlistChange") {
+            return "Set.playlistChange";
+        }
+        if set.contains_key("playlistIndex") {
+            return "Set.playlistIndex";
+        }
+        if set.contains_key("ready") {
+            return "Set.ready";
+        }
+        return "Set.other";
+    }
+    if top_level.contains_key("List") {
+        return "List";
+    }
+    if let Some(state) = top_level.get("State") {
+        let Some(state) = state.as_object() else {
+            return "State.non-object";
+        };
+        if state.len() == 1 && state.contains_key("ping") {
+            return "State.ping";
+        }
+        return "State.other";
+    }
+    "other-top-level"
+}
+
+fn is_known_pre_media_state_heartbeat(value: &serde_json::Value) -> bool {
+    let Some(top_level) = value.as_object() else {
+        return false;
+    };
+    if top_level.len() != 1 {
+        return false;
+    }
+    let Some(state) = top_level
+        .get("State")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    if state.len() != 1 {
+        return false;
+    }
+    let Some(ping) = state.get("ping").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    if ping.len() != 2
+        || !ping.contains_key("clientLatencyCalculation")
+        || !ping.contains_key("clientRtt")
+    {
+        return false;
+    }
+    let Some(client_latency_calculation) = ping
+        .get("clientLatencyCalculation")
+        .and_then(serde_json::Value::as_f64)
+    else {
+        return false;
+    };
+    let Some(client_rtt) = ping.get("clientRtt").and_then(serde_json::Value::as_f64) else {
+        return false;
+    };
+    client_latency_calculation.is_finite()
+        && client_latency_calculation > 0.0
+        && client_rtt.is_finite()
+        && client_rtt >= 0.0
+}
+
+fn is_known_playlist_echo_housekeeping_frame(value: &serde_json::Value) -> bool {
+    value == &serde_json::json!({"List": null})
+        || value == &serde_json::json!({"State": {"ping": {}}})
+        || is_known_pre_media_state_heartbeat(value)
+        || value
+            == &serde_json::json!({
+                "Set": {
+                    "ready": {
+                        "isReady": false,
+                        "manuallyInitiated": false,
+                    }
+                }
+            })
+}
+
+pub(super) fn start_playlist_echo_mock_session_server(
+    server_hello: &'static str,
+    expected_media_url: String,
+    username: &'static str,
+) -> Result<MockSessionServer, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("failed to bind playlist-echo mock TCP listener: {error}"))?;
+    listener.set_nonblocking(true).map_err(|error| {
+        format!("failed to set playlist-echo mock TCP listener nonblocking mode: {error}")
+    })?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("failed to read playlist-echo mock TCP address: {error}"))?;
+    let port = address.port();
+
+    let (peer_tx, peer_rx) = mpsc::channel();
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (playlist_exchange_tx, playlist_exchange_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let join_handle = thread::Builder::new()
+        .name("sorotte-native-playlist-echo".to_owned())
+        .spawn(move || -> Result<(), String> {
+            let accept_deadline = Instant::now() + Duration::from_secs(25);
+            let (mut stream, peer) = loop {
+                if release_rx.try_recv().is_ok() {
+                    return Ok(());
+                }
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= accept_deadline {
+                            return Err(
+                                "playlist-echo mock TCP server timed out waiting for client connection"
+                                    .to_owned(),
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(40));
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "playlist-echo mock TCP server failed to accept client: {error}"
+                        ));
+                    }
+                }
+            };
+            if !peer.is_ipv4() || !peer.ip().is_loopback() {
+                return Err(format!(
+                    "playlist-echo mock TCP server rejected non-IPv4-loopback peer {peer}"
+                ));
+            }
+            peer_tx.send(peer.to_string()).map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to report connected peer endpoint: {error}"
+                )
+            })?;
+            stream.set_nonblocking(false).map_err(|error| {
+                format!("playlist-echo mock TCP server failed to restore blocking mode: {error}")
+            })?;
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to set read timeout: {error}"
+                    )
+                })?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to set write timeout: {error}"
+                    )
+                })?;
+            let reader_stream = stream.try_clone().map_err(|error| {
+                format!("playlist-echo mock TCP server failed to clone stream: {error}")
+            })?;
+            let mut reader = BufReader::new(reader_stream);
+            let hello_line = read_mock_session_startup_hello_line(&mut stream, &mut reader)?;
+            hello_tx.send(hello_line).map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to report startup hello line: {error}"
+                )
+            })?;
+            stream
+                .write_all(server_hello.as_bytes())
+                .map_err(|error| {
+                    format!("playlist-echo mock TCP server failed to write Hello: {error}")
+                })?;
+            stream.write_all(b"\n").map_err(|error| {
+                format!("playlist-echo mock TCP server failed to terminate Hello: {error}")
+            })?;
+
+            let exchange_deadline = Instant::now() + Duration::from_secs(25);
+            let mut unrelated_frame_count = 0usize;
+            let request = loop {
+                if release_rx.try_recv().is_ok() {
+                    return Err(
+                        "playlist-echo mock TCP server was released before playlistChange"
+                            .to_owned(),
+                    );
+                }
+                let mut candidate = String::new();
+                match reader.read_line(&mut candidate) {
+                    Ok(0) => {
+                        return Err(
+                            "playlist-echo mock TCP client closed before playlistChange".to_owned()
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) =>
+                    {
+                        if Instant::now() >= exchange_deadline {
+                            return Err(
+                                "playlist-echo mock TCP server timed out waiting for playlistChange"
+                                    .to_owned(),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "playlist-echo mock TCP server failed reading client frame: {error}"
+                        ));
+                    }
+                }
+                let candidate = candidate.trim();
+                if candidate.is_empty() {
+                    return Err(
+                        "playlist-echo mock TCP server received an empty client frame".to_owned()
+                    );
+                }
+                let parsed: serde_json::Value =
+                    serde_json::from_str(candidate).map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server received malformed client JSON: {error}"
+                        )
+                    })?;
+                let expected_playlist_change = serde_json::json!({
+                    "Set": {
+                        "playlistChange": {
+                            "files": [expected_media_url.as_str()],
+                        }
+                    }
+                });
+                if parsed == expected_playlist_change {
+                    break candidate.to_owned();
+                }
+                if is_known_playlist_echo_housekeeping_frame(&parsed) {
+                    unrelated_frame_count = unrelated_frame_count.saturating_add(1);
+                    if unrelated_frame_count > 64 {
+                        return Err(
+                            "playlist-echo mock TCP server exceeded known startup-frame budget before playlistChange"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+                if parsed.pointer("/Set/playlistChange").is_some() {
+                    return Err(
+                        "playlist-echo mock TCP server playlistChange did not match the exact closed request schema"
+                            .to_owned(),
+                    );
+                }
+                return Err(
+                    format!(
+                        "playlist-echo mock TCP server received an unexpected client frame before playlistChange (redacted shape: {})",
+                        redacted_playlist_echo_frame_shape(&parsed)
+                    ),
+                );
+            };
+
+            let playlist_change_echo = serde_json::json!({
+                "Set": {
+                    "playlistChange": {
+                        "files": [expected_media_url.as_str()],
+                        "user": username,
+                    }
+                }
+            })
+            .to_string();
+            stream
+                .write_all(playlist_change_echo.as_bytes())
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to write authoritative playlistChange echo: {error}"
+                    )
+                })?;
+            stream.write_all(b"\n").map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to terminate authoritative playlistChange echo: {error}"
+                )
+            })?;
+            stream.flush().map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to flush authoritative playlistChange echo: {error}"
+                )
+            })?;
+
+            let expected_playlist_index = serde_json::json!({
+                "Set": {
+                    "playlistIndex": {
+                        "index": 0,
+                    }
+                }
+            });
+            let playlist_index_request = loop {
+                if release_rx.try_recv().is_ok() {
+                    return Err(
+                        "playlist-echo mock TCP server was released before playlistIndex"
+                            .to_owned(),
+                    );
+                }
+                let mut candidate = String::new();
+                match reader.read_line(&mut candidate) {
+                    Ok(0) => {
+                        return Err(
+                            "playlist-echo mock TCP client closed before playlistIndex".to_owned(),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) =>
+                    {
+                        if Instant::now() >= exchange_deadline {
+                            return Err(
+                                "playlist-echo mock TCP server timed out waiting for playlistIndex"
+                                    .to_owned(),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "playlist-echo mock TCP server failed reading client frame before playlistIndex: {error}"
+                        ));
+                    }
+                }
+                let candidate = candidate.trim();
+                if candidate.is_empty() {
+                    return Err(
+                        "playlist-echo mock TCP server received an empty client frame before playlistIndex"
+                            .to_owned(),
+                    );
+                }
+                let parsed: serde_json::Value =
+                    serde_json::from_str(candidate).map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server received malformed client JSON before playlistIndex: {error}"
+                        )
+                    })?;
+                if parsed == expected_playlist_index {
+                    break candidate.to_owned();
+                }
+                if is_known_playlist_echo_housekeeping_frame(&parsed) {
+                    unrelated_frame_count = unrelated_frame_count.saturating_add(1);
+                    if unrelated_frame_count > 64 {
+                        return Err(
+                            "playlist-echo mock TCP server exceeded known housekeeping-frame budget before playlistIndex"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+                if parsed.pointer("/Set/playlistIndex").is_some() {
+                    return Err(
+                        "playlist-echo mock TCP server playlistIndex did not match the exact closed request schema"
+                            .to_owned(),
+                    );
+                }
+                return Err(format!(
+                    "playlist-echo mock TCP server received an unexpected client frame before playlistIndex (redacted shape: {})",
+                    redacted_playlist_echo_frame_shape(&parsed)
+                ));
+            };
+
+            let playlist_index_echo = serde_json::json!({
+                "Set": {
+                    "playlistIndex": {
+                        "index": 0,
+                        "user": username,
+                    }
+                }
+            })
+            .to_string();
+            stream
+                .write_all(playlist_index_echo.as_bytes())
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to write authoritative playlistIndex echo: {error}"
+                    )
+                })?;
+            stream.write_all(b"\n").map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to terminate authoritative playlistIndex echo: {error}"
+                )
+            })?;
+            stream.flush().map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to flush authoritative playlistIndex echo: {error}"
+                )
+            })?;
+            playlist_exchange_tx
+                .send((
+                    request,
+                    playlist_change_echo,
+                    playlist_index_request,
+                    playlist_index_echo,
+                ))
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to report exchange evidence: {error}"
+                    )
+                })?;
+
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .map_err(|error| format!("failed to spawn playlist-echo mock TCP server: {error}"))?;
+
+    Ok(MockSessionServer {
+        address: address.to_string(),
+        port,
+        peer_rx,
+        hello_rx,
+        playlist_exchange_rx: Some(playlist_exchange_rx),
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -892,4 +1517,45 @@ pub(super) fn wait_for_accessible_name_with_named_control_scroll_up<D: NativeGui
     Err(format!(
         "timed out waiting for accessible name {name:?} after {max_scrolls} upward scrolls on {scroll_control_name:?}"
     ))
+}
+
+#[cfg(test)]
+mod failure_artifact_tests {
+    use super::*;
+
+    #[test]
+    fn failure_artifact_identity_redacts_password_values_but_preserves_stable_ids() {
+        let node = NativeAccessibilityNode {
+            name: "native-failure-secret-canary".to_owned(),
+            automation_id: "main-window:controller-auth:password".to_owned(),
+            control_type: 0,
+            enabled: true,
+            focused: false,
+            offscreen: false,
+            bounds: None,
+        };
+
+        let (name, automation_id) = redacted_native_failure_node_identity(&node);
+
+        assert_eq!(name, sorotte_secret::REDACTED_SECRET);
+        assert_eq!(automation_id, node.automation_id);
+    }
+
+    #[test]
+    fn failure_artifact_identity_preserves_non_secret_menu_evidence() {
+        let node = NativeAccessibilityNode {
+            name: "File".to_owned(),
+            automation_id: FILE_MENU_AUTOMATION_ID.to_owned(),
+            control_type: 0,
+            enabled: true,
+            focused: false,
+            offscreen: false,
+            bounds: Some([10, 10, 50, 30]),
+        };
+
+        let (name, automation_id) = redacted_native_failure_node_identity(&node);
+
+        assert_eq!(name, "File");
+        assert_eq!(automation_id, FILE_MENU_AUTOMATION_ID);
+    }
 }

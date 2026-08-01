@@ -496,32 +496,7 @@ fn sorotte_client_message_context(message_name: &str) -> Option<SanitizationCont
 }
 
 fn sensitive_key(key: &str) -> bool {
-    let normalized = normalized_key(key);
-    let compact = normalized.replace('_', "");
-    matches!(
-        normalized.as_str(),
-        "authorization"
-            | "cookie"
-            | "cookies"
-            | "password"
-            | "passwd"
-            | "secret"
-            | "token"
-            | "access_token"
-            | "refresh_token"
-            | "api_key"
-            | "http_header_fields"
-            | "headers"
-    ) || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || normalized.ends_with("_password")
-        || matches!(
-            compact.as_str(),
-            "accesstoken" | "refreshtoken" | "apikey" | "httpheaderfields" | "proxyauthorization"
-        )
-        || compact.ends_with("token")
-        || compact.ends_with("secret")
-        || compact.ends_with("password")
+    sorotte_secret::key_is_sensitive(key)
 }
 
 fn location_key(key: &str) -> bool {
@@ -806,6 +781,9 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
     }
     encoded
 }
+
+#[cfg(test)]
+mod privacy_tests;
 
 #[cfg(test)]
 mod tests {

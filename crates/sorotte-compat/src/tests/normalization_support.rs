@@ -181,18 +181,11 @@ fn is_legacy_default_user_features(features: &serde_json::Map<String, Value>) ->
         && features.get("uiMode") == Some(&Value::String("Unknown".to_owned()))
 }
 
-fn is_legacy_compat_missing_features_marker(features: &serde_json::Map<String, Value>) -> bool {
-    features.get(LEGACY_COMPAT_MISSING_FEATURES_MARKER) == Some(&Value::Bool(true))
-}
-
 fn canonicalize_user_features_field(object: &mut serde_json::Map<String, Value>, field: &str) {
     let canonicalize_to_default = match object.get(field) {
         None => true,
         Some(Value::Null) => true,
-        Some(Value::Object(features)) => {
-            is_legacy_default_user_features(features)
-                || is_legacy_compat_missing_features_marker(features)
-        }
+        Some(Value::Object(features)) => is_legacy_default_user_features(features),
         _ => false,
     };
     if canonicalize_to_default {

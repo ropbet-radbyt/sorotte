@@ -6,67 +6,162 @@ use tokio::time::Instant;
 
 use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
-pub(crate) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+pub const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
-pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InboundProtocolReadObservation {
+    ConsumedPartial(usize),
+    CancelledPartial(usize),
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static INBOUND_PROTOCOL_READ_OBSERVER:
+        tokio::sync::mpsc::UnboundedSender<InboundProtocolReadObservation>;
+}
+
+#[cfg(test)]
+pub(crate) async fn observe_inbound_protocol_reads<F>(
+    observer: tokio::sync::mpsc::UnboundedSender<InboundProtocolReadObservation>,
+    future: F,
+) -> F::Output
 where
-    R: AsyncBufRead + Unpin,
+    F: std::future::Future,
 {
-    let mut line = Vec::new();
-    loop {
-        let available = reader.fill_buf().await?;
-        if available.is_empty() {
-            if line.is_empty() {
-                return Ok(None);
-            }
-            break;
-        }
+    INBOUND_PROTOCOL_READ_OBSERVER.scope(observer, future).await
+}
 
-        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
-            let raw_line_len = line.len() + newline_index;
-            let line_len = if newline_index == 0 {
-                raw_line_len.saturating_sub(usize::from(line.last() == Some(&b'\r')))
-            } else {
-                raw_line_len.saturating_sub(usize::from(available[newline_index - 1] == b'\r'))
+#[cfg(test)]
+struct InboundProtocolReadGuard {
+    partial_bytes: usize,
+    completed: bool,
+}
+
+#[cfg(test)]
+impl InboundProtocolReadGuard {
+    fn new(partial_bytes: usize) -> Self {
+        Self {
+            partial_bytes,
+            completed: false,
+        }
+    }
+
+    fn consumed_partial(&mut self, bytes: usize) {
+        self.partial_bytes = bytes;
+        let _ = INBOUND_PROTOCOL_READ_OBSERVER.try_with(|observer| {
+            observer.send(InboundProtocolReadObservation::ConsumedPartial(bytes))
+        });
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+#[cfg(test)]
+impl Drop for InboundProtocolReadGuard {
+    fn drop(&mut self) {
+        if self.partial_bytes == 0 || self.completed {
+            return;
+        }
+        let _ = INBOUND_PROTOCOL_READ_OBSERVER.try_with(|observer| {
+            observer.send(InboundProtocolReadObservation::CancelledPartial(
+                self.partial_bytes,
+            ))
+        });
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InboundProtocolLineReader {
+    partial_line: Vec<u8>,
+}
+
+impl InboundProtocolLineReader {
+    pub async fn read_line<R>(&mut self, reader: &mut R) -> anyhow::Result<Option<String>>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        #[cfg(test)]
+        let mut read_guard = InboundProtocolReadGuard::new(self.partial_line.len());
+        loop {
+            let available = match reader.fill_buf().await {
+                Ok(available) => available,
+                Err(error) => {
+                    self.partial_line.clear();
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Err(error.into());
+                }
             };
-            if line_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+            if available.is_empty() {
+                if self.partial_line.is_empty() {
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Ok(None);
+                }
+                break;
+            }
+
+            if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+                let raw_line_len = self.partial_line.len() + newline_index;
+                let line_len = if newline_index == 0 {
+                    raw_line_len
+                        .saturating_sub(usize::from(self.partial_line.last() == Some(&b'\r')))
+                } else {
+                    raw_line_len.saturating_sub(usize::from(available[newline_index - 1] == b'\r'))
+                };
+                if line_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                    self.partial_line.clear();
+                    #[cfg(test)]
+                    read_guard.complete();
+                    return Err(anyhow::anyhow!(
+                        "Inbound protocol line too long: exceeded {} bytes",
+                        MAX_INBOUND_PROTOCOL_LINE_BYTES
+                    ));
+                }
+
+                let take = newline_index + 1;
+                self.partial_line.extend_from_slice(&available[..take]);
+                reader.consume(take);
+                break;
+            }
+
+            let buffered_len = self.partial_line.len() + available.len();
+            let ends_with_framing_cr = available
+                .last()
+                .or_else(|| self.partial_line.last())
+                .is_some_and(|byte| *byte == b'\r');
+            let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
+            if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                self.partial_line.clear();
+                #[cfg(test)]
+                read_guard.complete();
                 return Err(anyhow::anyhow!(
                     "Inbound protocol line too long: exceeded {} bytes",
                     MAX_INBOUND_PROTOCOL_LINE_BYTES
                 ));
             }
 
-            let take = newline_index + 1;
-            line.extend_from_slice(&available[..take]);
+            let take = available.len();
+            self.partial_line.extend_from_slice(available);
             reader.consume(take);
-            break;
+            #[cfg(test)]
+            read_guard.consumed_partial(self.partial_line.len());
         }
 
-        let buffered_len = line.len() + available.len();
-        let ends_with_framing_cr = available
-            .last()
-            .or_else(|| line.last())
-            .is_some_and(|byte| *byte == b'\r');
-        let payload_len = buffered_len.saturating_sub(usize::from(ends_with_framing_cr));
-        if payload_len > MAX_INBOUND_PROTOCOL_LINE_BYTES {
-            return Err(anyhow::anyhow!(
-                "Inbound protocol line too long: exceeded {} bytes",
-                MAX_INBOUND_PROTOCOL_LINE_BYTES
-            ));
+        let mut line = std::mem::take(&mut self.partial_line);
+        if line.last() == Some(&b'\n') {
+            line.pop();
         }
-
-        let take = available.len();
-        line.extend_from_slice(available);
-        reader.consume(take);
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        #[cfg(test)]
+        read_guard.complete();
+        Ok(Some(String::from_utf8(line)?))
     }
-
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-    Ok(Some(String::from_utf8(line)?))
 }
 
 pub(crate) async fn write_protocol_line<W>(writer: &mut W, line: &str) -> anyhow::Result<()>
@@ -171,6 +266,13 @@ mod tests {
 
     struct ProtocolIoTestPlayer;
 
+    async fn read_one_protocol_line_for_test<R>(reader: &mut R) -> anyhow::Result<Option<String>>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        InboundProtocolLineReader::default().read_line(reader).await
+    }
+
     impl PlayerAdapter for ProtocolIoTestPlayer {
         fn name(&self) -> &'static str {
             "protocol-io-test-player"
@@ -198,7 +300,7 @@ mod tests {
         let input = vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES + 1];
         let mut reader = BufReader::new(&input[..]);
 
-        let error = read_inbound_protocol_line(&mut reader)
+        let error = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect_err("oversized inbound line should fail");
 
@@ -215,7 +317,7 @@ mod tests {
         framed.extend_from_slice(b"\r\n");
         let mut reader = BufReader::new(&framed[..]);
 
-        let line = read_inbound_protocol_line(&mut reader)
+        let line = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect("batched line read should succeed")
             .expect("batched line should be present");
@@ -232,7 +334,7 @@ mod tests {
         framed.extend_from_slice(b"\r\n");
         let mut reader = BufReader::with_capacity(MAX_INBOUND_PROTOCOL_LINE_BYTES + 1, &framed[..]);
 
-        let line = read_inbound_protocol_line(&mut reader)
+        let line = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect("exact-limit split CRLF line should be accepted")
             .expect("exact-limit line should be present");
@@ -249,6 +351,16 @@ mod tests {
             .expect("protocol line should write");
 
         assert_eq!(output, b"{\"List\":null}\r\n");
+    }
+
+    #[test]
+    fn production_connected_session_has_no_reusable_one_shot_reader_wrapper() {
+        const CONNECTED_SESSION_SOURCE: &str = include_str!("session_runner/connected_session.rs");
+        assert!(CONNECTED_SESSION_SOURCE.contains("InboundProtocolLineReader::default()"));
+        assert!(
+            !CONNECTED_SESSION_SOURCE.contains("read_inbound_protocol_line"),
+            "reusable connection paths must own InboundProtocolLineReader state"
+        );
     }
 
     #[tokio::test]

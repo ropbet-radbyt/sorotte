@@ -1,0 +1,144 @@
+schema_version = 1
+
+[policy]
+critical_minimum_percent = "90.00"
+
+[[critical_path]]
+id = "protocol-wire"
+category = "protocol-parsing"
+owner = "protocol"
+match = "directory"
+path = "crates/sorotte-protocol/src/"
+
+[[critical_path]]
+id = "player-lifecycle"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/lifecycle.rs"
+
+[[critical_path]]
+id = "client-session-lifecycle"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/session/lifecycle.rs"
+
+[[critical_path]]
+id = "client-runtime-lifecycle"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/runtime/lifecycle_actions.rs"
+
+[[critical_path]]
+id = "server-auth"
+category = "authorization"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/auth.rs"
+
+[[critical_path]]
+id = "server-authorization-handlers"
+category = "authorization"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/runtime_handlers.rs"
+
+[[critical_path]]
+id = "server-authorization-maintenance"
+category = "authorization"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/runtime_maintenance.rs"
+
+[[critical_path]]
+id = "server-authorization-readiness"
+category = "authorization"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/runtime_readiness.rs"
+
+[[critical_path]]
+id = "server-authorization-playback-barrier"
+category = "authorization"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/runtime_playback_barrier.rs"
+
+[[critical_path]]
+id = "notification-controller-auth"
+category = "authorization"
+owner = "notifications"
+match = "file"
+path = "crates/sorotte-cli/src/notifications/controller_auth.rs"
+
+[[critical_path]]
+id = "legacy-notification-controller-auth"
+category = "authorization"
+owner = "notifications"
+match = "file"
+path = "crates/sorotte-client-app/src/legacy_notifications/controller_auth.rs"
+
+[[critical_path]]
+id = "plex-auth"
+category = "authorization"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/auth.rs"
+
+[[critical_path]]
+id = "server-persistence"
+category = "persistence-arbitration"
+owner = "server-persistence"
+match = "file"
+path = "crates/sorotte-server/src/persistence.rs"
+
+[[critical_path]]
+id = "server-persistence-actor"
+category = "persistence-arbitration"
+owner = "server-persistence"
+match = "file"
+path = "crates/sorotte-server/src/persistence_actor.rs"
+
+[[critical_path]]
+id = "gui-updater-binary"
+category = "updater-trust"
+owner = "release-security"
+match = "file"
+path = "crates/sorotte-gui/src/bin/sorotte-gui-updater.rs"
+
+[[critical_path]]
+id = "gui-update-services"
+category = "updater-trust"
+owner = "release-security"
+match = "file"
+path = "crates/sorotte-gui/src/app/remote_services.rs"
+
+[[critical_path]]
+id = "gui-update-orchestration"
+category = "updater-trust"
+owner = "release-security"
+match = "file"
+path = "crates/sorotte-gui/src/app/runtime_owner/updates.rs"
+
+[[critical_path]]
+id = "secret-storage"
+category = "privacy"
+owner = "secrets"
+match = "directory"
+path = "crates/sorotte-secret/src/"
+
+[[critical_path]]
+id = "player-api-redaction"
+category = "privacy"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-api/src/lib.rs"
+
+[[critical_path]]
+id = "player-transcript"
+category = "privacy"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/transcript.rs"

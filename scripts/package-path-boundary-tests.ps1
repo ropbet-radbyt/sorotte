@@ -252,19 +252,26 @@ try {
     $guiManifest = Get-Content -Raw -LiteralPath (
         Join-Path $guiHardlinkOutput "artifacts\sorotte-update-manifest.json"
     ) | ConvertFrom-Json
-    $sourceCommitTimestamp = (& git show -s --format=%cI $guiManifest.git_sha).Trim()
+    $sourceCommitEpochText = (& git show -s --format=%ct $guiManifest.git_sha).Trim()
     if ($LASTEXITCODE -ne 0) {
         throw "could not resolve packaged GUI source commit timestamp"
     }
-    $expectedCreatedAt = [System.DateTimeOffset]::Parse(
-        $sourceCommitTimestamp,
-        [System.Globalization.CultureInfo]::InvariantCulture,
-        [System.Globalization.DateTimeStyles]::RoundtripKind
-    ).ToUniversalTime().ToString(
-        "yyyy-MM-ddTHH:mm:ssZ",
+    $sourceCommitEpoch = [long]::Parse(
+        $sourceCommitEpochText,
+        [System.Globalization.NumberStyles]::Integer,
         [System.Globalization.CultureInfo]::InvariantCulture
     )
-    if ($guiManifest.created_at_utc -ne $expectedCreatedAt) {
+    $manifestCreatedAt = if ($guiManifest.created_at_utc -is [System.DateTime]) {
+        [System.DateTimeOffset]$guiManifest.created_at_utc
+    }
+    else {
+        [System.DateTimeOffset]::Parse(
+            [string]$guiManifest.created_at_utc,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind
+        )
+    }
+    if ($manifestCreatedAt.ToUnixTimeSeconds() -ne $sourceCommitEpoch) {
         throw "dev package freshness must use the source commit timestamp, not rerun time"
     }
 

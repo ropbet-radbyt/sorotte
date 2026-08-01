@@ -20,7 +20,7 @@ use super::shell_state::{
     MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowShellState,
     MainWindowUserRow, MediaSearchDirectoryRow, MediaSearchWorkflowRuntimeFlags,
     MediaSearchWorkflowShellState, MenuActionId, MenuActionShellItem, MenuDialogShellState,
-    MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
+    MenuSectionId, MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
     PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 #[cfg(test)]

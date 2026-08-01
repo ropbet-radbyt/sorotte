@@ -11,7 +11,11 @@ fn python_trace_fanout_scenario_reconciles_client_sessions() {
     assert_eq!(client_1.room(), Some("room1"));
     assert_eq!(client_1.user_room("bob"), Some("room2"));
     assert_eq!(client_1.user_ready("alice"), Some(true));
-    assert_eq!(client_1.user_ready("bob"), Some(false));
+    assert_eq!(
+        client_1.user_ready("bob"),
+        None,
+        "legacy clients without readiness support must remain unknown, not not-ready"
+    );
     let client_1_playlist = client_1
         .current_room_playlist()
         .expect("client-1 should have current room playlist");
@@ -47,14 +51,17 @@ fn python_trace_cross_room_ready_list_reconciles_room_membership_and_readiness()
     assert_eq!(client_3.user_room("bob"), Some("room1"));
     assert_eq!(client_3.user_room("carol"), Some("room1"));
     assert_eq!(client_3.user_ready("alice"), Some(true));
-    assert_eq!(client_3.user_ready("bob"), Some(false));
+    assert_eq!(
+        client_3.user_ready("bob"),
+        None,
+        "legacy clients without readiness support must remain unknown, not not-ready"
+    );
     assert_eq!(client_3.user_ready("carol"), Some(true));
-    let room_playstate = client_3
-        .room_playstate("room1")
-        .expect("client-3 should have room1 playstate");
-    assert_eq!(room_playstate.position, Some(0.0));
-    assert_eq!(room_playstate.paused, Some(true));
-    assert_eq!(room_playstate.do_seek, Some(false));
+    assert_eq!(
+        client_3.room_playstate("room1"),
+        None,
+        "membership replay must not synthesize playstate without a State message"
+    );
 }
 
 #[test]

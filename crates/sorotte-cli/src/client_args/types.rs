@@ -1,5 +1,122 @@
 use sorotte_secret::SecretValue;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostArgumentError {
+    EmptyHost,
+    EmptyPort,
+    NonNumericPort,
+    PortOutOfRange,
+    MalformedBracketedIpv6,
+}
+
+impl std::fmt::Display for HostArgumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::EmptyHost => "host is empty",
+            Self::EmptyPort => "port is empty",
+            Self::NonNumericPort => "port is not numeric",
+            Self::PortOutOfRange => "port must be between 1 and 65535",
+            Self::MalformedBracketedIpv6 => "bracketed IPv6 endpoint is malformed",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegacyUnknownOptionIssue {
+    name: String,
+    attached_value_present: bool,
+}
+
+impl LegacyUnknownOptionIssue {
+    fn new(name: String, attached_value_present: bool) -> Self {
+        Self {
+            name,
+            attached_value_present,
+        }
+    }
+
+    fn diagnostic_fragment(&self) -> String {
+        if self.attached_value_present {
+            format!("{}={}", self.name, sorotte_secret::REDACTED_SECRET)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    #[cfg(test)]
+    fn matches_rejected_token(&self, token: &str) -> bool {
+        token.split_once('=').map_or_else(
+            || self.name == token && !self.attached_value_present,
+            |(expected_name, _)| self.name == expected_name && self.attached_value_present,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyClientArgumentIssue {
+    UnknownOption(LegacyUnknownOptionIssue),
+    MissingValue {
+        name: String,
+    },
+    InvalidHost {
+        name: String,
+        error: HostArgumentError,
+    },
+}
+
+impl LegacyClientArgumentIssue {
+    pub(crate) fn unknown_option(argument: &str) -> Self {
+        let (name, attached_value_present) = argument
+            .split_once('=')
+            .map_or((argument, false), |(name, _)| (name, true));
+        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+            name.to_owned(),
+            attached_value_present,
+        ))
+    }
+
+    pub(crate) fn unknown_short_option(name: char, attached_value_present: bool) -> Self {
+        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+            format!("-{name}"),
+            attached_value_present,
+        ))
+    }
+
+    pub(crate) fn missing_value(name: &str) -> Self {
+        Self::MissingValue {
+            name: name.to_owned(),
+        }
+    }
+
+    pub(crate) fn invalid_host(name: &str, error: HostArgumentError) -> Self {
+        Self::InvalidHost {
+            name: name.to_owned(),
+            error,
+        }
+    }
+
+    pub(crate) fn is_host_argument(&self) -> bool {
+        matches!(self, Self::InvalidHost { .. })
+    }
+
+    pub(crate) fn diagnostic_fragment(&self) -> String {
+        match self {
+            Self::UnknownOption(option) => option.diagnostic_fragment(),
+            Self::MissingValue { name } => name.clone(),
+            Self::InvalidHost { name, error } => format!("{name} ({error})"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn matches_rejected_token(&self, token: &str) -> bool {
+        match self {
+            Self::UnknownOption(option) => option.matches_rejected_token(token),
+            Self::MissingValue { name } => name == token,
+            Self::InvalidHost { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct LegacyClientArgOverrides {
     pub(crate) connect_requested: bool,
@@ -22,7 +139,7 @@ pub(crate) struct LegacyClientArgOverrides {
     pub(crate) controlled_room_password_override: Option<SecretValue>,
     pub(crate) show_help: bool,
     pub(crate) show_version: bool,
-    pub(crate) unknown_options: Vec<String>,
+    pub(crate) unknown_options: Vec<LegacyClientArgumentIssue>,
 }
 
 impl std::fmt::Debug for LegacyClientArgOverrides {

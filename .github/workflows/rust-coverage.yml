@@ -5,31 +5,160 @@ on:
   schedule:
     - cron: "30 5 * * *"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sorotte-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
     defaults:
       run:
         working-directory: .
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout pinned legacy reference for merged coverage
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Syncplay/syncplay
+          ref: d1c5f85af377c960c5a940707c4d01bc84fd9c3f
+          path: .interop-cache/syncplay-legacy
+          persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
 
-      - name: Generate lcov coverage report
-        run: cargo llvm-cov --workspace --lcov --output-path target/lcov.info
+      - name: Install merged coverage prerequisites
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements/legacy-python-interop.txt
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-llvm-cov@0.8.4
+
+      - name: Generate merged behavioral coverage profiles
+        run: >-
+          python scripts/coverage_profile_lanes.py run
+          --repo-root .
+          --output target/verification/coverage-profile-lanes.json
+
+      - name: Export pinned LLVM JSON
+        run: >-
+          cargo llvm-cov report --json --skip-functions
+          --output-path target/coverage.json
+
+      - name: Export native LLVM source view
+        run: >-
+          cargo llvm-cov report --text
+          --output-path target/coverage.txt
+
+      - name: Build source-bound physical line map
+        run: >-
+          python scripts/llvm_cov_line_map.py
+          --repo-root .
+          --llvm-json target/coverage.json
+          --llvm-text target/coverage.txt
+          --output target/coverage-line-map.json
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sorotte-lcov
-          path: target/lcov.info
+          name: sorotte-llvm-coverage
+          path: |
+            target/coverage.json
+            target/coverage.txt
+            target/coverage-line-map.json
+            target/verification/coverage-profile-lanes.json
+            target/verification/coverage-profile-logs/
           if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  windows-process-coverage:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CARGO_TARGET_DIR: target/llvm-cov-windows-process
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-llvm-cov@0.8.4
+
+      - name: Generate Windows process coverage profiles
+        run: >-
+          python scripts/coverage_windows_process_lanes.py run
+          --repo-root .
+          --output target/verification/coverage-windows-process-lanes.json
+
+      - name: Export Windows LLVM JSON
+        run: >-
+          cargo llvm-cov report --json --skip-functions
+          --output-path target/coverage-windows-process.json
+
+      - name: Export Windows LLVM source view
+        run: >-
+          cargo llvm-cov report --text
+          --output-path target/coverage-windows-process.txt
+
+      - name: Build Windows source-bound physical line map
+        run: >-
+          python scripts/llvm_cov_line_map.py
+          --repo-root .
+          --llvm-json target/coverage-windows-process.json
+          --llvm-text target/coverage-windows-process.txt
+          --output target/coverage-windows-process-line-map.json
+
+      - name: Upload Windows process coverage artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-windows-process-llvm-coverage
+          path: |
+            target/coverage-windows-process.json
+            target/coverage-windows-process.txt
+            target/coverage-windows-process-line-map.json
+            target/verification/coverage-windows-process-lanes.json
+            target/verification/coverage-windows-process-logs/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

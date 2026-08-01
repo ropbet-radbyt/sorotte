@@ -8,7 +8,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "motd-user"
               }
@@ -21,6 +21,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }

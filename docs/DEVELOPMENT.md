@@ -37,6 +37,47 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
+Pull-request CI keeps the public `Rust all-feature behavior (Windows)` and
+`coverage-diff` checks stable, but their expensive work is deliberately
+parallel. Windows nextest/doctests, the release/package checks, and exact-head
+Windows process coverage run as three independent workers; the public Windows
+check succeeds only after all three do. Linux merged coverage starts
+immediately in a separate producer, and `coverage-diff` consumes the Linux and
+Windows artifacts only to resolve the immutable base, enforce the two-map
+changed-line policy, and finalize evidence. Do not make either producer depend
+on the public Windows aggregate or move profile generation back into
+`coverage-diff`; `scripts/tests/test_ci_policy.py` treats either change as a
+critical-path and fail-closed policy regression.
+
+The retained timing checkpoints are intentionally observational, not an SLA.
+Full-matrix run `30674012574` spent 33m30 executing before the split; the first
+complete parallel run, `30677728038`, finished in 19m33. Exact commands,
+worker timings, the retained failed attempt, and artifact identities are in
+[`hosted-ci-closure-20260801.md`](evidence/test-coverage/hosted-ci-closure-20260801.md).
+
+Repository-owned workflows pin first-party JavaScript actions by full commit
+SHA to Node 24 majors: `actions/checkout` v7, `actions/setup-python` v7,
+`actions/upload-artifact` v7, and `actions/download-artifact` v8. Upgrade the
+reviewed major and immutable SHA together, then run the workflow-policy suites
+and actionlint. Do not suppress runtime-deprecation annotations in place of an
+action upgrade.
+
+## Real mpv Checks
+
+The required `mpv-pr-semantics` job builds the peeled mpv `v0.41.0` commit and
+runs the four ignored real-player contracts explicitly. Scheduled and manually
+dispatched CI expands that same fail-closed job to a second, immutable reviewed
+post-release snapshot. The two endpoints run in parallel, and matrix fail-fast
+is disabled so one failure cannot erase the other endpoint's result.
+
+Do not replace either source SHA with a floating tag or branch. The newest
+snapshot is the final reviewed mpv revision that builds against Ubuntu 24.04's
+native libplacebo dependency; rolling it forward requires reviewing the mpv
+and runner dependency boundary together. See
+[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md)
+for the exact identities, local campaign, version-parser regression, and
+exact-head minimum/newest result.
+
 ## GUI Checks
 
 Run semantic smoke coverage for GUI workflow changes:
@@ -45,14 +86,52 @@ Run semantic smoke coverage for GUI workflow changes:
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 ```
 
-Run Windows native smoke coverage for rendering, accessibility, startup, and end-to-end GUI changes:
+For local Windows accessibility iteration without desktop-wide mouse, keyboard,
+or cursor injection, run the fixed non-authoritative UIA-only inventory:
 
 ```powershell
-cargo build -p sorotte-gui --bin sorotte-gui
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode UiaOnly
 ```
 
-`scripts/gui-native-smoke.ps1` uses the existing `target/debug/sorotte-gui.exe`, so rebuild first after GUI code changes.
+The UIA-only lane verifies the AccessKit menu inventory and invokes File -> Exit
+through UI Automation. It rejects every Win32 `SendInput` or cursor-movement
+fallback and reports physical/focused-keyboard capabilities as
+`optional-skip(reason=local-uia-mode)`. It may still display, resize, or
+foreground Sorotte. Its report has `authoritative=false` and cannot satisfy the
+strict CI contract.
+
+Run authoritative Windows native smoke coverage for rendering, accessibility,
+startup, and end-to-end GUI changes only on an isolated interactive desktop:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode StrictPhysical
+```
+
+`scripts/gui-native-smoke.ps1` performs a locked build before the watchdog
+starts, requires all ten implemented scenarios by default, and preserves
+structured evidence under `target/verification/gui-native-smoke/`. Its native
+menu contract requires exact UIA/AccessKit IDs and structured outcomes for
+detached and attached Open Media behavior. The baseline also requires 25
+single-delivery physical File-menu transactions. Each physical endpoint is
+bound to the target's absolute virtual-desktop coordinate in the same
+`SendInput` call; menu toggles are never blindly redelivered. The baseline also
+requires an exact File -> Exit lifecycle trace and process exit within four
+seconds. Connectivity
+scenarios must declare a typed detached or loopback mode; non-loopback TCP
+targets are rejected before process launch, and scenario-owned servers remain
+live until explicit teardown. Live-Python scenarios use a two-sided roster
+handshake rather than UI polling alone. Any semantic wait for a peer to observe
+GUI-originated compound protocol work must continue pumping the runtime owner;
+an optimistic shell projection is not proof that every receipt-owned transport
+frame was delivered. Live-Python fixtures must advertise the protocol features
+their assertions exercise. Top-tab actions are not complete when UIA reports
+success or focus alone: the expected tab content must appear. The baseline
+deliberately proves exact focused-keyboard activation of Interface & System.
+The native-smoke binary's unit contracts are included automatically by
+`cargo test --workspace --all-features`. Failures preserve a screenshot and
+credential-redacted accessibility tree when a live window remains. Pass
+`-BinaryPath` only when deliberately validating a caller-supplied executable;
+the wrapper records and binds that executable's path and digest.
 
 Generate the deterministic native Settings review packet on Windows with:
 
@@ -87,7 +166,24 @@ GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
+Consume the exact staged bytes, including a visible-window launch, installed
+updater self-replacement, and faulted rollback:
+
+```powershell
+$sourceSha = (git rev-parse HEAD).Trim()
+python scripts/verify_gui_release_artifact.py `
+  --artifacts-dir target/gui-release/artifacts `
+  --expected-source-sha $sourceSha `
+  --expected-channel stable `
+  --report target/gui-release/artifact-verification.json
+```
+
 The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; pushes to the current `main` tip update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks. Publication rechecks the remote `main` tip so rerunning an older workflow cannot roll dev clients backward.
+Both the build and publication jobs independently verify the downloaded
+archive, checksum, external update manifest, embedded install manifest, closed
+payload inventory, source SHA, and channel. Only the build job executes the
+Windows binaries; publication reconsumes the same bytes without repeating the
+runtime smoke.
 
 ## Server Release Checks
 
@@ -110,6 +206,16 @@ powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1
 ```
 
 The verification script writes JSON and Markdown reports under `target/server-release-verify/`.
+
+The scheduled and manually dispatched CI matrix invokes the verifier with
+`-NoWorkspace`. That mode skips only its duplicate `cargo test --workspace`
+pass: the same workflow already runs locked, all-feature workspace tests and
+doctests on Linux and Windows. The server tests, live compatibility checks,
+Clippy gate, and strict server release matrix still run on both platforms.
+Standalone release verification keeps the full default command above. The
+first clean parallel run exposed the Windows verifier as the 19m28 critical
+path; the successful exact-head run after this deduplication took 10m49. Treat
+those values as retained observations rather than timeout targets.
 
 ## Compatibility Workflow
 
@@ -152,11 +258,77 @@ Install once:
 
 ```powershell
 rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov --locked
+cargo install cargo-llvm-cov --version 0.8.4 --locked
+python -m pip install -r requirements/legacy-python-interop.txt
+git clone https://github.com/Syncplay/syncplay.git `
+  .interop-cache/syncplay-legacy
+git -C .interop-cache/syncplay-legacy checkout --detach `
+  d1c5f85af377c960c5a940707c4d01bc84fd9c3f
 ```
 
-Generate LCOV:
+Generate the merged workspace, GUI semantic, and strict live-TLS profiles,
+then export the pinned native producer views and source-bound physical-line
+map:
 
 ```powershell
-cargo llvm-cov --workspace --lcov --output-path target/lcov.info
+$env:SYNCPLAY_LEGACY_ROOT = `
+  (Resolve-Path .interop-cache/syncplay-legacy).Path
+python scripts/coverage_profile_lanes.py run `
+  --repo-root . `
+  --output target/verification/coverage-profile-lanes.json
+python scripts/coverage_profile_lanes.py validate `
+  --report target/verification/coverage-profile-lanes.json
+cargo llvm-cov report --json --skip-functions `
+  --output-path target/coverage.json
+cargo llvm-cov report --text `
+  --output-path target/coverage.txt
+python scripts/llvm_cov_line_map.py `
+  --repo-root . `
+  --llvm-json target/coverage.json `
+  --llvm-text target/coverage.txt `
+  --output target/coverage-line-map.json
 ```
+
+The LLVM component must be present before captured/headless execution:
+cargo-llvm-cov otherwise prompts interactively and can look hung. Pull-request
+policy is based on unique changed physical production lines, while LLVM's
+aggregate line-instance summary is retained as separate diagnostic evidence;
+see [`coverage/README.md`](../coverage/README.md).
+
+Each execution lane must both pass its behavior oracle and create or update a
+raw profile. The collector removes only generated raw/merged coverage inputs
+below `target` before starting, attests the reset, and requires continuous
+current-run profile counts. It hashes profile content, forbids a lane from
+removing prior evidence, and requires the merge to leave raw inputs unchanged.
+It rejects a stale semantic binary, incomplete scenario inventory, skipped
+legacy prerequisite, wrong Syncplay revision, unexpected compatibility
+selector/count, or unmergeable profiles. It does not claim native interactive
+Windows coverage or the currently red complete legacy fanout matrix.
+
+## Targeted Mutation Testing
+
+Mutation testing is intentionally shard-based. Install the pinned producer
+and run a scheduled shard (`privacy-secret`, `server-auth`, or
+`protocol-codec`) with a fresh results root. For example:
+
+```powershell
+cargo install cargo-mutants --version 27.1.0 --locked
+python scripts/mutation_ci.py validate `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --shard protocol-codec
+python scripts/mutation_ci.py run `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --shard protocol-codec `
+  --results-root target/mutation-ci/protocol-codec `
+  --output target/verification/mutation-protocol-codec.json
+```
+
+Use a fresh results root for every local run. The wrapper rejects an existing
+`mutants.out` directory so stale artifacts cannot be mistaken for new
+evidence. Policy schema 2 binds package-wide versus library testing and any
+focused Rust test namespace; the wrapper reconciles that scope against every
+producer phase. A survivor or product defect discovered by a coverage-only
+branch should be characterized and recorded; do not change production
+behavior just to make the mutation shard green.

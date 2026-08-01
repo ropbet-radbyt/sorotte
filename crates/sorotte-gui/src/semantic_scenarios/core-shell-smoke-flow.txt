@@ -8,7 +8,6 @@ assert-value	shell:active-view	setup
 assert-selected	configuration-root	true
 assert-value	settings.connection.public_server_count	2
 assert-enabled	menu.open_media	false
-assert-enabled	shell:quick:open-media-file	false
 assert-enabled	menu.toggle_playback_buttons	true
 assert-enabled	menu.toggle_autoplay_controls	true
 assert-selected	menu.toggle_autoplay_controls	true

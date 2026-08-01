@@ -2,6 +2,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -548,6 +549,77 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
     assert!(
         dropped.load(Ordering::SeqCst),
         "threaded runtime owner should be dropped after the worker shuts down",
+    );
+}
+
+#[test]
+fn gui_threaded_runtime_owner_pump_bounds_shutdown_when_owner_poll_is_stuck() {
+    struct BlockingRuntimeOwner {
+        entered_tx: Option<mpsc::Sender<()>>,
+        release_rx: mpsc::Receiver<()>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for BlockingRuntimeOwner {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl GuiQueuedRuntimeOwner for BlockingRuntimeOwner {
+        fn input_changed(
+            &mut self,
+            _handle: &GuiQueuedRuntimeBridgeHandle,
+            _input: &crate::app::feature_slices::GuiRuntimeInput,
+        ) {
+        }
+
+        fn poll(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle) {
+            if let Some(entered_tx) = self.entered_tx.take() {
+                let _ = entered_tx.send(());
+            }
+            let _ = self.release_rx.recv();
+        }
+    }
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval_and_shutdown_timeout(
+        GuiQueuedRuntimeBridgeHandle::default(),
+        BlockingRuntimeOwner {
+            entered_tx: Some(entered_tx),
+            release_rx,
+            dropped: dropped.clone(),
+        },
+        Duration::from_millis(5),
+        Duration::from_millis(60),
+    )
+    .expect("blocked-owner runtime pump should spawn");
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    GuiNativeRuntimePump::pump(&mut pump, &state);
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocked owner should enter poll");
+
+    let shutdown_started = Instant::now();
+    drop(pump);
+    assert!(
+        shutdown_started.elapsed() < Duration::from_millis(500),
+        "runtime pump drop must not wait indefinitely for a blocked owner"
+    );
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "the detached worker should still own the blocked runtime owner"
+    );
+
+    release_tx
+        .send(())
+        .expect("blocked owner should remain releasable after bounded detach");
+    wait_until(
+        Duration::from_secs(1),
+        "detached blocked owner drop",
+        || dropped.load(Ordering::SeqCst),
     );
 }
 

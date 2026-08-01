@@ -203,13 +203,13 @@ class _RecordingClient:
             "managedRooms": True,
             "persistentRooms": True,
             "setOthersReadiness": True,
-            "sharedPlaylists": False,
+            "sharedPlaylists": True,
             "uiMode": "GUI",
         }
         self._config = {
             "readyAtStart": False,
             "loadPlaylistFromFile": None,
-            "sharedPlaylistEnabled": False,
+            "sharedPlaylistEnabled": True,
         }
         self.userlist = _RecordingUserList(username, room)
         self.playlist = _RecordingPlaylist(self)
@@ -350,7 +350,7 @@ def _playlist_index_snapshot(client):
     return playlist_index
 
 
-def _emit_client_snapshot(status, client, extra_payload=None):
+def _emit_client_snapshot(status, client, extra_payload=None, request_id=None):
     payload = {
         "status": status,
         "username": client.getUsername(),
@@ -368,6 +368,8 @@ def _emit_client_snapshot(status, client, extra_payload=None):
     }
     if extra_payload:
         payload.update(extra_payload)
+    if request_id is not None:
+        payload["requestId"] = request_id
     _emit_json(payload)
 
 
@@ -405,6 +407,23 @@ def _file_name_for_username(client, username):
     if user is None:
         return None
     return _file_name_snapshot(user.file)
+
+
+def _wait_for_user_presence(client, username, timeout_seconds, error_holder):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if username == client.getUsername() or username in client.userlist._users:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    observed_users = sorted(_user_ready_snapshot(client))
+    raise RuntimeError(
+        "python live peer timed out waiting for the requested user presence; "
+        f"username={username!r}, observedUsers={observed_users!r}"
+    )
 
 
 def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error_holder):
@@ -517,16 +536,34 @@ def _wait_for_playlist_index(client, index, timeout_seconds, error_holder):
 def _handle_command(client, protocol, protocol_lock, command, error_holder):
     if error_holder:
         raise RuntimeError(error_holder[0])
+    request_id = command.get("requestId")
+    if request_id is not None and (
+        isinstance(request_id, bool)
+        or not isinstance(request_id, int)
+        or request_id < 1
+    ):
+        raise RuntimeError(
+            "python live peer requestId must be a positive integer when supplied"
+        )
+
+    def emit(status, extra_payload=None):
+        _emit_client_snapshot(
+            status,
+            client,
+            extra_payload,
+            request_id=request_id,
+        )
+
     command_name = command.get("command")
     if command_name == "snapshot":
-        _emit_client_snapshot("snapshot", client)
+        emit("snapshot")
         return
     if command_name == "set_ready":
         if "ready" not in command:
             raise RuntimeError("python live peer set_ready command requires a ready field")
         with protocol_lock:
             protocol.setReady(bool(command["ready"]), manuallyInitiated=True)
-        _emit_client_snapshot("ready-command-sent", client, {"ready": bool(command["ready"])})
+        emit("ready-command-sent", {"ready": bool(command["ready"])})
         return
     if command_name == "set_room":
         room = command.get("room")
@@ -534,7 +571,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             raise RuntimeError("python live peer set_room command requires a room string")
         with protocol_lock:
             protocol.sendRoomSetting(room)
-        _emit_client_snapshot("room-command-sent", client, {"room": room})
+        emit("room-command-sent", {"room": room})
         return
     if command_name == "set_file":
         file_ = command.get("file")
@@ -542,7 +579,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             raise RuntimeError("python live peer set_file command requires a file object")
         with protocol_lock:
             protocol.sendFileSetting(file_)
-        _emit_client_snapshot("file-command-sent", client, {"file": file_})
+        emit("file-command-sent", {"file": file_})
         return
     if command_name == "request_controlled_room":
         room = command.get("room")
@@ -557,9 +594,8 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         with protocol_lock:
             protocol.requestControlledRoom(room, password)
-        _emit_client_snapshot(
+        emit(
             "controlled-room-command-sent",
-            client,
             {"room": room, "password": password},
         )
         return
@@ -577,7 +613,22 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot("local-ready", client, {"ready": expected_ready})
+        emit("local-ready", {"ready": expected_ready})
+        return
+    if command_name == "wait_for_user_presence":
+        username = command.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise RuntimeError(
+                "python live peer wait_for_user_presence command requires a username string"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        _wait_for_user_presence(
+            client,
+            username,
+            timeout_seconds,
+            error_holder,
+        )
+        emit("user-present", {"usernameObserved": username})
         return
     if command_name == "wait_for_user_ready":
         username = command.get("username")
@@ -598,9 +649,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
-            "user-ready", client, {"usernameObserved": username, "ready": expected_ready}
-        )
+        emit("user-ready", {"usernameObserved": username, "ready": expected_ready})
         return
     if command_name == "wait_for_user_room":
         username = command.get("username")
@@ -621,9 +670,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
-            "user-room", client, {"usernameObserved": username, "room": room}
-        )
+        emit("user-room", {"usernameObserved": username, "room": room})
         return
     if command_name == "wait_for_local_controller":
         if "controller" not in command:
@@ -639,9 +686,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
-            "local-controller", client, {"controller": expected_controller}
-        )
+        emit("local-controller", {"controller": expected_controller})
         return
     if command_name == "wait_for_user_controller":
         username = command.get("username")
@@ -662,9 +707,8 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
+        emit(
             "user-controller",
-            client,
             {"usernameObserved": username, "controller": expected_controller},
         )
         return
@@ -676,7 +720,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         with protocol_lock:
             protocol.sendChatMessage(message)
-        _emit_client_snapshot("chat-command-sent", client, {"message": message})
+        emit("chat-command-sent", {"message": message})
         return
     if command_name == "wait_for_chat_message":
         username = command.get("username")
@@ -697,9 +741,8 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
+        emit(
             "chat-message",
-            client,
             {"usernameObserved": username, "message": message},
         )
         return
@@ -722,9 +765,8 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             timeout_seconds,
             error_holder,
         )
-        _emit_client_snapshot(
+        emit(
             "user-file",
-            client,
             {"usernameObserved": username, "fileName": file_name},
         )
         return
@@ -736,7 +778,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         with protocol_lock:
             client.playlist.changePlaylist(files, user=None, resetIndex=True)
-        _emit_client_snapshot("playlist-command-sent", client, {"files": files})
+        emit("playlist-command-sent", {"files": files})
         return
     if command_name == "set_playlist_index":
         index = command.get("index")
@@ -746,7 +788,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         with protocol_lock:
             client.playlist.changeToPlaylistIndex(index, user=None, resetPosition=False)
-        _emit_client_snapshot("playlist-index-command-sent", client, {"index": index})
+        emit("playlist-index-command-sent", {"index": index})
         return
     if command_name == "wait_for_playlist":
         files = command.get("files")
@@ -756,7 +798,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         timeout_seconds = float(command.get("timeoutSeconds", 3.0))
         _wait_for_playlist(client, files, timeout_seconds, error_holder)
-        _emit_client_snapshot("playlist", client, {"filesObserved": files})
+        emit("playlist", {"filesObserved": files})
         return
     if command_name == "wait_for_playlist_index":
         index = command.get("index")
@@ -766,7 +808,7 @@ def _handle_command(client, protocol, protocol_lock, command, error_holder):
             )
         timeout_seconds = float(command.get("timeoutSeconds", 3.0))
         _wait_for_playlist_index(client, index, timeout_seconds, error_holder)
-        _emit_client_snapshot("playlist-index", client, {"indexObserved": index})
+        emit("playlist-index", {"indexObserved": index})
         return
     raise RuntimeError(f"python live peer received an unknown command: {command_name!r}")
 
@@ -940,6 +982,7 @@ def main():
     args = parser.parse_args()
 
     transport = None
+    current_request_id = None
     try:
         legacy_root = _legacy_root()
         _add_legacy_root_to_sys_path(legacy_root)
@@ -984,13 +1027,19 @@ def main():
             if not raw_command:
                 continue
             command = json.loads(raw_command)
+            if isinstance(command, dict):
+                current_request_id = command.get("requestId")
             _handle_command(client, protocol, protocol_lock, command, error_holder)
+            current_request_id = None
         stop_event.set()
         transport.loseConnection()
         pump_thread.join(timeout=1.0)
         return 0
     except Exception as exc:
-        _emit_json({"status": "error", "error": str(exc)})
+        error_payload = {"status": "error", "error": str(exc)}
+        if current_request_id is not None:
+            error_payload["requestId"] = current_request_id
+        _emit_json(error_payload)
         if transport is not None:
             transport.loseConnection()
         return 1

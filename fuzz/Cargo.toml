@@ -1,0 +1,54 @@
+[package]
+name = "sorotte-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+anyhow = "=1.0.104"
+libfuzzer-sys = "=0.4.13"
+serde = "=1.0.229"
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+sorotte-cli = { path = "../crates/sorotte-cli", features = ["fuzz-support"] }
+sorotte-client-app = { path = "../crates/sorotte-client-app" }
+sorotte-player-api = { path = "../crates/sorotte-player-api" }
+sorotte-player-mpv = { path = "../crates/sorotte-player-mpv", features = ["fuzz-support"] }
+sorotte-protocol = { path = "../crates/sorotte-protocol" }
+tokio = { version = "=1.53.1", features = ["io-util", "rt", "sync"] }
+
+[[bin]]
+name = "protocol_line"
+path = "fuzz_targets/protocol_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "framed_session"
+path = "fuzz_targets/framed_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpv_framed_transcript"
+path = "fuzz_targets/mpv_framed_transcript.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"

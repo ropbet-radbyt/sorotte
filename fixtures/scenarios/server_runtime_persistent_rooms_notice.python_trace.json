@@ -8,9 +8,33 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "persistent-user"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "persistent-room": {
+                "persistent-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0.0
+                }
               }
             }
           }
@@ -21,6 +45,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -46,30 +80,6 @@
               },
               "username": "persistent-user",
               "version": "9.9.9"
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "List": {
-              "persistent-room": {
-                "persistent-user": {
-                  "controller": false,
-                  "features": {
-                    "chat": false,
-                    "featureList": false,
-                    "managedRooms": true,
-                    "persistentRooms": false,
-                    "readiness": true,
-                    "sharedPlaylists": true,
-                    "uiMode": "Unknown"
-                  },
-                  "file": {},
-                  "isReady": false,
-                  "position": 0.0
-                }
-              }
             }
           }
         }

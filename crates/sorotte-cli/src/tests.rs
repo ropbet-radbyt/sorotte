@@ -2,7 +2,7 @@
 use super::spawn_legacy_external_player_from_spec_legacy_compatible;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-    ConnectedSessionExit, LegacyClientArgOverrides,
+    ConnectedSessionExit, HostArgumentError, LegacyClientArgOverrides, LegacyClientArgumentIssue,
     LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
     LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
     ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
@@ -14,7 +14,7 @@ use super::{
     apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
     apply_stored_legacy_startup_player_defaults_if_arg_absent,
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
-    chat_notification_message, clear_sorotte_cli_gui_state,
+    build_client_loop_config_from_env, chat_notification_message, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings_legacy_compatible,
     cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
     controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
@@ -31,7 +31,7 @@ use super::{
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_utc_timestamp_string_legacy_compatible,
+    legacy_unrecognized_arguments_diagnostic_line, legacy_utc_timestamp_string_legacy_compatible,
     load_sorotte_cli_stored_settings_mvp_legacy_compatible,
     managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,
     normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
@@ -62,7 +62,7 @@ use super::{
     should_run_headless_automatic_update_check_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
     upsert_sorotte_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
-    user_change_notification_message,
+    user_change_notification_message, validate_composed_client_endpoint,
 };
 use serde_json::Value;
 use sorotte_client_app::app_boundary::application::{ClientApplication, ClientApplicationSettings};
@@ -96,7 +96,9 @@ use sorotte_protocol::{
     IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
     StatePayload, decode_message_line, encode_message_line,
 };
-use std::ffi::OsStr;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -110,15 +112,18 @@ static SOROTTE_GUI_STATE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
 static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
+static PANIC_SAFE_ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
 struct TestEnvGuard<'a> {
     _guard: MutexGuard<'a, ()>,
+    prior_values: RefCell<BTreeMap<OsString, Option<OsString>>>,
 }
 
 impl<'a> TestEnvGuard<'a> {
     fn lock(lock: &'a Mutex<()>) -> Self {
         Self {
-            _guard: lock.lock().expect("lock poisoned"),
+            _guard: lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            prior_values: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -127,9 +132,10 @@ impl<'a> TestEnvGuard<'a> {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
+        let key = key.as_ref();
+        self.remember(key);
         // SAFETY: Environment mutation is process-global in Rust 2024. CLI tests use
-        // TestEnvGuard to hold the relevant domain mutex while mutating and restoring
-        // env state, so test-owned env changes do not race each other.
+        // TestEnvGuard to hold the relevant domain mutex while mutating env state.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -139,11 +145,55 @@ impl<'a> TestEnvGuard<'a> {
     where
         K: AsRef<OsStr>,
     {
+        let key = key.as_ref();
+        self.remember(key);
         // SAFETY: See set_var; the same guard serializes test-owned removals.
         unsafe {
             std::env::remove_var(key);
         }
     }
+
+    fn remember(&self, key: &OsStr) {
+        let mut prior_values = self.prior_values.borrow_mut();
+        prior_values
+            .entry(key.to_os_string())
+            .or_insert_with(|| std::env::var_os(key));
+    }
+}
+
+impl Drop for TestEnvGuard<'_> {
+    fn drop(&mut self) {
+        for (key, prior_value) in self.prior_values.get_mut().iter() {
+            // SAFETY: The domain mutex is still held while Drop restores every
+            // test-owned key, including when the test body is unwinding.
+            unsafe {
+                match prior_value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_env_guard_restores_mutations_and_recovers_after_a_panic() {
+    const KEY: &str = "SOROTTE_TEST_PANIC_SAFE_ENV_GUARD";
+    let original = std::env::var_os(KEY);
+    let panic = std::panic::catch_unwind(|| {
+        let env = TestEnvGuard::lock(&PANIC_SAFE_ENV_GUARD_LOCK);
+        env.set_var(KEY, "temporary-test-value");
+        panic!("intentional panic exercises TestEnvGuard unwinding");
+    });
+    assert!(panic.is_err());
+
+    let env = TestEnvGuard::lock(&PANIC_SAFE_ENV_GUARD_LOCK);
+    assert_eq!(
+        std::env::var_os(KEY),
+        original,
+        "Drop must restore the original value before releasing a poisoned lock"
+    );
+    drop(env);
 }
 
 fn ignore_autoplay_notification(
@@ -559,6 +609,7 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
     assert!(!diagnostic_output.contains("?Signature="));
 }
 
+mod cli_argument_configuration_composition;
 mod cli_runtime_overrides;
 mod client_args_compat;
 mod client_runtime;
@@ -567,12 +618,14 @@ mod connected_session_desync;
 mod connected_session_local_commands;
 mod connected_session_reconnect_restore;
 mod env_client_config;
+mod framed_transport_schedules;
 mod local_input_commands;
 mod mpv_smoke;
 mod mpv_startup;
 mod notification_messages;
 mod output_notifications;
 mod plex_watch_sync;
+mod raw_protocol_framing;
 mod reconnect_diagnostics;
 mod runtime_notifications;
 mod startup_playlist;

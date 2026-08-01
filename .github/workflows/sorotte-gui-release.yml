@@ -5,7 +5,7 @@ on:
   pull_request:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "v*"
 
@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: sorotte-gui-release-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && 'dev' || github.run_id }}
-  cancel-in-progress: false
+  group: sorotte-gui-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SOROTTE_GUI_DEV_RELEASE_TAG: sorotte-gui-dev
@@ -26,15 +26,20 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
       - name: Check formatting
         shell: pwsh
@@ -43,24 +48,42 @@ jobs:
       - name: Run GUI updater tests
         shell: pwsh
         run: |
-          cargo test -p sorotte-gui --lib update_
-          cargo test -p sorotte-gui --bin sorotte-gui-updater
-          cargo test -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
+          cargo test --locked -p sorotte-gui --lib update_
+          cargo test --locked -p sorotte-gui --bin sorotte-gui-updater
+          cargo test --locked -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
 
       - name: Build GUI release binaries
         shell: pwsh
         run: |
-          cargo build --release -p sorotte-gui --bin sorotte-gui
-          cargo build --release -p sorotte-gui --bin sorotte-gui-updater
+          cargo build --locked --release -p sorotte-gui --bin sorotte-gui
+          cargo build --locked --release -p sorotte-gui --bin sorotte-gui-updater
 
       - name: Package GUI release
         shell: pwsh
         run: |
           $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SOROTTE_GUI_RELEASE_CHANNEL=$channel"
           ./scripts/package-gui-release.ps1 -Channel $channel -SkipBuild
 
+      - name: Verify exact GUI release artifact
+        shell: pwsh
+        run: |
+          python scripts/verify_gui_release_artifact.py `
+            --artifacts-dir target/gui-release/artifacts `
+            --expected-source-sha "$env:GITHUB_SHA" `
+            --expected-channel "$env:SOROTTE_GUI_RELEASE_CHANNEL" `
+            --report target/gui-release/artifact-verification.json
+
+      - name: Upload GUI artifact verification report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-gui-artifact-verification
+          path: target/gui-release/artifact-verification.json
+          if-no-files-found: warn
+
       - name: Upload GUI package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sorotte-gui-windows-x86_64
           path: target/gui-release/artifacts/*
@@ -73,13 +96,37 @@ jobs:
       contents: write
     steps:
       - name: Checkout trusted publication revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
       - name: Download GUI package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sorotte-gui-windows-x86_64
           path: target/gui-release/artifacts
+
+      - name: Reverify downloaded GUI release artifact
+        shell: pwsh
+        run: |
+          $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
+          python scripts/verify_gui_release_artifact.py `
+            --artifacts-dir target/gui-release/artifacts `
+            --expected-source-sha "$env:GITHUB_SHA" `
+            --expected-channel "$channel" `
+            --report target/gui-release/publication-verification.json `
+            --skip-runtime-smoke
+
+      - name: Upload publication verification report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-gui-publication-verification
+          path: target/gui-release/publication-verification.json
+          if-no-files-found: warn
 
       - name: Attach package to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

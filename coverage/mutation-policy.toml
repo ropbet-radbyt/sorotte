@@ -1,0 +1,342 @@
+schema_version = 2
+cargo_mutants_version = "27.1.0"
+
+[[shard]]
+id = "privacy-secret"
+owner = "secrets"
+package = "sorotte-secret"
+files = ["crates/sorotte-secret/src/lib.rs"]
+test_target = "package"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-auth"
+owner = "server-security"
+package = "sorotte-server"
+files = ["crates/sorotte-server/src/auth.rs"]
+test_target = "lib"
+test_filter = "auth::tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "protocol-codec"
+owner = "protocol-safety"
+package = "sorotte-protocol"
+files = [
+    "crates/sorotte-protocol/src/codec.rs",
+    "crates/sorotte-protocol/src/redacted_debug.rs",
+]
+test_target = "lib"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-reconnect-state"
+owner = "client-lifecycle"
+package = "sorotte-client-core"
+files = ["crates/sorotte-client-core/src/session/reconnect.rs"]
+test_target = "lib"
+test_filter = "session::tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-runtime-config"
+owner = "client-configuration"
+package = "sorotte-client-app"
+files = ["crates/sorotte-client-app/src/legacy_runtime_config.rs"]
+test_target = "lib"
+test_filter = "legacy_runtime_config::tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-ping"
+owner = "client-networking"
+package = "sorotte-client-core"
+files = ["crates/sorotte-client-core/src/ping.rs"]
+test_target = "lib"
+test_filter = "session::tests::ping_tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-persistence-arbitration"
+owner = "server-persistence"
+package = "sorotte-server"
+files = ["crates/sorotte-server/src/persistence_actor/persistence_arbitration.rs"]
+test_target = "lib"
+test_filter = "persistence_actor::persistence_arbitration_tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-inbound-order"
+owner = "client-protocol"
+package = "sorotte-client-core"
+files = ["crates/sorotte-client-core/src/inbound_order.rs"]
+test_target = "lib"
+test_filter = "session::tests::protocol_tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-playlist-shuffle"
+owner = "client-playlist"
+package = "sorotte-client-core"
+files = ["crates/sorotte-client-core/src/session/playlist/shuffle_helpers.rs"]
+test_target = "lib"
+test_filter = "session::tests::playlist_tests::shuffle_undo_tests::"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "cli-framing"
+owner = "cli-transport"
+package = "sorotte-cli"
+files = ["crates/sorotte-cli/src/protocol_io.rs"]
+test_target = "package"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[accepted_unviable]]
+id = "const-default-is-not-const"
+shard = "privacy-secret"
+file = "crates/sorotte-secret/src/lib.rs"
+function = "RedactedCommandArgs::from_count"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants inserts a non-const Default::default call into a const fn, so Rust rejects the mutant before tests can run"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-error-source-dyn-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "<impl std::error::Error for ProtocolError>::source"
+return_type = "-> Option<&(dyn std::error::Error +'static)>"
+genre = "FnValue"
+replacement = "Some(Box::leak(Box::new(Default::default())))"
+reason = "cargo-mutants cannot construct Default::default for the dynamic Error trait object required by this source return type"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-error-from-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "<impl From<serde_json::Error> for ProtocolError>::from"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "ProtocolError intentionally has no Default implementation, so the generated replacement cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-command-order-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "decode_protocol_message_with_command_order"
+return_type = "-> Result<ProtocolMessage, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(Default::default())"
+reason = "ProtocolMessage has no semantically valid Default variant, so the generated successful replacement cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-message-lines-default-element"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "decode_message_lines"
+return_type = "-> Result<Vec<ProtocolMessage>, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(vec![Default::default()])"
+reason = "ProtocolMessage has no semantically valid Default variant, so the generated vector element cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-line-items-default-element"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "decode_message_line_items"
+return_type = "-> Result<Vec<DecodedMessageLineItem>, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(vec![Default::default()])"
+reason = "DecodedMessageLineItem has no meaningful Default value, so the generated vector element cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-message-line-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "decode_message_line"
+return_type = "-> Result<ProtocolMessage, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(Default::default())"
+reason = "ProtocolMessage has no semantically valid Default variant, so the generated successful replacement cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-hello-value-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "extract_hello"
+return_type = "-> Result<HelloPayload, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(Default::default())"
+reason = "HelloPayload requires identity fields and has no Default implementation, so the generated successful replacement cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "protocol-hello-message-default"
+shard = "protocol-codec"
+file = "crates/sorotte-protocol/src/codec.rs"
+function = "extract_hello_from_message"
+return_type = "-> Result<HelloPayload, ProtocolError>"
+genre = "FnValue"
+replacement = "Ok(Default::default())"
+reason = "HelloPayload requires identity fields and has no Default implementation, so the generated successful replacement cannot type-check"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-reconnect-ping-let-chain-or"
+shard = "client-reconnect-state"
+file = "crates/sorotte-client-core/src/session/reconnect.rs"
+function = "ClientSession::reconcile_ping_only_state_response"
+return_type = "-> StatePayload"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces the Rust let-chain && with ||, but let expressions are only valid in && chains so the generated mutant cannot parse"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-reconnect-state-let-chain-or"
+shard = "client-reconnect-state"
+file = "crates/sorotte-client-core/src/session/reconnect.rs"
+function = "ClientSession::reconcile_normalized_state_and_build_response_with_local_state_change_override"
+return_type = "-> StatePayload"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces the Rust let-chain && with ||, but let expressions are only valid in && chains so the generated mutant cannot parse"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-runtime-config-host-let-chain-or"
+shard = "client-runtime-config"
+file = "crates/sorotte-client-app/src/legacy_runtime_config.rs"
+function = "parse_host_and_optional_port_from_host_arg_legacy_compatible"
+return_type = "-> (String, Option<u16>)"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces the Rust let-chain && with ||, but let expressions are only valid in && chains so both generated sites fail to parse"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-runtime-config-room-let-chain-or"
+shard = "client-runtime-config"
+file = "crates/sorotte-client-app/src/legacy_runtime_config.rs"
+function = "normalize_controlled_room_input_legacy_compatible"
+return_type = "-> (String, Option<String>)"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces the Rust let-chain && with ||, but let expressions are only valid in && chains so both generated sites fail to parse"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-runtime-config-fallback-let-chain-or"
+shard = "client-runtime-config"
+file = "crates/sorotte-client-app/src/legacy_runtime_config.rs"
+function = "stored_client_settings_runtime_snapshot_legacy_compatible"
+return_type = "-> StoredClientSettingsRuntimeSnapshot"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces the Rust let-chain && with ||, but let expressions are only valid in && chains so the generated fallback mutant cannot parse"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "server-persistence-arbitration-enqueue-default"
+shard = "server-persistence-arbitration"
+file = "crates/sorotte-server/src/persistence_actor/persistence_arbitration.rs"
+function = "RoomPersistenceArbitration::enqueue"
+return_type = "-> RoomEffectEnqueueDisposition"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a semantic three-way disposition enum that intentionally has no safe default"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "server-persistence-arbitration-effect-default"
+shard = "server-persistence-arbitration"
+file = "crates/sorotte-server/src/persistence_actor/persistence_arbitration.rs"
+function = "RoomPersistenceArbitration::desired_effects"
+return_type = "-> Vec<ServerPersistenceEffect>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a persistence effect whose required room or snapshot identity has no valid default"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "client-playlist-shuffle-let-chain-or"
+shard = "client-playlist-shuffle"
+file = "crates/sorotte-client-core/src/session/playlist/shuffle_helpers.rs"
+function = "ClientSession::local_playlist_target_index_from_changed_playlist_legacy_compatible"
+return_type = "-> usize"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants replaces each of the forward- and backward-search Rust let-chain && sites with ||, but let expressions are only valid in && chains so both generated mutants cannot parse"
+review_by = "2026-10-31"

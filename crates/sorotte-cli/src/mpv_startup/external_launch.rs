@@ -118,7 +118,10 @@ pub(crate) fn spawn_legacy_external_player_from_spec_legacy_compatible(
     if !spec.args.is_empty() {
         command.args(&spec.args);
     }
-    command.stdout(Stdio::null()).stderr(Stdio::null());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     command.spawn().map_err(|error| {
         anyhow!(
             "failed to launch legacy external player '{}' with args {:?}: {error}",

@@ -112,11 +112,42 @@ Room isolation:
 
 ## TLS
 
-The `--tls` option points at a directory containing:
+The `--tls` option points at a TLS bundle root. The recommended layout uses an
+atomically replaced selector and immutable generations:
 
-- `cert.pem`
-- `chain.pem`
-- `privkey.pem`
+```text
+tls/
+  current.json
+  generations/
+    20260730T120000Z-1234-AbCdEf/
+      cert.pem
+      chain.pem
+      privkey.pem
+```
+
+`current.json` uses schema `sorotte-tls-bundle-v1`, names the selected
+generation, and records the exact byte length and lowercase SHA-256 digest of
+all three members. The server reads only that generation, authenticates every
+member, and verifies that the selector did not change during capture. A
+publisher must fully write a new generation and atomically rename a temporary
+selector to `current.json`; it must never modify a selected generation in
+place. [`copy-swag-sorotte-certs.sh`](../scripts/copy-swag-sorotte-certs.sh)
+implements this contract for SWAG/Let's Encrypt lineages.
+
+The schema is deliberately closed. A generation ID is at most 128 ASCII bytes,
+uses only letters, digits, `-`, and `_`, and begins/ends with a letter or
+digit. `current.json` is limited to 16 KiB and each member to 4 MiB. The atomic
+bundle root, `generations` directory, selected generation directory, selector,
+and members must be ordinary directories/files rather than symbolic links or
+Windows reparse points.
+
+For compatibility, a directory containing loose `cert.pem`, `chain.pem`, and
+`privkey.pem` files is still accepted when `current.json` is absent. The server
+follows member symlinks, limits each resolved regular file to 4 MiB using an
+opened-handle plus-one read, rechecks handle length, and requires two matching
+captures before installing loose files. No reader can prove that three
+independently replaced paths came from one certificate generation. Use loose
+files only when they are static or publication is externally serialized.
 
 Example:
 
@@ -252,11 +283,22 @@ Packages intentionally exclude `target/release/deps`.
 Release-tag runs build and push immutable source tags:
 
 - `ghcr.io/ropbet-radbyt/sorotte-server:<git-tag>`
-- `ghcr.io/ropbet-radbyt/sorotte-server:sha-<short-sha>`
+- `ghcr.io/ropbet-radbyt/sorotte-server:sha-<full-40-character-sha>`
 
 The mutable `ghcr.io/ropbet-radbyt/sorotte-server:latest` tag is promoted only
 by an explicit manual workflow run with `push_latest` set to `true`. Re-running
 an older tag workflow cannot move `latest` backward.
+
+Publication is intentionally later than testing. The workflow builds and loads
+one local `linux/amd64` image, checks its source/config/RootFS identity, consumes
+it through non-root plaintext, TLS, graceful-shutdown, and persistence-restart
+smoke, and generates an SPDX SBOM from that exact daemon image. Registry login
+and tag pushes occur only after those checks. Every tag must produce one common
+manifest digest; that digest is then keylessly signed and attested before an
+anonymous GHCR client re-fetches every tag and the digest reference. The final
+gate rejects any mismatch among the local image-config identity, runtime and
+restart evidence, SBOM, pushed manifest, signature, attestation, or public
+manifest/config bytes.
 
 To publish manually:
 
@@ -265,12 +307,32 @@ To publish manually:
 3. Go to `Actions`.
 4. Run `publish sorotte-server container`; set `push_latest` to `true` only
    when intentionally promoting that selected revision.
-5. After the first successful push, open the package page for `sorotte-server`.
+5. After the first push (even if the later anonymous comparison correctly
+   fails for a private new package), open the package page for
+   `sorotte-server`.
 6. Go to `Package settings`.
 7. Change visibility to `Public` if the image should be anonymously pullable.
+8. If the first run stopped at anonymous public verification because a new
+   package was private, rerun the workflow after changing visibility and
+   require the uploaded `final-gate-report.json` to pass.
 
-GitHub Container Registry packages are private on first publish. Public container packages can be pulled anonymously after package visibility is changed.
+GitHub Container Registry packages are private on first publish. Public
+container packages can be pulled anonymously after package visibility is
+changed. A successful authenticated push is therefore not, by itself, a
+successful Sorotte container publication.
 
 ## Signing
 
-Artifacts are checksumed but unsigned. Add signing only after the project has a stable signing key and artifact publication process.
+Release archives are checksumed but remain unsigned.
+
+The server container has a separate keyless signing contract. Its workflow
+uses GitHub's OIDC identity to sign the exact tested registry manifest digest
+and attach the generated SPDX JSON as an in-toto attestation. Verification is
+restricted to this repository, the exact workflow URI, the GitHub Actions OIDC
+issuer, the source revision, and signed source/workflow-source annotations.
+The anonymous public digest comparison and the always-run final gate must pass
+before the signature or attestation is treated as publication evidence.
+
+This describes the repository workflow, not an already completed publication.
+Retain the workflow artifact containing runtime, SBOM, push, Cosign,
+anonymous-registry, and final-gate reports for each claimed release.

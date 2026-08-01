@@ -54,6 +54,59 @@ fn reconnect_playlist_restore_emits_actions_on_empty_server_playlist_snapshot() 
 }
 
 #[test]
+fn reconnect_playlist_restore_matching_echo_retires_acknowledgement_fence() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("initial playlist should apply");
+    session.reset_sync_state_for_reconnect();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+        .expect("empty reconnect playlist should arm restoration");
+
+    assert!(
+        !session
+            .runtime_actions_for_reconnect_playlist_restore_if_needed()
+            .is_empty(),
+        "armed restoration should be emitted once"
+    );
+    assert!(
+        session
+            .model
+            .reconnect
+            .playlist_restore_pending_ack
+            .is_some(),
+        "sending must retain the desired playlist until the server acknowledges it"
+    );
+
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("matching server echo should apply");
+    assert!(
+        session
+            .model
+            .reconnect
+            .playlist_restore_pending_ack
+            .is_none(),
+        "matching server echo should retire the acknowledgement fence"
+    );
+}
+
+#[test]
 fn reconnect_playlist_restore_ignores_non_matching_playlist_updates() {
     let mut session = ClientSession::default();
     session

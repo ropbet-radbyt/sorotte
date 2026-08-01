@@ -8,7 +8,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice"
               }
@@ -21,6 +21,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -86,7 +96,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice_"
               }
@@ -98,7 +108,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice_"
               }
@@ -111,6 +121,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -136,40 +156,6 @@
               },
               "username": "alice_",
               "version": "1.2.255"
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
             }
           }
         }
@@ -237,7 +223,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice__"
               }
@@ -249,7 +235,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice__"
               }
@@ -261,7 +247,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice__"
               }
@@ -274,6 +260,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -301,57 +297,6 @@
               "version": "1.2.255"
             }
           }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-3",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
         }
       ],
       "step": 3
@@ -375,7 +320,7 @@
                     "uiMode": "Unknown"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 },
                 "alice_": {
@@ -390,7 +335,7 @@
                     "uiMode": "Unknown"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 },
                 "alice__": {
@@ -405,7 +350,7 @@
                     "uiMode": "Unknown"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 }
               }

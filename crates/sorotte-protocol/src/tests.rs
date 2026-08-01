@@ -104,6 +104,31 @@ fn roundtrip_raw_json_value_fixture() {
 }
 
 #[test]
+fn raw_floating_point_roundtrip_is_exact() {
+    let value = decode_line("70E70").expect("counterexample is valid JSON");
+    let encoded = encode_line(&value).expect("decoded counterexample should encode");
+    let decoded = decode_line(&encoded).expect("encoded counterexample should decode");
+    assert_eq!(
+        value, decoded,
+        "protocol floating-point value must remain exact across decode/encode/decode"
+    );
+}
+
+#[test]
+fn typed_state_floating_point_roundtrip_is_exact() {
+    let message = decode_message_line(r#"{"State":{"playstate":{"position":70E70}}}"#)
+        .expect("counterexample is a valid State message");
+    let encoded =
+        encode_message_line(&message).expect("decoded counterexample message should encode");
+    let decoded =
+        decode_message_line(&encoded).expect("encoded counterexample message should decode");
+    assert_eq!(
+        message, decoded,
+        "typed floating-point value must remain exact across decode/encode/decode"
+    );
+}
+
+#[test]
 fn playback_barrier_fixtures_decode_from_nested_extension_maps() {
     let prepare_message = decode_message_line(&read_fixture("set_playback_barrier_prepare.json"))
         .expect("prepare fixture should decode");
@@ -1198,6 +1223,116 @@ fn set_payload_preserves_nested_command_order() {
         set_message.set.command_order,
         vec!["file".to_owned(), "room".to_owned()]
     );
+}
+
+#[test]
+fn raw_command_order_scanner_preserves_all_top_level_permutations() {
+    let command_fragments = [
+        (
+            "Set",
+            r#""Set":{"room":{"name":"room, } \"List\": null ☃"}}"#,
+        ),
+        ("List", r#""List":null"#),
+        (
+            "Hello",
+            r#""Hello":{"username":"alice","room":{"name":"room"},"version":"1.2.255"}"#,
+        ),
+    ];
+    let permutations = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    for permutation in permutations {
+        let raw_line = format!(
+            "{{ {} ,\n{}\t, {} }}",
+            command_fragments[permutation[0]].1,
+            command_fragments[permutation[1]].1,
+            command_fragments[permutation[2]].1,
+        );
+        let items = decode_message_line_items(&raw_line)
+            .unwrap_or_else(|error| panic!("permutation {permutation:?} should decode: {error}"));
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item
+                    .command
+                    .as_deref()
+                    .expect("command should be identified"))
+                .collect::<Vec<_>>(),
+            permutation
+                .iter()
+                .map(|index| command_fragments[*index].0)
+                .collect::<Vec<_>>(),
+            "raw source order must survive serde_json's object representation"
+        );
+        assert!(
+            items.iter().all(|item| item.message.is_ok()),
+            "every command fragment in permutation {permutation:?} should remain typed"
+        );
+    }
+}
+
+#[test]
+fn raw_set_order_scanner_ignores_structural_tokens_inside_values() {
+    let set_fragments = [
+        (
+            "file",
+            r#""file":{"name":"nested }, \"room\": { token.mkv"}"#,
+        ),
+        ("room", r#""room":{"name":"雪,}]room"}"#),
+        ("playlistIndex", r#""playlistIndex":{"index":0}"#),
+    ];
+    let permutations = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    for permutation in permutations {
+        let raw_line = format!(
+            r#"{{"Set":{{{}, {}, {}}}}}"#,
+            set_fragments[permutation[0]].1,
+            set_fragments[permutation[1]].1,
+            set_fragments[permutation[2]].1,
+        );
+        let ProtocolMessage::Set(message) =
+            decode_message_line(&raw_line).expect("adversarial Set line should decode")
+        else {
+            panic!("adversarial Set line should remain a Set message");
+        };
+        assert_eq!(
+            message.set.command_order,
+            permutation
+                .iter()
+                .map(|index| set_fragments[*index].0.to_owned())
+                .collect::<Vec<_>>(),
+            "nested delimiters and escaped quotes must not become keys"
+        );
+    }
+}
+
+#[test]
+fn raw_command_order_scanner_decodes_escaped_command_keys() {
+    let items =
+        decode_message_line_items(r#"{"\u0053et":{"room":{"name":"room"}},"Li\u0073t":null}"#)
+            .expect("escaped protocol command keys should decode");
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.command.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("Set"), Some("List")]
+    );
+    assert!(items.iter().all(|item| item.message.is_ok()));
 }
 
 #[test]

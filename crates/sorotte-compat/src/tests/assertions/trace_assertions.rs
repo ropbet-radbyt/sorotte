@@ -167,17 +167,6 @@ pub(in crate::tests) fn assert_runtime_matches_captured_trace_with_full_override
                     normalization_options,
                 );
                 canonicalize_legacy_hello_fields(&mut message);
-                canonicalize_intentional_username_collision_divergence(
-                    scenario_name,
-                    true,
-                    &mut message,
-                );
-                canonicalize_intentional_current_index_divergence(
-                    scenario_name,
-                    step_number - 1,
-                    true,
-                    &mut message,
-                );
                 ComparableOutbound { client_id, message }
             })
             .collect();
@@ -190,55 +179,12 @@ pub(in crate::tests) fn assert_runtime_matches_captured_trace_with_full_override
                     normalization_options,
                 );
                 canonicalize_legacy_hello_fields(&mut message);
-                canonicalize_intentional_username_collision_divergence(
-                    scenario_name,
-                    false,
-                    &mut message,
-                );
-                canonicalize_intentional_current_index_divergence(
-                    scenario_name,
-                    step_number - 1,
-                    false,
-                    &mut message,
-                );
                 ComparableOutbound {
                     client_id: output.client_id.clone(),
                     message,
                 }
             })
             .collect();
-
-        if scenario_name == "server_runtime_controlled_room_permissions.jsonl"
-            && step_number == 9
-            && expected_outputs.is_empty()
-        {
-            // The old capture silently ignored this unauthorized index mutation.
-            // Current Python emits a null correction (covered by the live parity
-            // test), while Sorotte returns the atomically normalized current index.
-            // Keep the captured-trace exception exact down to recipient, user, and
-            // value instead of broadly ignoring playlistIndex messages.
-            assert_eq!(
-                actual_outputs,
-                vec![ComparableOutbound {
-                    client_id: "client-2".to_owned(),
-                    message: json!({
-                        "Set": {
-                            "playlistIndex": {
-                                "index": 0,
-                                "user": "+room1:CB39A19549E8"
-                            }
-                        }
-                    }),
-                }],
-                "controlled-room trace divergence must remain the exact normalized correction"
-            );
-            continue;
-        }
-
-        let actual_outputs = without_unshared_runtime_playlist_index_normalizations(
-            &expected_outputs,
-            &actual_outputs,
-        );
 
         assert_eq!(
             actual_outputs.len(),

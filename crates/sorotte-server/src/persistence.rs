@@ -1,5 +1,36 @@
 use super::*;
 
+#[cfg(test)]
+pub(crate) mod test_crash {
+    pub(crate) const HELPER_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_HELPER";
+    pub(crate) const POINT_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_POINT";
+    pub(crate) const ACTION_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_ACTION";
+    pub(crate) const DB_PATH_ENV: &str = "SOROTTE_PERSISTENCE_CRASH_DB_PATH";
+    pub(crate) const EXIT_CODE: i32 = 86;
+
+    pub(crate) const SCHEMA_AFTER_PLAYLIST_JSON: &str = "schema-after-playlist-json";
+    pub(crate) const SCHEMA_AFTER_PERSISTENCE_VERSION: &str = "schema-after-persistence-version";
+    pub(crate) const SCHEMA_AFTER_OWNER_BUCKET: &str = "schema-after-owner-bucket";
+    pub(crate) const SCHEMA_AFTER_CREATED_AT: &str = "schema-after-created-at";
+    pub(crate) const SCHEMA_AFTER_METADATA: &str = "schema-after-metadata";
+    pub(crate) const ROOM_MIGRATION_AFTER_ROW: &str = "room-migration-after-row";
+    pub(crate) const ROOM_MIGRATION_AFTER_COMMIT: &str = "room-migration-after-commit";
+    pub(crate) const ROOM_EFFECT_AFTER_WRITE: &str = "room-effect-after-write";
+    pub(crate) const ROOM_EFFECT_AFTER_COMMIT: &str = "room-effect-after-commit";
+    pub(crate) const STATS_AFTER_FIRST_ROW: &str = "stats-after-first-row";
+    pub(crate) const STATS_AFTER_COMMIT: &str = "stats-after-commit";
+    pub(crate) const QUOTA_SECRET_AFTER_GENERATE: &str = "quota-secret-after-generate";
+    pub(crate) const QUOTA_SECRET_AFTER_INSERT: &str = "quota-secret-after-insert";
+
+    pub(crate) fn exit_if_armed(point: &str) {
+        if std::env::var_os(HELPER_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+            && std::env::var_os(POINT_ENV).as_deref() == Some(std::ffi::OsStr::new(point))
+        {
+            std::process::exit(EXIT_CODE);
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct PersistedRoomState {
     pub(crate) files: Vec<String>,
@@ -68,6 +99,8 @@ impl StatsPersistenceStore {
                 statement
                     .execute(params![snapshot_time, version])
                     .map_err(|source| self.sqlite_error("insert clients snapshot row", source))?;
+                #[cfg(test)]
+                test_crash::exit_if_armed(test_crash::STATS_AFTER_FIRST_ROW);
             }
         }
         transaction
@@ -134,8 +167,13 @@ impl RoomPersistenceStore {
     pub(crate) fn load_rooms(
         &self,
     ) -> Result<BTreeMap<String, PersistedRoomState>, RoomPersistenceError> {
-        let connection = self.connection("connect")?;
-        let mut statement = connection
+        let mut connection = self.connection("connect")?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|source| {
+                self.sqlite_error("begin persisted room migration transaction", source)
+            })?;
+        let mut statement = transaction
             .prepare(
                 "SELECT name, playlist, playlistJson, playlistIndex, position, lastSavedUpdate \
                         , persistenceVersion, ownerBucket, createdAt \
@@ -200,7 +238,7 @@ impl RoomPersistenceStore {
             if needs_json_migration {
                 let playlist_json = serde_json::to_string(&room_state.files)
                     .expect("serializing a string playlist cannot fail");
-                connection
+                transaction
                     .execute(
                         "UPDATE persistent_rooms SET playlistJson = ?1 WHERE name = ?2",
                         params![playlist_json, room_name],
@@ -210,7 +248,7 @@ impl RoomPersistenceStore {
                     })?;
             }
             if needs_index_migration {
-                connection
+                transaction
                     .execute(
                         "UPDATE persistent_rooms SET playlistIndex = ?1 WHERE name = ?2",
                         params![room_state.index, room_name],
@@ -220,7 +258,14 @@ impl RoomPersistenceStore {
                     })?;
             }
             rooms.insert(room_name, room_state);
+            #[cfg(test)]
+            test_crash::exit_if_armed(test_crash::ROOM_MIGRATION_AFTER_ROW);
         }
+        transaction
+            .commit()
+            .map_err(|source| self.sqlite_error("commit persisted room migrations", source))?;
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::ROOM_MIGRATION_AFTER_COMMIT);
         Ok(rooms)
     }
 
@@ -328,6 +373,8 @@ impl RoomPersistenceStore {
                     [],
                 )
                 .map_err(|source| self.sqlite_error("migrate schema", source))?;
+            #[cfg(test)]
+            test_crash::exit_if_armed(test_crash::SCHEMA_AFTER_PLAYLIST_JSON);
         }
         for (column, definition) in [
             ("persistenceVersion", "INTEGER NOT NULL DEFAULT 0"),
@@ -341,6 +388,13 @@ impl RoomPersistenceStore {
                         [],
                     )
                     .map_err(|source| self.sqlite_error("migrate schema", source))?;
+                #[cfg(test)]
+                test_crash::exit_if_armed(match column {
+                    "persistenceVersion" => test_crash::SCHEMA_AFTER_PERSISTENCE_VERSION,
+                    "ownerBucket" => test_crash::SCHEMA_AFTER_OWNER_BUCKET,
+                    "createdAt" => test_crash::SCHEMA_AFTER_CREATED_AT,
+                    _ => unreachable!("only known schema migrations are enumerated"),
+                });
             }
         }
         connection
@@ -352,10 +406,33 @@ impl RoomPersistenceStore {
                 [],
             )
             .map_err(|source| self.sqlite_error("initialize metadata schema", source))?;
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::SCHEMA_AFTER_METADATA);
         Ok(())
     }
 
     pub(crate) fn load_or_create_quota_secret(&self) -> Result<[u8; 32], RoomPersistenceError> {
+        self.load_or_create_quota_secret_inner(|| {})
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_or_create_quota_secret_with_before_create<F>(
+        &self,
+        before_create: F,
+    ) -> Result<[u8; 32], RoomPersistenceError>
+    where
+        F: FnOnce(),
+    {
+        self.load_or_create_quota_secret_inner(before_create)
+    }
+
+    fn load_or_create_quota_secret_inner<F>(
+        &self,
+        before_create: F,
+    ) -> Result<[u8; 32], RoomPersistenceError>
+    where
+        F: FnOnce(),
+    {
         let connection = self.connection("connect quota metadata")?;
         let existing = connection
             .query_row(
@@ -366,20 +443,38 @@ impl RoomPersistenceStore {
             .optional()
             .map_err(|source| self.sqlite_error("load quota secret", source))?;
         if let Some(existing) = existing {
-            return existing.try_into().map_err(|_| {
-                self.sqlite_error("decode quota secret", rusqlite::Error::InvalidQuery)
-            });
+            return self.decode_quota_secret(existing);
         }
 
+        before_create();
         let mut secret = [0_u8; 32];
         getrandom::fill(&mut secret).expect("operating system random source should be available");
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::QUOTA_SECRET_AFTER_GENERATE);
         connection
             .execute(
-                "INSERT INTO persistence_metadata (key, value) VALUES ('quota-secret-v1', ?1)",
+                "INSERT INTO persistence_metadata (key, value) \
+                 VALUES ('quota-secret-v1', ?1) \
+                 ON CONFLICT(key) DO NOTHING",
                 params![secret.as_slice()],
             )
             .map_err(|source| self.sqlite_error("create quota secret", source))?;
-        Ok(secret)
+        #[cfg(test)]
+        test_crash::exit_if_armed(test_crash::QUOTA_SECRET_AFTER_INSERT);
+        let stored = connection
+            .query_row(
+                "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .map_err(|source| self.sqlite_error("reload quota secret", source))?;
+        self.decode_quota_secret(stored)
+    }
+
+    fn decode_quota_secret(&self, value: Vec<u8>) -> Result<[u8; 32], RoomPersistenceError> {
+        value
+            .try_into()
+            .map_err(|_| self.sqlite_error("decode quota secret", rusqlite::Error::InvalidQuery))
     }
 
     pub(crate) fn connection(

@@ -654,7 +654,9 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiPlayerLaunchRuntimeState::None => {}
             GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
             GuiPlayerLaunchRuntimeState::TestPlayer => {
-                self.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+                self.player = Some(GuiOwnedPlayer::Test(
+                    GuiTestPlayerAdapter::from_environment(),
+                ));
                 self.managed_stream_helper_refresh_required = false;
                 self.player_unavailability_reason = None;
                 self.player_apply_state

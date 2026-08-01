@@ -1,0 +1,83 @@
+name: sorotte Mutation Testing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 4 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sorotte-mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    name: Mutation (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - privacy-secret
+          - server-auth
+          - protocol-codec
+          - client-reconnect-state
+          - client-runtime-config
+          - client-ping
+          - server-persistence-arbitration
+          - client-inbound-order
+          - client-playlist-shuffle
+          - cli-framing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned cargo-mutants
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+
+      - name: Validate mutation policy
+        run: >-
+          python scripts/mutation_ci.py validate
+          --repo-root .
+          --policy coverage/mutation-policy.toml
+          --shard ${{ matrix.shard }}
+
+      - name: Run source-bound mutation shard
+        run: >-
+          python scripts/mutation_ci.py run
+          --repo-root .
+          --policy coverage/mutation-policy.toml
+          --shard ${{ matrix.shard }}
+          --results-root target/mutation-ci/${{ matrix.shard }}
+          --output target/verification/mutation-${{ matrix.shard }}.json
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-mutation-${{ matrix.shard }}
+          path: |
+            target/verification/mutation-${{ matrix.shard }}.json
+            target/mutation-ci/${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

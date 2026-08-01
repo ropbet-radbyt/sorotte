@@ -5,7 +5,8 @@ impl MenuDialogShellState {
         Self {
             sections: vec![
                 MenuSectionShellState {
-                    title: "File",
+                    id: MenuSectionId::File,
+                    title: MenuSectionId::File.label(),
                     actions: vec![
                         MenuActionShellItem::new(MenuActionId::OpenMedia, false, false),
                         MenuActionShellItem::new(MenuActionId::OpenMediaSearch, true, false),
@@ -18,7 +19,8 @@ impl MenuDialogShellState {
                     ],
                 },
                 MenuSectionShellState {
-                    title: "Playback",
+                    id: MenuSectionId::Playback,
+                    title: MenuSectionId::Playback.label(),
                     actions: vec![
                         MenuActionShellItem::new(MenuActionId::Play, false, false),
                         MenuActionShellItem::new(MenuActionId::Pause, false, false),
@@ -29,7 +31,8 @@ impl MenuDialogShellState {
                     ],
                 },
                 MenuSectionShellState {
-                    title: "Advanced",
+                    id: MenuSectionId::Advanced,
+                    title: MenuSectionId::Advanced.label(),
                     actions: vec![
                         MenuActionShellItem::new(MenuActionId::CreateControlledRoom, false, false),
                         MenuActionShellItem::new(MenuActionId::IdentifyAsController, false, false),
@@ -39,7 +42,8 @@ impl MenuDialogShellState {
                     ],
                 },
                 MenuSectionShellState {
-                    title: "Window",
+                    id: MenuSectionId::Window,
+                    title: MenuSectionId::Window.label(),
                     actions: vec![
                         MenuActionShellItem::new(MenuActionId::TogglePlaybackButtons, true, true),
                         MenuActionShellItem::new(MenuActionId::ToggleAutoplayControls, true, true),
@@ -47,7 +51,8 @@ impl MenuDialogShellState {
                     ],
                 },
                 MenuSectionShellState {
-                    title: "Help",
+                    id: MenuSectionId::Help,
+                    title: MenuSectionId::Help.label(),
                     actions: vec![
                         MenuActionShellItem::new(MenuActionId::About, true, false),
                         MenuActionShellItem::new(MenuActionId::Help, true, false),

@@ -923,6 +923,426 @@ fn gui_persisted_config_runtime_owner_opens_playlist_url_without_a_local_origin(
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_automatic_session_open_loads_direct_web_url() {
+    for stream_url in [
+        "http://127.0.0.1:43210/generated-fault.wav",
+        "https://media.example.test/video.mp4",
+    ] {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback runtime owner should bootstrap");
+        owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            only_switch_to_trusted_domains: Some(false),
+            trusted_domains: Some(Vec::new()),
+            ..StoredClientSettingsMvp::default()
+        });
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        owner.open_media_files_through_shared_playlist_runtime_impl(
+            &handle,
+            &mut state,
+            vec![stream_url.to_owned()],
+            None,
+        );
+
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            vec![stream_url.to_owned()]
+        );
+        assert_eq!(
+            owner
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref()),
+            Some(stream_url),
+            "Automatic session-backed media opens should load an initial direct HTTP(S) URL"
+        );
+    }
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_media_confirmation() {
+    struct TrackedRecordingPlayer {
+        opened_paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        command_progress: std::sync::Arc<
+            std::sync::Mutex<std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>>,
+        >,
+        media_load_outcomes: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+            >,
+        >,
+        local_file_updates: std::sync::Arc<
+            std::sync::Mutex<std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>>,
+        >,
+        next_command_id: u64,
+    }
+
+    impl PlayerAdapter for TrackedRecordingPlayer {
+        fn name(&self) -> &'static str {
+            "tracked-recording"
+        }
+
+        fn execute_tracked(
+            &mut self,
+            command: sorotte_player_api::PlayerCommand,
+        ) -> Result<sorotte_player_api::PlayerCommandId, sorotte_player_api::PlayerError> {
+            let sorotte_player_api::PlayerCommand::OpenFile(path) = command else {
+                return Err(sorotte_player_api::PlayerError::Unsupported(
+                    "execute_tracked",
+                ));
+            };
+            self.opened_paths
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(path);
+            let command_id = sorotte_player_api::PlayerCommandId::new(self.next_command_id);
+            self.next_command_id = self.next_command_id.wrapping_add(1);
+            Ok(command_id)
+        }
+
+        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+            self.command_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            self.media_load_outcomes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+            self.local_file_updates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+        }
+    }
+
+    let initial_url = "http://127.0.0.1:43210/generated-fault.wav";
+    let replacement_url = "https://media.example.test/replacement.mp4";
+    let opened_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let command_progress =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let media_load_outcomes =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let local_file_updates =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TrackedRecordingPlayer {
+        opened_paths: opened_paths.clone(),
+        command_progress: command_progress.clone(),
+        media_load_outcomes: media_load_outcomes.clone(),
+        local_file_updates: local_file_updates.clone(),
+        next_command_id: 1,
+    })));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        only_switch_to_trusted_domains: Some(false),
+        trusted_domains: Some(Vec::new()),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![initial_url.to_owned()],
+        None,
+    );
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![initial_url.to_owned()]
+    );
+    let playlist_generation = owner.playlist_resolution.generation;
+    let remote_revision = owner
+        .session
+        .as_ref()
+        .expect("session should remain attached")
+        .current_room_playlist_remote_revision();
+    let initial_command_id = owner
+        .playlist_resolution_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.player_command_id)
+        .expect("initial direct URL load should be tracked");
+    assert!(owner.player_local_file_placeholder);
+
+    command_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extend([
+            sorotte_player_api::PlayerCommandProgress::accepted(
+                initial_command_id,
+                Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
+                None,
+            ),
+            sorotte_player_api::PlayerCommandProgress::finished(
+                initial_command_id,
+                Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
+                None,
+                None,
+                sorotte_player_api::PlayerCommandResult::Completed,
+            ),
+        ]);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let attempt = owner
+        .playlist_resolution_attempt
+        .as_ref()
+        .expect("accepted direct URL load should remain coordinated");
+    assert_eq!(
+        attempt.state,
+        crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading
+    );
+    assert_eq!(attempt.player_command_id, None);
+    assert!(
+        owner.last_attached_media_resolution_trigger.is_some(),
+        "an IPC reply must not clear the dedupe trigger before media confirmation"
+    );
+    owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    for _ in 0..4 {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    }
+    assert_eq!(
+        owner.playlist_resolution.generation, playlist_generation,
+        "matching playlistChange and playlistIndex echoes must preserve the optimistic scope"
+    );
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should remain attached")
+            .current_room_playlist_remote_revision(),
+        remote_revision,
+        "matching self echoes must not manufacture a remote replacement"
+    );
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![initial_url.to_owned()],
+        "the accepted loadfile reply and matching playlist echoes must not resubmit the URL"
+    );
+
+    let mut projected_row_ids = vec![state.main_window.playlist[0].entry_id];
+    for _ in 0..3 {
+        state.main_window.playlist[0].entry_id = crate::app::GuiPlaylistEntryId::next();
+        projected_row_ids.push(state.main_window.playlist[0].entry_id);
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    }
+    assert_eq!(
+        projected_row_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+        "the regression must exercise three distinct same-target row-scope projections"
+    );
+    assert_eq!(owner.playlist_resolution.generation, playlist_generation);
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![initial_url.to_owned()],
+        "same-target row identity churn must adopt the physical in-flight load instead of resubmitting it"
+    );
+
+    let successful_load = sorotte_player_api::PlayerMediaLoadOutcome::success(
+        initial_url,
+        Some(initial_url.to_owned()),
+    );
+    media_load_outcomes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push_back(successful_load);
+    local_file_updates
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push_back(
+            sorotte_player_api::LocalFileUpdate::new("generated-fault.wav").with_path(initial_url),
+        );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        !owner.player_local_file_placeholder,
+        "matching media evidence should clear the physical loading placeholder"
+    );
+    assert!(
+        owner.current_player_matches_media_target(initial_url),
+        "matching media evidence should confirm the direct URL identity"
+    );
+    owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .expect("confirmed direct URL load should remain coordinated")
+            .state,
+        crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Active
+    );
+
+    let terminal_failure = sorotte_player_api::PlayerMediaLoadOutcome::failure(
+        initial_url,
+        Some(initial_url.to_owned()),
+        sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+        "fixture connection ended",
+    );
+    media_load_outcomes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push_back(terminal_failure);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![initial_url.to_owned(), initial_url.to_owned()],
+        "an actual terminal failure after activation must still retry the selected URL"
+    );
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should remain attached")
+        .apply_message_json(
+            &serde_json::json!({
+                "Set": {
+                    "playlistChange": {
+                        "files": [replacement_url],
+                        "user": "bob",
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("different remote playlist replacement should apply");
+    let actions = owner
+        .session
+        .as_mut()
+        .expect("session should remain attached")
+        .drain_gui_actions(&state);
+    for action in actions {
+        assert!(
+            state.apply(action),
+            "remote replacement projection should apply cleanly"
+        );
+    }
+    owner.reconcile_playlist_resolution_scope(&handle, &mut state);
+    assert!(
+        owner.playlist_resolution.generation > playlist_generation,
+        "a genuinely different remote replacement must advance the playlist scope"
+    );
+    owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        *opened_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![
+            initial_url.to_owned(),
+            initial_url.to_owned(),
+            replacement_url.to_owned(),
+        ],
+        "a genuinely different remote replacement must supersede the in-flight retry"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_automatic_session_open_keeps_unsupported_urls_unresolved() {
+    for unsupported_url in [
+        "ftp://media.example.test/video.mp4",
+        "custom://media.example.test/video.mp4",
+    ] {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback runtime owner should bootstrap");
+        owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            only_switch_to_trusted_domains: Some(true),
+            trusted_domains: Some(vec!["media.example.test".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        owner.open_media_files_through_shared_playlist_runtime_impl(
+            &handle,
+            &mut state,
+            vec![unsupported_url.to_owned()],
+            None,
+        );
+
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            vec![unsupported_url.to_owned()]
+        );
+        assert!(
+            owner.player_local_file.is_none(),
+            "Automatic session-backed media opens must not load unsupported URL schemes"
+        );
+    }
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_automatic_session_open_blocks_untrusted_direct_web_url() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        only_switch_to_trusted_domains: Some(true),
+        trusted_domains: Some(vec!["trusted.example.test".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let untrusted_url = "https://untrusted.example.test/video.mp4";
+
+    owner.open_media_files_through_shared_playlist_runtime_impl(
+        &handle,
+        &mut state,
+        vec![untrusted_url.to_owned()],
+        None,
+    );
+
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec![untrusted_url.to_owned()]
+    );
+    assert!(
+        owner.player_local_file.is_none(),
+        "the direct-media candidate must remain behind room URL trust preflight"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested_slot() {
     let media_root = test_temp_root("shared-playlist-requested-slot");
     let inserted_path = media_root.join("episode2.mkv");

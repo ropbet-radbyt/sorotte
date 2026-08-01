@@ -74,6 +74,7 @@ use super::{
     GuiMediaMatchRemoteLookupResult, GuiPendingAttachedMediaResolution,
     GuiPendingAttachedPlayerPauseCommand, GuiPendingAttachedRoomUnpauseObservation,
     GuiPersistedConfigRuntimeOwner, GuiPlaylistLocalOriginBindingOutcome, GuiPlexOperationContext,
+    GuiPlexStreamResolveFailure, GuiPlexStreamResolveFailureDisposition,
     GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
     GuiUserMediaTargetResolutionSource,
 };
@@ -220,6 +221,7 @@ pub(super) struct PlaylistResolutionAttempt {
     pub(super) player_command_id: Option<PlayerCommandId>,
     pub(super) player_media_generation: Option<PlayerMediaGeneration>,
     pub(super) load_attempt_id: Option<LoadAttemptId>,
+    pub(super) media_confirmation_pending: bool,
     pub(super) state: PlaylistResolutionAttemptState,
     pub(super) candidate_failures: Vec<PlaylistResolutionCandidateFailure>,
     pub(super) fallback_pending: bool,
@@ -243,6 +245,10 @@ impl std::fmt::Debug for PlaylistResolutionAttempt {
             .field("player_command_id", &self.player_command_id)
             .field("player_media_generation", &self.player_media_generation)
             .field("load_attempt_id", &self.load_attempt_id)
+            .field(
+                "media_confirmation_pending",
+                &self.media_confirmation_pending,
+            )
             .field("state", &self.state)
             .field("failed_candidate_count", &self.candidate_failures.len())
             .field(
@@ -276,6 +282,7 @@ impl PlaylistResolutionAttempt {
             player_command_id: None,
             player_media_generation: None,
             load_attempt_id: None,
+            media_confirmation_pending: false,
             state: PlaylistResolutionAttemptState::Resolving,
             candidate_failures: Vec::new(),
             fallback_pending: false,
@@ -322,9 +329,10 @@ impl std::fmt::Debug for PlexResolutionMissKey {
 pub(super) struct PlexMissState {
     pub(super) key: PlexResolutionMissKey,
     pub(super) last_attempt_at: Instant,
-    pub(super) next_retry_at: Instant,
+    pub(super) next_retry_at: Option<Instant>,
     pub(super) attempt_count: u32,
     pub(super) retry_in_flight: bool,
+    pub(super) disposition: GuiPlexStreamResolveFailureDisposition,
 }
 
 impl std::fmt::Debug for PlexMissState {
@@ -336,6 +344,7 @@ impl std::fmt::Debug for PlexMissState {
             .field("next_retry_at", &self.next_retry_at)
             .field("attempt_count", &self.attempt_count)
             .field("retry_in_flight", &self.retry_in_flight)
+            .field("disposition", &self.disposition)
             .finish()
     }
 }

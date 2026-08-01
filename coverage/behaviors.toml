@@ -1,0 +1,929 @@
+schema_version = 1
+
+[policy]
+allowed_namespaces = ["PL", "SYNC", "NET", "SRV", "CFG", "GUI", "COMPAT", "MEDIA", "SEC", "REL"]
+allowed_risks = ["critical", "high", "medium", "low"]
+critical_minimum_proofs = 2
+required_jobs = [
+    "checks",
+    "lifecycle-contract",
+    "gui-semantic",
+    "rust-windows",
+    "coverage-diff",
+    "compat-live-tls",
+    "media-match-generated-media",
+    "mpv-pr-semantics",
+]
+
+[lanes.lifecycle-contract]
+runner = "rust-exact"
+required_on = ["push", "pull_request", "workflow_dispatch"]
+operating_systems = ["linux"]
+timeout_seconds = 900
+
+[lanes.gui-semantic]
+runner = "gui-semantic-suite"
+required_on = ["push", "pull_request", "workflow_dispatch"]
+operating_systems = ["linux"]
+timeout_seconds = 900
+complete_inventory = true
+
+[lanes.gui-semantic.semantic_suite]
+package = "sorotte-gui"
+binary = "sorotte-gui-semantic-suite"
+features = ["gui-semantic-smoke", "live-python-interop"]
+scenarios = [
+    "configuration-surface-flow",
+    "core-shell-smoke-flow",
+    "localized-runtime-flow",
+    "runtime-chat-flow",
+    "runtime-transport-churn-flow",
+    "drag-and-drop-ingest-flow",
+    "playlist-workflow-flow",
+    "player-setup-flow",
+    "persistence-reset-flow",
+    "detached-runtime-ownership-flow",
+    "live-python-peer-connect-flow",
+    "live-python-peer-controlled-room-flow",
+    "seek-preparation-flow",
+    "readiness-v2-flow",
+]
+
+[[behavior]]
+id = "PL-ACK-001"
+title = "A delayed snapshot acknowledgement cannot retire a newer overflow gap"
+risk = "critical"
+owners = ["player", "client-core", "gui"]
+invariants = [
+    "an unacknowledged batch remains byte-for-byte stable",
+    "acknowledging an older snapshot cannot erase a newer overflow gap",
+]
+
+[[behavior.proof]]
+id = "PL-ACK-001.reducer"
+kind = "rust-test"
+oracle = "state-invariant"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::tests::delayed_snapshot_ack_preserves_a_new_overflow_gap"
+source = "crates/sorotte-player-mpv/src/lifecycle.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-ACK-001.projection"
+kind = "rust-test"
+oracle = "cross-layer-projection"
+package = "sorotte-gui"
+target_kind = "lib"
+test = "app::runtime_owner::player::telemetry::lifecycle_verification_tests::trace_delivery::gap_snapshot_retains_indeterminate_until_ack_then_correlates_late_physical_effect"
+source = "crates/sorotte-gui/src/app/runtime_owner/player/telemetry/lifecycle_verification_tests/trace_delivery.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-EPOCH-001"
+title = "Attachment replacement cannot let an old terminal handoff mutate a reused playlist entry"
+risk = "critical"
+owners = ["player", "client-core", "gui"]
+invariants = [
+    "the retiring epoch is delivered before the replacement epoch",
+    "playlist-entry reuse across attachments never aliases lifecycle identity",
+]
+
+[[behavior.proof]]
+id = "PL-EPOCH-001.reducer"
+kind = "rust-test"
+oracle = "state-invariant"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::tests::cached_old_epoch_batch_replays_before_terminal_handoff_and_replacement_epoch"
+source = "crates/sorotte-player-mpv/src/lifecycle.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-EPOCH-001.projection"
+kind = "rust-test"
+oracle = "cross-layer-projection"
+package = "sorotte-gui"
+target_kind = "lib"
+test = "app::runtime_owner::player::telemetry::lifecycle_verification_tests::trace_delivery::attachment_replacement_delivers_old_terminal_handoff_before_reused_playlist_entry"
+source = "crates/sorotte-gui/src/app/runtime_owner/player/telemetry/lifecycle_verification_tests/trace_delivery.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-START-001"
+title = "Start-file establishes physical transport ownership before semantic file-loaded"
+risk = "critical"
+owners = ["player", "client-core", "gui"]
+invariants = [
+    "start-file may establish physical ownership without inventing semantic success",
+    "pre-file-loaded transport telemetry is attributed only to the owning attempt",
+]
+
+[[behavior.proof]]
+id = "PL-START-001.reducer"
+kind = "rust-test"
+oracle = "state-invariant"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::tests::start_file_explicitly_reports_normal_and_quiescent_transport_ownership"
+source = "crates/sorotte-player-mpv/src/lifecycle.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-START-001.projection"
+kind = "rust-test"
+oracle = "cross-layer-projection"
+package = "sorotte-gui"
+target_kind = "lib"
+test = "app::runtime_owner::player::telemetry::lifecycle_verification_tests::trace_load_matrix::trace_a_normal_start_owns_transport_before_file_loaded_for_all_target_classes"
+source = "crates/sorotte-gui/src/app/runtime_owner/player/telemetry/lifecycle_verification_tests/trace_load_matrix.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-RECOVERY-001"
+title = "A predecessor terminal cannot end same-generation recovery"
+risk = "critical"
+owners = ["player", "client-core", "gui"]
+invariants = [
+    "the old physical attempt may terminate without ending logical media",
+    "both predecessor-terminal orderings converge on the recovery attempt",
+]
+
+[[behavior.proof]]
+id = "PL-RECOVERY-001.reducer"
+kind = "rust-test"
+oracle = "state-invariant"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::tests::same_generation_recovery_old_terminal_never_ends_logical_media"
+source = "crates/sorotte-player-mpv/src/lifecycle.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-RECOVERY-001.projection"
+kind = "rust-test"
+oracle = "cross-layer-projection"
+package = "sorotte-gui"
+target_kind = "lib"
+test = "app::runtime_owner::player::telemetry::lifecycle_verification_tests::trace_load_matrix::trace_e_same_generation_recovery_survives_both_old_terminal_orderings"
+source = "crates/sorotte-gui/src/app/runtime_owner/player/telemetry/lifecycle_verification_tests/trace_load_matrix.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-PROP-001"
+title = "Shrinkable reducer-input histories preserve lifecycle graph, epoch, and ordering contracts"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "every generated transition preserves reducer invariants without a known-defect quarantine",
+    "a predecessor has at most one selected successor and all backlinks are reciprocal",
+    "event identities are unique and strictly increase within each attachment epoch",
+    "terminal-result identities are emitted at most once",
+]
+
+[[behavior.proof]]
+id = "PL-PROP-001.history"
+kind = "rust-test"
+oracle = "generative-model"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::generated_reducer_input_histories_preserve_contracts"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.external-successor-conflict"
+kind = "rust-test"
+oracle = "positive-causal-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::tc_player_001_external_replacement_preserves_reciprocal_links"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.rejected-successor-conflict"
+kind = "rust-test"
+oracle = "positive-causal-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::tc_player_001_acceptance_detaches_rejected_successor_backlink"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.adapter-accepted-successor"
+kind = "rust-test"
+oracle = "adapter-ingress-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "adapter::authoritative_reconciliation_regression_tests::accepted_load_detaches_a_rejected_successor_claim"
+source = "crates/sorotte-player-mpv/src/adapter.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.adapter-authoritative-terminalization"
+kind = "rust-test"
+oracle = "adapter-ingress-regression"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "adapter::authoritative_reconciliation_regression_tests::mismatched_authoritative_current_terminalizes_predecessor_before_external_admission"
+source = "crates/sorotte-player-mpv/src/adapter.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROP-001.vocabulary"
+kind = "rust-test"
+oracle = "generator-vocabulary-completeness"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::declared_vocabulary_executes_every_reducer_input_kind"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-STALE-001"
+title = "Old-epoch observations are strict no-ops after attachment replacement"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "every epoch-bearing observation kind is exercised for each generated setup",
+    "stale identity-bearing observations collide with live current-epoch state or a would-be insertion target",
+    "every stale observation emits no effect and cannot mutate reducer state",
+]
+
+[[behavior.proof]]
+id = "PL-STALE-001.property"
+kind = "rust-test"
+oracle = "metamorphic"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "lifecycle::property_tests::stale_epoch_observations_are_no_ops"
+source = "crates/sorotte-player-mpv/src/lifecycle/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-RECONNECT-001"
+title = "Reconnect restore schedules preserve state and one-shot delivery semantics"
+risk = "high"
+owners = ["client-core", "cli", "gui"]
+invariants = [
+    "retry resets preserve undrained ready, file, and playlist restoration across reconnect generations",
+    "Hello activation and the first authoritative playlist snapshot arm only capability-supported restoration",
+    "transition, state, and playlist outboxes drain in contract order and at most once",
+    "every generated state-aware schedule matches a small independent reference model",
+]
+
+[[behavior.proof]]
+id = "NET-RECONNECT-001.model"
+kind = "rust-test"
+oracle = "generative-reference-model"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::reconnect_tests::property_tests::generated_reconnect_restore_histories_match_reference_model"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-RECONNECT-001.vocabulary"
+kind = "rust-test"
+oracle = "generator-vocabulary-completeness"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::reconnect_tests::property_tests::declared_reconnect_schedule_vocabulary_exercises_every_transition_kind"
+source = "crates/sorotte-client-core/src/session/tests/reconnect_tests/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-DEADLINE-001"
+title = "CLI connection-phase and reconnect deadlines are independently bounded"
+risk = "high"
+owners = ["cli", "client-core"]
+invariants = [
+    "STARTTLS response and TLS handshake phases each receive their complete configured deadline",
+    "the initial server Hello deadline begins after the client Hello is sent and expires at its configured duration",
+    "reconnect backoff advances by the declared exponential schedule and terminal exhaustion adds no delay",
+    "required STARTTLS timeout retries never send Hello or credentials before negotiation resolves",
+]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.backoff"
+kind = "rust-test"
+oracle = "virtual-time-state-invariant"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "session_runner::network_loop::deterministic_reconnect_time_tests::reconnect_backoff_uses_exact_exponential_delays_and_no_terminal_sleep"
+source = "crates/sorotte-cli/src/session_runner/network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.phases"
+kind = "rust-test"
+oracle = "protocol-barrier-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "session_runner::connected_session::tests::starttls_response_and_handshake_have_independent_deadlines"
+source = "crates/sorotte-cli/src/session_runner/connected_session.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.hello"
+kind = "rust-test"
+oracle = "protocol-barrier-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::connected_session_reconnect_restore::room_switch_and_network_loop::initial_server_hello_timeout_starts_after_client_hello_is_sent"
+source = "crates/sorotte-cli/src/tests/connected_session_reconnect_restore/room_switch_and_network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-DEADLINE-001.loop"
+kind = "rust-test"
+oracle = "loopback-virtual-time"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::connected_session_reconnect_restore::room_switch_and_network_loop::client_network_loop_retries_starttls_timeout_before_exhaustion"
+source = "crates/sorotte-cli/src/tests/connected_session_reconnect_restore/room_switch_and_network_loop.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "CFG-CLI-001"
+title = "Legacy CLI grammar, endpoint composition, and diagnostics fail closed without credential reflection"
+risk = "high"
+owners = ["cli", "compatibility", "security"]
+invariants = [
+    "canonical short-attached values and known no-value clusters follow the pinned argparse grammar",
+    "the final host occurrence either atomically replaces host and optional port or blocks startup with a specific error",
+    "unknown attached values are discarded structurally and never retained for later diagnostic formatting",
+]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.grammar"
+kind = "rust-test"
+oracle = "canonical-short-option-table"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::canonical_short_attached_values_and_boolean_clusters_match_argparse_shape"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.endpoint"
+kind = "rust-test"
+oracle = "table-driven-final-occurrence-errors"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::malformed_final_cli_endpoints_fail_closed_with_specific_error_kinds"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.redaction"
+kind = "rust-test"
+oracle = "structural-secret-nonretention"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::unknown_attached_values_are_secret_safe_in_diagnostics"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-TLS-001"
+title = "TLS bundle rotation preserves bounded and atomic connection behavior"
+risk = "high"
+owners = ["server", "security"]
+invariants = [
+    "an explicit metadata revision causes at most one reload evaluation per observed revision",
+    "once a rotation revision is observed, invalid content in any required bundle member invalidates the candidate context",
+    "an already accepted handshake retains its captured valid context while later clients observe invalid rotation",
+    "restoring a valid bundle before retry exhaustion re-enables TLS, while exhaustion remains a terminal gate",
+    "generated revision histories match an independent context, acceptability, retry, response, and transport-action model",
+    "loose compatibility members follow regular-file symlinks but reject resolved members above 4 MiB",
+]
+
+[[behavior.proof]]
+id = "NET-TLS-001.model"
+kind = "rust-test"
+oracle = "exhaustive-reference-model"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::runtime_config_tests::tls_rotation_revision_histories_match_reference_model_without_wall_clock_waits"
+source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.inflight"
+kind = "rust-test"
+oracle = "real-network-captured-context"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::network_tests::server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_rotates_invalid_after_starttls_true"
+source = "crates/sorotte-server/src/tests/network_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.recovery"
+kind = "rust-test"
+oracle = "real-network-rotation-recovery"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::network_tests::server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_is_restored"
+source = "crates/sorotte-server/src/tests/network_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.retry-cap"
+kind = "rust-test"
+oracle = "bounded-retry-state-invariant"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::runtime_config_tests::tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads"
+source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.loose-bound"
+kind = "rust-test"
+oracle = "real-filesystem-plus-one-size-bound"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::tls_snapshot_fault_tests::loose_tls_snapshot_rejects_every_oversized_member_before_unbounded_allocation"
+source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.loose-symlink"
+kind = "rust-test"
+oracle = "real-filesystem-certbot-symlink-compatibility"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::tls_snapshot_fault_tests::loose_tls_snapshot_follows_certbot_style_member_symlinks_with_the_same_bound"
+source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "SRV-PERSIST-001"
+title = "Persistence interruption recovers only complete and structurally valid state"
+risk = "critical"
+owners = ["server", "security"]
+invariants = [
+    "every committed schema prefix remains readable and a later open finishes migration idempotently",
+    "multi-row playlist migration reopens entirely old or entirely canonical, never partially migrated",
+    "room saves and deletes reopen as the complete old state before commit or the complete new state after commit",
+    "a stats snapshot reopens with zero rows before commit or every row after commit",
+    "quota-secret creation reopens with no row before insertion or one stable 32-byte value after insertion",
+    "every crash-produced database passes SQLite integrity checking before recovery",
+]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.schema"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-schema-matrix"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::room_schema_migration_recovers_after_every_process_interruption"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.row-migration"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-transaction"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::playlist_migration_is_atomic_across_process_interruption"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.room-effect"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-save-delete"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::room_effects_reopen_as_old_or_new_complete_state_across_commit_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.stats"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-snapshot"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::stats_snapshots_reopen_as_empty_or_complete_across_commit_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SRV-PERSIST-001.quota-secret"
+kind = "rust-test"
+oracle = "subprocess-crash-reopen-secret"
+package = "sorotte-server"
+target_kind = "lib"
+test = "persistence_actor::tests::quota_secret_creation_reopens_without_partial_metadata_across_crashes"
+source = "crates/sorotte-server/src/persistence_actor.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-GUI-001"
+title = "GUI runtime transport state survives reconnect and membership churn"
+risk = "high"
+owners = ["gui", "client-core"]
+invariants = ["reconnect and user churn preserve ordered room and chat projection"]
+
+[[behavior.proof]]
+id = "NET-GUI-001.semantic"
+kind = "semantic-scenario"
+oracle = "semantic-observation"
+scenario = "runtime-transport-churn-flow"
+source = "crates/sorotte-gui/src/semantic_scenarios/runtime-transport-churn-flow.txt"
+operating_systems = ["linux"]
+required_lanes = ["gui-semantic"]
+
+[[behavior]]
+id = "GUI-SEEK-001"
+title = "Seek preparation exposes truthful progress and capability-gated recovery"
+risk = "high"
+owners = ["gui", "player"]
+invariants = ["seek, refill, and convergence phases never claim unsupported recovery"]
+
+[[behavior.proof]]
+id = "GUI-SEEK-001.semantic"
+kind = "semantic-scenario"
+oracle = "semantic-observation"
+scenario = "seek-preparation-flow"
+source = "crates/sorotte-gui/src/semantic_scenarios/seek-preparation-flow.txt"
+operating_systems = ["linux"]
+required_lanes = ["gui-semantic"]
+
+[[behavior]]
+id = "GUI-READY-001"
+title = "Readiness intent remains distinct from technical playability and room eligibility"
+risk = "high"
+owners = ["gui", "client-core", "server"]
+invariants = ["readiness intent, playability, room readiness, and start eligibility remain separate"]
+
+[[behavior.proof]]
+id = "GUI-READY-001.semantic"
+kind = "semantic-scenario"
+oracle = "semantic-observation"
+scenario = "readiness-v2-flow"
+source = "crates/sorotte-gui/src/semantic_scenarios/readiness-v2-flow.txt"
+operating_systems = ["linux"]
+required_lanes = ["gui-semantic"]
+
+[[behavior]]
+id = "GUI-PLAYER-001"
+title = "Player setup failures remain blocking and retryable through the runtime boundary"
+risk = "high"
+owners = ["gui", "player"]
+invariants = ["first-run and recovery setup failures expose a blocking retry path"]
+
+[[behavior.proof]]
+id = "GUI-PLAYER-001.semantic"
+kind = "semantic-scenario"
+oracle = "semantic-observation"
+scenario = "player-setup-flow"
+source = "crates/sorotte-gui/src/semantic_scenarios/player-setup-flow.txt"
+operating_systems = ["linux"]
+required_lanes = ["gui-semantic"]
+
+[[behavior]]
+id = "PL-IPC-001"
+title = "JSON IPC framing is invariant to transport fragmentation and coalescing"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "arbitrary byte chunking cannot change frame or event order",
+    "events coalesced around command responses remain ordered and observable",
+]
+
+[[behavior.proof]]
+id = "PL-IPC-001.fragments"
+kind = "rust-test"
+oracle = "framed-boundary-metamorphic"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_tests::framed_worker_is_invariant_to_every_chunk_size_and_preserves_event_order"
+source = "crates/sorotte-player-mpv/src/tests/ipc_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-001.cross-command-coalescing"
+kind = "rust-test"
+oracle = "framed-command-boundary"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_tests::framed_worker_carries_coalesced_events_across_command_boundaries"
+source = "crates/sorotte-player-mpv/src/tests/ipc_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-IPC-002"
+title = "JSON IPC rejects duplicated or reordered command responses"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "a stale duplicate cannot satisfy a later command",
+    "a future response arriving before the matching response corrupts and closes the connection",
+]
+
+[[behavior.proof]]
+id = "PL-IPC-002.reorder"
+kind = "rust-test"
+oracle = "fail-closed-protocol-boundary"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_tests::framed_worker_rejects_a_future_response_before_the_matching_response"
+source = "crates/sorotte-player-mpv/src/tests/ipc_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-002.duplicate"
+kind = "rust-test"
+oracle = "fail-closed-protocol-boundary"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_tests::framed_worker_rejects_duplicate_stale_response_on_the_next_command"
+source = "crates/sorotte-player-mpv/src/tests/ipc_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "SEC-REDACT-001"
+title = "Recognized credentials never enter player diagnostic artifacts"
+risk = "critical"
+owners = ["player", "security"]
+invariants = [
+    "nested and JSON-escaped credential canaries are absent from transcript state, Debug, JSON-lines, and diagnostic dumps",
+    "credential-bearing operation failures are redacted without suppressing ordinary parser diagnostics",
+]
+
+[[behavior.proof]]
+id = "SEC-REDACT-001.transcript"
+kind = "rust-test"
+oracle = "generated-taint-and-roundtrip"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "transcript::privacy_tests::generated_nested_and_escaped_credentials_never_reach_transcript_outputs"
+source = "crates/sorotte-player-mpv/src/transcript/privacy_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SEC-REDACT-001.player-error"
+kind = "rust-test"
+oracle = "generated-display-taint"
+package = "sorotte-player-api"
+target_kind = "lib"
+test = "error_display_redaction_tests::generated_nested_diagnostic_credentials_are_redacted"
+source = "crates/sorotte-player-api/src/lib.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "NET-CODEC-001"
+title = "Protocol decoding is total and preserves supported, composite, and duplicate semantics"
+risk = "high"
+owners = ["protocol", "client-core", "server"]
+invariants = [
+    "arbitrary bounded byte-derived strings and recursive JSON cannot panic or hang any public decoding entrypoint",
+    "all supported envelopes roundtrip through wire JSON with their command and extraction identities intact",
+    "composite decoding matches an independent structural oracle across whitespace, malformed, unknown, and mixed items",
+    "top-level duplicate commands retain first position and last value without inventing extra items",
+]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.bytes"
+kind = "rust-test"
+oracle = "generated-totality-and-cross-entrypoint"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::arbitrary_byte_strings_are_total_across_public_decode_entrypoints"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.json"
+kind = "rust-test"
+oracle = "generated-structural-metamorphic"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::arbitrary_json_matches_structural_and_whitespace_oracles"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.roundtrip"
+kind = "rust-test"
+oracle = "generated-wire-roundtrip"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::supported_messages_roundtrip_with_wire_and_extraction_invariants"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-CODEC-001.duplicates"
+kind = "rust-test"
+oracle = "generated-independent-duplicate-oracle"
+package = "sorotte-protocol"
+target_kind = "lib"
+test = "property_tests::generated_duplicate_composites_match_first_position_last_value_oracle"
+source = "crates/sorotte-protocol/src/property_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-IPC-003"
+title = "Duplex IPC faults preserve correlation, ordering, at-most-once delivery, and terminal fencing"
+risk = "high"
+owners = ["player"]
+invariants = [
+    "split and coalesced responses, events, recoverable errors, stale duplicates, future reordering, and half-closes match an independent command-correlation model",
+    "a delayed response cannot let a later nonblocking command overtake or duplicate events and completion",
+    "a withheld response produces one bounded timeout, closes the connection, and prevents all later writes",
+]
+
+[[behavior.proof]]
+id = "PL-IPC-003.model"
+kind = "rust-test"
+oracle = "exhaustive-duplex-reference-model"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::duplex_fault_histories_match_independent_correlation_and_terminal_model"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-003.delay"
+kind = "rust-test"
+oracle = "condition-variable-order-and-at-most-once"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::delayed_duplex_response_preserves_event_completion_order_and_at_most_once_delivery"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-IPC-003.deadline"
+kind = "rust-test"
+oracle = "bounded-deadline-terminal-fence"
+package = "sorotte-player-mpv"
+target_kind = "lib"
+test = "tests::ipc_duplex_fault_tests::withheld_duplex_response_times_out_once_and_terminally_fences_later_writes"
+source = "crates/sorotte-player-mpv/src/tests/ipc_duplex_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
+id = "PL-PROC-001"
+title = "Player subprocess ownership and cleanup are explicit, bounded, and observable"
+risk = "high"
+owners = ["cli", "player"]
+invariants = [
+    "managed ownership kills, waits, reaps, and removes its IPC artifact within a deterministic parent-side deadline",
+    "cleanup remains safe and complete when the managed child has already exited",
+    "an unmanaged launch transfers lifetime ownership to the child while an owned early-exit handle retains its exact status",
+    "external spawn failures retain program context without exposing argument values and child stdout or stderr cannot contaminate CLI output",
+]
+
+[[behavior.proof]]
+id = "PL-PROC-001.managed-cleanup"
+kind = "rust-test"
+oracle = "exact-child-barrier-and-reap"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "mpv_startup::managed_process::process_supervision_tests::managed_guard_drop_kills_waits_reaps_and_removes_ipc_artifact"
+source = "crates/sorotte-cli/src/mpv_startup/managed_process.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.already-exited"
+kind = "rust-test"
+oracle = "exact-child-idempotent-cleanup"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "mpv_startup::managed_process::process_supervision_tests::managed_guard_cleanup_is_idempotent_after_child_already_exited"
+source = "crates/sorotte-cli/src/mpv_startup/managed_process.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.external-ownership"
+kind = "rust-test"
+oracle = "exact-child-lifetime-handoff"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::mpv_startup::external_launch::unmanaged_external_launch_hands_process_ownership_to_the_child"
+source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "PL-PROC-001.spawn-redaction"
+kind = "rust-test"
+oracle = "exact-process-spawn-diagnostic"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::mpv_startup::external_launch::external_spawn_failure_is_contextual_and_redacts_arguments"
+source = "crates/sorotte-cli/src/tests/mpv_startup/external_launch.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]

@@ -6,14 +6,11 @@ impl NativeControlKind {
         self,
         control_type: windows::Win32::UI::Accessibility::UIA_CONTROLTYPE_ID,
     ) -> bool {
-        use windows::Win32::UI::Accessibility::{
-            UIA_ButtonControlTypeId, UIA_MenuItemControlTypeId,
-        };
+        use windows::Win32::UI::Accessibility::UIA_ButtonControlTypeId;
 
         match self {
             Self::Any => true,
             Self::Button => control_type == UIA_ButtonControlTypeId,
-            Self::MenuItem => control_type == UIA_MenuItemControlTypeId,
         }
     }
 }

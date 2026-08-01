@@ -25,8 +25,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
-cargo build -p sorotte-gui --bin sorotte-gui
-powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000
 SOROTTE_TEST_MPV_BIN=C:\Program Files\mpv\mpv.exe
 cargo test -p sorotte-player-mpv --all-features \
   tests::smoke_tests::real_mpv_bridge_lifecycle_over_json_ipc \
@@ -501,14 +500,21 @@ All completion checks were run after the authority corrections:
 | sanitized transcript replay under every partition | passed |
 | generated lifecycle histories | passed |
 | `scripts/gui-semantic-suite.ps1 -Json` | 14 of 14 passed |
-| `cargo build -p sorotte-gui --bin sorotte-gui` | passed |
-| `scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000` | passed in the interactive Windows desktop session |
+| legacy permissive `scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000` | passed in the interactive Windows desktop session |
 | real mpv JSON-IPC bridge lifecycle | passed with `mpv v0.41.0-877-ge5486b96d` |
 
 The first native-smoke launch through the noninteractive Node helper could not
 send keyboard input across its Windows logon-session boundary. The identical
 script passed when run in the interactive desktop session; this was a test
 launcher limitation, not a product failure.
+
+That historical pass predates the strict native contract. Replaying its raw
+report through the current validator fails because required native menus and
+Open Media completion were absent and the run performed repeated placeholder
+DNS lookups. See `docs/TEST_COVERAGE_FINDINGS.md`; do not treat the historical
+green result as current native-contract evidence. Current menu/Open Media
+evidence is the separate strict, identity-bound run documented in
+`docs/evidence/test-coverage/native-menu-open-media-20260729.md`.
 
 The finite verification stop conditions are satisfied: the reducer, adapter,
 client-core, and GUI projections agree after every scripted step; every required

@@ -33,6 +33,12 @@ const MEDIA_INDEX_ACTIVATION_LOCK_FILE: &str = ".media-index-activation.lock";
 const MEDIA_INDEX_GENERATIONS_DIR: &str = "generations";
 const MEDIA_INDEX_MANIFEST_VERSION: u32 = 3;
 const MEDIA_INDEX_BUILD_PREFIX: &str = ".media-match-build-";
+#[cfg(windows)]
+const WINDOWS_ATOMIC_REPLACE_ATTEMPTS: usize = 8;
+#[cfg(windows)]
+const WINDOWS_ATOMIC_REPLACE_INITIAL_DELAY: Duration = Duration::from_millis(5);
+#[cfg(windows)]
+const WINDOWS_ATOMIC_REPLACE_MAX_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaIndexCommitOutcome {
@@ -1441,6 +1447,49 @@ fn atomic_replace_path(source: &Path, destination: &Path) -> std::io::Result<()>
 }
 
 #[cfg(windows)]
+fn is_transient_windows_atomic_replace_error(error: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+    };
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_ACCESS_DENIED as i32
+                || code == ERROR_SHARING_VIOLATION as i32
+                || code == ERROR_LOCK_VIOLATION as i32
+    )
+}
+
+#[cfg(windows)]
+fn retry_windows_atomic_replace<Replace, Sleep>(
+    mut replace: Replace,
+    mut sleep: Sleep,
+) -> std::io::Result<()>
+where
+    Replace: FnMut() -> std::io::Result<()>,
+    Sleep: FnMut(Duration),
+{
+    let mut delay = WINDOWS_ATOMIC_REPLACE_INITIAL_DELAY;
+    for attempt in 1..=WINDOWS_ATOMIC_REPLACE_ATTEMPTS {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < WINDOWS_ATOMIC_REPLACE_ATTEMPTS
+                    && is_transient_windows_atomic_replace_error(&error) =>
+            {
+                sleep(delay);
+                delay = delay
+                    .saturating_mul(2)
+                    .min(WINDOWS_ATOMIC_REPLACE_MAX_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the bounded atomic-replace loop always returns")
+}
+
+#[cfg(windows)]
 fn atomic_replace_path(source: &Path, destination: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -1456,18 +1505,111 @@ fn atomic_replace_path(source: &Path, destination: &Path) -> std::io::Result<()>
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
-    // SAFETY: both buffers are stable, NUL-terminated UTF-16 paths for the duration of the call.
-    let moved = unsafe {
-        MoveFileExW(
-            source_wide.as_ptr(),
-            destination_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+    retry_windows_atomic_replace(
+        || {
+            // SAFETY: both buffers are stable, NUL-terminated UTF-16 paths for the duration of
+            // every call.
+            let moved = unsafe {
+                MoveFileExW(
+                    source_wide.as_ptr(),
+                    destination_wide.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if moved == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        },
+        std::thread::sleep,
+    )
+}
+
+#[cfg(all(test, windows))]
+mod windows_atomic_replace_retry_tests {
+    use super::*;
+
+    #[test]
+    fn transient_windows_atomic_replace_denials_retry_until_success() {
+        let transient_codes = [5, 32, 33];
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+
+        retry_windows_atomic_replace(
+            || {
+                attempts += 1;
+                if attempts <= transient_codes.len() {
+                    Err(std::io::Error::from_raw_os_error(
+                        transient_codes[attempts - 1],
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| delays.push(delay),
         )
-    };
-    if moved == 0 {
-        return Err(std::io::Error::last_os_error());
+        .expect("transient Windows manifest replacement denials should recover");
+
+        assert_eq!(attempts, 4);
+        assert_eq!(
+            delays,
+            [
+                Duration::from_millis(5),
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+            ]
+        );
     }
-    Ok(())
+
+    #[test]
+    fn persistent_windows_atomic_replace_denial_stops_at_retry_budget() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+
+        let error = retry_windows_atomic_replace(
+            || {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(5))
+            },
+            |delay| delays.push(delay),
+        )
+        .expect_err("persistent Windows manifest replacement denial should remain an error");
+
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert_eq!(attempts, WINDOWS_ATOMIC_REPLACE_ATTEMPTS);
+        assert_eq!(
+            delays,
+            [
+                Duration::from_millis(5),
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(40),
+                Duration::from_millis(80),
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+            ]
+        );
+    }
+
+    #[test]
+    fn nontransient_windows_atomic_replace_error_is_not_retried() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+
+        let error = retry_windows_atomic_replace(
+            || {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(87))
+            },
+            |delay| delays.push(delay),
+        )
+        .expect_err("nontransient Windows manifest replacement error should fail immediately");
+
+        assert_eq!(error.raw_os_error(), Some(87));
+        assert_eq!(attempts, 1);
+        assert!(delays.is_empty());
+    }
 }
 
 fn online_backup_database(source_path: &Path, destination_path: &Path) -> Result<(), String> {

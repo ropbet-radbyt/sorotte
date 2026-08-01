@@ -341,8 +341,20 @@ impl GuiWidgetEguiRenderer {
         egui::Panel::top("sorotte-native-menu-bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 for section in &menus.children {
-                    ui.menu_button(&section.label, |ui| {
-                        self.render_menu_section(ui, section, state);
+                    let response = ui
+                        .push_id(&section.id, |ui| {
+                            ui.menu_button(&section.label, |ui| {
+                                self.render_menu_section(ui, section, state);
+                            })
+                        })
+                        .inner;
+                    Self::register_automation_id(ui, &response.response, section);
+                    response.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            response.response.enabled(),
+                            &section.label,
+                        )
                     });
                 }
             });

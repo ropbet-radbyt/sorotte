@@ -18,6 +18,64 @@ use std::{
 struct NeverRespondingTransport;
 
 #[derive(Debug)]
+struct FragmentingReader {
+    bytes: io::Cursor<Vec<u8>>,
+    max_chunk_bytes: usize,
+}
+
+impl FragmentingReader {
+    fn new(bytes: Vec<u8>, max_chunk_bytes: usize) -> Self {
+        assert!(max_chunk_bytes > 0);
+        Self {
+            bytes: io::Cursor::new(bytes),
+            max_chunk_bytes,
+        }
+    }
+}
+
+impl io::Read for FragmentingReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let bounded_len = output.len().min(self.max_chunk_bytes);
+        io::Read::read(&mut self.bytes, &mut output[..bounded_len])
+    }
+}
+
+#[derive(Debug)]
+struct FramedWireTransport {
+    reader: FragmentingReader,
+    read_buffer: Vec<u8>,
+    writes: Arc<Mutex<Vec<String>>>,
+}
+
+impl FramedWireTransport {
+    fn new(wire: Vec<u8>, max_chunk_bytes: usize) -> (Self, Arc<Mutex<Vec<String>>>) {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                reader: FragmentingReader::new(wire, max_chunk_bytes),
+                read_buffer: Vec::new(),
+                writes: Arc::clone(&writes),
+            },
+            writes,
+        )
+    }
+}
+
+impl MpvJsonIpcTransport for FramedWireTransport {
+    fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+        self.writes
+            .lock()
+            .expect("framed-wire writes should not be poisoned")
+            .push(line.to_owned());
+        Ok(())
+    }
+
+    fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+        read_line_from_stream(&mut self.reader, &mut self.read_buffer, line)
+    }
+}
+
+#[derive(Debug)]
 struct NetworkOptionsHookSupersessionTransport {
     writes: Arc<Mutex<Vec<String>>>,
     responses: VecDeque<String>,
@@ -723,6 +781,259 @@ fn buffered_read_line_from_stream_returns_partial_final_line_on_eof() {
     let eof_bytes = read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("eof");
     assert_eq!(eof_bytes, 0);
     assert!(line.is_empty());
+}
+
+#[test]
+fn buffered_read_line_from_stream_is_invariant_to_every_chunk_size() {
+    let expected_lines = [
+        "{\"event\":\"client-message\",\"args\":[\"snowman\",\"☃\"]}\r\n",
+        "\n",
+        "{\"request_id\":7,\"error\":\"success\"}\n",
+        "{\"event\":\"shutdown\"}",
+    ];
+    let wire = expected_lines.concat().into_bytes();
+
+    for max_chunk_bytes in 1..=wire.len() {
+        let mut stream = FragmentingReader::new(wire.clone(), max_chunk_bytes);
+        let mut read_buffer = Vec::new();
+        let mut line = String::new();
+
+        for expected in expected_lines {
+            let bytes = read_line_from_stream(&mut stream, &mut read_buffer, &mut line)
+                .unwrap_or_else(|error| {
+                    panic!("chunk size {max_chunk_bytes} should decode {expected:?}: {error}")
+                });
+            assert_eq!(
+                bytes,
+                expected.len(),
+                "chunk size {max_chunk_bytes} returned the wrong byte count"
+            );
+            assert_eq!(
+                line, expected,
+                "chunk size {max_chunk_bytes} changed frame boundaries"
+            );
+        }
+
+        assert_eq!(
+            read_line_from_stream(&mut stream, &mut read_buffer, &mut line)
+                .expect("the fragmented stream should reach a clean EOF"),
+            0,
+            "chunk size {max_chunk_bytes} should be exhausted"
+        );
+        assert!(line.is_empty());
+        assert!(read_buffer.is_empty());
+    }
+}
+
+#[test]
+fn buffered_read_line_from_stream_enforces_utf8_and_exact_size_boundaries() {
+    let exact_line = format!("{}\r\n", "x".repeat(MPV_IPC_MAX_LINE_BYTES));
+    let mut exact_stream = FragmentingReader::new(exact_line.as_bytes().to_vec(), 8 * 1024);
+    let mut read_buffer = Vec::new();
+    let mut line = String::new();
+    assert_eq!(
+        read_line_from_stream(&mut exact_stream, &mut read_buffer, &mut line)
+            .expect("a line exactly at the content limit should be accepted"),
+        exact_line.len()
+    );
+    assert_eq!(line, exact_line);
+
+    let oversized_line = format!("{}\n", "x".repeat(MPV_IPC_MAX_LINE_BYTES + 1));
+    let mut oversized_stream = FragmentingReader::new(oversized_line.as_bytes().to_vec(), 8 * 1024);
+    let oversized_error = read_line_from_stream(&mut oversized_stream, &mut read_buffer, &mut line)
+        .expect_err("one content byte over the limit must fail");
+    assert_eq!(oversized_error.kind(), io::ErrorKind::InvalidData);
+    assert!(oversized_error.to_string().contains("line too long"));
+
+    for max_chunk_bytes in 1..=4 {
+        let mut invalid_utf8 =
+            FragmentingReader::new(vec![b'{', 0xff, b'}', b'\n'], max_chunk_bytes);
+        let mut invalid_buffer = Vec::new();
+        let mut invalid_line = String::new();
+        let error =
+            read_line_from_stream(&mut invalid_utf8, &mut invalid_buffer, &mut invalid_line)
+                .expect_err("invalid UTF-8 must fail before JSON decoding");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not valid UTF-8"));
+    }
+}
+
+#[test]
+fn framed_worker_is_invariant_to_every_chunk_size_and_preserves_event_order() {
+    let first_event = json!({
+        "event": "property-change",
+        "name": "pause",
+        "data": true,
+    });
+    let second_event = json!({
+        "event": "property-change",
+        "name": "time-pos",
+        "data": 12.5,
+    });
+    let response = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let wire = format!("\n{first_event}\r\n{second_event}\n{response}").into_bytes();
+
+    for max_chunk_bytes in 1..=wire.len() {
+        let (transport, writes) = FramedWireTransport::new(wire.clone(), max_chunk_bytes);
+        let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+        assert_eq!(
+            client.get_property("pause").unwrap_or_else(|error| panic!(
+                "chunk size {max_chunk_bytes} should reach the matching response: {error}"
+            )),
+            Some(json!(false))
+        );
+        assert_eq!(
+            client.take_pending_events(),
+            vec![first_event.clone(), second_event.clone()],
+            "chunk size {max_chunk_bytes} changed event ordering"
+        );
+
+        let writes = writes
+            .lock()
+            .expect("framed-wire writes should not be poisoned");
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(writes[0].trim_end())
+                .expect("the production worker should emit valid JSON"),
+            json!({
+                "command": ["get_property", "pause"],
+                "request_id": 1,
+            })
+        );
+    }
+}
+
+#[test]
+fn framed_worker_carries_coalesced_events_across_command_boundaries() {
+    let first_response = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let intervening_event = json!({
+        "event": "property-change",
+        "name": "path",
+        "data": "movie.mkv",
+    });
+    let second_response = json!({
+        "request_id": 2,
+        "error": "success",
+        "data": "movie.mkv",
+    });
+    let wire = format!("{first_response}\n{intervening_event}\n{second_response}\n").into_bytes();
+    let (transport, _writes) = FramedWireTransport::new(wire, usize::MAX);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client
+            .get_property("pause")
+            .expect("the first coalesced response should be consumed"),
+        Some(json!(false))
+    );
+    assert_eq!(
+        client
+            .get_property_string("path")
+            .expect("the next command should cross the buffered event"),
+        Some("movie.mkv".to_owned())
+    );
+    assert_eq!(client.take_pending_events(), vec![intervening_event]);
+}
+
+#[test]
+fn framed_worker_half_close_preserves_prior_events_and_disconnects() {
+    let prior_event = json!({
+        "event": "property-change",
+        "name": "pause",
+        "data": true,
+    });
+    let wire = format!("{prior_event}\n").into_bytes();
+    let (transport, _writes) = FramedWireTransport::new(wire, 1);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let error = client
+        .get_property("pause")
+        .expect_err("EOF after an event must not impersonate a command response");
+
+    assert!(error.contains("unexpected EOF"), "{error}");
+    assert_eq!(client.take_pending_events(), vec![prior_event]);
+    assert!(!client.is_healthy());
+    assert!(
+        client
+            .take_connection_events()
+            .iter()
+            .any(|event| { matches!(event, MpvIpcConnectionEvent::Disconnected { .. }) })
+    );
+}
+
+#[test]
+fn framed_worker_rejects_truncated_json_without_echoing_credential_bytes() {
+    let secret = "framed-partial-credential-canary";
+    let wire =
+        format!(r#"{{"request_id":1,"error":"success","X-Plex-Token":"{secret}""#).into_bytes();
+    let (transport, _writes) = FramedWireTransport::new(wire, 2);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let error = client
+        .get_property("path")
+        .expect_err("a truncated final frame must fail JSON decoding");
+    let connection_events = client.take_connection_events();
+
+    assert!(error.contains("invalid mpv IPC JSON line"), "{error}");
+    assert!(!error.contains(secret), "{error}");
+    assert!(!format!("{connection_events:?}").contains(secret));
+    assert!(!client.is_healthy());
+}
+
+#[test]
+fn framed_worker_rejects_duplicate_stale_response_on_the_next_command() {
+    let response_one = json!({
+        "request_id": 1,
+        "error": "success",
+        "data": false,
+    });
+    let response_two = json!({
+        "request_id": 2,
+        "error": "success",
+        "data": "movie.mkv",
+    });
+    let wire = format!("{response_one}\n{response_one}\n{response_two}\n").into_bytes();
+    let (transport, _writes) = FramedWireTransport::new(wire, usize::MAX);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    assert_eq!(
+        client
+            .get_property("pause")
+            .expect("the first response should succeed"),
+        Some(json!(false))
+    );
+    let error = client
+        .get_property("path")
+        .expect_err("a duplicate response must not satisfy a later command");
+    assert!(error.contains("request_id mismatch"), "{error}");
+    assert!(!client.is_healthy());
+}
+
+#[test]
+fn framed_worker_rejects_a_future_response_before_the_matching_response() {
+    let wire = concat!(
+        "{\"request_id\":2,\"error\":\"success\",\"data\":\"future\"}\n",
+        "{\"request_id\":1,\"error\":\"success\",\"data\":\"current\"}\n",
+    )
+    .as_bytes()
+    .to_vec();
+    let (transport, _writes) = FramedWireTransport::new(wire, 3);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let error = client
+        .get_property("path")
+        .expect_err("a reordered future response must fail closed");
+    assert!(error.contains("expected 1, received 2"), "{error}");
+    assert!(!client.is_healthy());
 }
 
 #[test]

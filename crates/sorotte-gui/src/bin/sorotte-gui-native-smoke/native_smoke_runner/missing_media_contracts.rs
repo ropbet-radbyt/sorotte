@@ -45,8 +45,7 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         media_search_browse_path: &detached_search_path,
         open_media_file_path: &search_target_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: None,
-        loopback_session: None,
+        network_mode: NativeNetworkMode::Detached,
         attach_test_player: true,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -149,7 +148,8 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "detached-missing-media", error);
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -216,13 +216,14 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
         media_search_browse_path: &continue_media_search_path,
         open_media_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: Some(TcpSessionBootstrap {
-            host: "127.0.0.1",
-            port: session_server.port,
-            username: TRANSPORT_SESSION_USERNAME,
-            room: TRANSPORT_SESSION_ROOM,
-        }),
-        loopback_session: None,
+        network_mode: NativeNetworkMode::TcpLoopback {
+            bootstrap: NativeTcpBootstrap::Environment(TcpSessionBootstrap {
+                host: "127.0.0.1",
+                port: session_server.port,
+                username: TRANSPORT_SESSION_USERNAME,
+                room: TRANSPORT_SESSION_ROOM,
+            }),
+        },
         attach_test_player: true,
         drop_file_paths_spec: None,
         drop_target: None,
@@ -350,7 +351,8 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
         Ok(steps)
     })();
 
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        capture_native_failure_artifacts(driver, window, "missing-media-continue", error);
         let _ = child.kill();
         let _ = child.wait();
     }

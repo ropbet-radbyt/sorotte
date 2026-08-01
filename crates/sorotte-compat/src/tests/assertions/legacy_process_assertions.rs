@@ -16,6 +16,9 @@ pub(in crate::tests) fn is_background_idle_state_message(message: &ProtocolMessa
 }
 
 pub(in crate::tests) fn legacy_server_prerequisites_missing(error: &InteropError) -> bool {
+    if required_live_interop_enabled() {
+        return false;
+    }
     match error {
         InteropError::LegacySyncplayCheckoutMissing(_) | InteropError::PythonSpawn { .. } => true,
         InteropError::LegacyServerExited { stderr, .. }
@@ -30,17 +33,23 @@ pub(in crate::tests) fn legacy_server_prerequisites_missing(error: &InteropError
 }
 
 pub(in crate::tests) fn legacy_server_parity_assertions_enabled() -> bool {
-    std::env::var("SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY")
-        .ok()
-        .is_some_and(|value| {
-            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-        })
+    required_live_interop_enabled()
+        || std::env::var("SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY")
+            .ok()
+            .is_some_and(|value| {
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+            })
 }
 
 pub(in crate::tests) fn legacy_tls_parity_prerequisites_strict_enabled() -> bool {
-    std::env::var("SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY")
-        .ok()
-        .is_some_and(|value| {
-            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-        })
+    required_live_interop_enabled()
+        || std::env::var("SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY")
+            .ok()
+            .is_some_and(|value| {
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+            })
 }

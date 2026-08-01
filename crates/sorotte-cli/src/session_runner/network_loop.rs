@@ -550,6 +550,53 @@ pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides_and_st
 }
 
 #[cfg(test)]
+mod deterministic_reconnect_time_tests {
+    use super::*;
+    use crate::{client_config::create_client_runtime, tests::test_client_loop_config};
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_backoff_uses_exact_exponential_delays_and_no_terminal_sleep() {
+        let mut config = test_client_loop_config();
+        config.max_retries = 2;
+        let mut runtime = create_client_runtime(&config);
+        let mut retries = 0;
+        let started_at = Instant::now();
+
+        for (expected_retries, expected_elapsed) in [
+            (1, Duration::from_millis(100)),
+            (2, Duration::from_millis(300)),
+            (3, Duration::from_millis(700)),
+        ] {
+            assert!(
+                !run_reconnect_backoff(&mut runtime, &mut retries)
+                    .await
+                    .expect("an allowed reconnect attempt should schedule"),
+                "attempt {expected_retries} should remain below the retry limit"
+            );
+            assert_eq!(retries, expected_retries);
+            assert_eq!(
+                Instant::now().duration_since(started_at),
+                expected_elapsed,
+                "reconnect attempt {expected_retries} should advance only its declared backoff"
+            );
+        }
+
+        let elapsed_before_exhaustion = Instant::now().duration_since(started_at);
+        assert!(
+            run_reconnect_backoff(&mut runtime, &mut retries)
+                .await
+                .expect("retry exhaustion should be a normal scheduler outcome")
+        );
+        assert_eq!(retries, 3, "terminal evaluation must not invent an attempt");
+        assert_eq!(
+            Instant::now().duration_since(started_at),
+            elapsed_before_exhaustion,
+            "retry exhaustion must not add an unobservable terminal delay"
+        );
+    }
+}
+
+#[cfg(test)]
 mod shutdown_release_tests {
     use super::*;
 

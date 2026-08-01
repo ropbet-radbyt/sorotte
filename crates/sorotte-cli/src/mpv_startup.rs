@@ -46,7 +46,7 @@ pub(super) use self::explicit_args::{
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible,
 };
-#[cfg(all(test, windows))]
+#[cfg(test)]
 pub(super) use self::external_launch::spawn_legacy_external_player_from_spec_legacy_compatible;
 #[cfg(test)]
 pub(super) use self::external_launch::{

@@ -25,6 +25,7 @@ if ($ExtraArgs.Length -gt 0) {
 $cargoArgs = @(
     "run",
     "--quiet",
+    "--locked",
     "-p",
     "sorotte-gui",
     "--features",
@@ -39,6 +40,8 @@ $stderrPath = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-stderr-" + [guid]
 $isolatedConfigRoot = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-config-" + [guid]::NewGuid().ToString("N"))
 $isolatedConfigPath = Join-Path $isolatedConfigRoot "sorotte.ini"
 $previousConfigPath = $env:SOROTTE_CLIENT_CONFIG_PATH
+$process = $null
+$launchError = $null
 
 try {
     New-Item -Path $isolatedConfigRoot -ItemType Directory | Out-Null
@@ -51,6 +54,9 @@ try {
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath
 }
+catch {
+    $launchError = $_.Exception.Message
+}
 finally {
     $env:SOROTTE_CLIENT_CONFIG_PATH = $previousConfigPath
 }
@@ -62,10 +68,13 @@ if (Test-Path -LiteralPath $stdoutPath) {
 if (Test-Path -LiteralPath $stderrPath) {
     $output += Get-Content -LiteralPath $stderrPath
 }
+if ($launchError) {
+    $output += "sorotte-gui-semantic-suite launcher failed: $launchError"
+}
 Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $isolatedConfigRoot -Recurse -Force -ErrorAction SilentlyContinue
 
-$exitCode = $process.ExitCode
+$exitCode = if ($null -eq $process) { 1 } else { $process.ExitCode }
 
 if ($OutputPath) {
     $directory = Split-Path -Parent $OutputPath

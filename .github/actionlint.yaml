@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - sorotte-native-interactive
+    - sorotte-ephemeral

@@ -166,6 +166,7 @@ fn youtube_video_id(value: &str) -> Option<&str> {
 mod config;
 mod control;
 mod inbound;
+mod inbound_order;
 mod model;
 mod notifications;
 mod outbox;

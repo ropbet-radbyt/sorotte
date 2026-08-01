@@ -107,7 +107,7 @@ pub fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
         return (host.to_owned(), None);
     }
 
-    if host_value.matches(':').count() > 1 {
+    if host_value.contains(':') {
         return (format!("[{host_value}]"), None);
     }
 
@@ -406,11 +406,83 @@ mod tests {
     use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
     use super::{
-        StoredClientSettingsEnvPresence, normalize_controlled_room_input_legacy_compatible,
+        StoredClientSettingsConfigPlan, StoredClientSettingsEnvPresence,
+        normalize_controlled_room_input_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
         stored_client_settings_config_plan_legacy_compatible,
         stored_client_settings_runtime_snapshot_legacy_compatible,
     };
+
+    fn stored_settings_with_every_runtime_override() -> StoredClientSettingsMvp {
+        StoredClientSettingsMvp {
+            host: Some("stored.example".to_owned()),
+            port: Some(8123),
+            server_password: Some("server-secret".into()),
+            username: Some("stored-user".to_owned()),
+            room: Some("+room:ABCDEF123456:AB-123".to_owned()),
+            autoplay_initial_state: Some(true),
+            autoplay_require_same_filenames: Some(false),
+            ready_at_start: Some(true),
+            shared_playlist_enabled: Some(false),
+            pause_on_leave: Some(true),
+            loop_at_end_of_playlist: Some(true),
+            loop_single_files: Some(true),
+            only_switch_to_trusted_domains: Some(false),
+            trusted_domains: Some(vec![" example.org ".to_owned()]),
+            rewind_on_desync: Some(false),
+            fastforward_on_desync: Some(false),
+            slow_on_desync: Some(false),
+            dont_slow_down_with_me: Some(true),
+            rewind_threshold_seconds: Some(1.25),
+            fastforward_threshold_seconds: Some(4.5),
+            slowdown_threshold_seconds: Some(0.75),
+            unpause_action: Some(UnpauseActionMode::Always),
+            autoplay_min_users: Some(AutoplayThresholdOverride::Set(7)),
+            filename_privacy_mode: Some(PrivacyMode::SendHashed),
+            filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+            show_duration_notification: Some(false),
+            show_same_room_osd: Some(false),
+            show_osd_warnings: Some(false),
+            show_noncontroller_osd: Some(false),
+            show_different_room_osd: Some(false),
+            ..StoredClientSettingsMvp::default()
+        }
+    }
+
+    fn every_runtime_env_value_is_present() -> StoredClientSettingsEnvPresence {
+        StoredClientSettingsEnvPresence {
+            host: true,
+            port: true,
+            server_password: true,
+            username: true,
+            room: true,
+            autoplay: true,
+            autoplay_require_same_filenames: true,
+            ready_at_start: true,
+            shared_playlist_enabled: true,
+            pause_on_leave: true,
+            loop_at_end_of_playlist: true,
+            loop_single_files: true,
+            only_switch_to_trusted_domains: true,
+            trusted_domains: true,
+            rewind_on_desync: true,
+            fastforward_on_desync: true,
+            slow_on_desync: true,
+            dont_slow_down_with_me: true,
+            rewind_threshold_seconds: true,
+            fastforward_threshold_seconds: true,
+            slowdown_threshold_seconds: true,
+            unpause_action: true,
+            autoplay_min_users: true,
+            filename_privacy_mode: true,
+            filesize_privacy_mode: true,
+            show_duration_notification: true,
+            show_same_room_osd: true,
+            show_osd_warnings: true,
+            show_noncontroller_osd: true,
+            show_different_room_osd: true,
+        }
+    }
 
     #[test]
     fn parse_host_and_optional_port_from_host_arg_legacy_compatible_parses_expected_shapes() {
@@ -460,6 +532,36 @@ mod tests {
                 Some("AB-123-456".to_owned())
             )
         );
+    }
+
+    #[test]
+    fn controlled_room_normalization_rejects_each_invalid_canonical_component() {
+        for invalid in [":ABCDEF123456", "room:ABCDEF12345", "room:ABCDE!123456"] {
+            assert_eq!(
+                normalize_controlled_room_input_legacy_compatible(invalid.to_owned()),
+                (invalid.to_owned(), None),
+                "invalid controlled-room component was accepted: {invalid:?}"
+            );
+        }
+        assert_eq!(
+            normalize_controlled_room_input_legacy_compatible("room:ABCDEF123456:!_?".to_owned()),
+            ("+room:ABCDEF123456".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn runtime_snapshot_discards_blank_optional_identity_values() {
+        let snapshot =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+                host: Some(" \t ".to_owned()),
+                server_password: Some(" \r\n ".into()),
+                username: Some(" \n ".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+
+        assert_eq!(snapshot.settings.host, None);
+        assert_eq!(snapshot.settings.server_password, None);
+        assert_eq!(snapshot.settings.username, None);
     }
 
     #[test]
@@ -625,6 +727,61 @@ mod tests {
         );
         assert_eq!(plan.filename_privacy_mode, Some(PrivacyMode::SendHashed));
         assert_eq!(plan.show_osd_warnings_override, Some(false));
+    }
+
+    #[test]
+    fn config_plan_applies_every_explicit_override_when_environment_is_absent() {
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &stored_settings_with_every_runtime_override(),
+            &StoredClientSettingsEnvPresence::default(),
+        );
+
+        assert_eq!(
+            plan,
+            StoredClientSettingsConfigPlan {
+                host: Some("stored.example".to_owned()),
+                port: Some(8123),
+                server_password: Some("server-secret".into()),
+                username: Some("stored-user".to_owned()),
+                room: Some("+room:ABCDEF123456".to_owned()),
+                controlled_room_password_override: Some("AB-123".into()),
+                autoplay_enabled: Some(true),
+                autoplay_require_same_filenames: Some(false),
+                ready_at_start_override: Some(true),
+                shared_playlists_enabled_override: Some(false),
+                pause_on_leave_override: Some(true),
+                loop_at_end_of_playlist_override: Some(true),
+                loop_single_files_override: Some(true),
+                only_switch_to_trusted_domains_override: Some(false),
+                trusted_domains_override: Some(vec!["example.org".to_owned()]),
+                rewind_on_desync_override: Some(false),
+                fastforward_on_desync_override: Some(false),
+                slow_on_desync_override: Some(false),
+                dont_slow_down_with_me_override: Some(true),
+                rewind_threshold_seconds_override: Some(1.25),
+                fastforward_threshold_seconds_override: Some(4.5),
+                slowdown_threshold_seconds_override: Some(0.75),
+                unpause_action_override: Some(UnpauseActionMode::Always),
+                auto_play_threshold_override: Some(AutoplayThresholdOverride::Set(7)),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification_override: Some(false),
+                show_same_room_osd_override: Some(false),
+                show_osd_warnings_override: Some(false),
+                show_noncontroller_osd_override: Some(false),
+                show_different_room_osd_override: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn config_plan_suppresses_every_explicit_override_when_environment_is_present() {
+        let plan = stored_client_settings_config_plan_legacy_compatible(
+            &stored_settings_with_every_runtime_override(),
+            &every_runtime_env_value_is_present(),
+        );
+
+        assert_eq!(plan, StoredClientSettingsConfigPlan::default());
     }
 
     #[test]

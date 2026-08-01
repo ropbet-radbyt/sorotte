@@ -223,7 +223,7 @@ fn help_text() -> &'static str {
         "  --persistent-room-inactivity-expiry-seconds [n]\n",
         "                                    Expire empty inactive durable rooms (default: 2592000; 0 disables)\n",
         "  --stats-db-file [file]           Enable stats snapshots using SQLite file\n",
-        "  --tls [dir]                      TLS certificate directory (cert.pem/chain.pem/privkey.pem)\n",
+        "  --tls [dir]                      TLS bundle directory (atomic current.json/generations or loose PEM files)\n",
         "  --ipv4-only                      Bind only IPv4 listen socket\n",
         "  --ipv6-only                      Bind IPv6 listen socket\n",
         "  --interface-ipv4 [ip]            Bind to specific IPv4 address\n",

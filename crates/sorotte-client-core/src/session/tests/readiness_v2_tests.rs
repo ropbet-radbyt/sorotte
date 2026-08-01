@@ -197,6 +197,30 @@ fn v2_play_stages_ready_without_dispatching_a_physical_resume() {
 }
 
 #[test]
+fn reconnect_reset_preserves_same_room_canonical_v2_ready_projection() {
+    let mut session = active_v2_session();
+    session.apply_readiness_v2_extension(ReadinessSetExtension::new().with_snapshot(snapshot(
+        2,
+        41,
+        UserReadinessIntent::Ready,
+        None,
+    )));
+    assert_eq!(
+        session.user_ready("alice"),
+        Some(true),
+        "precondition: the canonical same-room snapshot marks the local user ready"
+    );
+
+    session.reset_sync_state_for_reconnect();
+
+    assert_eq!(
+        session.user_ready("alice"),
+        Some(true),
+        "reconnect reset should preserve the canonical same-room readiness projection"
+    );
+}
+
+#[test]
 fn v2_controller_play_is_held_only_by_a_preparing_readiness_owned_pause() {
     for phase in [
         PlaybackBarrierPhase::AwaitingDecision,

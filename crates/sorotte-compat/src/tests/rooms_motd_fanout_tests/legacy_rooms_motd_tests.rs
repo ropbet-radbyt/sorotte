@@ -158,6 +158,136 @@ fn legacy_server_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file
 }
 
 #[test]
+fn legacy_permanent_room_snapshot_setter_alternate_is_context_exact() {
+    let steps = load_server_runtime_scenario_fixture(PERMANENT_ROOMS_FILE_SCENARIO)
+        .expect("permanent-room scenario should load");
+    let request_line = &steps
+        .get(8)
+        .expect("Bob rejoin step should exist")
+        .request_line;
+    let alice_request_line = &steps
+        .first()
+        .expect("Alice initial Hello step should exist")
+        .request_line;
+    let other_room_request_line = request_line.replace("\"permanent-room\"", "\"other-room\"");
+    let original = json!({
+        "Set": {
+            "playlistChange": {"files": ["episode.mkv"], "user": "bob"},
+            "playlistIndex": {"index": 4, "user": "bob"},
+        }
+    });
+    let mut canonical = original.clone();
+    canonicalize_legacy_permanent_room_snapshot_setter(
+        PERMANENT_ROOMS_FILE_SCENARIO,
+        8,
+        "client-3",
+        request_line,
+        "client-3",
+        &mut canonical,
+    );
+    assert_eq!(
+        canonical.pointer("/Set/playlistChange/user"),
+        Some(&json!("alice"))
+    );
+    assert_eq!(
+        canonical.pointer("/Set/playlistIndex/user"),
+        Some(&json!("alice"))
+    );
+    assert_eq!(
+        canonical.pointer("/Set/playlistChange/files"),
+        Some(&json!(["episode.mkv"]))
+    );
+    assert_eq!(
+        canonical.pointer("/Set/playlistIndex/index"),
+        Some(&json!(4))
+    );
+
+    for (label, scenario, step, request_client, request, output_client) in [
+        (
+            "scenario",
+            "server_runtime_state_propagation.jsonl",
+            8,
+            "client-3",
+            request_line.as_str(),
+            "client-3",
+        ),
+        (
+            "step",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            7,
+            "client-3",
+            request_line.as_str(),
+            "client-3",
+        ),
+        (
+            "request client",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            8,
+            "client-2",
+            request_line.as_str(),
+            "client-3",
+        ),
+        (
+            "request payload",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            8,
+            "client-3",
+            alice_request_line.as_str(),
+            "client-3",
+        ),
+        (
+            "request room",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            8,
+            "client-3",
+            other_room_request_line.as_str(),
+            "client-3",
+        ),
+        (
+            "request message",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            8,
+            "client-3",
+            r#"{"Set":{"ready":{"isReady":true}}}"#,
+            "client-3",
+        ),
+        (
+            "output recipient",
+            PERMANENT_ROOMS_FILE_SCENARIO,
+            8,
+            "client-3",
+            request_line.as_str(),
+            "client-2",
+        ),
+    ] {
+        let mut candidate = original.clone();
+        canonicalize_legacy_permanent_room_snapshot_setter(
+            scenario,
+            step,
+            request_client,
+            request,
+            output_client,
+            &mut candidate,
+        );
+        assert_eq!(candidate, original, "wrong {label} must not canonicalize");
+    }
+
+    let mut other_user = json!({
+        "Set": {"playlistChange": {"files": [], "user": "mallory"}}
+    });
+    let expected_other_user = other_user.clone();
+    canonicalize_legacy_permanent_room_snapshot_setter(
+        PERMANENT_ROOMS_FILE_SCENARIO,
+        8,
+        "client-3",
+        request_line,
+        "client-3",
+        &mut other_user,
+    );
+    assert_eq!(other_user, expected_other_user);
+}
+
+#[test]
 fn legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario()
  {
     if !legacy_server_parity_assertions_enabled() {

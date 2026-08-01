@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
@@ -96,14 +96,42 @@ pub struct FaultInjectingHttpServer {
     address: SocketAddr,
     shutdown: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<HttpRequestRecord>>>,
+    burst_stalls_armed: Arc<AtomicBool>,
+    deferred_burst_stall_announcement_count: Arc<AtomicUsize>,
+    burst_stall_count: Arc<AtomicUsize>,
+    completed_burst_stall_count: Arc<AtomicUsize>,
     held_transmission_count: Arc<AtomicUsize>,
     held_transmissions_released: Arc<AtomicBool>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+enum BurstStallMode {
+    ArmedPerResponse,
+    DeferredGlobalOneShot,
+}
+
 impl FaultInjectingHttpServer {
     pub fn start(fixtures: BTreeMap<String, HttpMediaFixture>) -> std::io::Result<Self> {
-        Self::start_with_transmission_holds(fixtures, BTreeMap::new())
+        Self::start_with_controls(fixtures, BTreeMap::new(), BurstStallMode::ArmedPerResponse)
+    }
+
+    /// Starts a server whose configured burst stalls cannot fire until
+    /// [`Self::arm_burst_stalls`] is called.
+    ///
+    /// Responses continue transmitting while the gate is unarmed. If a response has already
+    /// crossed a stall's byte threshold when the gate is armed, that pending stall fires before
+    /// the response transmits its next chunk. Each configured path/stall pair is consumed globally
+    /// at most once, even if a player opens retry or range connections. This lets integration tests
+    /// establish an exact player state before injecting one time-bounded network fault.
+    pub fn start_with_deferred_burst_stalls(
+        fixtures: BTreeMap<String, HttpMediaFixture>,
+    ) -> std::io::Result<Self> {
+        Self::start_with_controls(
+            fixtures,
+            BTreeMap::new(),
+            BurstStallMode::DeferredGlobalOneShot,
+        )
     }
 
     /// Starts a server whose selected paths stop after the configured number of response-body
@@ -116,6 +144,18 @@ impl FaultInjectingHttpServer {
         fixtures: BTreeMap<String, HttpMediaFixture>,
         hold_after_body_bytes: BTreeMap<String, usize>,
     ) -> std::io::Result<Self> {
+        Self::start_with_controls(
+            fixtures,
+            hold_after_body_bytes,
+            BurstStallMode::ArmedPerResponse,
+        )
+    }
+
+    fn start_with_controls(
+        fixtures: BTreeMap<String, HttpMediaFixture>,
+        hold_after_body_bytes: BTreeMap<String, usize>,
+        burst_stall_mode: BurstStallMode,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -124,6 +164,16 @@ impl FaultInjectingHttpServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_counts = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let burst_stalls_armed = Arc::new(AtomicBool::new(matches!(
+            burst_stall_mode,
+            BurstStallMode::ArmedPerResponse
+        )));
+        let burst_stalls_global_one_shot =
+            matches!(burst_stall_mode, BurstStallMode::DeferredGlobalOneShot);
+        let consumed_burst_stalls = Arc::new(Mutex::new(BTreeSet::<(String, usize)>::new()));
+        let deferred_burst_stall_announcement_count = Arc::new(AtomicUsize::new(0));
+        let burst_stall_count = Arc::new(AtomicUsize::new(0));
+        let completed_burst_stall_count = Arc::new(AtomicUsize::new(0));
         let held_transmission_count = Arc::new(AtomicUsize::new(0));
         let held_transmissions_released = Arc::new(AtomicBool::new(false));
         let thread_fixtures = Arc::clone(&fixtures);
@@ -131,6 +181,12 @@ impl FaultInjectingHttpServer {
         let thread_requests = Arc::clone(&requests);
         let thread_request_counts = Arc::clone(&request_counts);
         let thread_shutdown = Arc::clone(&shutdown);
+        let thread_burst_stalls_armed = Arc::clone(&burst_stalls_armed);
+        let thread_consumed_burst_stalls = Arc::clone(&consumed_burst_stalls);
+        let thread_deferred_burst_stall_announcement_count =
+            Arc::clone(&deferred_burst_stall_announcement_count);
+        let thread_burst_stall_count = Arc::clone(&burst_stall_count);
+        let thread_completed_burst_stall_count = Arc::clone(&completed_burst_stall_count);
         let thread_held_transmission_count = Arc::clone(&held_transmission_count);
         let thread_held_transmissions_released = Arc::clone(&held_transmissions_released);
         let accept_thread = thread::Builder::new()
@@ -144,6 +200,13 @@ impl FaultInjectingHttpServer {
                             let requests = Arc::clone(&thread_requests);
                             let request_counts = Arc::clone(&thread_request_counts);
                             let shutdown = Arc::clone(&thread_shutdown);
+                            let burst_stalls_armed = Arc::clone(&thread_burst_stalls_armed);
+                            let consumed_burst_stalls = Arc::clone(&thread_consumed_burst_stalls);
+                            let deferred_burst_stall_announcement_count =
+                                Arc::clone(&thread_deferred_burst_stall_announcement_count);
+                            let burst_stall_count = Arc::clone(&thread_burst_stall_count);
+                            let completed_burst_stall_count =
+                                Arc::clone(&thread_completed_burst_stall_count);
                             let held_transmission_count =
                                 Arc::clone(&thread_held_transmission_count);
                             let held_transmissions_released =
@@ -153,10 +216,21 @@ impl FaultInjectingHttpServer {
                                     stream,
                                     &fixtures,
                                     &request_counts,
-                                    &hold_after_body_bytes,
-                                    &held_transmission_count,
-                                    &held_transmissions_released,
-                                    &shutdown,
+                                    ConnectionFaultControls {
+                                        hold_after_body_bytes: &hold_after_body_bytes,
+                                        burst_stalls: BurstStallControl {
+                                            armed: &burst_stalls_armed,
+                                            global_one_shot: burst_stalls_global_one_shot,
+                                            consumed: &consumed_burst_stalls,
+                                            deferred_announcement_count:
+                                                &deferred_burst_stall_announcement_count,
+                                            applied_count: &burst_stall_count,
+                                            completed_count: &completed_burst_stall_count,
+                                        },
+                                        held_transmission_count: &held_transmission_count,
+                                        held_transmissions_released: &held_transmissions_released,
+                                        shutdown: &shutdown,
+                                    },
                                 ) {
                                     requests.lock().expect("request log poisoned").push(record);
                                 }
@@ -173,6 +247,10 @@ impl FaultInjectingHttpServer {
             address,
             shutdown,
             requests,
+            burst_stalls_armed,
+            deferred_burst_stall_announcement_count,
+            burst_stall_count,
+            completed_burst_stall_count,
             held_transmission_count,
             held_transmissions_released,
             accept_thread: Some(accept_thread),
@@ -207,6 +285,38 @@ impl FaultInjectingHttpServer {
         false
     }
 
+    pub fn wait_for_deferred_burst_stall_announcements(
+        &self,
+        count: usize,
+        timeout: Duration,
+    ) -> bool {
+        wait_for_atomic_count(
+            &self.deferred_burst_stall_announcement_count,
+            count,
+            timeout,
+        )
+    }
+
+    pub fn burst_stall_count(&self) -> usize {
+        self.burst_stall_count.load(Ordering::Acquire)
+    }
+
+    pub fn wait_for_burst_stalls(&self, count: usize, timeout: Duration) -> bool {
+        wait_for_atomic_count(&self.burst_stall_count, count, timeout)
+    }
+
+    pub fn completed_burst_stall_count(&self) -> usize {
+        self.completed_burst_stall_count.load(Ordering::Acquire)
+    }
+
+    pub fn wait_for_completed_burst_stalls(&self, count: usize, timeout: Duration) -> bool {
+        wait_for_atomic_count(&self.completed_burst_stall_count, count, timeout)
+    }
+
+    pub fn arm_burst_stalls(&self) {
+        self.burst_stalls_armed.store(true, Ordering::Release);
+    }
+
     pub fn wait_for_held_transmissions(&self, count: usize, timeout: Duration) -> bool {
         let started = std::time::Instant::now();
         while started.elapsed() < timeout {
@@ -239,10 +349,7 @@ fn handle_connection(
     mut stream: TcpStream,
     fixtures: &BTreeMap<String, HttpMediaFixture>,
     request_counts: &Mutex<BTreeMap<String, usize>>,
-    hold_after_body_bytes: &BTreeMap<String, usize>,
-    held_transmission_count: &AtomicUsize,
-    held_transmissions_released: &AtomicBool,
-    shutdown: &AtomicBool,
+    controls: ConnectionFaultControls<'_>,
 ) -> Option<HttpRequestRecord> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
@@ -314,11 +421,13 @@ fn handle_connection(
         body,
         &fixture.fault_profile,
         request_ordinal,
+        &path,
+        controls.burst_stalls,
         TransmissionHoldControl {
-            after_body_bytes: hold_after_body_bytes.get(&path).copied(),
-            held_transmission_count,
-            released: held_transmissions_released,
-            shutdown,
+            after_body_bytes: controls.hold_after_body_bytes.get(&path).copied(),
+            held_transmission_count: controls.held_transmission_count,
+            released: controls.held_transmissions_released,
+            shutdown: controls.shutdown,
         },
     );
     Some(HttpRequestRecord {
@@ -383,11 +492,32 @@ struct TransmissionHoldControl<'a> {
     shutdown: &'a AtomicBool,
 }
 
+#[derive(Clone, Copy)]
+struct ConnectionFaultControls<'a> {
+    hold_after_body_bytes: &'a BTreeMap<String, usize>,
+    burst_stalls: BurstStallControl<'a>,
+    held_transmission_count: &'a AtomicUsize,
+    held_transmissions_released: &'a AtomicBool,
+    shutdown: &'a AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+struct BurstStallControl<'a> {
+    armed: &'a AtomicBool,
+    global_one_shot: bool,
+    consumed: &'a Mutex<BTreeSet<(String, usize)>>,
+    deferred_announcement_count: &'a AtomicUsize,
+    applied_count: &'a AtomicUsize,
+    completed_count: &'a AtomicUsize,
+}
+
 fn transmit_faulted_body(
     stream: &mut TcpStream,
     body: &[u8],
     faults: &NetworkFaultProfile,
     request_ordinal: usize,
+    path: &str,
+    burst_stalls: BurstStallControl<'_>,
     hold: TransmissionHoldControl<'_>,
 ) -> usize {
     let disconnect_enabled = faults.temporary_disconnect_requests == 0
@@ -405,6 +535,7 @@ fn transmit_faulted_body(
     let mut stalls = faults.burst_stalls.clone();
     stalls.sort_by_key(|stall| stall.after_body_bytes);
     let mut next_stall = 0;
+    let mut pending_stall_announced = false;
     let hold_after_body_bytes = hold.after_body_bytes.map(|bytes| bytes.min(disconnect_at));
     let mut hold_announced = false;
     while transmitted < disconnect_at {
@@ -426,8 +557,30 @@ fn transmit_faulted_body(
             .get(next_stall)
             .is_some_and(|stall| transmitted >= stall.after_body_bytes)
         {
-            thread::sleep(stalls[next_stall].duration);
+            if !burst_stalls.armed.load(Ordering::Acquire) {
+                if !pending_stall_announced {
+                    burst_stalls
+                        .deferred_announcement_count
+                        .fetch_add(1, Ordering::AcqRel);
+                    pending_stall_announced = true;
+                }
+                break;
+            }
+            let stall_index = next_stall;
             next_stall += 1;
+            pending_stall_announced = false;
+            if burst_stalls.global_one_shot
+                && !burst_stalls
+                    .consumed
+                    .lock()
+                    .expect("burst-stall consumption set poisoned")
+                    .insert((path.to_owned(), stall_index))
+            {
+                continue;
+            }
+            burst_stalls.applied_count.fetch_add(1, Ordering::AcqRel);
+            thread::sleep(stalls[stall_index].duration);
+            burst_stalls.completed_count.fetch_add(1, Ordering::AcqRel);
         }
         let transmission_limit = if hold.released.load(Ordering::Acquire) {
             disconnect_at
@@ -450,6 +603,17 @@ fn transmit_faulted_body(
         }
     }
     transmitted
+}
+
+fn wait_for_atomic_count(counter: &AtomicUsize, count: usize, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if counter.load(Ordering::Acquire) >= count {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    false
 }
 
 pub fn hls_vod_manifest(segment_paths: &[&str], segment_duration_seconds: f64) -> Vec<u8> {
@@ -618,6 +782,60 @@ mod tests {
         assert!(response.ends_with(b"0123456789abcdef"));
         assert!(server.wait_for_requests(1, Duration::from_secs(1)));
         assert_eq!(server.requests()[0].transmitted_body_bytes, 16);
+    }
+
+    #[test]
+    fn deferred_burst_stall_fires_only_after_arming_and_then_resumes() {
+        let body = vec![9; 64 * 1024];
+        let fixture = HttpMediaFixture::static_bytes("application/octet-stream", body.clone())
+            .with_faults(NetworkFaultProfile {
+                bytes_per_second: Some(64 * 1024),
+                burst_stalls: vec![BurstStall {
+                    after_body_bytes: 3_000,
+                    duration: Duration::from_millis(200),
+                }],
+                ..NetworkFaultProfile::default()
+            });
+        let server = FaultInjectingHttpServer::start_with_controls(
+            BTreeMap::from([("/deferred.bin".to_owned(), fixture)]),
+            BTreeMap::from([("/deferred.bin".to_owned(), 16 * 1024)]),
+            BurstStallMode::DeferredGlobalOneShot,
+        )
+        .unwrap();
+        let first_address = server.address();
+        let first_request = thread::spawn(move || raw_get(first_address, "/deferred.bin", None));
+        let second_address = server.address();
+        let second_request = thread::spawn(move || raw_get(second_address, "/deferred.bin", None));
+
+        assert!(server.wait_for_deferred_burst_stall_announcements(2, Duration::from_secs(3)));
+        assert!(server.wait_for_held_transmissions(2, Duration::from_secs(3)));
+        assert_eq!(
+            server.burst_stall_count(),
+            0,
+            "a deferred stall must not fire before the test arms its gate"
+        );
+
+        server.arm_burst_stalls();
+        server.release_held_transmissions();
+        assert!(server.wait_for_burst_stalls(1, Duration::from_secs(3)));
+        assert!(server.wait_for_completed_burst_stalls(1, Duration::from_secs(3)));
+
+        let resumed = std::time::Instant::now();
+        while (!first_request.is_finished() || !second_request.is_finished())
+            && resumed.elapsed() < Duration::from_secs(5)
+        {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            first_request.is_finished() && second_request.is_finished(),
+            "both responses must resume after the bounded burst stall"
+        );
+        let first_response = first_request.join().expect("first request should finish");
+        let second_response = second_request.join().expect("second request should finish");
+        assert!(first_response.ends_with(&body));
+        assert!(second_response.ends_with(&body));
+        assert_eq!(server.burst_stall_count(), 1);
+        assert_eq!(server.completed_burst_stall_count(), 1);
     }
 
     #[test]

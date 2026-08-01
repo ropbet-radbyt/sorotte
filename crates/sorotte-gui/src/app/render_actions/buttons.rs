@@ -316,9 +316,6 @@ impl GuiWidgetEguiRenderer {
             "main-window:room-actions:toggle" => {
                 vec![GuiShellAction::ToggleMainWindowRoomChange]
             }
-            "shell:quick:open-media-file" => {
-                vec![GuiShellAction::InvokeMenuAction(MenuActionId::OpenMedia)]
-            }
             "main-window:control:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
             "main-window:control:play" => vec![GuiShellAction::BeginPlaybackResume],
             "main-window:control:pause" => vec![GuiShellAction::BeginPlaybackPause],

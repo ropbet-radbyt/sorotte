@@ -4,7 +4,6 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::Arc,
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -25,14 +24,16 @@ use super::{
     INITIAL_SERVER_STATE_DELAY_SECONDS, LEGACY_PERSISTENT_ROOMS_NOTICE,
     LEGACY_SERVER_LINE_DECODE_ERROR, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
     LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, PersistedRoomState,
-    RoomPasswordCheckError, RoomPasswordProvider, RoomPlaylistState, SERVER_REAL_VERSION,
-    SERVER_STATE_INTERVAL_SECONDS, ServerActorError, ServerActorHandle, ServerApp,
-    ServerInboundCommand, ServerLifecycleError, ServerNetworkError, ServerOutboundDelivery,
-    ServerPersistenceEffect, ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError,
-    ServerSetCommand, ServerSharedFile, ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES,
-    default_motd_for_client_version, generate_server_salt_legacy_compatible,
-    motd_for_client_context, motd_for_client_version, read_network_line_from_stream,
-    run_server_network_loop_until_shutdown, run_server_network_loops_and_shutdown_actor,
+    RoomPasswordProvider, RoomPlaylistState, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS,
+    ServerActorError, ServerActorHandle, ServerApp, ServerInboundCommand, ServerLifecycleError,
+    ServerNetworkError, ServerOutboundDelivery, ServerPersistenceEffect, ServerRuntime,
+    ServerRuntimeDispatch, ServerRuntimeError, ServerSetCommand, ServerSharedFile,
+    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, TlsCertificateBundleMetadataClock,
+    default_motd_for_client_version, load_tls_server_config_from_snapshot, motd_for_client_context,
+    motd_for_client_version, read_network_line_from_stream, read_tls_certificate_bundle_snapshot,
+    read_tls_certificate_bundle_snapshot_with_test_hook,
+    read_tls_certificate_bundle_snapshot_with_test_reader, run_server_network_loop_until_shutdown,
+    run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_fingerprint,
 };
 use sorotte_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
@@ -535,6 +536,40 @@ fn write_valid_tls_bundle(path: &Path) {
         .expect("valid chain fixture should write");
 }
 
+fn write_invalid_tls_bundle(path: &Path, label: &str) {
+    for filename in super::TLS_REQUIRED_CERT_FILENAMES {
+        fs::write(path.join(filename), format!("invalid-{label}-{filename}"))
+            .expect("invalid TLS bundle fixture should write");
+    }
+}
+
+fn set_file_modified_time_for_test(path: &Path, modified_time: SystemTime) {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("TLS bundle member should open for timestamp update");
+    file.set_times(fs::FileTimes::new().set_modified(modified_time))
+        .expect("TLS bundle member modification time should be settable");
+    assert_eq!(
+        fs::metadata(path)
+            .expect("timestamped TLS bundle member should remain readable")
+            .modified()
+            .expect("TLS bundle member should expose modification time"),
+        modified_time,
+        "filesystem must preserve the explicit test timestamp"
+    );
+}
+
+fn server_runtime_with_tls_metadata_clock(
+    cert_path: &Path,
+) -> (ServerRuntime, TlsCertificateBundleMetadataClock) {
+    let metadata_clock = TlsCertificateBundleMetadataClock::new();
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_certificate_bundle_metadata_clock_for_test(metadata_clock.clone());
+    runtime.set_tls_cert_path(Some(cert_path.to_path_buf()));
+    (runtime, metadata_clock)
+}
+
 fn tls_client_connector_for_test_fixture() -> TlsConnector {
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
     let certs = rustls_pemfile::certs(&mut cert_reader)
@@ -550,46 +585,6 @@ fn tls_client_connector_for_test_fixture() -> TlsConnector {
         .with_root_certificates(roots)
         .with_no_client_auth();
     TlsConnector::from(Arc::new(client_config))
-}
-
-fn overwrite_file_until_modified_time_changes(path: &Path, contents: &str) {
-    let original_modified_time = fs::metadata(path)
-        .expect("file should be readable before overwrite")
-        .modified()
-        .expect("file should expose modification time");
-    for attempt in 0..8 {
-        fs::write(path, format!("{contents}-{attempt}"))
-            .expect("file overwrite should succeed while testing rotation");
-        let updated_modified_time = fs::metadata(path)
-            .expect("overwritten file should be readable")
-            .modified()
-            .expect("overwritten file should expose modification time");
-        if updated_modified_time != original_modified_time {
-            return;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    panic!("file modification time did not change after repeated overwrite attempts");
-}
-
-fn rewrite_file_until_modified_time_changes(path: &Path, contents: &str) {
-    let original_modified_time = fs::metadata(path)
-        .expect("file should be readable before overwrite")
-        .modified()
-        .expect("file should expose modification time");
-    for _ in 0..8 {
-        fs::write(path, contents)
-            .expect("file rewrite should succeed while testing rotation recovery");
-        let updated_modified_time = fs::metadata(path)
-            .expect("rewritten file should be readable")
-            .modified()
-            .expect("rewritten file should expose modification time");
-        if updated_modified_time != original_modified_time {
-            return;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    panic!("file modification time did not change after repeated rewrite attempts");
 }
 
 fn tls_start_response(lines: &[String]) -> Option<String> {
@@ -626,9 +621,13 @@ fn dispatch_error_message(dispatch: &ServerRuntimeDispatch) -> Option<String> {
 
 mod controller_playlist_tests;
 mod network_tests;
+mod persistence_platform_syscall_fault_tests;
+mod persistence_power_loss_harness_tests;
 mod persistence_tests;
 mod playback_barrier_tests;
+mod raw_protocol_framing_tests;
 mod readiness_v2_tests;
 mod runtime_config_tests;
 mod session_tests;
 mod state_tests;
+mod tls_snapshot_fault_tests;

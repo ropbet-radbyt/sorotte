@@ -600,7 +600,7 @@ fn capture_visual_scenario(
         ),
         _ => None,
     };
-    let driver = PlatformNativeGuiDriver;
+    let driver = PlatformNativeGuiDriver::default();
     let public_servers_spec = if matches!(
         scenario,
         VisualScenario::SaveAndConnect | VisualScenario::ConnectOnceDirty
@@ -615,10 +615,14 @@ fn capture_visual_scenario(
         media_search_browse_path: &media_search_path,
         open_media_file_path: &open_media_path,
         public_servers_spec,
-        tcp_session: None,
-        loopback_session: scenario
-            .uses_loopback_session()
-            .then_some((CONFIG_USERNAME_VALUE, CONFIG_ROOM_VALUE)),
+        network_mode: if scenario.uses_loopback_session() {
+            NativeNetworkMode::InProcessLoopback {
+                username: CONFIG_USERNAME_VALUE,
+                room: CONFIG_ROOM_VALUE,
+            }
+        } else {
+            NativeNetworkMode::Detached
+        },
         attach_test_player: !scenario.first_run(),
         drop_file_paths_spec: (scenario == VisualScenario::PlayerSettingsDegraded)
             .then_some(dropped_media_spec.as_str()),
@@ -634,8 +638,11 @@ fn capture_visual_scenario(
             appdata_root: scenario
                 .uses_default_storage_root()
                 .then_some(runtime_root.as_path()),
+            explicit_config_path_with_appdata_root: false,
             config_storage_browse_path: (scenario == VisualScenario::StorageLocationPending)
                 .then_some(config_storage_browse_path.as_path()),
+            test_player_observation_path: None,
+            lifecycle_observation_path: None,
             disable_startup_saved_connect: matches!(
                 scenario,
                 VisualScenario::SaveAndConnect | VisualScenario::ConnectOnceDirty

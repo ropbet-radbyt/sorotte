@@ -64,23 +64,57 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_file_name
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
     harness: &mut LegacyServerPythonPeerHarness,
     playlist: &[String],
     timeout: Duration,
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
-    harness
-        .wait_for_peer_playlist(playlist, timeout)
-        .map_err(LivePythonPeerInteropError::from)
+    let deadline = Instant::now() + timeout;
+    loop {
+        // Production transports advance one receipt-owned protocol frame at a
+        // time. Keep the real owner pumping while polling the reference peer;
+        // a blocking peer-side wait would otherwise starve compound playlist
+        // operations after the optimistic shell projection already matches.
+        pump_and_apply(owner, handle, state);
+        let snapshot = harness.peer_snapshot()?;
+        if snapshot.playlist == playlist {
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer playlist observation; expected={playlist:?}, observed={:?}, observed_index={:?}, room={:?}",
+                snapshot.playlist, snapshot.playlist_index, snapshot.room
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist_index(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
     harness: &mut LegacyServerPythonPeerHarness,
     index: usize,
     timeout: Duration,
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
-    harness
-        .wait_for_peer_playlist_index(index, timeout)
-        .map_err(LivePythonPeerInteropError::from)
+    let deadline = Instant::now() + timeout;
+    loop {
+        pump_and_apply(owner, handle, state);
+        let snapshot = harness.peer_snapshot()?;
+        if snapshot.playlist_index == Some(index) {
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer playlist-index observation; expected={index}, observed={:?}, playlist={:?}, room={:?}",
+                snapshot.playlist_index, snapshot.playlist, snapshot.room
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_presence(
@@ -88,20 +122,9 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_presence(
     username: &str,
     timeout: Duration,
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let snapshot = harness.peer_snapshot()?;
-        if snapshot.observed_users.contains_key(username) {
-            return Ok(snapshot);
-        }
-        if Instant::now() >= deadline {
-            return Err(LivePythonPeerInteropError::Gui(format!(
-                "timed out waiting for Python reference peer to observe GUI user {username:?}; users={:?}",
-                snapshot.observed_users
-            )));
-        }
-        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
-    }
+    harness
+        .wait_for_peer_observed_user_presence(username, timeout)
+        .map_err(LivePythonPeerInteropError::from)
 }
 
 #[cfg(test)]

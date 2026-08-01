@@ -3,7 +3,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -129,6 +129,12 @@ pub struct ServerRuntimeScenarioStep {
     pub client_id: String,
     pub request_line: String,
     pub advance_seconds: f64,
+    /// Optional wall-clock advance for the legacy Python implementation.
+    ///
+    /// Sorotte deliberately uses a longer liveness timeout. Timeout scenarios
+    /// can therefore place both implementations at the same semantic boundary
+    /// without sleeping past Python's shorter connection lifetime.
+    pub legacy_advance_seconds: Option<f64>,
 }
 
 impl std::fmt::Debug for ServerRuntimeScenarioStep {
@@ -138,6 +144,7 @@ impl std::fmt::Debug for ServerRuntimeScenarioStep {
             .field("client_id", &self.client_id)
             .field("request_line_bytes", &self.request_line.len())
             .field("advance_seconds", &self.advance_seconds)
+            .field("legacy_advance_seconds", &self.legacy_advance_seconds)
             .finish()
     }
 }
@@ -166,11 +173,13 @@ const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(6);
 const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
 const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
-const LEGACY_COMPAT_MISSING_FEATURES_MARKER: &str = "__syncplay_rs_missing_features__";
+const LEGACY_SERVER_STARTUP_LOCK_WAIT: Duration = Duration::from_secs(30);
 const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
 const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
+const LEGACY_SYNCPLAY_BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
 
 static LEGACY_SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static LEGACY_SERVER_STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug)]
 struct LegacyServerClientConnection {
@@ -180,6 +189,11 @@ struct LegacyServerClientConnection {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InteropError {
+    #[error("required live interoperability prerequisite failed: {source}")]
+    RequiredLivePrerequisite {
+        #[source]
+        source: Box<InteropError>,
+    },
     #[error("legacy syncplay checkout not found at {0}")]
     LegacySyncplayCheckoutMissing(PathBuf),
     #[error("python handshake probe script not found at {0}")]
@@ -231,6 +245,17 @@ pub enum InteropError {
         stderr: String,
     },
     #[error(
+        "legacy server did not expose permanent rooms {permanent_rooms:?} on port {port} before timeout"
+    )]
+    LegacyServerPersistentRoomsStartTimeout {
+        port: u16,
+        permanent_rooms: Vec<String>,
+    },
+    #[error(
+        "legacy server did not close its room-state startup probe on port {port} before timeout"
+    )]
+    LegacyServerStartupProbeDisconnectTimeout { port: u16 },
+    #[error(
         "python live peer process exited before reporting a successful connection (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
     )]
     PythonLivePeerExited {
@@ -274,6 +299,7 @@ pub struct LegacyServerPythonPeerHarness {
     peer_status_rx: Option<mpsc::Receiver<String>>,
     peer_stdout_lines: Arc<Mutex<Vec<String>>>,
     peer_stderr_lines: Arc<Mutex<Vec<String>>>,
+    next_peer_request_id: u64,
 }
 
 mod fixtures;
@@ -293,7 +319,7 @@ pub use self::fixtures::{
 pub use self::legacy_process::{
     interop_prerequisites_missing, legacy_syncplay_checkout_dir,
     legacy_syncplay_server_entry_script_path, python_handshake_probe_script_path,
-    python_live_peer_probe_script_path,
+    python_live_peer_probe_script_path, required_live_interop_enabled,
 };
 pub use self::legacy_server::{
     run_legacy_server_fanout_roundtrip, run_legacy_server_fanout_roundtrip_with_overrides,

@@ -36,6 +36,7 @@ mod startup_support;
 mod state_integrity;
 mod stream_support;
 mod support;
+mod test_lifecycle;
 #[cfg(test)]
 mod testing;
 mod ui_state;

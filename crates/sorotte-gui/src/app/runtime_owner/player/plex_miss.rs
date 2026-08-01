@@ -34,7 +34,14 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(state) = self.plex_miss_state.as_mut() else {
             return true;
         };
-        if state.retry_in_flight || now < state.next_retry_at {
+        if state.disposition == GuiPlexStreamResolveFailureDisposition::PermanentForContext {
+            return false;
+        }
+        if state.retry_in_flight
+            || state
+                .next_retry_at
+                .is_some_and(|next_retry_at| now < next_retry_at)
+        {
             return false;
         }
         state.retry_in_flight = true;
@@ -51,10 +58,48 @@ impl GuiPersistedConfigRuntimeOwner {
         self.plex_miss_state = Some(PlexMissState {
             key,
             last_attempt_at: now,
-            next_retry_at: now + plex_miss_backoff(attempt_count),
+            next_retry_at: Some(now + plex_miss_backoff(attempt_count)),
             attempt_count,
             retry_in_flight: false,
+            disposition: GuiPlexStreamResolveFailureDisposition::Retryable,
         });
+    }
+
+    pub(super) fn record_permanent_plex_resolution_failure(
+        &mut self,
+        key: PlexResolutionMissKey,
+        now: Instant,
+    ) {
+        let attempt_count = self
+            .plex_miss_state
+            .as_ref()
+            .filter(|state| state.key == key)
+            .map(|state| state.attempt_count.saturating_add(1))
+            .unwrap_or(1);
+        self.plex_miss_state = Some(PlexMissState {
+            key,
+            last_attempt_at: now,
+            next_retry_at: None,
+            attempt_count,
+            retry_in_flight: false,
+            disposition: GuiPlexStreamResolveFailureDisposition::PermanentForContext,
+        });
+    }
+
+    pub(super) fn record_plex_resolution_failure(
+        &mut self,
+        key: PlexResolutionMissKey,
+        disposition: GuiPlexStreamResolveFailureDisposition,
+        now: Instant,
+    ) {
+        match disposition {
+            GuiPlexStreamResolveFailureDisposition::Retryable => {
+                self.record_plex_resolution_miss(key, now);
+            }
+            GuiPlexStreamResolveFailureDisposition::PermanentForContext => {
+                self.record_permanent_plex_resolution_failure(key, now);
+            }
+        }
     }
 
     pub(super) fn clear_plex_resolution_miss_for_key(&mut self, key: &PlexResolutionMissKey) {
@@ -73,7 +118,12 @@ impl GuiPersistedConfigRuntimeOwner {
         now: Instant,
     ) -> bool {
         self.plex_miss_state.as_ref().is_some_and(|state| {
-            &state.key == key && !state.retry_in_flight && now >= state.next_retry_at
+            &state.key == key
+                && state.disposition == GuiPlexStreamResolveFailureDisposition::Retryable
+                && !state.retry_in_flight
+                && state
+                    .next_retry_at
+                    .is_some_and(|next_retry_at| now >= next_retry_at)
         })
     }
 }
@@ -115,7 +165,7 @@ mod tests {
         owner.record_plex_resolution_miss(key.clone(), start);
         let first = owner.plex_miss_state.as_ref().unwrap();
         assert_eq!(first.attempt_count, 1);
-        assert_eq!(first.next_retry_at, start + Duration::from_secs(2));
+        assert_eq!(first.next_retry_at, Some(start + Duration::from_secs(2)));
         assert!(!owner.plex_resolution_allowed_now(&key, start + Duration::from_secs(1)));
         assert!(owner.plex_resolution_allowed_now(&key, start + Duration::from_secs(2)));
         assert!(owner.plex_miss_state.as_ref().unwrap().retry_in_flight);
@@ -126,7 +176,7 @@ mod tests {
         assert_eq!(second.attempt_count, 2);
         assert_eq!(
             second.next_retry_at,
-            second_attempt + Duration::from_secs(5)
+            Some(second_attempt + Duration::from_secs(5))
         );
 
         owner.clear_plex_resolution_miss_for_key(&key);
@@ -135,6 +185,35 @@ mod tests {
 
         owner.record_plex_resolution_miss(key, second_attempt);
         owner.reconcile_plex_miss_key(&other_key);
+        assert!(owner.plex_miss_state.is_none());
+    }
+
+    #[test]
+    fn permanent_failure_has_no_deadline_and_rearms_only_for_a_new_context() {
+        let row_id = GuiPlaylistEntryId::next();
+        let key = miss_key(row_id, 3, "target-a");
+        let other_key = miss_key(row_id, 4, "target-a");
+        let start = Instant::now();
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+
+        owner.record_permanent_plex_resolution_failure(key.clone(), start);
+
+        let failure = owner.plex_miss_state.as_ref().unwrap();
+        assert_eq!(
+            failure.disposition,
+            GuiPlexStreamResolveFailureDisposition::PermanentForContext
+        );
+        assert_eq!(failure.attempt_count, 1);
+        assert!(failure.next_retry_at.is_none());
+        assert!(!failure.retry_in_flight);
+        assert!(
+            !owner.plex_resolution_allowed_now(&key, start + Duration::from_secs(24 * 60 * 60))
+        );
+        assert!(
+            !owner.matching_plex_miss_retry_due(&key, start + Duration::from_secs(24 * 60 * 60))
+        );
+
+        assert!(owner.plex_resolution_allowed_now(&other_key, start));
         assert!(owner.plex_miss_state.is_none());
     }
 
@@ -161,9 +240,10 @@ mod tests {
             owner.plex_miss_state = Some(PlexMissState {
                 key: miss_key(row_id, owner.playlist_resolution.generation, "episode.mkv"),
                 last_attempt_at: now,
-                next_retry_at: now,
+                next_retry_at: Some(now),
                 attempt_count: 1,
                 retry_in_flight: false,
+                disposition: GuiPlexStreamResolveFailureDisposition::Retryable,
             });
             state.main_window.playlist[0].source_state.policy = policy;
 

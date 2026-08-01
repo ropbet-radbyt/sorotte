@@ -118,7 +118,7 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_ROOM,
             harness.address(),
-            TlsPolicy::PreferTls,
+            TlsPolicy::Plaintext,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -209,8 +209,22 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
         &first_local_playlist,
         Some(0),
     )?;
-    wait_for_peer_observed_playlist(harness, &first_local_playlist, Duration::from_secs(3))?;
-    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        &first_local_playlist,
+        Duration::from_secs(3),
+    )?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        0,
+        Duration::from_secs(3),
+    )?;
 
     request_local_ready(&handle, &mut state, true)?;
     wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
@@ -255,8 +269,22 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
         &second_local_playlist,
         Some(0),
     )?;
-    wait_for_peer_observed_playlist(harness, &second_local_playlist, Duration::from_secs(3))?;
-    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        &second_local_playlist,
+        Duration::from_secs(3),
+    )?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        0,
+        Duration::from_secs(3),
+    )?;
 
     request_local_playlist_selection(&handle, &mut state, 1)?;
     wait_for_projected_playlist(
@@ -266,7 +294,14 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
         &second_local_playlist,
         Some(1),
     )?;
-    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        1,
+        Duration::from_secs(3),
+    )?;
 
     let reduced_local_playlist = vec![LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned()];
     request_local_playlist_remove_selected(&handle, &mut state)?;
@@ -277,19 +312,47 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
         &reduced_local_playlist,
         Some(0),
     )?;
-    wait_for_peer_observed_playlist(harness, &reduced_local_playlist, Duration::from_secs(3))?;
-    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        &reduced_local_playlist,
+        Duration::from_secs(3),
+    )?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        0,
+        Duration::from_secs(3),
+    )?;
 
     let peer_playlist = vec![
         LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
         LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
     ];
     harness.set_peer_playlist(&peer_playlist)?;
-    wait_for_peer_observed_playlist(harness, &peer_playlist, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        &peer_playlist,
+        Duration::from_secs(3),
+    )?;
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &peer_playlist, Some(0))?;
 
     harness.set_peer_playlist_index(1)?;
-    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        1,
+        Duration::from_secs(3),
+    )?;
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &peer_playlist, Some(1))?;
 
     let mut peer_chat_messages = harness.peer_snapshot()?.chat_messages;
@@ -453,6 +516,7 @@ pub(super) fn run_live_python_peer_detached_public_server_connect_flow_with_harn
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
         public_servers: Some(vec![("Primary".to_owned(), harness.address().to_owned())]),
+        tls_policy: Some("Plaintext".to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
@@ -516,6 +580,7 @@ pub(super) fn run_live_python_peer_startup_saved_connect_flow_with_harness(
         port: Some(harness.port()),
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
+        tls_policy: Some("Plaintext".to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
@@ -565,7 +630,7 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_ROOM,
             harness.address(),
-            TlsPolicy::PreferTls,
+            TlsPolicy::Plaintext,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
@@ -602,8 +667,22 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
     request_local_shared_playlist_open(&handle, &media_fixture.path_refs());
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &expected_playlist, Some(0))?;
     wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
-    wait_for_peer_observed_playlist(harness, &expected_playlist, Duration::from_secs(3))?;
-    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        &expected_playlist,
+        Duration::from_secs(3),
+    )?;
+    wait_for_peer_observed_playlist_index(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        0,
+        Duration::from_secs(3),
+    )?;
 
     request_local_ready(&handle, &mut state, true)?;
     wait_for_projection(&mut owner, &handle, &mut state, true, false)?;

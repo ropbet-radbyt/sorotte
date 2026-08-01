@@ -11,7 +11,8 @@ impl LegacyServerPythonPeerHarness {
             ));
         }
 
-        let port = reserve_ephemeral_tcp_port()?;
+        let mut port_lease = reserve_legacy_server_port()?;
+        let port = port_lease.port();
         let python_bin = python_bin_from_env();
         let python_bin_display = python_bin.to_string_lossy().to_string();
 
@@ -30,6 +31,7 @@ impl LegacyServerPythonPeerHarness {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        port_lease.release_socket_for_child();
         let mut server_child =
             server_command
                 .spawn()
@@ -42,6 +44,7 @@ impl LegacyServerPythonPeerHarness {
             terminate_legacy_server_process(&mut server_child);
             return Err(error);
         }
+        drop(port_lease);
         if let Err(error) = ensure_legacy_server_is_running(&mut server_child) {
             terminate_legacy_server_process(&mut server_child);
             return Err(error);
@@ -61,6 +64,7 @@ impl LegacyServerPythonPeerHarness {
             peer_status_rx: None,
             peer_stdout_lines: Arc::new(Mutex::new(Vec::new())),
             peer_stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            next_peer_request_id: 1,
         })
     }
 }

@@ -1,0 +1,244 @@
+name: sorotte Protocol Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "coverage/behaviors.toml"
+      - "coverage/known-defects.toml"
+      - "crates/**"
+      - "fuzz/**"
+      - ".github/workflows/rust-fuzz.yml"
+      - "requirements/ci-policy.txt"
+      - "scripts/known_defect_policy.py"
+      - "scripts/tests/test_known_defect_policy.py"
+      - "scripts/tests/test_protocol_fuzz_policy.py"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "coverage/behaviors.toml"
+      - "coverage/known-defects.toml"
+      - "crates/**"
+      - "fuzz/**"
+      - ".github/workflows/rust-fuzz.yml"
+      - "requirements/ci-policy.txt"
+      - "scripts/known_defect_policy.py"
+      - "scripts/tests/test_known_defect_policy.py"
+      - "scripts/tests/test_protocol_fuzz_policy.py"
+  workflow_dispatch:
+  schedule:
+    - cron: "45 3 * * 3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sorotte-protocol-fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  protocol-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FUZZ_SECONDS: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '45' || '900' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pinned nightly Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: nightly-2026-07-29
+          components: rust-src
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install CI policy prerequisites
+        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
+
+      - name: Install pinned cargo-fuzz
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
+
+      - name: Verify exact fuzz toolchain
+        run: |
+          test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"
+          rustc +nightly-2026-07-29 -vV
+
+      - name: Validate protocol fuzz policy
+        run: python -m unittest scripts.tests.test_protocol_fuzz_policy -v
+
+      - name: Build protocol fuzz target
+        run: >-
+          cargo +nightly-2026-07-29 fuzz build
+          --fuzz-dir fuzz
+          --sanitizer address
+          protocol_line
+
+      - name: Run bounded protocol fuzz target
+        run: >-
+          python fuzz/run_protocol_fuzz.py
+          --toolchain nightly-2026-07-29
+          --source-sha "${{ github.sha }}"
+          --seconds "${FUZZ_SECONDS}"
+          --seed-corpus crates/sorotte-protocol/tests/corpus/protocol_parser
+          --expected-seed-count 16
+          --output-root target/fuzz-ci/protocol-line
+
+      - name: Upload protocol fuzz evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-protocol-fuzz
+          path: target/fuzz-ci/protocol-line
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  framed-session-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FUZZ_SECONDS: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '45' || '900' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pinned nightly Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: nightly-2026-07-29
+          components: rust-src
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install CI policy prerequisites
+        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
+
+      - name: Install pinned cargo-fuzz
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
+
+      - name: Verify exact fuzz toolchain
+        run: |
+          test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"
+          rustc +nightly-2026-07-29 -vV
+
+      - name: Validate protocol fuzz policy
+        run: python -m unittest scripts.tests.test_protocol_fuzz_policy -v
+
+      - name: Build framed-session fuzz target
+        run: >-
+          cargo +nightly-2026-07-29 fuzz build
+          --fuzz-dir fuzz
+          --sanitizer address
+          framed_session
+
+      - name: Run bounded framed-session fuzz target
+        run: >-
+          python fuzz/run_protocol_fuzz.py
+          --target framed_session
+          --toolchain nightly-2026-07-29
+          --source-sha "${{ github.sha }}"
+          --seconds "${FUZZ_SECONDS}"
+          --seed-corpus crates/sorotte-cli/tests/corpus/framed_session
+          --expected-seed-count 14
+          --output-root target/fuzz-ci/framed-session
+
+      - name: Upload framed-session fuzz evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-framed-session-fuzz
+          path: target/fuzz-ci/framed-session
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  mpv-framed-transcript-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FUZZ_SECONDS: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '45' || '900' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pinned nightly Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: nightly-2026-07-29
+          components: rust-src
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install CI policy prerequisites
+        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
+
+      - name: Install pinned cargo-fuzz
+        run: >-
+          cargo +nightly-2026-07-29 install cargo-fuzz
+          --version 0.13.2
+          --locked
+
+      - name: Verify exact fuzz toolchain
+        run: |
+          test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"
+          rustc +nightly-2026-07-29 -vV
+
+      - name: Validate protocol fuzz policy
+        run: python -m unittest scripts.tests.test_protocol_fuzz_policy -v
+
+      - name: Build mpv framed-transcript fuzz target
+        run: >-
+          cargo +nightly-2026-07-29 fuzz build
+          --fuzz-dir fuzz
+          --sanitizer address
+          mpv_framed_transcript
+
+      - name: Run bounded mpv framed-transcript fuzz target
+        run: >-
+          python fuzz/run_protocol_fuzz.py
+          --target mpv_framed_transcript
+          --toolchain nightly-2026-07-29
+          --source-sha "${{ github.sha }}"
+          --seconds "${FUZZ_SECONDS}"
+          --seed-corpus crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript
+          --expected-seed-count 12
+          --output-root target/fuzz-ci/mpv-framed-transcript
+
+      - name: Upload mpv framed-transcript fuzz evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-mpv-framed-transcript-fuzz
+          path: target/fuzz-ci/mpv-framed-transcript
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true

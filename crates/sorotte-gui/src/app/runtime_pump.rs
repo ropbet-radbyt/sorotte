@@ -33,6 +33,9 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
     }
 
     fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
+        if handle.threaded_runtime_shutdown_requested() {
+            return;
+        }
         self.poll_cached_runtime(handle);
     }
 }

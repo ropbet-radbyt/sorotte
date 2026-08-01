@@ -65,7 +65,8 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
         ));
     }
 
-    let port = reserve_ephemeral_tcp_port()?;
+    let mut port_lease = reserve_legacy_server_port()?;
+    let port = port_lease.port();
     let python_bin = python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let motd_template_file_path = motd_template
@@ -111,6 +112,7 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
             .arg("--permanent-rooms-file")
             .arg(permanent_rooms_path);
     }
+    port_lease.release_socket_for_child();
     let child_spawn = command.spawn();
     let mut child = match child_spawn {
         Ok(child) => child,
@@ -133,12 +135,15 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
 
     let result = (|| {
         wait_for_legacy_server_startup(port, &mut child)?;
+        drop(port_lease);
+        wait_for_legacy_permanent_rooms_startup(port, &mut child, permanent_rooms)?;
 
         let mut clients: BTreeMap<String, LegacyServerClientConnection> = BTreeMap::new();
         let mut events = Vec::with_capacity(steps.len());
         for step in steps {
             ensure_legacy_server_is_running(&mut child)?;
-            if !clients.contains_key(&step.client_id) {
+            let is_new_client = !clients.contains_key(&step.client_id);
+            if is_new_client {
                 let stream = connect_legacy_client_stream(port, &step.client_id)?;
                 clients.insert(
                     step.client_id.clone(),
@@ -149,20 +154,29 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
                 );
             }
 
-            if step.advance_seconds > 0.0 {
-                thread::sleep(Duration::from_secs_f64(step.advance_seconds));
+            let legacy_advance_seconds =
+                step.legacy_advance_seconds.unwrap_or(step.advance_seconds);
+            if legacy_advance_seconds > 0.0 {
+                thread::sleep(Duration::from_secs_f64(legacy_advance_seconds));
             }
 
             let stream = clients
                 .get_mut(&step.client_id)
                 .ok_or_else(|| InteropError::MissingLegacyClient(step.client_id.clone()))?;
+            let required_first_output_client = (is_new_client
+                && matches!(
+                    decode_message_line(&step.request_line)?,
+                    ProtocolMessage::Hello(_)
+                ))
+            .then_some(step.client_id.as_str());
             let legacy_request_line = prepare_legacy_server_request_line(&step.request_line)?;
             stream.stream.write_all(legacy_request_line.as_bytes())?;
             // Twisted LineReceiver defaults to CRLF framing.
             stream.stream.write_all(b"\r\n")?;
             stream.stream.flush()?;
 
-            let outbound_lines = collect_legacy_server_step_outputs(&mut clients)?;
+            let outbound_lines =
+                collect_legacy_server_step_outputs(&mut clients, required_first_output_client)?;
             events.push(ServerRuntimeScenarioEvent {
                 client_id: step.client_id.clone(),
                 request_line: step.request_line.clone(),

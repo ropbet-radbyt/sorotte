@@ -30,8 +30,7 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path: &window_drop_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: None,
-        loopback_session: None,
+        network_mode: NativeNetworkMode::Detached,
         attach_test_player: true,
         drop_file_paths_spec: Some(&window_drop_spec),
         drop_target: Some("window"),
@@ -57,7 +56,8 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         wait_for_process_exit(&mut window_child, timeout)?;
         Ok(())
     })();
-    if window_outcome.is_err() {
+    if let Err(error) = &window_outcome {
+        capture_native_failure_artifacts(driver, window_handle, "drag-drop-window", error);
         let _ = window_child.kill();
         let _ = window_child.wait();
     }
@@ -94,8 +94,10 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path: &playlist_drop_file_path,
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
-        tcp_session: None,
-        loopback_session: Some(("drag-drop-user", "drag-drop-room")),
+        network_mode: NativeNetworkMode::InProcessLoopback {
+            username: "drag-drop-user",
+            room: "drag-drop-room",
+        },
         attach_test_player: true,
         drop_file_paths_spec: Some(&playlist_drop_spec),
         drop_target: Some("playlist"),
@@ -122,7 +124,8 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         wait_for_process_exit(&mut playlist_child, timeout)?;
         Ok(())
     })();
-    if playlist_outcome.is_err() {
+    if let Err(error) = &playlist_outcome {
+        capture_native_failure_artifacts(driver, playlist_handle, "drag-drop-playlist", error);
         let _ = playlist_child.kill();
         let _ = playlist_child.wait();
     }

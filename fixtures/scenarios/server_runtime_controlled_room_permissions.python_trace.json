@@ -8,7 +8,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice"
               }
@@ -21,6 +21,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -86,7 +96,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "bob"
               }
@@ -98,7 +108,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "bob"
               }
@@ -111,6 +121,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -136,40 +156,6 @@
               },
               "username": "bob",
               "version": "1.2.255"
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-2",
-          "message": {
-            "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
             }
           }
         }
@@ -246,7 +232,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "alice"
               }
@@ -259,6 +245,16 @@
             "Set": {
               "playlistChange": {
                 "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
               }
             }
           }
@@ -320,7 +316,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "bob"
               }
@@ -332,7 +328,7 @@
           "message": {
             "Set": {
               "ready": {
-                "isReady": false,
+                "isReady": null,
                 "manuallyInitiated": false,
                 "username": "bob"
               }
@@ -348,6 +344,16 @@
               }
             }
           }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null
+              }
+            }
+          }
         }
       ],
       "step": 5
@@ -360,6 +366,17 @@
             "Set": {
               "playlistChange": {
                 "files": [],
+                "user": "+room1:CB39A19549E8"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null,
                 "user": "+room1:CB39A19549E8"
               }
             }
@@ -431,7 +448,19 @@
       "step": 8
     },
     {
-      "outputs": [],
+      "outputs": [
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistIndex": {
+                "index": null,
+                "user": "+room1:CB39A19549E8"
+              }
+            }
+          }
+        }
+      ],
       "step": 9
     },
     {
@@ -480,7 +509,7 @@
                     "uiMode": "Unknown"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 },
                 "bob": {
@@ -495,7 +524,7 @@
                     "uiMode": "Unknown"
                   },
                   "file": {},
-                  "isReady": false,
+                  "isReady": null,
                   "position": 0.0
                 }
               }

@@ -58,7 +58,7 @@ pub(super) use self::main_window::{
     MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
     MainWindowUserRow,
 };
-pub(in crate::app) use self::menu::MenuActionId;
+pub(in crate::app) use self::menu::{MenuActionId, MenuSectionId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuActionShellItem {
@@ -71,6 +71,7 @@ pub(super) struct MenuActionShellItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuSectionShellState {
+    pub(super) id: MenuSectionId,
     pub(super) title: &'static str,
     pub(super) actions: Vec<MenuActionShellItem>,
 }

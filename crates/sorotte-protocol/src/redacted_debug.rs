@@ -120,44 +120,130 @@ impl fmt::Debug for RedactedSecret {
 }
 
 fn json_key_is_sensitive(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
-    [
-        "password",
-        "token",
-        "secret",
-        "credential",
-        "logicalmediaid",
-        "requestid",
-        "operationid",
-    ]
-    .into_iter()
-    .any(|marker| normalized.contains(marker))
+    sorotte_secret::key_is_sensitive(key)
 }
 
 pub(crate) fn text_may_contain_credentials(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    [
-        "password=",
-        "password:",
-        "password\":",
-        "password%3d",
-        "token=",
-        "token:",
-        "token\":",
-        "token%3d",
-        "secret=",
-        "secret:",
-        "secret\":",
-        "secret%3d",
-        "credential=",
-        "credential:",
-        "credential\":",
-        "credential%3d",
-    ]
-    .into_iter()
-    .any(|marker| lower.contains(marker))
+    sorotte_secret::text_may_contain_credentials(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_value_debug_preserves_ordinary_values_and_redacts_credentials() {
+        let ordinary = Value::String("playback timeout".to_owned());
+        let credential = Value::String("request failed: password=canary".to_owned());
+
+        assert_eq!(
+            format!("{:?}", RedactedJsonValue(&ordinary)),
+            "String(\"playback timeout\")"
+        );
+        assert_eq!(
+            format!("{:?}", RedactedJsonValue(&credential)),
+            sorotte_secret::REDACTED_SECRET
+        );
+    }
+
+    #[test]
+    fn json_value_debug_applies_key_and_value_redaction_recursively() {
+        let value = serde_json::json!({
+            "displayName": "alice",
+            "nested": [{
+                "status": "ready",
+                "password": "password-canary"
+            }],
+            "diagnostic": "access_token=token-canary"
+        });
+
+        let debug = format!("{:?}", RedactedJsonValue(&value));
+        assert!(debug.contains("\"displayName\": String(\"alice\")"));
+        assert!(debug.contains("\"status\": String(\"ready\")"));
+        assert_eq!(debug.matches(sorotte_secret::REDACTED_SECRET).count(), 2);
+        assert!(!debug.contains("password-canary"));
+        assert!(!debug.contains("token-canary"));
+    }
+
+    #[test]
+    fn optional_json_debug_distinguishes_some_and_none_exactly() {
+        let ordinary = Value::String("ready".to_owned());
+        let credential = Value::String("token=canary".to_owned());
+
+        assert_eq!(
+            format!("{:?}", RedactedOptionalJsonValue(Some(&ordinary))),
+            "Some(String(\"ready\"))"
+        );
+        assert_eq!(
+            format!("{:?}", RedactedOptionalJsonValue(Some(&credential))),
+            "Some(<redacted>)"
+        );
+        assert_eq!(format!("{:?}", RedactedOptionalJsonValue(None)), "None");
+    }
+
+    #[test]
+    fn optional_text_debug_is_always_value_free() {
+        assert_eq!(
+            format!("{:?}", RedactedOptionalText(Some("ordinary"))),
+            "Some(<redacted>)"
+        );
+        assert_eq!(format!("{:?}", RedactedOptionalText(None)), "None");
+    }
+
+    #[test]
+    fn optional_sensitive_text_debug_classifies_some_and_preserves_none() {
+        assert_eq!(
+            format!(
+                "{:?}",
+                RedactedOptionalSensitiveText(Some("playback timeout"))
+            ),
+            "Some(\"playback timeout\")"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                RedactedOptionalSensitiveText(Some("access_token=canary"))
+            ),
+            "Some(<redacted>)"
+        );
+        assert_eq!(format!("{:?}", RedactedOptionalSensitiveText(None)), "None");
+    }
+
+    #[test]
+    fn text_list_debug_classifies_each_value_independently() {
+        let values = vec![
+            "ready".to_owned(),
+            "request failed: password=canary".to_owned(),
+            "buffering".to_owned(),
+        ];
+
+        assert_eq!(
+            format!("{:?}", RedactedTextList(&values)),
+            "[\"ready\", <redacted>, \"buffering\"]"
+        );
+    }
+
+    #[test]
+    fn json_map_debug_preserves_ordinary_keys_and_redacts_sensitive_keys() {
+        let values = BTreeMap::from([
+            ("displayName".to_owned(), Value::String("alice".to_owned())),
+            (
+                "vendorAccessToken".to_owned(),
+                Value::String("token-canary".to_owned()),
+            ),
+        ]);
+
+        assert_eq!(
+            format!("{:?}", RedactedJsonMap(&values)),
+            "{\"displayName\": String(\"alice\"), \"vendorAccessToken\": <redacted>}"
+        );
+    }
+
+    #[test]
+    fn classifier_forwarders_preserve_both_boolean_outcomes() {
+        assert!(!json_key_is_sensitive("displayName"));
+        assert!(json_key_is_sensitive("vendorAccessToken"));
+        assert!(!text_may_contain_credentials("playback timeout"));
+        assert!(text_may_contain_credentials("access_token=canary"));
+    }
 }

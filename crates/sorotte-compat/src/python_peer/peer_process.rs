@@ -66,14 +66,14 @@ impl LegacyServerPythonPeerHarness {
     pub(super) fn wait_for_peer_connected(
         &mut self,
         timeout: Duration,
-    ) -> Result<(), InteropError> {
-        self.wait_for_peer_status(timeout, "connected").map(|_| ())
+    ) -> Result<Value, InteropError> {
+        self.wait_for_peer_status(timeout, "connected", None)
     }
 
     pub(super) fn ensure_peer_connected(&mut self) -> Result<(), InteropError> {
         if self.peer_child.is_none() {
             self.spawn_peer_process()?;
-            self.wait_for_peer_connected(Duration::from_secs(3))?;
+            let _ = self.wait_for_peer_connected(Duration::from_secs(3))?;
         }
         Ok(())
     }
@@ -113,24 +113,48 @@ impl LegacyServerPythonPeerHarness {
         }
     }
 
-    pub(super) fn send_peer_command(&mut self, command: &Value) -> Result<(), InteropError> {
+    pub(super) fn send_peer_command(&mut self, command: &Value) -> Result<u64, InteropError> {
+        let request_id = self.next_peer_request_id;
+        self.next_peer_request_id = self.next_peer_request_id.checked_add(1).ok_or_else(|| {
+            InteropError::InvalidPythonBatchResponse(
+                "python live peer request ID space was exhausted".to_owned(),
+            )
+        })?;
+        let mut command = command.clone();
+        let command = command.as_object_mut().ok_or_else(|| {
+            InteropError::InvalidPythonBatchResponse(
+                "python live peer command must be a JSON object".to_owned(),
+            )
+        })?;
+        command.insert("requestId".to_owned(), Value::from(request_id));
         let stdin = self
             .peer_stdin
             .as_mut()
             .ok_or(InteropError::PythonStdinMissing)?;
-        let mut payload = serde_json::to_vec(command)?;
+        let mut payload = serde_json::to_vec(&command)?;
         payload.push(b'\n');
         stdin
             .write_all(&payload)
             .map_err(InteropError::PythonStdinWrite)?;
         stdin.flush().map_err(InteropError::PythonStdinWrite)?;
-        Ok(())
+        Ok(request_id)
+    }
+
+    pub(super) fn send_peer_command_and_wait(
+        &mut self,
+        command: &Value,
+        response_timeout: Duration,
+        expected_status: &str,
+    ) -> Result<Value, InteropError> {
+        let request_id = self.send_peer_command(command)?;
+        self.wait_for_peer_status(response_timeout, expected_status, Some(request_id))
     }
 
     pub(super) fn wait_for_peer_status(
         &mut self,
         timeout: Duration,
         expected_status: &str,
+        expected_request_id: Option<u64>,
     ) -> Result<Value, InteropError> {
         let Some(peer_status_rx) = self.peer_status_rx.as_ref() else {
             return Err(InteropError::InvalidPythonBatchResponse(
@@ -161,11 +185,31 @@ impl LegacyServerPythonPeerHarness {
         };
 
         let parsed = self.parse_peer_status_line(&status_line)?;
+        let actual_request_id = parsed.get("requestId").and_then(Value::as_u64);
+        if actual_request_id != expected_request_id {
+            return Err(InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer response request ID {actual_request_id:?} did not match expected request ID {expected_request_id:?}: {status_line:?}"
+            )));
+        }
         let Some(actual_status) = parsed.get("status").and_then(Value::as_str) else {
             return Err(InteropError::InvalidPythonBatchResponse(format!(
                 "python live peer status line did not include a status field: {status_line:?}"
             )));
         };
+        if actual_status == "error" {
+            return Err(InteropError::InvalidPythonBatchResponse(
+                parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "python live peer reported an unspecified error line: {status_line:?}"
+                        )
+                    }),
+            ));
+        }
         if actual_status != expected_status {
             return Err(InteropError::InvalidPythonBatchResponse(format!(
                 "python live peer reported unexpected status {actual_status:?}; expected {expected_status:?}: {status_line:?}"

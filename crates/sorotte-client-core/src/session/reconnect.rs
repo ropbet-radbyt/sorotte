@@ -7,6 +7,7 @@ impl ClientSession {
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
         self.reset_playback_barrier();
+        self.model.cancel_connection_scoped_playback_transactions();
         self.mark_readiness_v2_reconnect_pending();
         let (ready_snapshot, file_snapshot, controller_snapshot) = self
             .model
@@ -37,7 +38,8 @@ impl ClientSession {
             .reconnect
             .playlist_restore_snapshot
             .take()
-            .or(self.model.reconnect.playlist_restore_intent.take());
+            .or(self.model.reconnect.playlist_restore_intent.take())
+            .or(self.model.reconnect.playlist_restore_pending_ack.take());
 
         self.model.reconnect.ready_restore_snapshot = preserved_ready_snapshot.or(ready_snapshot);
         self.model.reconnect.ready_restore_intent = None;
@@ -52,6 +54,7 @@ impl ClientSession {
                     .and_then(Self::playlist_restore_intent_from_room_playlist)
             });
         self.model.reconnect.playlist_restore_intent = None;
+        self.model.reconnect.playlist_restore_pending_ack = None;
         self.model.reconnect.connected_intent = false;
         self.clear_reconnect_state_restore_validation_state();
         self.pending_chat_notifications.clear();

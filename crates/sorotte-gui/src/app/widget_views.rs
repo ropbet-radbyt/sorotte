@@ -7,7 +7,7 @@ use super::shell_state::{
     GuiPlexPlaylistSearchResult, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
     GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase, GuiSettingApplyRequirement,
     GuiSettingValueOrigin, GuiShellModal, GuiShellView, GuiStreamHelperHealth,
-    GuiTransientNotificationLevel, MenuActionId, SecretDraft, SettingId, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, SecretDraft, SettingId, SorotteGuiShellAppState,
     playlist_entries_from_multiline_text,
 };
 use super::support::{

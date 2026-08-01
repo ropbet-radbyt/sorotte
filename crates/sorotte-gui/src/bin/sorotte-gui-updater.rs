@@ -5,7 +5,7 @@ use std::{
     env, fs,
     io::{Cursor, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -132,6 +132,202 @@ struct JournalCommit {
 enum ApplyProgress {
     BeforePrepare(usize),
     BeforeReplace(usize),
+    #[cfg(test)]
+    AfterReplace(usize),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestStorageOperation {
+    Write,
+    Flush,
+    Replace,
+    Remove,
+    ParentDirectorySync,
+}
+
+#[cfg(test)]
+impl TestStorageOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Write => "write",
+            Self::Flush => "flush",
+            Self::Replace => "replace",
+            Self::Remove => "remove",
+            Self::ParentDirectorySync => "parent-directory-sync",
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestStorageFaultKind {
+    DeterministicDiskFull,
+    DeterministicAccessDenied,
+}
+
+#[cfg(test)]
+impl TestStorageFaultKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DeterministicDiskFull => "deterministic injected disk-full analogue",
+            Self::DeterministicAccessDenied => "deterministic injected access-denied analogue",
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestStorageFault {
+    operation: TestStorageOperation,
+    remaining_matches: usize,
+    kind: TestStorageFaultKind,
+    fired: bool,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_STORAGE_FAULT: std::cell::RefCell<Option<TestStorageFault>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn arm_test_storage_fault(
+    operation: TestStorageOperation,
+    occurrence: usize,
+    kind: TestStorageFaultKind,
+) {
+    assert!(occurrence > 0, "a storage fault occurrence is one-based");
+    TEST_STORAGE_FAULT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "only one storage fault may be armed per thread"
+        );
+        *slot = Some(TestStorageFault {
+            operation,
+            remaining_matches: occurrence,
+            kind,
+            fired: false,
+        });
+    });
+}
+
+#[cfg(test)]
+fn take_test_storage_fault() -> Option<TestStorageFault> {
+    TEST_STORAGE_FAULT.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+fn test_storage_operation(operation: TestStorageOperation, path: &Path) -> Result<(), String> {
+    TEST_STORAGE_FAULT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(fault) = slot.as_mut() else {
+            return Ok(());
+        };
+        if fault.operation != operation || fault.fired {
+            return Ok(());
+        }
+        fault.remaining_matches -= 1;
+        if fault.remaining_matches > 0 {
+            return Ok(());
+        }
+        fault.fired = true;
+        Err(format!(
+            "{} during updater {} at {}",
+            fault.kind.label(),
+            operation.label(),
+            path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
+const PROCESS_INTERRUPT_BOUNDARY_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_BOUNDARY";
+#[cfg(test)]
+const PROCESS_INTERRUPT_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_INTERRUPT_ROOT";
+#[cfg(test)]
+const PROCESS_INTERRUPT_MARKER: &str = "boundary-reached";
+#[cfg(test)]
+const PROCESS_INTERRUPT_PENDING_MARKER: &str = ".boundary-reached.pending";
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessInterruptBoundary {
+    JournalHeader,
+    Prepared(usize),
+    Replaced(usize),
+    Committed,
+    Cleaned(usize),
+    JournalRemoved,
+}
+
+#[cfg(test)]
+impl ProcessInterruptBoundary {
+    fn label(self) -> String {
+        match self {
+            Self::JournalHeader => "journal-header".to_owned(),
+            Self::Prepared(index) => format!("prepared-{index}"),
+            Self::Replaced(index) => format!("replaced-{index}"),
+            Self::Committed => "committed".to_owned(),
+            Self::Cleaned(index) => format!("cleaned-{index}"),
+            Self::JournalRemoved => "journal-removed".to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+fn publish_process_interrupt_boundary(root: &Path, label: &str) -> Result<(), String> {
+    let pending = root.join(PROCESS_INTERRUPT_PENDING_MARKER);
+    let marker = root.join(PROCESS_INTERRUPT_MARKER);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .map_err(|error| {
+            format!(
+                "failed creating updater interruption boundary {}: {error}",
+                pending.display()
+            )
+        })?;
+    file.write_all(label.as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed flushing updater interruption boundary {}: {error}",
+                pending.display()
+            )
+        })?;
+    drop(file);
+    fs::rename(&pending, &marker).map_err(|error| {
+        format!(
+            "failed atomically publishing updater interruption boundary {}: {error}",
+            marker.display()
+        )
+    })?;
+    sync_parent_directory(&marker)
+}
+
+#[cfg(test)]
+fn process_interrupt_barrier(boundary: ProcessInterruptBoundary) {
+    let Some(expected) = env::var_os(PROCESS_INTERRUPT_BOUNDARY_ENV) else {
+        return;
+    };
+    let label = boundary.label();
+    if expected != std::ffi::OsStr::new(&label) {
+        return;
+    }
+    let root = PathBuf::from(
+        env::var_os(PROCESS_INTERRUPT_ROOT_ENV)
+            .expect("an updater interruption boundary must include its fixture root"),
+    );
+    publish_process_interrupt_boundary(&root, &label)
+        .expect("the updater child must publish its durable interruption boundary");
+    let release = root.join("release-boundary");
+    while !release.exists() {
+        std::thread::yield_now();
+    }
 }
 
 #[cfg(windows)]
@@ -305,8 +501,7 @@ where
                 &args.log_path,
                 "restarting Sorotte GUI after update recovery",
             )?;
-            Command::new(&target_exe_path)
-                .spawn()
+            spawn_background_without_inherited_stdio(&mut Command::new(&target_exe_path))
                 .map_err(|error| format!("failed to restart Sorotte GUI: {error}"))?;
         }
         append_log(&args.log_path, "interrupted update recovery completed")?;
@@ -353,8 +548,7 @@ fn apply_validated_source_update(args: &UpdaterArgs, source_dir: &Path) -> Resul
     apply_replacement_plan(&plan)?;
     if plan.restart {
         append_log(&plan.log_path, "restarting Sorotte GUI")?;
-        Command::new(&plan.target_exe_path)
-            .spawn()
+        spawn_background_without_inherited_stdio(&mut Command::new(&plan.target_exe_path))
             .map_err(|error| format!("failed to restart Sorotte GUI: {error}"))?;
     }
     append_log(&plan.log_path, "update completed")?;
@@ -643,13 +837,17 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
         let _ = remove_directory_if_exists(&bootstrap_dir);
         return Err(error);
     }
+    if let Err(error) = sync_parent_directory(&detached_path) {
+        let _ = remove_directory_if_exists(&bootstrap_dir);
+        return Err(error);
+    }
     append_log(
         &args.log_path,
         "delegating replacement to a detached authenticated updater copy",
     )?;
     let mut command = Command::new(&detached_path);
     command.args(detached_update_helper_args(args, &expected_sha256));
-    command.spawn().map_err(|error| {
+    spawn_background_without_inherited_stdio(&mut command).map_err(|error| {
         let _ = remove_directory_if_exists(&bootstrap_dir);
         format!(
             "failed launching detached update helper {}: {error}",
@@ -657,6 +855,15 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
         )
     })?;
     Ok(())
+}
+
+fn spawn_background_without_inherited_stdio(command: &mut Command) -> std::io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 fn detached_update_helper_args(args: &UpdaterArgs, expected_sha256: &str) -> Vec<String> {
@@ -1245,6 +1452,8 @@ where
     recover_pending_update(&plan.target_dir)?;
     let journal = journal_for_plan(plan)?;
     write_journal_header(&plan.journal_path, &journal)?;
+    #[cfg(test)]
+    process_interrupt_barrier(ProcessInterruptBoundary::JournalHeader);
 
     let result = (|| {
         for (index, file) in plan.files.iter().enumerate() {
@@ -1275,13 +1484,23 @@ where
                 .map_err(|error| {
                     format!("failed creating {}: {error}", file.temporary.display())
                 })?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Write, &file.temporary)?;
             output
                 .write_all(&bytes)
-                .and_then(|()| output.flush())
+                .map_err(|error| format!("failed writing {}: {error}", file.temporary.display()))?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Flush, &file.temporary)?;
+            output
+                .flush()
                 .and_then(|()| output.sync_all())
                 .map_err(|error| {
                     format!("failed flushing {}: {error}", file.temporary.display())
                 })?;
+            drop(output);
+            sync_parent_directory(&file.temporary)?;
+            #[cfg(test)]
+            process_interrupt_barrier(ProcessInterruptBoundary::Prepared(index + 1));
         }
 
         for (index, file) in plan.files.iter().enumerate() {
@@ -1292,8 +1511,15 @@ where
             reject_reparse_parent(&plan.target_dir, &file.target)?;
             validate_replacement_target_unchanged(file)?;
             install_prepared_replacement(file)?;
+            #[cfg(test)]
+            {
+                before_progress(ApplyProgress::AfterReplace(index + 1))?;
+                process_interrupt_barrier(ProcessInterruptBoundary::Replaced(index + 1));
+            }
         }
         append_journal_commit(&plan.journal_path)?;
+        #[cfg(test)]
+        process_interrupt_barrier(ProcessInterruptBoundary::Committed);
         Ok(())
     })();
 
@@ -1343,6 +1569,8 @@ fn install_prepared_replacement(file: &ReplacementFile) -> Result<(), String> {
             atomic_replace_with_backup(&file.target, &file.temporary, &file.backup)?;
         }
         (true, None) => {
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Replace, &file.target)?;
             fs::rename(&file.target, &file.backup).map_err(|error| {
                 format!(
                     "failed moving obsolete target {} to rollback backup {}: {error}",
@@ -1350,15 +1578,19 @@ fn install_prepared_replacement(file: &ReplacementFile) -> Result<(), String> {
                     file.backup.display()
                 )
             })?;
+            sync_parent_directory(&file.target)?;
         }
         (false, Some(expected)) => {
             require_file_digest(&file.temporary, expected, "prepared replacement")?;
+            #[cfg(test)]
+            test_storage_operation(TestStorageOperation::Replace, &file.target)?;
             fs::rename(&file.temporary, &file.target).map_err(|error| {
                 format!(
                     "failed atomically installing new file {}: {error}",
                     file.target.display()
                 )
             })?;
+            sync_parent_directory(&file.target)?;
         }
         (false, None) => return Ok(()),
     }
@@ -1379,6 +1611,8 @@ fn atomic_replace_with_backup(
     replacement: &Path,
     backup: &Path,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     windows_replace_file(target, replacement, Some(backup)).map_err(|error| {
         format!(
             "failed atomically replacing {} with {} and backup {}: {error}",
@@ -1386,7 +1620,8 @@ fn atomic_replace_with_backup(
             replacement.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(not(windows))]
@@ -1395,6 +1630,8 @@ fn atomic_replace_with_backup(
     replacement: &Path,
     backup: &Path,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     fs::rename(target, backup).map_err(|error| {
         format!(
             "failed moving {} to rollback backup {}: {error}",
@@ -1402,35 +1639,43 @@ fn atomic_replace_with_backup(
             backup.display()
         )
     })?;
+    sync_parent_directory(target)?;
     fs::rename(replacement, target).map_err(|error| {
         format!(
             "failed installing replacement {} at {}: {error}",
             replacement.display(),
             target.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(windows)]
 fn atomic_restore_backup(target: &Path, backup: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     windows_replace_file(target, backup, None).map_err(|error| {
         format!(
             "failed atomically restoring {} from {}: {error}",
             target.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(not(windows))]
 fn atomic_restore_backup(target: &Path, backup: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Replace, target)?;
     fs::rename(backup, target).map_err(|error| {
         format!(
             "failed atomically restoring {} from {}: {error}",
             target.display(),
             backup.display()
         )
-    })
+    })?;
+    sync_parent_directory(target)
 }
 
 #[cfg(windows)]
@@ -1517,17 +1762,38 @@ fn write_journal_header(path: &Path, journal: &ReplacementJournal) -> Result<(),
                 path.display()
             )
         })?;
-    serde_json::to_writer(&mut file, journal)
-        .map_err(|error| format!("failed serializing replacement journal: {error}"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.flush())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| {
+    let write_result = (|| {
+        #[cfg(test)]
+        test_storage_operation(TestStorageOperation::Write, path)?;
+        serde_json::to_writer(&mut file, journal)
+            .map_err(|error| format!("failed serializing replacement journal: {error}"))?;
+        file.write_all(b"\n").map_err(|error| {
             format!(
-                "failed flushing replacement journal {}: {error}",
+                "failed writing replacement journal {}: {error}",
                 path.display()
             )
-        })
+        })?;
+        #[cfg(test)]
+        test_storage_operation(TestStorageOperation::Flush, path)?;
+        file.flush()
+            .and_then(|()| file.sync_all())
+            .map_err(|error| {
+                format!(
+                    "failed flushing replacement journal {}: {error}",
+                    path.display()
+                )
+            })
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        return match remove_file_if_exists(path) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; additionally failed removing incomplete replacement journal: {cleanup_error}"
+            )),
+        };
+    }
+    sync_parent_directory(path)
 }
 
 fn append_journal_commit(path: &Path) -> Result<(), String> {
@@ -1540,10 +1806,19 @@ fn append_journal_commit(path: &Path) -> Result<(), String> {
                 path.display()
             )
         })?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Write, path)?;
     serde_json::to_writer(&mut file, &JournalCommit { committed: true })
         .map_err(|error| format!("failed serializing replacement commit: {error}"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.flush())
+    file.write_all(b"\n").map_err(|error| {
+        format!(
+            "failed writing replacement commit {}: {error}",
+            path.display()
+        )
+    })?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Flush, path)?;
+    file.flush()
         .and_then(|()| file.sync_all())
         .map_err(|error| {
             format!(
@@ -1656,16 +1931,6 @@ fn rollback_journal_entry(
     let temporary_digest = regular_file_digest_if_present(&temporary, "prepared replacement")?;
     let backup_digest = regular_file_digest_if_present(&backup, "rollback backup")?;
 
-    if let Some(actual) = temporary_digest.as_deref() {
-        let expected = entry.replacement_sha256.as_deref().ok_or_else(|| {
-            format!(
-                "unexpected prepared replacement exists for removed file {}",
-                entry.relative.display()
-            )
-        })?;
-        ensure_digest_matches(actual, expected, &temporary, "prepared replacement")?;
-    }
-
     if entry.target_existed {
         let original = entry.original_sha256.as_deref().ok_or_else(|| {
             format!(
@@ -1687,6 +1952,8 @@ fn rollback_journal_entry(
             if target_digest.is_some() {
                 atomic_restore_backup(&target, &backup)?;
             } else {
+                #[cfg(test)]
+                test_storage_operation(TestStorageOperation::Replace, &target)?;
                 fs::rename(&backup, &target).map_err(|error| {
                     format!(
                         "failed restoring missing target {} from {}: {error}",
@@ -1694,6 +1961,7 @@ fn rollback_journal_entry(
                         backup.display()
                     )
                 })?;
+                sync_parent_directory(&target)?;
             }
         } else {
             match target_digest.as_deref() {
@@ -1871,11 +2139,21 @@ fn cleanup_committed_update(
     for entry in &journal.entries {
         validate_committed_entry(target_dir, entry)?;
     }
+    #[cfg(test)]
+    let mut cleanup_index = 0;
     for entry in &journal.entries {
         remove_file_if_exists(&target_dir.join(&entry.temporary))?;
         remove_file_if_exists(&target_dir.join(&entry.backup))?;
+        #[cfg(test)]
+        {
+            cleanup_index += 1;
+            process_interrupt_barrier(ProcessInterruptBoundary::Cleaned(cleanup_index));
+        }
     }
-    remove_file_if_exists(journal_path)
+    remove_file_if_exists(journal_path)?;
+    #[cfg(test)]
+    process_interrupt_barrier(ProcessInterruptBoundary::JournalRemoved);
+    Ok(())
 }
 
 fn create_relative_directories_without_reparse(root: &Path, relative: &Path) -> Result<(), String> {
@@ -1908,6 +2186,7 @@ fn create_relative_directories_without_reparse(root: &Path, relative: &Path) -> 
                         current.display()
                     )
                 })?;
+                sync_parent_directory(&current)?;
                 ensure_directory_is_not_reparse_point(&current)?;
             }
             Err(error) => return Err(format!("failed inspecting {}: {error}", current.display())),
@@ -1976,11 +2255,79 @@ fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::Remove, path)?;
     match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => sync_parent_directory(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            sync_parent_directory_if_present(path)
+        }
         Err(error) => Err(format!("failed removing {}: {error}", path.display())),
     }
+}
+
+fn sync_parent_directory_if_present(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("updater path has no parent directory: {}", path.display()))?;
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.is_dir() && !metadata_is_reparse_or_symlink(&metadata) => {
+            sync_parent_directory(path)
+        }
+        Ok(_) => Err(format!(
+            "updater parent is not a regular directory: {}",
+            parent.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed inspecting updater parent directory {}: {error}",
+            parent.display()
+        )),
+    }
+}
+
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("updater path has no parent directory: {}", path.display()))?;
+    #[cfg(test)]
+    test_storage_operation(TestStorageOperation::ParentDirectorySync, parent)?;
+    sync_directory(parent)
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed synchronizing updater directory {}: {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed synchronizing updater directory {}: {error}",
+                path.display()
+            )
+        })
 }
 
 fn remove_directory_if_exists(path: &Path) -> Result<(), String> {
@@ -2046,6 +2393,110 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    struct ArmedTestStorageFault {
+        active: bool,
+    }
+
+    impl ArmedTestStorageFault {
+        fn new(
+            operation: TestStorageOperation,
+            occurrence: usize,
+            kind: TestStorageFaultKind,
+        ) -> Self {
+            arm_test_storage_fault(operation, occurrence, kind);
+            Self { active: true }
+        }
+
+        fn finish(mut self) -> TestStorageFault {
+            let fault =
+                take_test_storage_fault().expect("the test storage fault should remain armed");
+            self.active = false;
+            fault
+        }
+    }
+
+    impl Drop for ArmedTestStorageFault {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = take_test_storage_fault();
+            }
+        }
+    }
+
+    static DURABILITY_FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+
+    struct DurabilityFixtureRoot {
+        path: PathBuf,
+    }
+
+    impl DurabilityFixtureRoot {
+        fn new(case: &str) -> Self {
+            use std::sync::atomic::Ordering;
+
+            let sequence = DURABILITY_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let path = env::temp_dir().join(format!(
+                "sorotte-updater-durability-{}-{nonce}-{sequence}-{case}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)
+                .expect("the nonce-owned durability fixture root should be created");
+            Self { path }
+        }
+    }
+
+    impl Drop for DurabilityFixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct UnixDirectoryPermissionsGuard {
+        path: PathBuf,
+        original: fs::Permissions,
+        restored: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl UnixDirectoryPermissionsGuard {
+        fn deny_read(path: &Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let original = fs::metadata(path)
+                .expect("the nonce-owned updater directory should have metadata")
+                .permissions();
+            let mut denied = original.clone();
+            denied.set_mode(0o300);
+            fs::set_permissions(path, denied)
+                .expect("the test should remove read permission from its owned directory");
+            Self {
+                path: path.to_path_buf(),
+                original,
+                restored: false,
+            }
+        }
+
+        fn restore(&mut self) {
+            fs::set_permissions(&self.path, self.original.clone())
+                .expect("the test should restore its owned directory permissions");
+            self.restored = true;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for UnixDirectoryPermissionsGuard {
+        fn drop(&mut self) {
+            if !self.restored {
+                let _ = fs::set_permissions(&self.path, self.original.clone());
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -2149,12 +2600,727 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     fn prepare_test_plan(plan: &ReplacementPlan) {
         for file in &plan.files {
             if let Some(source) = file.source.as_ref() {
                 fs::copy(source, &file.temporary).unwrap();
             }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixFileKind {
+        Existing,
+        Added,
+        Removed,
+    }
+
+    impl MatrixFileKind {
+        const ALL: [Self; 3] = [Self::Existing, Self::Added, Self::Removed];
+
+        fn relative(self) -> &'static str {
+            match self {
+                Self::Existing => "existing.txt",
+                Self::Added => "added.txt",
+                Self::Removed => "removed.txt",
+            }
+        }
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Existing => "existing",
+                Self::Added => "added",
+                Self::Removed => "removed",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixArtifact {
+        Temporary,
+        Target,
+        Backup,
+    }
+
+    impl MatrixArtifact {
+        const ALL: [Self; 3] = [Self::Temporary, Self::Target, Self::Backup];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Temporary => "temporary",
+                Self::Target => "target",
+                Self::Backup => "backup",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixFault {
+        Missing,
+        Corrupt,
+        Substituted,
+    }
+
+    impl MatrixFault {
+        const ALL: [Self; 3] = [Self::Missing, Self::Corrupt, Self::Substituted];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Missing => "missing",
+                Self::Corrupt => "corrupt",
+                Self::Substituted => "substituted",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum MatrixRecoveryMode {
+        Uncommitted,
+        Committed,
+    }
+
+    impl MatrixRecoveryMode {
+        const ALL: [Self; 2] = [Self::Uncommitted, Self::Committed];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Uncommitted => "uncommitted",
+                Self::Committed => "committed",
+            }
+        }
+    }
+
+    fn recovery_matrix_plan(root: &Path) -> ReplacementPlan {
+        let target = root.join("target");
+        write_relative(
+            &target,
+            MatrixFileKind::Existing.relative(),
+            b"old-existing",
+        );
+        write_relative(&target, MatrixFileKind::Removed.relative(), b"old-removed");
+        test_plan(
+            root,
+            &[
+                (MatrixFileKind::Existing.relative(), Some(b"new-existing")),
+                (MatrixFileKind::Added.relative(), Some(b"new-added")),
+                (MatrixFileKind::Removed.relative(), None),
+            ],
+        )
+    }
+
+    fn matrix_file(plan: &ReplacementPlan, kind: MatrixFileKind) -> &ReplacementFile {
+        plan.files
+            .iter()
+            .find(|file| file.relative == Path::new(kind.relative()))
+            .unwrap()
+    }
+
+    fn matrix_artifact_path(
+        plan: &ReplacementPlan,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+    ) -> PathBuf {
+        let file = matrix_file(plan, kind);
+        match artifact {
+            MatrixArtifact::Temporary => file.temporary.clone(),
+            MatrixArtifact::Target => file.target.clone(),
+            MatrixArtifact::Backup => file.backup.clone(),
+        }
+    }
+
+    fn prepare_and_install_matrix(plan: &ReplacementPlan) {
+        prepare_test_plan(plan);
+        for file in &plan.files {
+            if file.source.is_some() || file.target_existed {
+                install_prepared_replacement(file).unwrap();
+            }
+        }
+    }
+
+    fn replacement_bytes(kind: MatrixFileKind) -> Option<&'static [u8]> {
+        match kind {
+            MatrixFileKind::Existing => Some(b"new-existing"),
+            MatrixFileKind::Added => Some(b"new-added"),
+            MatrixFileKind::Removed => None,
+        }
+    }
+
+    fn original_bytes(kind: MatrixFileKind) -> Option<&'static [u8]> {
+        match kind {
+            MatrixFileKind::Existing => Some(b"old-existing"),
+            MatrixFileKind::Added => None,
+            MatrixFileKind::Removed => Some(b"old-removed"),
+        }
+    }
+
+    fn assert_matrix_target_state(plan: &ReplacementPlan, committed: bool) {
+        for kind in MatrixFileKind::ALL {
+            let expected = if committed {
+                replacement_bytes(kind)
+            } else {
+                original_bytes(kind)
+            };
+            let target = &matrix_file(plan, kind).target;
+            match expected {
+                Some(expected) => assert_eq!(
+                    fs::read(target).unwrap(),
+                    expected,
+                    "unexpected {:?} target after recovery",
+                    kind
+                ),
+                None => assert!(
+                    !target.exists(),
+                    "{kind:?} target should be absent after recovery"
+                ),
+            }
+        }
+    }
+
+    fn assert_matrix_state(plan: &ReplacementPlan, committed: bool) {
+        assert_matrix_target_state(plan, committed);
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| !file.temporary.exists() && !file.backup.exists()),
+            "successful recovery must remove every temporary and backup"
+        );
+        assert!(
+            !plan.journal_path.exists(),
+            "successful recovery must remove its journal"
+        );
+    }
+
+    fn assert_authenticated_journal_selection(plan: &ReplacementPlan, committed: bool) {
+        let contents = fs::read_to_string(&plan.journal_path)
+            .expect("the retained recovery journal should be readable");
+        let mut lines = contents.lines();
+        let journal: ReplacementJournal = serde_json::from_str(
+            lines
+                .next()
+                .expect("the retained recovery journal should have a header"),
+        )
+        .expect("the retained recovery journal header should parse");
+        validate_journal(&journal).expect("the retained recovery journal should authenticate");
+        assert_eq!(
+            journal.entries.len(),
+            plan.files.len(),
+            "the journal must authenticate the complete transaction"
+        );
+        assert_eq!(
+            lines.any(|line| {
+                serde_json::from_str::<JournalCommit>(line)
+                    .map(|commit| commit.committed)
+                    .unwrap_or(false)
+            }),
+            committed,
+            "only the authenticated commit marker may select forward cleanup"
+        );
+    }
+
+    fn assert_durability_fixture_scope(
+        fixture: &DurabilityFixtureRoot,
+        transaction_root: &Path,
+        outside_sentinel: &Path,
+        expected_sentinel: &[u8],
+        plan: &ReplacementPlan,
+    ) {
+        assert_eq!(
+            fs::read(outside_sentinel).unwrap(),
+            expected_sentinel,
+            "the updater transaction must not mutate the sibling sentinel"
+        );
+        assert!(transaction_root.starts_with(&fixture.path));
+        assert!(plan.target_dir.starts_with(transaction_root));
+        assert!(plan.journal_path.starts_with(&plan.target_dir));
+        for file in &plan.files {
+            for path in [&file.target, &file.temporary, &file.backup] {
+                assert!(
+                    path.starts_with(transaction_root),
+                    "transaction path escaped the nonce-owned fixture: {}",
+                    path.display()
+                );
+            }
+            if let Some(source) = file.source.as_ref() {
+                assert!(
+                    source.starts_with(transaction_root),
+                    "transaction source escaped the nonce-owned fixture: {}",
+                    source.display()
+                );
+            }
+        }
+    }
+
+    fn apply_matrix_fault(
+        plan: &ReplacementPlan,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+        fault: MatrixFault,
+    ) {
+        let path = matrix_artifact_path(plan, kind, artifact);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed clearing {}: {error}", path.display()),
+        }
+        match fault {
+            MatrixFault::Missing => {}
+            MatrixFault::Corrupt => {
+                fs::write(path, b"\0truncated-or-corrupt-artifact").unwrap();
+            }
+            MatrixFault::Substituted => {
+                let other_transaction_bytes: &[u8] = match kind {
+                    MatrixFileKind::Existing => b"new-added",
+                    MatrixFileKind::Added => b"old-removed",
+                    MatrixFileKind::Removed => b"new-existing",
+                };
+                fs::write(path, other_transaction_bytes).unwrap();
+            }
+        }
+    }
+
+    fn reference_recovery_accepts(
+        mode: MatrixRecoveryMode,
+        kind: MatrixFileKind,
+        artifact: MatrixArtifact,
+        fault: MatrixFault,
+    ) -> bool {
+        match mode {
+            MatrixRecoveryMode::Uncommitted => match artifact {
+                MatrixArtifact::Temporary => true,
+                MatrixArtifact::Target => fault == MatrixFault::Missing,
+                MatrixArtifact::Backup => {
+                    kind == MatrixFileKind::Added && fault == MatrixFault::Missing
+                }
+            },
+            MatrixRecoveryMode::Committed => match artifact {
+                MatrixArtifact::Temporary | MatrixArtifact::Backup => fault == MatrixFault::Missing,
+                MatrixArtifact::Target => {
+                    kind == MatrixFileKind::Removed && fault == MatrixFault::Missing
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn tc_updater_002_parent_directory_sync_failure_retains_authenticated_recovery() {
+        let fixture = DurabilityFixtureRoot::new("tc-updater-002");
+        let transaction_root = fixture.path.join("transaction");
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        let plan = recovery_matrix_plan(&transaction_root);
+        let injected = ArmedTestStorageFault::new(
+            TestStorageOperation::ParentDirectorySync,
+            1,
+            TestStorageFaultKind::DeterministicAccessDenied,
+        );
+
+        let result = apply_replacement_plan(&plan);
+        let fault = injected.finish();
+
+        assert!(
+            fault.fired,
+            "TC-UPDATER-002: updater transaction completed without reaching a parent-directory sync boundary"
+        );
+        assert_eq!(fault.remaining_matches, 0);
+        assert!(
+            result.is_err(),
+            "the characterized parent-directory sync failure must abort or defer the transaction"
+        );
+        assert_authenticated_journal_selection(&plan, false);
+        assert_matrix_target_state(&plan, false);
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+
+        recover_pending_update(&plan.target_dir)
+            .expect("the authenticated uncommitted journal should recover the old install");
+        assert_matrix_state(&plan, false);
+        recover_pending_update(&plan.target_dir)
+            .expect("a second recovery after the directory-sync fault should be a no-op");
+        assert_matrix_state(&plan, false);
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+    }
+
+    #[test]
+    fn deterministic_updater_storage_fault_matrix_recovers_complete_old_or_new_installs() {
+        #[derive(Clone, Copy)]
+        struct Case {
+            label: &'static str,
+            operation: TestStorageOperation,
+            occurrence: usize,
+            kind: TestStorageFaultKind,
+            apply_succeeds: bool,
+            committed: bool,
+            retained_journal_selection: Option<bool>,
+        }
+
+        let cases = [
+            Case {
+                label: "journal-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "commit-write-disk-full",
+                operation: TestStorageOperation::Write,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "journal-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "commit-flush-disk-full",
+                operation: TestStorageOperation::Flush,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicDiskFull,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "first-replace-access-denied",
+                operation: TestStorageOperation::Replace,
+                occurrence: 1,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "second-replace-access-denied",
+                operation: TestStorageOperation::Replace,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "prepared-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "replace-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 4,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: false,
+                committed: false,
+                retained_journal_selection: None,
+            },
+            Case {
+                label: "committed-backup-remove-access-denied",
+                operation: TestStorageOperation::Remove,
+                occurrence: 2,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+            Case {
+                label: "committed-journal-remove-access-denied",
+                operation: TestStorageOperation::Remove,
+                occurrence: 7,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+            Case {
+                label: "committed-cleanup-parent-sync-access-denied",
+                operation: TestStorageOperation::ParentDirectorySync,
+                occurrence: 8,
+                kind: TestStorageFaultKind::DeterministicAccessDenied,
+                apply_succeeds: true,
+                committed: true,
+                retained_journal_selection: Some(true),
+            },
+        ];
+
+        for case in cases {
+            let fixture = DurabilityFixtureRoot::new(case.label);
+            let transaction_root = fixture.path.join("transaction");
+            let outside_sentinel = write_relative(
+                &fixture.path,
+                "outside/sentinel.bin",
+                b"outside-must-not-change",
+            );
+            let plan = recovery_matrix_plan(&transaction_root);
+            let injected = ArmedTestStorageFault::new(case.operation, case.occurrence, case.kind);
+
+            let result = apply_replacement_plan(&plan);
+            let fault = injected.finish();
+
+            assert!(
+                fault.fired,
+                "{} did not reach {:?} occurrence {}",
+                case.label, case.operation, case.occurrence
+            );
+            assert_eq!(fault.remaining_matches, 0);
+            assert_eq!(
+                result.is_ok(),
+                case.apply_succeeds,
+                "{} produced an unexpected apply result: {result:?}",
+                case.label
+            );
+            if let Err(error) = result.as_ref() {
+                assert!(
+                    error.contains(case.kind.label()),
+                    "{} lost the deterministic fault identity: {error}",
+                    case.label
+                );
+            }
+            assert_matrix_target_state(&plan, case.committed);
+            assert_durability_fixture_scope(
+                &fixture,
+                &transaction_root,
+                &outside_sentinel,
+                b"outside-must-not-change",
+                &plan,
+            );
+            match case.retained_journal_selection {
+                Some(committed) => assert_authenticated_journal_selection(&plan, committed),
+                None => assert!(
+                    !plan.journal_path.exists(),
+                    "{} unexpectedly retained its journal",
+                    case.label
+                ),
+            }
+
+            recover_pending_update(&plan.target_dir)
+                .unwrap_or_else(|error| panic!("{} failed first recovery: {error}", case.label));
+            assert_matrix_state(&plan, case.committed);
+            recover_pending_update(&plan.target_dir).unwrap_or_else(|error| {
+                panic!("{} failed idempotent recovery: {error}", case.label)
+            });
+            assert_matrix_state(&plan, case.committed);
+            assert_durability_fixture_scope(
+                &fixture,
+                &transaction_root,
+                &outside_sentinel,
+                b"outside-must-not-change",
+                &plan,
+            );
+        }
+        assert_eq!(cases.len(), 13);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_parent_directory_read_denial_recovers_old_install_idempotently() {
+        let fixture = DurabilityFixtureRoot::new("linux-directory-read-denial");
+        let transaction_root = fixture.path.join("transaction");
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        let plan = recovery_matrix_plan(&transaction_root);
+        let target_sentinel = write_relative(
+            &plan.target_dir,
+            "unmanaged/sentinel.bin",
+            b"unmanaged-target-must-not-change",
+        );
+        let mut permissions_guard = None;
+        let mut direct_denial = None;
+
+        assert!(
+            take_test_storage_fault().is_none(),
+            "the Linux syscall test must not use the synthetic storage fault seam"
+        );
+        let result = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(1) {
+                let guard = UnixDirectoryPermissionsGuard::deny_read(&plan.target_dir);
+                direct_denial = Some(
+                    sync_directory(&plan.target_dir)
+                        .expect_err("the owned Linux directory should deny read-open for sync"),
+                );
+                permissions_guard = Some(guard);
+            }
+            Ok(())
+        });
+
+        let direct_denial =
+            direct_denial.expect("the test should reach the first replacement boundary");
+        assert!(
+            direct_denial.contains("failed synchronizing updater directory")
+                && direct_denial.contains("os error 13"),
+            "unexpected Linux directory permission diagnostic: {direct_denial}"
+        );
+        let error =
+            result.expect_err("the real parent-directory sync denial must abort the transaction");
+        assert!(
+            error.contains("failed synchronizing updater directory")
+                && error.contains("rollback was incomplete"),
+            "the production transaction lost its directory-sync recovery boundary: {error}"
+        );
+        assert_authenticated_journal_selection(&plan, false);
+        assert_matrix_target_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+
+        permissions_guard
+            .as_mut()
+            .expect("the owned directory permissions should be guarded")
+            .restore();
+        sync_directory(&plan.target_dir)
+            .expect("directory synchronization should recover after restoring owner read access");
+
+        recover_pending_update(&plan.target_dir)
+            .expect("the authenticated uncommitted journal should recover the old install");
+        assert_matrix_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        recover_pending_update(&plan.target_dir)
+            .expect("a second recovery after the real Linux denial should be a no-op");
+        assert_matrix_state(&plan, false);
+        assert_eq!(
+            fs::read(&target_sentinel).unwrap(),
+            b"unmanaged-target-must-not-change"
+        );
+        assert_durability_fixture_scope(
+            &fixture,
+            &transaction_root,
+            &outside_sentinel,
+            b"outside-must-not-change",
+            &plan,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_parent_directory_sync_reports_reversible_share_denial() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+        let fixture = DurabilityFixtureRoot::new("windows-directory-share-denial");
+        let target = fixture.path.join("target");
+        fs::create_dir(&target).unwrap();
+        let outside_sentinel = write_relative(
+            &fixture.path,
+            "outside/sentinel.bin",
+            b"outside-must-not-change",
+        );
+        sync_directory(&target).expect("the test-owned directory should initially synchronize");
+        let exclusive = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&target)
+            .expect("the test should acquire an exclusive directory handle");
+
+        let error = sync_directory(&target)
+            .expect_err("the exclusive test-owned handle should deny directory synchronization");
+
+        assert!(
+            error.contains("failed synchronizing updater directory"),
+            "unexpected directory share-denial diagnostic: {error}"
+        );
+        drop(exclusive);
+        sync_directory(&target)
+            .expect("directory synchronization should recover after releasing the owned handle");
+        assert_eq!(
+            fs::read(outside_sentinel).unwrap(),
+            b"outside-must-not-change"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    fn replace_with_test_link(root: &Path, path: &Path, label: &str) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed clearing link path {}: {error}", path.display()),
+        }
+
+        #[cfg(unix)]
+        {
+            let link_target = write_relative(
+                root,
+                &format!("link-source-{label}.txt"),
+                b"link target must never be trusted",
+            );
+            std::os::unix::fs::symlink(link_target, path).unwrap();
+        }
+
+        #[cfg(windows)]
+        {
+            let link_target = root.join(format!("link-source-{label}"));
+            fs::create_dir(&link_target).unwrap();
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(path)
+                .arg(&link_target)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "test setup could not create a directory junction at {}",
+                path.display()
+            );
         }
     }
 
@@ -2454,6 +3620,251 @@ mod tests {
     }
 
     #[test]
+    fn tampered_prepared_replacement_is_discarded_during_safe_rollback() {
+        let root = test_root("tampered-prepared-rollback");
+        let target = root.join("target");
+        write_relative(&target, "a.txt", b"old-a");
+        let plan = test_plan(&root, &[("a.txt", Some(b"new-a"))]);
+        let temporary = plan.files[0].temporary.clone();
+
+        let error = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(1) {
+                fs::write(&temporary, b"tampered-after-preparation").unwrap();
+            }
+            Ok(())
+        })
+        .expect_err("tampering must abort the replacement");
+
+        assert!(
+            error.contains("all changed files were rolled back")
+                && fs::read(target.join("a.txt")).unwrap() == b"old-a"
+                && !temporary.exists()
+                && !plan.journal_path.exists(),
+            "tampered prepared replacement must not prevent rollback of an unchanged install"
+        );
+    }
+
+    #[test]
+    fn tampered_later_replacement_does_not_block_rollback_of_prior_file() {
+        let root = test_root("tampered-later-prepared-rollback");
+        let target = root.join("target");
+        write_relative(&target, "a.txt", b"old-a");
+        write_relative(&target, "b.txt", b"old-b");
+        let plan = test_plan(
+            &root,
+            &[("a.txt", Some(b"new-a")), ("b.txt", Some(b"new-b"))],
+        );
+        let second_temporary = plan.files[1].temporary.clone();
+
+        let error = apply_replacement_plan_with_hook(&plan, |progress| {
+            if progress == ApplyProgress::BeforeReplace(2) {
+                fs::write(&second_temporary, b"tampered-after-preparation").unwrap();
+            }
+            Ok(())
+        })
+        .expect_err("tampering must abort the replacement");
+
+        assert!(error.contains("all changed files were rolled back"));
+        assert_eq!(fs::read(target.join("a.txt")).unwrap(), b"old-a");
+        assert_eq!(fs::read(target.join("b.txt")).unwrap(), b"old-b");
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| !file.temporary.exists() && !file.backup.exists()),
+            "successful rollback should remove every transaction artifact"
+        );
+        assert!(!plan.journal_path.exists());
+    }
+
+    #[test]
+    fn every_before_and_after_replacement_failure_boundary_rolls_back_the_matrix() {
+        let schedules = [
+            ApplyProgress::BeforeReplace(1),
+            ApplyProgress::AfterReplace(1),
+            ApplyProgress::BeforeReplace(2),
+            ApplyProgress::AfterReplace(2),
+            ApplyProgress::BeforeReplace(3),
+            ApplyProgress::AfterReplace(3),
+        ];
+
+        for (case_index, injected_at) in schedules.into_iter().enumerate() {
+            let root = test_root(&format!("replacement-boundary-{case_index}"));
+            let plan = recovery_matrix_plan(&root);
+            let error = apply_replacement_plan_with_hook(&plan, |progress| {
+                if progress == injected_at {
+                    Err(format!("injected failure at {injected_at:?}"))
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("every injected replacement boundary must abort the update");
+
+            assert!(
+                error.contains("all changed files were rolled back"),
+                "{injected_at:?} did not report a complete rollback: {error}"
+            );
+            assert_matrix_state(&plan, false);
+            recover_pending_update(&plan.target_dir)
+                .expect("re-entering after a complete rollback must be a no-op");
+            assert_matrix_state(&plan, false);
+        }
+    }
+
+    #[test]
+    fn interrupted_prefix_recovery_is_idempotent_at_every_replacement_boundary() {
+        for installed_prefix in 0..=MatrixFileKind::ALL.len() {
+            let root = test_root(&format!("replacement-prefix-{installed_prefix}"));
+            let plan = recovery_matrix_plan(&root);
+            let journal = journal_for_plan(&plan).unwrap();
+            write_journal_header(&plan.journal_path, &journal).unwrap();
+            prepare_test_plan(&plan);
+            for file in plan.files.iter().take(installed_prefix) {
+                install_prepared_replacement(file).unwrap();
+            }
+
+            recover_pending_update(&plan.target_dir).unwrap();
+            assert_matrix_state(&plan, false);
+            recover_pending_update(&plan.target_dir)
+                .expect("a second uncommitted recovery must be a no-op");
+            assert_matrix_state(&plan, false);
+        }
+    }
+
+    #[test]
+    fn replacement_journal_artifact_fault_matrix_matches_the_reference_model() {
+        let mut schedules = 0;
+        for mode in MatrixRecoveryMode::ALL {
+            for kind in MatrixFileKind::ALL {
+                for artifact in MatrixArtifact::ALL {
+                    for fault in MatrixFault::ALL {
+                        schedules += 1;
+                        let root = test_root(&format!(
+                            "journal-matrix-{}-{}-{}-{}",
+                            mode.label(),
+                            kind.label(),
+                            artifact.label(),
+                            fault.label()
+                        ));
+                        let plan = recovery_matrix_plan(&root);
+                        let journal = journal_for_plan(&plan).unwrap();
+                        write_journal_header(&plan.journal_path, &journal).unwrap();
+                        prepare_and_install_matrix(&plan);
+                        if mode == MatrixRecoveryMode::Committed {
+                            append_journal_commit(&plan.journal_path).unwrap();
+                        }
+                        apply_matrix_fault(&plan, kind, artifact, fault);
+                        let fault_path = matrix_artifact_path(&plan, kind, artifact);
+                        let should_recover =
+                            reference_recovery_accepts(mode, kind, artifact, fault);
+
+                        let first = recover_pending_update(&plan.target_dir);
+                        if should_recover {
+                            first.unwrap_or_else(|error| {
+                                panic!(
+                                    "reference model accepted {mode:?}/{kind:?}/{artifact:?}/{fault:?}, \
+                                     but recovery rejected it: {error}"
+                                )
+                            });
+                            assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+                            recover_pending_update(&plan.target_dir)
+                                .expect("successful recovery must remain idempotent");
+                            assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+                        } else {
+                            let first_error = first.expect_err(&format!(
+                                "reference model rejects {mode:?}/{kind:?}/{artifact:?}/{fault:?}"
+                            ));
+                            assert!(
+                                plan.journal_path.is_file(),
+                                "failed recovery must retain its authenticated journal"
+                            );
+                            assert_eq!(
+                                fault_path.exists(),
+                                fault != MatrixFault::Missing,
+                                "recovery must not erase or synthesize the rejected artifact"
+                            );
+
+                            let second_error = recover_pending_update(&plan.target_dir)
+                                .expect_err("re-entering an ambiguous recovery must still fail");
+                            assert_eq!(
+                                first_error, second_error,
+                                "ambiguous recovery should converge on a stable diagnostic"
+                            );
+                            assert!(plan.journal_path.is_file());
+                            assert_eq!(
+                                fault_path.exists(),
+                                fault != MatrixFault::Missing,
+                                "re-entry must preserve the rejected artifact"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(schedules, 54);
+    }
+
+    #[test]
+    fn authenticated_prepared_replacements_are_disposable_or_cleanable_by_mode() {
+        for mode in MatrixRecoveryMode::ALL {
+            for kind in [MatrixFileKind::Existing, MatrixFileKind::Added] {
+                let root = test_root(&format!(
+                    "valid-temporary-{}-{}",
+                    mode.label(),
+                    kind.label()
+                ));
+                let plan = recovery_matrix_plan(&root);
+                let journal = journal_for_plan(&plan).unwrap();
+                write_journal_header(&plan.journal_path, &journal).unwrap();
+                prepare_and_install_matrix(&plan);
+                let file = matrix_file(&plan, kind);
+                fs::copy(file.source.as_ref().unwrap(), &file.temporary).unwrap();
+                if mode == MatrixRecoveryMode::Committed {
+                    append_journal_commit(&plan.journal_path).unwrap();
+                }
+
+                recover_pending_update(&plan.target_dir)
+                    .expect("an authenticated leftover temporary is safe to remove");
+                assert_matrix_state(&plan, mode == MatrixRecoveryMode::Committed);
+            }
+        }
+    }
+
+    #[test]
+    fn uncommitted_rollback_processes_entries_in_reverse_order() {
+        let root = test_root("reverse-rollback-order");
+        let plan = recovery_matrix_plan(&root);
+        let journal = journal_for_plan(&plan).unwrap();
+        write_journal_header(&plan.journal_path, &journal).unwrap();
+        prepare_and_install_matrix(&plan);
+        apply_matrix_fault(
+            &plan,
+            MatrixFileKind::Existing,
+            MatrixArtifact::Target,
+            MatrixFault::Corrupt,
+        );
+
+        let error = recover_pending_update(&plan.target_dir)
+            .expect_err("the earliest entry's unrecognized target must fail closed");
+
+        assert!(error.contains("unrecognized digest"));
+        assert_eq!(
+            fs::read(matrix_file(&plan, MatrixFileKind::Removed).target.clone()).unwrap(),
+            b"old-removed",
+            "the last entry must be restored before the earlier failure is reported"
+        );
+        assert!(
+            !matrix_file(&plan, MatrixFileKind::Added).target.exists(),
+            "the middle entry must be removed before the earlier failure is reported"
+        );
+        assert_eq!(
+            fs::read(matrix_file(&plan, MatrixFileKind::Existing).target.clone()).unwrap(),
+            b"\0truncated-or-corrupt-artifact",
+            "the unauthenticated target must remain untouched"
+        );
+        assert!(plan.journal_path.is_file());
+    }
+
+    #[test]
     fn preparation_failure_simulating_disk_exhaustion_leaves_install_unchanged() {
         let root = test_root("prepare-exhaustion");
         let target = root.join("target");
@@ -2656,6 +4067,53 @@ mod tests {
         assert!(!plan.journal_path.exists());
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn recovery_rejects_links_for_every_artifact_in_both_journal_modes() {
+        let mut schedules = 0;
+        for mode in MatrixRecoveryMode::ALL {
+            for artifact in MatrixArtifact::ALL {
+                schedules += 1;
+                let root = test_root(&format!(
+                    "journal-link-{}-{}",
+                    mode.label(),
+                    artifact.label()
+                ));
+                let plan = recovery_matrix_plan(&root);
+                let journal = journal_for_plan(&plan).unwrap();
+                write_journal_header(&plan.journal_path, &journal).unwrap();
+                prepare_and_install_matrix(&plan);
+                if mode == MatrixRecoveryMode::Committed {
+                    append_journal_commit(&plan.journal_path).unwrap();
+                }
+                let artifact_path = matrix_artifact_path(&plan, MatrixFileKind::Existing, artifact);
+                replace_with_test_link(
+                    &root,
+                    &artifact_path,
+                    &format!("{}-{}", mode.label(), artifact.label()),
+                );
+
+                let first_error = recover_pending_update(&plan.target_dir)
+                    .expect_err("recovery must reject a linked transaction artifact");
+                assert!(
+                    first_error.contains("link or reparse point"),
+                    "unexpected link rejection for {mode:?}/{artifact:?}: {first_error}"
+                );
+                assert!(plan.journal_path.is_file());
+                assert!(
+                    metadata_is_reparse_or_symlink(&fs::symlink_metadata(&artifact_path).unwrap()),
+                    "the rejected link must remain untouched"
+                );
+
+                let second_error = recover_pending_update(&plan.target_dir)
+                    .expect_err("re-entry must continue rejecting the link");
+                assert_eq!(first_error, second_error);
+                assert!(plan.journal_path.is_file());
+            }
+        }
+        assert_eq!(schedules, 6);
+    }
+
     #[test]
     fn reparse_or_symlink_package_paths_are_rejected() {
         let root = test_root("reparse");
@@ -2688,5 +4146,462 @@ mod tests {
         assert!(relative_path_is_safe(Path::new("resources/script.lua")));
         assert!(!relative_path_is_safe(Path::new("../sorotte-gui.exe")));
         assert!(!relative_path_is_safe(Path::new("/sorotte-gui.exe")));
+    }
+
+    #[cfg(windows)]
+    mod process_interruption_tests {
+        use super::*;
+        use std::{
+            process::{Child, Output},
+            sync::atomic::{AtomicU64, Ordering},
+            time::{Duration, Instant},
+        };
+
+        const PROCESS_FIXTURE_TEST: &str =
+            "tests::process_interruption_tests::updater_process_fixture_entrypoint";
+        const PROCESS_FIXTURE_ROLE_ENV: &str = "SOROTTE_TEST_UPDATER_PROCESS_FIXTURE_ROLE";
+        const PROCESS_FIXTURE_ROOT_ENV: &str = "SOROTTE_TEST_UPDATER_PROCESS_FIXTURE_ROOT";
+
+        static PROCESS_FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum CompleteInstallState {
+            Old,
+            New,
+        }
+
+        struct ProcessFixtureRoot {
+            path: PathBuf,
+        }
+
+        impl ProcessFixtureRoot {
+            fn new(case: &str) -> Self {
+                let sequence = PROCESS_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let path = env::temp_dir().join(format!(
+                    "sorotte-updater-process-{}-{sequence}-{case}",
+                    std::process::id()
+                ));
+                fs::create_dir(&path).expect("the updater process fixture root should be created");
+                Self { path }
+            }
+
+            fn marker(&self) -> PathBuf {
+                self.path.join(PROCESS_INTERRUPT_MARKER)
+            }
+
+            fn pending_marker(&self) -> PathBuf {
+                self.path.join(PROCESS_INTERRUPT_PENDING_MARKER)
+            }
+        }
+
+        impl Drop for ProcessFixtureRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.path);
+            }
+        }
+
+        struct KillAndReapChild {
+            child: Option<Child>,
+        }
+
+        impl KillAndReapChild {
+            fn new(child: Child) -> Self {
+                Self { child: Some(child) }
+            }
+
+            fn child_mut(&mut self) -> &mut Child {
+                self.child
+                    .as_mut()
+                    .expect("the child should still be owned")
+            }
+
+            fn finish(mut self) -> Output {
+                self.child
+                    .take()
+                    .expect("the child should still be owned")
+                    .wait_with_output()
+                    .expect("the updater fixture child should be reaped")
+            }
+        }
+
+        impl Drop for KillAndReapChild {
+            fn drop(&mut self) {
+                if let Some(child) = self.child.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        struct ExpectedInstall {
+            old_manifest: Vec<u8>,
+            new_manifest: Vec<u8>,
+        }
+
+        fn create_install_fixture(root: &Path) -> ExpectedInstall {
+            let target = root.join("target");
+            let source = root.join("source");
+            write_v2_install_source(
+                &target,
+                &[
+                    (GUI_EXE, b"old-gui"),
+                    (UPDATER_EXE, b"old-updater"),
+                    ("kept.txt", b"old-kept"),
+                    ("removed.txt", b"old-removed"),
+                ],
+            );
+            let old_manifest =
+                fs::read(target.join(INSTALL_MANIFEST)).expect("old manifest should be readable");
+            write_v2_install_source(
+                &source,
+                &[
+                    (GUI_EXE, b"new-gui"),
+                    (UPDATER_EXE, b"new-updater"),
+                    ("kept.txt", b"new-kept"),
+                    ("added.txt", b"new-added"),
+                ],
+            );
+            let new_manifest =
+                fs::read(source.join(INSTALL_MANIFEST)).expect("new manifest should be readable");
+            fs::create_dir(root.join("unused-backup"))
+                .expect("the legacy backup placeholder should be created");
+            ExpectedInstall {
+                old_manifest,
+                new_manifest,
+            }
+        }
+
+        fn fixture_args(root: &Path, recover: bool) -> UpdaterArgs {
+            let mut args = vec![
+                "--pid".to_owned(),
+                u32::MAX.to_string(),
+                "--target-dir".to_owned(),
+                root.join("target").display().to_string(),
+                "--target-exe".to_owned(),
+                GUI_EXE.to_owned(),
+                "--log".to_owned(),
+                root.join("updater.log").display().to_string(),
+            ];
+            if recover {
+                args.push("--recover".to_owned());
+            } else {
+                args.extend([
+                    "--source-dir".to_owned(),
+                    root.join("source").display().to_string(),
+                    "--backup-dir".to_owned(),
+                    root.join("unused-backup").display().to_string(),
+                ]);
+            }
+            parse_args(args).expect("the updater process fixture arguments should parse")
+        }
+
+        fn run_fixture_role(root: &Path, recover: bool) {
+            run_update_with_checks(
+                fixture_args(root, recover),
+                || Ok(false),
+                |_| Ok(UpdaterExecutionLocation::DetachedHelper),
+            )
+            .unwrap_or_else(|error| panic!("the updater process fixture failed: {error}"));
+        }
+
+        #[test]
+        fn updater_process_fixture_entrypoint() {
+            let Some(role) = env::var_os(PROCESS_FIXTURE_ROLE_ENV) else {
+                return;
+            };
+            let root = PathBuf::from(
+                env::var_os(PROCESS_FIXTURE_ROOT_ENV)
+                    .expect("the updater process fixture role must include its root"),
+            );
+            match role.to_string_lossy().as_ref() {
+                "apply" => run_fixture_role(&root, false),
+                "recover" => run_fixture_role(&root, true),
+                unexpected => panic!("unknown updater process fixture role {unexpected:?}"),
+            }
+        }
+
+        fn spawn_fixture(root: &Path, role: &str, boundary: Option<&str>) -> KillAndReapChild {
+            let mut command =
+                Command::new(env::current_exe().expect("the updater test image should exist"));
+            command
+                .args(["--exact", PROCESS_FIXTURE_TEST, "--nocapture"])
+                .env(PROCESS_FIXTURE_ROLE_ENV, role)
+                .env(PROCESS_FIXTURE_ROOT_ENV, root)
+                .env(PROCESS_INTERRUPT_ROOT_ENV, root)
+                .env_remove(PROCESS_INTERRUPT_BOUNDARY_ENV)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(boundary) = boundary {
+                command.env(PROCESS_INTERRUPT_BOUNDARY_ENV, boundary);
+            }
+            KillAndReapChild::new(
+                command
+                    .spawn()
+                    .expect("the updater process fixture should spawn"),
+            )
+        }
+
+        fn child_diagnostic(output: &Output) -> String {
+            format!(
+                "status={:?}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        }
+
+        fn boundary_marker_has_expected_content(
+            marker: &Path,
+            expected_boundary: &str,
+        ) -> Result<bool, String> {
+            match fs::read(marker) {
+                Ok(contents) => Ok(contents == expected_boundary.as_bytes()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(format!(
+                    "failed reading updater boundary marker {}: {error}",
+                    marker.display()
+                )),
+            }
+        }
+
+        fn assert_boundary_marker_handshake_is_atomic_and_content_acknowledged() {
+            let fixture = ProcessFixtureRoot::new("boundary-marker-handshake");
+            let marker = fixture.marker();
+            let expected = "replaced-6";
+
+            for incomplete in [b"".as_slice(), b"replaced-".as_slice(), b"unexpected"] {
+                fs::write(&marker, incomplete)
+                    .expect("the incomplete boundary marker should be writable");
+                assert!(
+                    !boundary_marker_has_expected_content(&marker, expected)
+                        .expect("the incomplete boundary marker should be readable"),
+                    "an incomplete or wrong boundary payload must not acknowledge readiness"
+                );
+            }
+
+            fs::remove_file(&marker).expect("the incomplete boundary marker should be removable");
+            publish_process_interrupt_boundary(&fixture.path, expected)
+                .expect("the complete boundary marker should publish atomically");
+            assert!(
+                boundary_marker_has_expected_content(&marker, expected)
+                    .expect("the complete boundary marker should be readable"),
+                "only the complete expected boundary payload may acknowledge readiness"
+            );
+            assert!(
+                !fixture.pending_marker().exists(),
+                "atomic publication must not retain its pending marker"
+            );
+        }
+
+        fn wait_for_boundary_and_terminate(fixture: &ProcessFixtureRoot, expected_boundary: &str) {
+            let mut child = spawn_fixture(&fixture.path, "apply", Some(expected_boundary));
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if boundary_marker_has_expected_content(&fixture.marker(), expected_boundary)
+                    .expect("the updater boundary marker should be observable")
+                {
+                    break;
+                }
+                if child
+                    .child_mut()
+                    .try_wait()
+                    .expect("the updater fixture child status should be observable")
+                    .is_some()
+                {
+                    let output = child.finish();
+                    panic!(
+                        "the updater child exited before boundary {expected_boundary}: {}",
+                        child_diagnostic(&output)
+                    );
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for updater boundary {expected_boundary}"
+                );
+                std::thread::yield_now();
+            }
+            child
+                .child_mut()
+                .kill()
+                .expect("the updater child should terminate at the barrier");
+            let output = child.finish();
+            assert!(
+                !output.status.success(),
+                "a forcibly terminated updater must not report success: {}",
+                child_diagnostic(&output)
+            );
+        }
+
+        fn wait_for_success(mut child: KillAndReapChild, description: &str) {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if child
+                    .child_mut()
+                    .try_wait()
+                    .expect("the updater fixture child status should be observable")
+                    .is_some()
+                {
+                    let output = child.finish();
+                    assert!(
+                        output.status.success(),
+                        "{description} failed: {}",
+                        child_diagnostic(&output)
+                    );
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {description}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        fn assert_authenticated_journal(root: &Path, expected_state: CompleteInstallState) {
+            let contents = fs::read_to_string(root.join("target").join(JOURNAL_FILE))
+                .expect("an interrupted transaction should retain its journal");
+            let mut lines = contents.lines();
+            let journal: ReplacementJournal = serde_json::from_str(
+                lines
+                    .next()
+                    .expect("the interruption journal should have a header"),
+            )
+            .expect("the interruption journal header should parse");
+            validate_journal(&journal).expect("the interruption journal should authenticate");
+            assert_eq!(
+                journal.entries.len(),
+                6,
+                "the journal must authenticate the complete replacement/removal set"
+            );
+            let committed = lines.any(|line| {
+                serde_json::from_str::<JournalCommit>(line)
+                    .map(|commit| commit.committed)
+                    .unwrap_or(false)
+            });
+            assert_eq!(
+                committed,
+                expected_state == CompleteInstallState::New,
+                "only a durable commit marker may select forward cleanup"
+            );
+        }
+
+        fn assert_complete_install(
+            root: &Path,
+            expected: &ExpectedInstall,
+            state: CompleteInstallState,
+        ) {
+            let target = root.join("target");
+            let (gui, updater, kept, added, removed, expected_manifest) = match state {
+                CompleteInstallState::Old => (
+                    b"old-gui".as_slice(),
+                    b"old-updater".as_slice(),
+                    b"old-kept".as_slice(),
+                    None,
+                    Some(b"old-removed".as_slice()),
+                    expected.old_manifest.as_slice(),
+                ),
+                CompleteInstallState::New => (
+                    b"new-gui".as_slice(),
+                    b"new-updater".as_slice(),
+                    b"new-kept".as_slice(),
+                    Some(b"new-added".as_slice()),
+                    None,
+                    expected.new_manifest.as_slice(),
+                ),
+            };
+            assert_eq!(fs::read(target.join(GUI_EXE)).unwrap(), gui);
+            assert_eq!(fs::read(target.join(UPDATER_EXE)).unwrap(), updater);
+            assert_eq!(fs::read(target.join("kept.txt")).unwrap(), kept);
+            assert_eq!(
+                fs::read(target.join(INSTALL_MANIFEST)).unwrap(),
+                expected_manifest
+            );
+            match added {
+                Some(bytes) => assert_eq!(fs::read(target.join("added.txt")).unwrap(), bytes),
+                None => assert!(!target.join("added.txt").exists()),
+            }
+            match removed {
+                Some(bytes) => assert_eq!(fs::read(target.join("removed.txt")).unwrap(), bytes),
+                None => assert!(!target.join("removed.txt").exists()),
+            }
+        }
+
+        fn assert_no_transaction_artifacts(root: &Path) {
+            let target = root.join("target");
+            assert!(!target.join(JOURNAL_FILE).exists());
+            let mut pending = vec![target];
+            while let Some(directory) = pending.pop() {
+                for entry in fs::read_dir(&directory).unwrap() {
+                    let entry = entry.unwrap();
+                    if entry.file_type().unwrap().is_dir() {
+                        assert!(
+                            !entry
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(BOOTSTRAP_DIR_PREFIX),
+                            "recovery must not leave an updater helper directory"
+                        );
+                        pending.push(entry.path());
+                    } else {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        assert!(
+                            !name.contains(".sorotte-new-") && !name.contains(".sorotte-old-"),
+                            "recovery left transaction artifact {}",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn real_process_termination_recovers_every_durable_transaction_boundary() {
+            assert_boundary_marker_handshake_is_atomic_and_content_acknowledged();
+
+            let schedules = [
+                ("journal-header", CompleteInstallState::Old),
+                ("prepared-1", CompleteInstallState::Old),
+                ("prepared-6", CompleteInstallState::Old),
+                ("replaced-1", CompleteInstallState::Old),
+                ("replaced-3", CompleteInstallState::Old),
+                ("replaced-6", CompleteInstallState::Old),
+                ("committed", CompleteInstallState::New),
+                ("cleaned-1", CompleteInstallState::New),
+                ("cleaned-3", CompleteInstallState::New),
+                ("cleaned-6", CompleteInstallState::New),
+                ("journal-removed", CompleteInstallState::New),
+            ];
+
+            for (boundary, final_state) in schedules {
+                let fixture = ProcessFixtureRoot::new(boundary);
+                let expected = create_install_fixture(&fixture.path);
+                wait_for_boundary_and_terminate(&fixture, boundary);
+                if boundary == "journal-removed" {
+                    assert!(
+                        !fixture.path.join("target").join(JOURNAL_FILE).exists(),
+                        "the final cleanup boundary should follow journal deletion"
+                    );
+                } else {
+                    assert_authenticated_journal(&fixture.path, final_state);
+                }
+
+                wait_for_success(
+                    spawn_fixture(&fixture.path, "recover", None),
+                    "first recovery child",
+                );
+                assert_complete_install(&fixture.path, &expected, final_state);
+                assert_no_transaction_artifacts(&fixture.path);
+
+                wait_for_success(
+                    spawn_fixture(&fixture.path, "recover", None),
+                    "idempotent recovery child",
+                );
+                assert_complete_install(&fixture.path, &expected, final_state);
+                assert_no_transaction_artifacts(&fixture.path);
+            }
+            assert_eq!(schedules.len(), 11);
+        }
     }
 }

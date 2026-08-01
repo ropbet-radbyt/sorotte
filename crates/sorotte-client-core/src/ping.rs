@@ -48,11 +48,8 @@ impl ClientPingMetricsLegacyCompatible {
         }
         self.average_rtt_seconds = self.average_rtt_seconds * LEGACY_PING_MOVING_AVERAGE_WEIGHT
             + current_rtt * (1.0 - LEGACY_PING_MOVING_AVERAGE_WEIGHT);
-        self.forward_delay_seconds = if server_rtt < current_rtt {
-            self.average_rtt_seconds / 2.0 + (current_rtt - server_rtt)
-        } else {
-            self.average_rtt_seconds / 2.0
-        };
+        let positive_client_server_delta = (current_rtt - server_rtt).max(0.0);
+        self.forward_delay_seconds = self.average_rtt_seconds / 2.0 + positive_client_server_delta;
     }
 
     pub fn client_rtt_seconds(self) -> f64 {

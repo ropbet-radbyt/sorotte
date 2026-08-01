@@ -1,8 +1,107 @@
 use super::*;
-use crate::RoomPersistenceStore;
-use rusqlite::params;
+use crate::{RoomPersistenceError, RoomPersistenceStore};
+use rusqlite::{ErrorCode, params};
 use sorotte_protocol::ListUserEntry;
 use std::collections::BTreeMap;
+use std::sync::Barrier;
+
+#[derive(Debug, PartialEq)]
+struct RawPersistedRoomRow {
+    playlist: String,
+    playlist_json: String,
+    playlist_index: Option<i64>,
+    position: f64,
+    last_activity_at_seconds: f64,
+    persistence_version: i64,
+    owner_bucket: Option<String>,
+    created_at_seconds: f64,
+}
+
+fn sqlite_full_baseline_room_state() -> PersistedRoomState {
+    PersistedRoomState {
+        files: vec![
+            "baseline-episode-01.mkv".to_owned(),
+            "baseline-episode-02.mkv".to_owned(),
+            "baseline-episode-03.mkv".to_owned(),
+        ],
+        index: Some(1),
+        position: 125.25,
+        last_activity_at_seconds: 1_001.5,
+        version: 41,
+        owner_bucket: Some("quota:v1:sqlite-full-baseline".to_owned()),
+        created_at_seconds: 901.25,
+    }
+}
+
+fn sqlite_full_replacement_room_state(version: u64) -> PersistedRoomState {
+    PersistedRoomState {
+        files: (0..512)
+            .map(|index| {
+                format!(
+                    "replacement-{index:04}-{}.mkv",
+                    "deterministic-payload-".repeat(256)
+                )
+            })
+            .collect(),
+        index: Some(511),
+        position: 987.75,
+        last_activity_at_seconds: 2_002.5,
+        version,
+        owner_bucket: Some("quota:v1:sqlite-full-replacement".to_owned()),
+        created_at_seconds: 902.5,
+    }
+}
+
+fn raw_persisted_room_row(
+    connection: &rusqlite::Connection,
+    room_name: &str,
+) -> RawPersistedRoomRow {
+    connection
+        .query_row(
+            "SELECT playlist, playlistJson, playlistIndex, position, lastSavedUpdate, \
+                    persistenceVersion, ownerBucket, createdAt \
+             FROM persistent_rooms WHERE name = ?1",
+            [room_name],
+            |row| {
+                Ok(RawPersistedRoomRow {
+                    playlist: row.get(0)?,
+                    playlist_json: row.get(1)?,
+                    playlist_index: row.get(2)?,
+                    position: row.get(3)?,
+                    last_activity_at_seconds: row.get(4)?,
+                    persistence_version: row.get(5)?,
+                    owner_bucket: row.get(6)?,
+                    created_at_seconds: row.get(7)?,
+                })
+            },
+        )
+        .expect("the durable room row should remain queryable")
+}
+
+fn assert_sqlite_integrity_ok(connection: &rusqlite::Connection) {
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("SQLite integrity check should complete");
+    assert_eq!(integrity, "ok");
+}
+
+fn assert_room_persistence_disk_full(error: &RoomPersistenceError, expected_path: &Path) {
+    let RoomPersistenceError::Sqlite {
+        action,
+        path,
+        source,
+    } = error;
+    assert_eq!(*action, "save persisted room");
+    assert_eq!(path, expected_path);
+    let rusqlite::Error::SqliteFailure(sqlite_error, _) = source else {
+        panic!("expected a classified SQLite failure, got {source:?}");
+    };
+    assert_eq!(
+        sqlite_error.code,
+        ErrorCode::DiskFull,
+        "the constrained production write must surface SQLITE_FULL"
+    );
+}
 
 fn decode_single_list_rooms(
     lines: Vec<String>,
@@ -459,6 +558,201 @@ fn legacy_multiline_playlist_rows_are_migrated_to_json_on_load() {
 }
 
 #[test]
+fn corrupt_quota_secret_lengths_fail_closed_without_overwriting_metadata() {
+    let db_path = temporary_sqlite_path("corrupt-quota-secret-length");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+
+    for length in [0_usize, 1, 31, 33, 1_024] {
+        let corrupt_secret = vec![0xa5; length];
+        let connection = store
+            .connection("seed corrupt quota secret")
+            .expect("room store connection should open");
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO persistence_metadata (key, value) \
+                 VALUES ('quota-secret-v1', ?1)",
+                params![corrupt_secret],
+            )
+            .expect("corrupt metadata fixture should be seedable");
+        drop(connection);
+
+        for attempt in 1..=2 {
+            let error = store.load_or_create_quota_secret().unwrap_err();
+            match error {
+                RoomPersistenceError::Sqlite { action, .. } => assert_eq!(
+                    action, "decode quota secret",
+                    "attempt {attempt} for length {length} reported the wrong boundary"
+                ),
+            }
+        }
+
+        let connection = store
+            .connection("inspect corrupt quota secret")
+            .expect("room store connection should reopen");
+        let persisted: Vec<u8> = connection
+            .query_row(
+                "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("corrupt metadata row should remain observable");
+        assert_eq!(
+            persisted, corrupt_secret,
+            "failed decoding must not silently replace durable identity"
+        );
+    }
+
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn concurrent_quota_secret_creation_converges_on_one_durable_value() {
+    let db_path = temporary_sqlite_path("concurrent-quota-secret-creation");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+    let creation_barrier = Arc::new(Barrier::new(2));
+    let handles = (0..2)
+        .map(|_| {
+            let store = store.clone();
+            let creation_barrier = Arc::clone(&creation_barrier);
+            std::thread::spawn(move || {
+                store.load_or_create_quota_secret_with_before_create(|| {
+                    creation_barrier.wait();
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .expect("quota-secret creation worker should not panic")
+        })
+        .collect::<Vec<_>>();
+
+    let successful_secrets = results
+        .into_iter()
+        .map(|result| result.expect("both concurrent creators should load the durable secret"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        successful_secrets.len(),
+        2,
+        "both concurrent callers should receive the durable secret"
+    );
+    assert_eq!(
+        successful_secrets[0], successful_secrets[1],
+        "concurrent creators must converge on the same durable value"
+    );
+
+    let connection = store
+        .connection("inspect concurrently created quota secret")
+        .expect("room store connection should reopen");
+    let persisted: Vec<u8> = connection
+        .query_row(
+            "SELECT value FROM persistence_metadata WHERE key = 'quota-secret-v1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the converged secret should be durable");
+    assert_eq!(persisted, successful_secrets[0]);
+    drop(connection);
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn playlist_json_migration_rolls_back_all_rows_after_later_failure() {
+    let db_path = temporary_sqlite_path("playlist-json-migration-atomicity");
+    let _ = fs::remove_file(&db_path);
+    let store = RoomPersistenceStore::open(&db_path).expect("room store should initialize");
+    let connection = store
+        .connection("seed migration atomicity fault")
+        .expect("room store connection should open");
+    for (name, playlist) in [("first", "one.mkv"), ("second", "two.mkv")] {
+        connection
+            .execute(
+                "INSERT INTO persistent_rooms \
+                 (name, playlist, playlistJson, playlistIndex, position, lastSavedUpdate) \
+                 VALUES (?1, ?2, NULL, 0, 0, 0)",
+                params![name, playlist],
+            )
+            .expect("legacy row should be seedable");
+    }
+    connection
+        .execute_batch(
+            "CREATE TABLE migration_fault (attempts INTEGER NOT NULL);
+             INSERT INTO migration_fault (attempts) VALUES (0);
+             CREATE TRIGGER fail_second_playlist_json_migration
+             BEFORE UPDATE OF playlistJson ON persistent_rooms
+             BEGIN
+               UPDATE migration_fault SET attempts = attempts + 1;
+               SELECT CASE
+                 WHEN (SELECT attempts FROM migration_fault) = 2
+                 THEN RAISE(ABORT, 'injected second migration failure')
+               END;
+             END;",
+        )
+        .expect("deterministic migration failpoint should install");
+    drop(connection);
+
+    let error = store
+        .load_rooms()
+        .expect_err("the second playlist migration write should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected second migration failure"),
+        "unexpected migration error: {error}"
+    );
+
+    let connection = store
+        .connection("inspect interrupted migration")
+        .expect("room store connection should reopen");
+    let migrated_before_restart: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM persistent_rooms WHERE playlistJson IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("partial migration count should be readable");
+    assert_eq!(
+        migrated_before_restart, 0,
+        "a failed playlist migration must roll back every row"
+    );
+    connection
+        .execute_batch("DROP TRIGGER fail_second_playlist_json_migration;")
+        .expect("failpoint should be removable before restart");
+    drop(connection);
+
+    let restarted_store =
+        RoomPersistenceStore::open(&db_path).expect("interrupted store should reopen");
+    let rooms = restarted_store
+        .load_rooms()
+        .expect("a retry without the failpoint should finish migration");
+    assert_eq!(rooms["first"].files, vec!["one.mkv".to_owned()]);
+    assert_eq!(rooms["second"].files, vec!["two.mkv".to_owned()]);
+    let connection = restarted_store
+        .connection("inspect recovered migration")
+        .expect("recovered store connection should open");
+    let migrated_after_restart: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM persistent_rooms WHERE playlistJson IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovered migration count should be readable");
+    assert_eq!(migrated_after_restart, 2);
+
+    drop(connection);
+    drop(restarted_store);
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
 fn persisted_playlist_indices_are_normalized_during_load_and_repaired_on_disk() {
     let db_path = temporary_sqlite_path("persistent-playlist-index-normalization");
     let _ = fs::remove_file(&db_path);
@@ -549,6 +843,97 @@ fn room_persistence_sets_busy_timeout_or_wal() {
 }
 
 #[test]
+fn room_persistence_sqlite_full_preserves_old_row_and_recovers_after_limit_lift() {
+    let db_path = temporary_sqlite_path("room-persistence-sqlite-full-recovery");
+    let _ = fs::remove_file(&db_path);
+    let store =
+        RoomPersistenceStore::open(&db_path).expect("room persistence schema should initialize");
+    let connection = store
+        .connection("test SQLITE_FULL durability")
+        .expect("room persistence connection should open");
+    let baseline = sqlite_full_baseline_room_state();
+    store
+        .save_room(&connection, "durable-room", &baseline)
+        .expect("the baseline room should persist");
+    let checkpoint_busy: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .expect("the baseline WAL should checkpoint");
+    assert_eq!(
+        checkpoint_busy, 0,
+        "the baseline checkpoint must not be busy"
+    );
+
+    let durable_before_failure = raw_persisted_room_row(&connection, "durable-room");
+    let page_count: i64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .expect("the current SQLite page count should be queryable");
+    connection
+        .pragma_update(None, "max_page_count", page_count)
+        .expect("the database page limit should be constrained to its current size");
+    let constrained_page_count: i64 = connection
+        .query_row("PRAGMA max_page_count", [], |row| row.get(0))
+        .expect("the constrained SQLite page count should be queryable");
+    assert_eq!(
+        constrained_page_count, page_count,
+        "the fixture must leave no page allocation headroom"
+    );
+
+    let replacement = sqlite_full_replacement_room_state(42);
+    let error = store
+        .save_room(&connection, "durable-room", &replacement)
+        .expect_err("a materially larger replacement must exhaust the page limit");
+    assert_room_persistence_disk_full(&error, &db_path);
+
+    let durable_after_failure = raw_persisted_room_row(&connection, "durable-room");
+    assert_eq!(
+        durable_after_failure, durable_before_failure,
+        "SQLITE_FULL must not leak any replacement playlist, index, scalar, or version column"
+    );
+    assert_sqlite_integrity_ok(&connection);
+
+    let reopened =
+        RoomPersistenceStore::open(&db_path).expect("the database should reopen after SQLITE_FULL");
+    let recovered_old_rooms = reopened
+        .load_rooms()
+        .expect("the old durable snapshot should recover normally");
+    assert_eq!(
+        recovered_old_rooms.get("durable-room"),
+        Some(&baseline),
+        "normal recovery must expose the complete pre-failure room"
+    );
+    drop(reopened);
+
+    connection
+        .pragma_update(None, "max_page_count", page_count + 4_096)
+        .expect("the artificial page limit should lift");
+    store
+        .save_room(&connection, "durable-room", &replacement)
+        .expect("the newer room should persist after capacity returns");
+    assert_sqlite_integrity_ok(&connection);
+    drop(connection);
+
+    let final_reopen = RoomPersistenceStore::open(&db_path)
+        .expect("the recovered database should reopen normally");
+    let recovered_new_rooms = final_reopen
+        .load_rooms()
+        .expect("the newer durable snapshot should reload");
+    assert_eq!(
+        recovered_new_rooms.get("durable-room"),
+        Some(&replacement),
+        "capacity restoration must permit complete forward progress"
+    );
+    let final_connection = final_reopen
+        .connection("final SQLITE_FULL integrity check")
+        .expect("the final inspection connection should open");
+    assert_sqlite_integrity_ok(&final_connection);
+
+    drop(final_connection);
+    drop(final_reopen);
+    drop(store);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
 fn permanent_rooms_file_ignores_blank_lines() {
     assert_eq!(
         crate::parse_permanent_rooms_file(" room-a \n\n\t\nroom-b\n"),
@@ -579,6 +964,11 @@ fn permanent_rooms_file_works_without_a_rooms_database() {
     assert!(
         runtime.room_playlists.contains_key("permanent-room"),
         "a permanent-rooms file must create its configured empty room even without SQLite"
+    );
+    assert_eq!(
+        runtime.room_playlist_state("permanent-room").index,
+        Some(0),
+        "legacy permanent-room placeholders begin with playlist index zero"
     );
     assert!(
         runtime.room_is_permanent("permanent-room"),
@@ -650,13 +1040,13 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
             client_id == "client-2"
                 && matches!(
                     message,
-                    ProtocolMessage::Set(payload)
-                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
-                            index.index_value().is_none()
+                        ProtocolMessage::Set(payload)
+                            if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(0)
                         })
                 )
         }),
-        "empty permanent-room playlists must restore a null index"
+        "empty permanent-room playlists must preserve their explicit legacy index"
     );
 
     drop(runtime);
@@ -859,6 +1249,80 @@ fn persistent_list_updates_include_legacy_default_ui_mode_clients() {
     assert!(
         list_recipients.contains("client-2"),
         "legacy clients that omit features should receive Python-synthesized uiMode defaults"
+    );
+
+    let client_2_messages: Vec<_> = directed_messages
+        .iter()
+        .filter(|(recipient, _)| recipient == "client-2")
+        .map(|(_, message)| message)
+        .collect();
+    let list_position = client_2_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::List(_)))
+        .expect("joining client should receive the persistent room list");
+    let playlist_position = client_2_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_change.is_some()
+            )
+        })
+        .expect("joining client should receive its playlist snapshot");
+    let hello_position = client_2_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::Hello(_)))
+        .expect("joining client should receive Hello");
+    assert!(
+        list_position < playlist_position && playlist_position < hello_position,
+        "legacy persistent-room order is list, playlist snapshot, then Hello for the joiner"
+    );
+}
+
+#[test]
+fn persistent_room_switch_list_precedes_playlist_snapshot() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("client hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room switch should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let client_messages: Vec<_> = directed_messages
+        .iter()
+        .filter(|(recipient, _)| recipient == "client-1")
+        .map(|(_, message)| message)
+        .collect();
+    let list_position = client_messages
+        .iter()
+        .position(|message| matches!(message, ProtocolMessage::List(_)))
+        .expect("switching client should receive a persistent room list");
+    let playlist_position = client_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_change.is_some()
+            )
+        })
+        .expect("switching client should receive its destination playlist snapshot");
+    let playlist_index_position = client_messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
+            )
+        })
+        .expect("switching client should receive its destination playlist index");
+    assert!(
+        list_position < playlist_position && playlist_position < playlist_index_position,
+        "legacy persistent-room switch order is list before playlist and index snapshots"
     );
 }
 

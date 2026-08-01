@@ -1515,7 +1515,15 @@ impl GuiPersistedConfigRuntimeOwner {
         // episode exists. Keep it separate from the file-change side effects below so ordered
         // adapters can activate an untracked playlist attempt and Plex can retire a confirmed
         // logical placeholder without preparing the same media a second time.
-        self.handle_untracked_playlist_local_file_observation(&update);
+        if authoritative_reacquisition {
+            // `apply_ordered_snapshot` only supplies a local-file replay here
+            // when the active-load snapshot explicitly proves
+            // `physical_file_loaded`. Ordinary path observations do not carry
+            // that authority.
+            self.handle_authoritative_playlist_local_file_observation(&update);
+        } else {
+            self.handle_untracked_playlist_local_file_observation(&update);
+        }
         let tracked_playlist_load_unconfirmed =
             self.tracked_playlist_resolution_load_matches_local_file(&update);
         let identity_remains_placeholder = tracked_playlist_load_unconfirmed

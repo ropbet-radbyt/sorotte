@@ -1,5 +1,318 @@
 use super::*;
 
+const EXTERNAL_PROCESS_FIXTURE_TEST: &str =
+    "tests::mpv_startup::external_launch::external_player_process_fixture_entrypoint";
+const PROCESS_FIXTURE_ROLE: &str = "SOROTTE_TEST_EXTERNAL_PROCESS_FIXTURE_ROLE";
+const PROCESS_FIXTURE_ROOT: &str = "SOROTTE_TEST_EXTERNAL_PROCESS_FIXTURE_ROOT";
+const STDOUT_SENTINEL: &str = "sorotte-external-child-stdout-must-be-null";
+const STDERR_SENTINEL: &str = "sorotte-external-child-stderr-must-be-null";
+
+static PROCESS_FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+struct ProcessFixtureDirectory {
+    path: PathBuf,
+}
+
+impl ProcessFixtureDirectory {
+    fn new(case: &str) -> Self {
+        let sequence = PROCESS_FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "sorotte-cli-external-process-{}-{sequence}-{case}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).expect("process fixture directory should be created");
+        Self { path }
+    }
+
+    fn marker(&self, name: &str) -> PathBuf {
+        self.path.join(name)
+    }
+}
+
+impl Drop for ProcessFixtureDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn wait_for_process_marker(path: &Path, description: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {description}: {}",
+            path.display()
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn exact_fixture_args() -> Vec<String> {
+    vec![
+        "--exact".to_owned(),
+        EXTERNAL_PROCESS_FIXTURE_TEST.to_owned(),
+        "--nocapture".to_owned(),
+    ]
+}
+
+fn locked_process_fixture_role() -> (TestEnvGuard<'static>, Option<std::ffi::OsString>) {
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let role = std::env::var_os(PROCESS_FIXTURE_ROLE);
+    (env, role)
+}
+
+fn run_external_stdio_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let fixture = ProcessFixtureDirectory::new("stdio");
+    let mut coordinator = std::process::Command::new(
+        std::env::current_exe().expect("current test executable should be available"),
+    );
+    coordinator
+        .args(exact_fixture_args())
+        .env(PROCESS_FIXTURE_ROLE, "stdio-coordinator")
+        .env(PROCESS_FIXTURE_ROOT, &fixture.path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut coordinator = coordinator
+        .spawn()
+        .expect("stdio coordinator should be spawned");
+
+    wait_for_process_marker(
+        &fixture.marker("coordinator-ready"),
+        "stdio coordinator launch",
+    );
+    let mut stdin = coordinator
+        .stdin
+        .take()
+        .expect("coordinator stdin should be piped");
+    stdin
+        .write_all(b"parent-stdin-token")
+        .expect("test token should be written");
+    drop(stdin);
+
+    let output = coordinator
+        .wait_with_output()
+        .expect("stdio coordinator should finish");
+    assert!(
+        output.status.success(),
+        "stdio coordinator failed: status={:?}, stdout={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed_stdin =
+        std::fs::read(fixture.marker("leaf-stdin")).expect("leaf stdin record should exist");
+    (observed_stdin, output.stdout, output.stderr)
+}
+
+#[test]
+fn external_player_process_fixture_entrypoint() {
+    use std::io::Read as _;
+
+    let (env, role) = locked_process_fixture_role();
+    let Some(role) = role else {
+        return;
+    };
+    let root = PathBuf::from(
+        std::env::var_os(PROCESS_FIXTURE_ROOT)
+            .expect("process fixture root should accompany fixture role"),
+    );
+    match role.to_string_lossy().as_ref() {
+        "detached-leaf" => {
+            std::fs::write(root.join("leaf-started"), b"started")
+                .expect("detached leaf should publish its start barrier");
+            wait_for_process_marker(&root.join("release-leaf"), "detached leaf release");
+            std::fs::write(root.join("leaf-finished"), b"finished")
+                .expect("detached leaf should publish completion");
+        }
+        "early-exit-leaf" => {
+            std::fs::write(root.join("leaf-started"), b"started")
+                .expect("early-exit leaf should publish its start barrier");
+            std::process::exit(23);
+        }
+        "stdio-coordinator" => {
+            env.set_var(PROCESS_FIXTURE_ROLE, "stdio-leaf");
+            let spec = LegacyExternalPlayerLaunchSpec {
+                program: std::env::current_exe()
+                    .expect("current test executable should be available"),
+                args: exact_fixture_args(),
+            };
+            let mut child = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+                .expect("production external launch should spawn the stdio leaf");
+            std::fs::write(root.join("coordinator-ready"), b"ready")
+                .expect("coordinator should publish its launch barrier");
+            let status = child.wait().expect("stdio leaf should be reaped");
+            assert!(status.success(), "stdio leaf should exit successfully");
+        }
+        "stdio-leaf" => {
+            let mut stdin = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut stdin)
+                .expect("stdio leaf should read stdin to EOF");
+            std::fs::write(root.join("leaf-stdin"), stdin)
+                .expect("stdio leaf should record inherited stdin");
+            println!("{STDOUT_SENTINEL}");
+            eprintln!("{STDERR_SENTINEL}");
+        }
+        unexpected => panic!("unknown external process fixture role: {unexpected}"),
+    }
+}
+
+#[test]
+fn process_fixture_entrypoint_waits_for_role_restoration_before_observation() {
+    let mutating_env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let original_role = std::env::var_os(PROCESS_FIXTURE_ROLE);
+    mutating_env.set_var(PROCESS_FIXTURE_ROLE, "early-exit-leaf");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let observer = std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .expect("role observer should publish its start");
+        let (_env, role) = locked_process_fixture_role();
+        observed_tx
+            .send(role)
+            .expect("role observer should publish its result");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("role observer should reach the lock boundary");
+    assert!(
+        observed_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "fixture role observation must not race a test-owned environment mutation"
+    );
+    drop(mutating_env);
+    assert_eq!(
+        observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("role observer should resume after restoration"),
+        original_role,
+        "the fixture entrypoint must observe the restored role, not the transient child role"
+    );
+    observer.join().expect("role observer should stop cleanly");
+}
+
+#[test]
+fn external_spawn_failure_is_contextual_and_redacts_arguments() {
+    let fixture = ProcessFixtureDirectory::new("spawn-failure");
+    let missing_program = fixture.marker("missing-player");
+    let secret = "super-secret-player-token";
+    let spec = LegacyExternalPlayerLaunchSpec {
+        program: missing_program.clone(),
+        args: vec![format!("--password={secret}")],
+    };
+
+    let error = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+        .expect_err("a missing external player must fail to spawn")
+        .to_string();
+
+    assert!(
+        error.contains(missing_program.to_string_lossy().as_ref()),
+        "spawn diagnostics should identify the failed program: {error}"
+    );
+    assert!(
+        error.contains("RedactedCommandArgs"),
+        "spawn diagnostics should render arguments through the redaction type: {error}"
+    );
+    assert!(
+        !error.contains(secret),
+        "spawn diagnostics must not expose argument values: {error}"
+    );
+}
+
+#[test]
+fn external_launch_returns_ownership_for_caller_to_reap_an_early_exit() {
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    let fixture = ProcessFixtureDirectory::new("early-exit");
+    env.set_var(PROCESS_FIXTURE_ROLE, "early-exit-leaf");
+    env.set_var(PROCESS_FIXTURE_ROOT, &fixture.path);
+    let spec = LegacyExternalPlayerLaunchSpec {
+        program: std::env::current_exe().expect("current test executable should be available"),
+        args: exact_fixture_args(),
+    };
+
+    let mut child = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+        .expect("production external launch should return the child handle");
+    wait_for_process_marker(&fixture.marker("leaf-started"), "early-exit child start");
+    let status = child.wait().expect("caller should reap early-exit child");
+
+    assert_eq!(
+        status.code(),
+        Some(23),
+        "external launch must preserve the real child exit status for its owner"
+    );
+}
+
+#[test]
+fn unmanaged_external_launch_hands_process_ownership_to_the_child() {
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
+    for key in [
+        "SOROTTE_CLIENT_MPV_MANAGED_LAUNCH",
+        "SOROTTE_CLIENT_MPV_IPC_PATH",
+        "SOROTTE_MPV_IPC_PATH",
+    ] {
+        env.remove_var(key);
+    }
+    let fixture = ProcessFixtureDirectory::new("ownership-handoff");
+    env.set_var(PROCESS_FIXTURE_ROLE, "detached-leaf");
+    env.set_var(PROCESS_FIXTURE_ROOT, &fixture.path);
+    let overrides = LegacyClientArgOverrides {
+        player_path: Some(
+            std::env::current_exe()
+                .expect("current test executable should be available")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        player_args: exact_fixture_args(),
+        ..Default::default()
+    };
+
+    assert!(
+        crate::spawn_legacy_external_player_if_requested_legacy_compatible(&overrides)
+            .expect("production unmanaged launch should succeed"),
+        "the unmanaged external launch path should report that it spawned"
+    );
+    wait_for_process_marker(&fixture.marker("leaf-started"), "detached child start");
+    assert!(
+        !fixture.marker("leaf-finished").exists(),
+        "dropping the unmanaged Child handle must not terminate the external player"
+    );
+
+    std::fs::write(fixture.marker("release-leaf"), b"release")
+        .expect("detached child release should be published");
+    wait_for_process_marker(
+        &fixture.marker("leaf-finished"),
+        "detached child completion",
+    );
+}
+
+#[test]
+fn external_launch_nulls_child_stdout_and_stderr() {
+    let (_, stdout, stderr) = run_external_stdio_fixture();
+    assert!(
+        !String::from_utf8_lossy(&stdout).contains(STDOUT_SENTINEL),
+        "external player stdout leaked into the launching CLI"
+    );
+    assert!(
+        !String::from_utf8_lossy(&stderr).contains(STDERR_SENTINEL),
+        "external player stderr leaked into the launching CLI"
+    );
+}
+
+#[test]
+fn external_launch_nulls_child_stdin() {
+    let (observed_stdin, _, _) = run_external_stdio_fixture();
+    assert!(
+        observed_stdin.is_empty(),
+        "external launch must not inherit the CLI stdin handle"
+    );
+}
+
 #[test]
 fn legacy_external_player_launch_spec_from_overrides_orders_player_args_before_file() {
     let overrides = LegacyClientArgOverrides {

@@ -53,9 +53,16 @@ mod stdin_input;
 mod stored_settings;
 mod update_check;
 
+#[cfg(feature = "fuzz-support")]
+#[doc(hidden)]
+pub mod fuzz_support {
+    pub use crate::protocol_io::{InboundProtocolLineReader, MAX_INBOUND_PROTOCOL_LINE_BYTES};
+}
+
 #[cfg(test)]
 use self::client_args::{
-    LegacyClientArgOverrides, legacy_force_gui_prompt_compatibility_line_legacy_compatible,
+    HostArgumentError, LegacyClientArgumentIssue,
+    legacy_force_gui_prompt_compatibility_line_legacy_compatible,
     localized_compatibility_input_label_legacy_compatible,
     localized_compatibility_note_label_legacy_compatible,
     localized_legacy_ini_compatibility_heading_legacy_compatible,
@@ -63,10 +70,12 @@ use self::client_args::{
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use self::client_args::{
-    apply_legacy_client_arg_overrides, emit_legacy_client_arg_compatibility_warnings,
+    LegacyClientArgOverrides, apply_legacy_client_arg_overrides,
+    emit_legacy_client_arg_compatibility_warnings, legacy_unrecognized_arguments_diagnostic_line,
     parse_legacy_client_arg_overrides, print_legacy_client_help,
     should_halt_for_stored_force_gui_prompt_legacy_compatible,
     stored_force_gui_prompt_compatibility_line_legacy_compatible,
+    validate_composed_client_endpoint,
 };
 use self::client_config::build_client_loop_config_from_env;
 #[cfg(test)]
@@ -98,6 +107,8 @@ use self::language_support::{
 use self::local_runtime_actions::{
     publish_pending_local_file_updates, run_planned_local_runtime_action_legacy_compatible,
 };
+#[cfg(test)]
+use self::mpv_startup::spawn_legacy_external_player_from_spec_legacy_compatible;
 use self::mpv_startup::spawn_legacy_external_player_if_requested_legacy_compatible;
 #[cfg(test)]
 use self::mpv_startup::{
@@ -126,9 +137,7 @@ use self::mpv_startup::{
 };
 #[cfg(all(test, windows))]
 use self::mpv_startup::{
-    connect_mpv_adapter_with_retry,
-    retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
-    spawn_legacy_external_player_from_spec_legacy_compatible,
+    connect_mpv_adapter_with_retry, retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
 };
 #[cfg(test)]
 use self::notifications::{
@@ -183,6 +192,31 @@ use self::update_check::{
     should_run_headless_automatic_update_check_legacy_compatible,
 };
 
+fn persist_explicit_legacy_client_arg_settings(overrides: &LegacyClientArgOverrides) {
+    if let Some(language) = overrides.language.as_deref()
+        && !overrides.no_store
+        && let Err(error) = persist_sorotte_cli_language_setting_legacy_compatible(language)
+    {
+        eprintln!("warning: failed to persist legacy --language setting: {error}");
+    }
+    if let Some(player_path) = overrides.player_path.as_deref()
+        && !overrides.no_store
+        && let Err(error) = persist_sorotte_cli_player_path_setting_legacy_compatible(player_path)
+    {
+        eprintln!("warning: failed to persist legacy --player-path setting: {error}");
+    }
+    if let Some(player_path) = overrides.player_path.as_deref()
+        && !overrides.no_store
+        && !overrides.player_args.is_empty()
+        && let Err(error) = persist_sorotte_cli_per_player_arguments_setting_legacy_compatible(
+            player_path,
+            &overrides.player_args,
+        )
+    {
+        eprintln!("warning: failed to persist legacy per-player arguments setting: {error}");
+    }
+}
+
 pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
     let mut client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
     if client_arg_overrides.show_version {
@@ -194,8 +228,10 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         return Ok(());
     }
     if !client_arg_overrides.unknown_options.is_empty() {
-        let unknown_options = client_arg_overrides.unknown_options.join(" ");
-        eprintln!("error: unrecognized arguments: {unknown_options}");
+        eprintln!(
+            "{}",
+            legacy_unrecognized_arguments_diagnostic_line(&client_arg_overrides.unknown_options)
+        );
         return Err(anyhow!("unrecognized arguments"));
     }
     set_sorotte_cli_config_cli_overrides(
@@ -228,27 +264,10 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
             }
         }
     }
-    if let Some(language) = client_arg_overrides.language.as_deref()
-        && !client_arg_overrides.no_store
-        && let Err(error) = persist_sorotte_cli_language_setting_legacy_compatible(language)
-    {
-        eprintln!("warning: failed to persist legacy --language setting: {error}");
-    }
-    if let Some(player_path) = client_arg_overrides.player_path.as_deref()
-        && !client_arg_overrides.no_store
-        && let Err(error) = persist_sorotte_cli_player_path_setting_legacy_compatible(player_path)
-    {
-        eprintln!("warning: failed to persist legacy --player-path setting: {error}");
-    }
-    if let Some(player_path) = client_arg_overrides.player_path.as_deref()
-        && !client_arg_overrides.no_store
-        && !client_arg_overrides.player_args.is_empty()
-        && let Err(error) = persist_sorotte_cli_per_player_arguments_setting_legacy_compatible(
-            player_path,
-            &client_arg_overrides.player_args,
-        )
-    {
-        eprintln!("warning: failed to persist legacy per-player arguments setting: {error}");
+    let should_connect =
+        env_flag_enabled("SOROTTE_CLIENT_CONNECT") || client_arg_overrides.should_connect_client();
+    if !should_connect {
+        persist_explicit_legacy_client_arg_settings(&client_arg_overrides);
     }
     emit_legacy_client_arg_compatibility_warnings(&client_arg_overrides);
     if client_arg_overrides.should_halt_for_legacy_force_gui_prompt_compatibility() {
@@ -281,11 +300,7 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
             stored_settings.as_ref(),
         ),
     );
-    apply_headless_automatic_update_check_legacy_compatible(
-        &client_arg_overrides,
-        stored_settings.as_ref(),
-    );
-    if env_flag_enabled("SOROTTE_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
+    if should_connect {
         let mut config = build_client_loop_config_from_env();
         if let Some(stored_settings) = stored_settings.as_ref() {
             apply_stored_client_settings_mvp_if_env_absent(&mut config, stored_settings);
@@ -299,6 +314,13 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
             stored_settings.as_ref(),
         );
         apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
+        validate_composed_client_endpoint(&config)
+            .map_err(|error| anyhow!("invalid client endpoint: {error}"))?;
+        persist_explicit_legacy_client_arg_settings(&client_arg_overrides);
+        apply_headless_automatic_update_check_legacy_compatible(
+            &client_arg_overrides,
+            stored_settings.as_ref(),
+        );
         if !client_arg_overrides.no_store
             && let Err(error) = persist_sorotte_cli_stored_settings_mvp_legacy_compatible(&config)
         {
@@ -318,6 +340,11 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         .await?;
         return Ok(());
     }
+
+    apply_headless_automatic_update_check_legacy_compatible(
+        &client_arg_overrides,
+        stored_settings.as_ref(),
+    );
 
     let mut client =
         ClientApplication::with_default_session(sorotte_player_mpv::MpvAdapter::default());

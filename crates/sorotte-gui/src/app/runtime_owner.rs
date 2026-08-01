@@ -982,9 +982,60 @@ pub(super) struct GuiPlexPlaylistResolveWorkerResult {
     pub(super) result: Result<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiPlexStreamResolveFailureDisposition {
+    Retryable,
+    PermanentForContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexStreamResolveFailure {
+    pub(super) message: String,
+    pub(super) disposition: GuiPlexStreamResolveFailureDisposition,
+}
+
+impl GuiPlexStreamResolveFailure {
+    pub(super) fn from_plex_error(target: &str, error: sorotte_plex::PlexError) -> Self {
+        let disposition = if error.is_ambiguous_playable_parts() {
+            GuiPlexStreamResolveFailureDisposition::PermanentForContext
+        } else {
+            GuiPlexStreamResolveFailureDisposition::Retryable
+        };
+        Self {
+            message: sorotte_plex::redact_plex_token(&format!(
+                "Resolving Plex stream target for '{target}' failed: {error}"
+            )),
+            disposition,
+        }
+    }
+
+    pub(super) fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            disposition: GuiPlexStreamResolveFailureDisposition::Retryable,
+        }
+    }
+
+    pub(super) fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for GuiPlexStreamResolveFailure {
+    fn from(message: String) -> Self {
+        Self::retryable(message)
+    }
+}
+
+impl std::fmt::Display for GuiPlexStreamResolveFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct GuiPlexStreamResolveOutcome {
-    pub(super) stream_target: Result<Option<PlexStreamTarget>, String>,
+    pub(super) stream_target: Result<Option<PlexStreamTarget>, GuiPlexStreamResolveFailure>,
     pub(super) cache: PlexMatchCache,
 }
 
