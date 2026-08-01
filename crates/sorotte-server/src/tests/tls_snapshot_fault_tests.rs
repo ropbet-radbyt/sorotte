@@ -354,6 +354,60 @@ fn captured_tls_snapshot_remains_loadable_after_files_are_replaced() {
     fs::remove_dir_all(&cert_path).expect("TLS snapshot directory should be removable");
 }
 
+#[test]
+fn loose_tls_snapshot_rejects_every_oversized_member_before_unbounded_allocation() {
+    let cert_path = temporary_directory_path("tls-loose-member-size-bound");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("TLS size-bound directory should be creatable");
+    let oversized = vec![
+        b'x';
+        usize::try_from(crate::tls::TLS_BUNDLE_MEMBER_MAX_BYTES + 1)
+            .expect("TLS member bound should fit usize")
+    ];
+
+    for filename in super::super::TLS_REQUIRED_CERT_FILENAMES {
+        write_valid_tls_bundle(&cert_path);
+        fs::write(cert_path.join(filename), &oversized)
+            .expect("oversized TLS member should write for the regression");
+        let error = read_tls_certificate_bundle_snapshot(&cert_path)
+            .expect_err("oversized loose TLS member must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("4194304-byte limit"));
+        assert!(error.to_string().contains(filename));
+    }
+
+    fs::remove_dir_all(&cert_path).expect("TLS size-bound directory should be removable");
+}
+
+#[cfg(unix)]
+#[test]
+fn loose_tls_snapshot_follows_certbot_style_member_symlinks_with_the_same_bound() {
+    use std::os::unix::fs::symlink;
+
+    let root = temporary_directory_path("tls-loose-symlink-compatibility");
+    let _ = fs::remove_dir_all(&root);
+    let live = root.join("live");
+    let archive = root.join("archive");
+    fs::create_dir_all(&live).expect("TLS live directory should be creatable");
+    fs::create_dir_all(&archive).expect("TLS archive directory should be creatable");
+    for (filename, contents) in [
+        ("privkey.pem", TEST_TLS_PRIVATE_KEY_PEM),
+        ("cert.pem", TEST_TLS_CERT_PEM),
+        ("chain.pem", TEST_TLS_CHAIN_PEM),
+    ] {
+        let archived = archive.join(format!("{filename}.1"));
+        fs::write(&archived, contents).expect("archived TLS member should write");
+        symlink(&archived, live.join(filename)).expect("live TLS member symlink should create");
+    }
+
+    let snapshot = read_tls_certificate_bundle_snapshot(&live)
+        .expect("bounded loose reader should follow Certbot-style member links");
+    load_tls_server_config_from_snapshot(&live, &snapshot)
+        .expect("symlink-backed bounded snapshot should remain rustls-loadable");
+
+    fs::remove_dir_all(&root).expect("TLS symlink compatibility directory should be removable");
+}
+
 fn mutate_certificate_signature(pem: &str) -> Vec<u8> {
     let mut mutated = pem.as_bytes().to_vec();
     let end_marker = b"-----END CERTIFICATE-----";

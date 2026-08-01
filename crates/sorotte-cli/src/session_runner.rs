@@ -88,7 +88,7 @@ use crate::notifications::{
 };
 use crate::protocol_io::{
     InboundProtocolLineReader, flush_runtime_protocol_lines, flush_runtime_protocol_lines_until,
-    read_inbound_protocol_line, write_protocol_line,
+    write_protocol_line,
 };
 use crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible;
 use crate::stdin_input::{recv_local_input_line, spawn_local_input_receiver_legacy_compatible};

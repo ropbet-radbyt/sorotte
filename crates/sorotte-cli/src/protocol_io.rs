@@ -164,13 +164,6 @@ impl InboundProtocolLineReader {
     }
 }
 
-pub(crate) async fn read_inbound_protocol_line<R>(reader: &mut R) -> anyhow::Result<Option<String>>
-where
-    R: AsyncBufRead + Unpin,
-{
-    InboundProtocolLineReader::default().read_line(reader).await
-}
-
 pub(crate) async fn write_protocol_line<W>(writer: &mut W, line: &str) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -273,6 +266,13 @@ mod tests {
 
     struct ProtocolIoTestPlayer;
 
+    async fn read_one_protocol_line_for_test<R>(reader: &mut R) -> anyhow::Result<Option<String>>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        InboundProtocolLineReader::default().read_line(reader).await
+    }
+
     impl PlayerAdapter for ProtocolIoTestPlayer {
         fn name(&self) -> &'static str {
             "protocol-io-test-player"
@@ -300,7 +300,7 @@ mod tests {
         let input = vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES + 1];
         let mut reader = BufReader::new(&input[..]);
 
-        let error = read_inbound_protocol_line(&mut reader)
+        let error = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect_err("oversized inbound line should fail");
 
@@ -317,7 +317,7 @@ mod tests {
         framed.extend_from_slice(b"\r\n");
         let mut reader = BufReader::new(&framed[..]);
 
-        let line = read_inbound_protocol_line(&mut reader)
+        let line = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect("batched line read should succeed")
             .expect("batched line should be present");
@@ -334,7 +334,7 @@ mod tests {
         framed.extend_from_slice(b"\r\n");
         let mut reader = BufReader::with_capacity(MAX_INBOUND_PROTOCOL_LINE_BYTES + 1, &framed[..]);
 
-        let line = read_inbound_protocol_line(&mut reader)
+        let line = read_one_protocol_line_for_test(&mut reader)
             .await
             .expect("exact-limit split CRLF line should be accepted")
             .expect("exact-limit line should be present");
@@ -351,6 +351,16 @@ mod tests {
             .expect("protocol line should write");
 
         assert_eq!(output, b"{\"List\":null}\r\n");
+    }
+
+    #[test]
+    fn production_connected_session_has_no_reusable_one_shot_reader_wrapper() {
+        const CONNECTED_SESSION_SOURCE: &str = include_str!("session_runner/connected_session.rs");
+        assert!(CONNECTED_SESSION_SOURCE.contains("InboundProtocolLineReader::default()"));
+        assert!(
+            !CONNECTED_SESSION_SOURCE.contains("read_inbound_protocol_line"),
+            "reusable connection paths must own InboundProtocolLineReader state"
+        );
     }
 
     #[tokio::test]

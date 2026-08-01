@@ -332,7 +332,11 @@ async fn negotiate_start_tls_with_policy(
         let tls_request_line = encode_message_line(&ProtocolMessage::start_tls("send"))?;
         write_protocol_line(&mut stream, &tls_request_line).await?;
         let mut reader = BufReader::new(stream);
-        let response = read_inbound_protocol_line(&mut reader).await?;
+        // This reader is terminal to the STARTTLS response attempt: timeout
+        // cancellation drops the connection, while successful fallback keeps
+        // the BufReader and its prefetched bytes as the transport.
+        let mut line_reader = InboundProtocolLineReader::default();
+        let response = line_reader.read_line(&mut reader).await?;
         // Keep the reader as the transport. PreferTls fallback must preserve
         // any later plaintext protocol bytes that arrived in the same socket
         // read as the STARTTLS response.

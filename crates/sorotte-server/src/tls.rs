@@ -6,7 +6,7 @@ const TLS_BUNDLE_CURRENT_MANIFEST_FILENAME: &str = "current.json";
 const TLS_BUNDLE_GENERATIONS_DIRECTORY: &str = "generations";
 const TLS_BUNDLE_MANIFEST_SCHEMA: &str = "sorotte-tls-bundle-v1";
 const TLS_BUNDLE_MANIFEST_MAX_BYTES: u64 = 16 * 1024;
-const TLS_BUNDLE_MEMBER_MAX_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const TLS_BUNDLE_MEMBER_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TLS_BUNDLE_GENERATION_MAX_BYTES: usize = 128;
 const TLS_BUNDLE_CAPTURE_ATTEMPTS: usize = 3;
 
@@ -144,6 +144,44 @@ fn read_plain_file_bounded(path: &Path, role: &str, max_bytes: u64) -> io::Resul
     if u64::try_from(bytes.len()).expect("TLS file length must fit u64") > max_bytes {
         return Err(invalid_tls_bundle(format!(
             "{role} '{}' changed beyond the {max_bytes}-byte limit while being read",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
+fn read_followed_file_bounded(path: &Path, role: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(invalid_tls_bundle(format!(
+            "{role} '{}' must resolve to a regular file",
+            path.display()
+        )));
+    }
+    if before.len() > max_bytes {
+        return Err(invalid_tls_bundle(format!(
+            "{role} '{}' is {} bytes, exceeding the {max_bytes}-byte limit",
+            path.display(),
+            before.len()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(before.len()).expect("bounded TLS file length must fit usize"),
+    );
+    (&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).expect("TLS file length must fit u64") > max_bytes {
+        return Err(invalid_tls_bundle(format!(
+            "{role} '{}' changed beyond the {max_bytes}-byte limit while being read",
+            path.display()
+        )));
+    }
+    let after = file.metadata()?;
+    if !after.is_file() || after.len() != before.len() {
+        return Err(unstable_tls_bundle(format!(
+            "{role} '{}' changed metadata while being read",
             path.display()
         )));
     }
@@ -355,8 +393,13 @@ pub(crate) fn read_tls_certificate_bundle_snapshot(
     if read_current_manifest_bytes_if_present(path)?.is_some() {
         return read_manifest_bundle_snapshot_with_hook(path, |_, _| {});
     }
-    let snapshot =
-        read_stable_loose_bundle_snapshot_with(path, |member_path| fs::read(member_path))?;
+    let snapshot = read_stable_loose_bundle_snapshot_with(path, |member_path| {
+        read_followed_file_bounded(
+            member_path,
+            "loose TLS bundle member",
+            TLS_BUNDLE_MEMBER_MAX_BYTES,
+        )
+    })?;
     if read_current_manifest_bytes_if_present(path)?.is_some() {
         return read_manifest_bundle_snapshot_with_hook(path, |_, _| {});
     }
