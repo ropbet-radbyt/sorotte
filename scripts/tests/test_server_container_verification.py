@@ -372,16 +372,89 @@ class JsonAndIdentityPolicyTests(unittest.TestCase):
 
 
 class LocalImageConsumerTests(unittest.TestCase):
-    def test_container_log_capture_waits_for_delayed_shutdown_marker(self) -> None:
-        marker = "sorotte-server: shutdown requested; draining client sessions\n"
+    def test_stop_requires_clean_exited_state_after_direct_sigint(self) -> None:
+        command_results = [
+            subprocess.CompletedProcess(["docker", "kill"], 0, stdout="name\n"),
+            subprocess.CompletedProcess(["docker", "wait"], 0, stdout="0\n"),
+        ]
+        state = {
+            "Status": "exited",
+            "Running": False,
+            "Dead": False,
+            "ExitCode": 0,
+            "OOMKilled": False,
+            "Error": "",
+        }
+        with (
+            mock.patch.object(container, "_run", side_effect=command_results) as run,
+            mock.patch.object(container, "_docker_json", return_value=state),
+        ):
+            self.assertEqual(
+                container._stop_and_inspect_container("container-name"),
+                {
+                    "error": "",
+                    "exitCode": 0,
+                    "oomKilled": False,
+                    "signal": "SIGINT",
+                },
+            )
+
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    ["docker", "kill", "--signal=SIGINT", "container-name"],
+                    timeout=container.SERVER_STOP_TIMEOUT_SECONDS,
+                ),
+                mock.call(
+                    ["docker", "wait", "container-name"],
+                    timeout=container.SERVER_STOP_TIMEOUT_SECONDS,
+                ),
+            ],
+        )
+
+    def test_stop_rejects_unclean_inspected_state(self) -> None:
+        variants = [
+            {"Status": "dead"},
+            {"Running": True},
+            {"Dead": True},
+            {"ExitCode": 1},
+            {"OOMKilled": True},
+            {"Error": "daemon failure"},
+        ]
+        for update in variants:
+            with self.subTest(update=update):
+                state = {
+                    "Status": "exited",
+                    "Running": False,
+                    "Dead": False,
+                    "ExitCode": 0,
+                    "OOMKilled": False,
+                    "Error": "",
+                }
+                state.update(update)
+                command_results = [
+                    subprocess.CompletedProcess(
+                        ["docker", "kill"], 0, stdout="name\n"
+                    ),
+                    subprocess.CompletedProcess(
+                        ["docker", "wait"], 0, stdout="0\n"
+                    ),
+                ]
+                with (
+                    mock.patch.object(container, "_run", side_effect=command_results),
+                    mock.patch.object(container, "_docker_json", return_value=state),
+                    self.assertRaisesRegex(
+                        container.VerificationError, "did not stop cleanly"
+                    ),
+                ):
+                    container._stop_and_inspect_container("container-name")
+
+    def test_container_log_capture_accepts_startup_log_without_shutdown_text(self) -> None:
+        marker = "sorotte-server listening on 0.0.0.0:8999\n"
         log_results = [
             subprocess.CompletedProcess(
-                ["docker", "logs"], 0, stdout="sorotte-server listening\n"
-            ),
-            subprocess.CompletedProcess(
-                ["docker", "logs"],
-                0,
-                stdout=f"sorotte-server listening\n{marker}",
+                ["docker", "logs"], 0, stdout=marker
             ),
             subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""),
         ]
@@ -395,18 +468,36 @@ class LocalImageConsumerTests(unittest.TestCase):
 
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
-                f"sorotte-server listening\n{marker}",
+                marker,
             )
             self.assertEqual(
                 run.call_args_list,
                 [
-                    mock.call(["docker", "logs", "container-name"], check=False),
                     mock.call(["docker", "logs", "container-name"], check=False),
                     mock.call(
                         ["docker", "rm", "--force", "container-name"], check=False
                     ),
                 ],
             )
+            sleep.assert_not_called()
+
+    def test_container_log_capture_waits_for_delayed_startup_marker(self) -> None:
+        marker = "sorotte-server listening on 0.0.0.0:8999\n"
+        log_results = [
+            subprocess.CompletedProcess(["docker", "logs"], 0, stdout=""),
+            subprocess.CompletedProcess(["docker", "logs"], 0, stdout=marker),
+            subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            with (
+                mock.patch.object(container, "_run", side_effect=log_results) as run,
+                mock.patch.object(container.time, "sleep") as sleep,
+            ):
+                container._write_container_log_and_remove("container-name", path)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), marker)
+            self.assertEqual(run.call_count, 3)
             sleep.assert_called_once_with(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
 
     def test_container_log_capture_fails_bounded_and_still_removes_container(
@@ -428,7 +519,7 @@ class LocalImageConsumerTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     container.VerificationError,
-                    "did not log the graceful shutdown barrier",
+                    "did not retain the startup listener marker",
                 ):
                     container._write_container_log_and_remove("container-name", path)
 
@@ -533,6 +624,12 @@ class LocalImageConsumerTests(unittest.TestCase):
             raw_restart["row"]["position"] = 0.0  # type: ignore[index]
             write_json(path, drift)
             with self.assertRaisesRegex(container.VerificationError, "raw position"):
+                container.parse_runtime_report(path)
+            drift = valid_runtime_report()
+            plaintext = drift["scenarios"][0]  # type: ignore[index]
+            plaintext["shutdown"]["error"] = "daemon failure"  # type: ignore[index]
+            write_json(path, drift)
+            with self.assertRaisesRegex(container.VerificationError, "shut down cleanly"):
                 container.parse_runtime_report(path)
 
     def test_raw_persisted_room_row_requires_exact_payload_and_integrity(self) -> None:
