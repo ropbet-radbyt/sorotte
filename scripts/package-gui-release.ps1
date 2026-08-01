@@ -288,7 +288,9 @@ $installMarker = [ordered]@{
     target = $target
     files = $installFiles
 }
-$installMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot "sorotte-install.json") -Encoding UTF8
+Write-Utf8ArtifactFile `
+    -Path (Join-Path $packageRoot "sorotte-install.json") `
+    -Content ($installMarker | ConvertTo-Json -Depth 4)
 
 $archivePath = Join-Path $artifactsRoot $archiveFileName
 if (Test-Path -LiteralPath $archivePath) {

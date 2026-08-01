@@ -778,6 +778,22 @@ class SymbolsBoundaryTests(unittest.TestCase):
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_packager_writes_both_manifests_as_bomless_utf8(self) -> None:
+        packager = (REPO_ROOT / "scripts" / "package-gui-release.ps1").read_text(
+            encoding="utf-8"
+        )
+        install_marker = packager[
+            packager.index("$installMarker = [ordered]@{") :
+            packager.index("$archivePath =", packager.index("$installMarker = [ordered]@{"))
+        ]
+        self.assertIn("Write-Utf8ArtifactFile", install_marker)
+        self.assertNotIn("Set-Content", install_marker)
+        self.assertIn("[System.Text.UTF8Encoding]::new($false)", packager)
+        self.assertIn(
+            "Write-Utf8ArtifactFile -Path $manifestPath",
+            packager,
+        )
+
     def test_gui_release_uses_immutable_action_revisions(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "sorotte-gui-release.yml"
