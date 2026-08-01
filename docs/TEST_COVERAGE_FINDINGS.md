@@ -3191,8 +3191,8 @@ are retained in
 
 ## TC-CLI-004: CLI argument composition did not preserve legacy occurrence semantics
 
-Status: **Resolved 2026-07-31; generated parser/composition regression is
-positive**
+Status: **Reopened 2026-08-01; the generated grammar omitted canonical
+short-attached options and malformed final endpoints**
 
 Severity: **Medium (valid legacy arguments could be rejected or compose into a
 different startup configuration)**
@@ -3209,9 +3209,13 @@ failures:
 - a later host without a port retained the earlier CLI port; and
 - missing required host/name values were silently accepted.
 
-The parser now represents each occurrence as unchanged, replace, clear, or
-invalid. Host and optional port are one atomic CLI-layer value. Attached
-long/short forms enter the same path as separated values; an empty attached
+The 2026-07-31 parser correction represents each occurrence as unchanged,
+replace, clear, or invalid, but its self-authored short-attached grammar used
+only the noncanonical `-x=value` spelling. Pinned argparse also accepts
+`-xvalue` and known flag clusters. The same composition boundary treats an
+explicit malformed final port as absent, allowing a lower-layer port to
+survive. Host and optional port must be one atomic CLI-layer value. Attached
+long/short forms must enter the same path as separated values; an empty attached
 optional value can clear only the preceding CLI override; optional missing
 room/password values retain legacy fall-through; and required host/name
 occurrences without a value fail closed.
@@ -3226,8 +3230,8 @@ eight registered ignores. Exact RED/GREEN counts and limits are retained in
 
 ## TC-CLI-005: Unknown attached option diagnostics reflected raw values
 
-Status: **Resolved 2026-07-31; attached values are redacted at the diagnostic
-boundary**
+Status: **Reopened 2026-08-01; canonical `-pSECRET` was rejected and retained
+verbatim before the diagnostic boundary**
 
 Severity: **High for diagnostic privacy (an unrecognized credential-shaped
 value could be reproduced in user-visible output)**
@@ -3239,8 +3243,11 @@ Before the correction,
 unknown-option diagnostic. Parser rejection was correct, but reflecting the
 full token crossed the diagnostic redaction boundary.
 
-Unknown arguments now retain bounded option identity while replacing
-everything after the first `=`. Startup uses that same formatter. The focused
+The first correction retained the raw token and replaced everything after the
+first `=` only while formatting. It therefore missed canonical
+short-attached passwords, which have no equals sign. Unknown arguments must
+instead retain structural option identity without retaining attached values,
+and startup must use that representation. The focused
 regression and every generated case require all server-password,
 controlled-room-password, explicit-password, and unknown attached-value
 canaries to be absent from production `Debug` and diagnostic output. This is

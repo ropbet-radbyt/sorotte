@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+#[should_panic(
+    expected = "TC-CLI-005: short-attached password must be accepted without diagnostic exposure"
+)]
+fn known_defect_tc_cli_005_short_attached_password_is_accepted_without_diagnostic_exposure() {
+    let overrides = parse_legacy_client_arg_overrides(["-pCLI_PASSWORD_CANARY"]);
+
+    assert!(
+        overrides.unknown_options.is_empty(),
+        "TC-CLI-005: short-attached password must be accepted without diagnostic exposure"
+    );
+}
+
+#[test]
+#[should_panic(expected = "TC-CLI-004: malformed final host must block endpoint composition")]
+fn known_defect_tc_cli_004_malformed_final_host_blocks_endpoint_composition() {
+    let overrides = parse_legacy_client_arg_overrides([
+        "--host",
+        "valid.example:8999",
+        "--host",
+        "invalid.example:notaport",
+    ]);
+
+    assert!(
+        !overrides.unknown_options.is_empty(),
+        "TC-CLI-004: malformed final host must block endpoint composition"
+    );
+}
+
+#[test]
 fn unknown_attached_values_are_secret_safe_in_diagnostics() {
     const SECRET: &str = "CLI_UNKNOWN_OPTION_SECRET_CANARY";
     let overrides = parse_legacy_client_arg_overrides([format!("--api-token={SECRET}")]);
