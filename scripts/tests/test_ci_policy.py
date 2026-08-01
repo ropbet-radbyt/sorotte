@@ -13,6 +13,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-ci.yml"
 COVERAGE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
 MUTATION_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-mutation.yml"
@@ -39,28 +40,28 @@ MPV_SOURCE_EXPRESSION = (
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
     "actions/checkout": (
-        "11d5960a326750d5838078e36cf38b85af677262",
-        "v4.4.0",
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "v7.0.1",
     ),
     "dtolnay/rust-toolchain": (
         "4cda84d5c5c54efe2404f9d843567869ab1699d4",
         "stable resolved 2026-07-28",
     ),
     "actions/setup-python": (
-        "a26af69be951a213d495a4c3e4e4022e16d87065",
-        "v5.6.0",
+        "5fda3b95a4ea91299a34e894583c3862153e4b97",
+        "v7.0.0",
     ),
     "actions/setup-go": (
         "924ae3a1cded613372ab5595356fb5720e22ba16",
         "v6.5.0",
     ),
     "actions/upload-artifact": (
-        "ea165f8d65b6e75b540449e92b4886f43607fa02",
-        "v4.6.2",
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "v7.0.1",
     ),
     "actions/download-artifact": (
-        "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-        "v4.3.0",
+        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "v8.0.1",
     ),
     "taiki-e/install-action": (
         "41049aa56687c35e0afa74eed4f09cec4f9afabf",
@@ -70,6 +71,15 @@ ACTION_PINS = {
 PINNED_USES = {
     action: f"{action}@{sha}" for action, (sha, _comment) in ACTION_PINS.items()
 }
+NODE24_ACTIONS = frozenset(
+    {
+        "actions/checkout",
+        "actions/setup-python",
+        "actions/setup-go",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+    }
+)
 USES_LINE = re.compile(
     r"^\s*uses:\s*([^@\s]+)@([^\s#]+)\s+#\s+(.+?)\s*$",
     re.MULTILINE,
@@ -500,6 +510,20 @@ class CiPolicyTests(unittest.TestCase):
                     self.assertRegex(revision, r"^[0-9a-f]{40}$")
                     self.assertEqual(comment, expected_comment)
                     self.assertIn(f"{action}@{revision}", parsed_uses)
+
+    def test_official_javascript_actions_are_node24_pinned_repo_wide(self) -> None:
+        seen: set[str] = set()
+        for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+            workflow_text = path.read_text(encoding="utf-8")
+            for action, revision, comment in USES_LINE.findall(workflow_text):
+                if action not in NODE24_ACTIONS:
+                    continue
+                with self.subTest(path=path.name, action=action):
+                    expected_revision, expected_comment = ACTION_PINS[action]
+                    self.assertEqual(revision, expected_revision)
+                    self.assertEqual(comment, expected_comment)
+                    seen.add(action)
+        self.assertEqual(seen, NODE24_ACTIONS)
 
     def test_rust_coverage_sources_are_canonical_lf_on_every_platform(self) -> None:
         self.assertEqual(

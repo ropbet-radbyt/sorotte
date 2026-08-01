@@ -9,11 +9,11 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
-CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 RUST = "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
-PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 INSTALL = "taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf"
-UPLOAD = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 
 
 def normalized(value: object) -> str:
