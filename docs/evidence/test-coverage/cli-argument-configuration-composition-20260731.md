@@ -17,6 +17,43 @@ The focused regression module and its 256-case deterministic composition
 campaign pass after the fixes. The owning crate's complete all-feature suite
 and strict all-target Clippy gate also pass.
 
+## 2026-08-01 review addendum
+
+The original 2026-07-31 result was incomplete at one grammar boundary. Its
+self-authored renderer treated `-x=value` as the attached short spelling and
+therefore did not exercise argparse's canonical `-xVALUE` form or known flag
+clusters. In particular, it did not prove `-pSECRET`, `-aexample:8999`,
+`-nAlice`, `-rroom`, `-dg`, or `-gd`. The original raw-token representation
+also meant an accepted `-pSECRET` could bypass the equals-sign-only diagnostic
+redactor. Those are product defects, not merely omissions in this report.
+
+The follow-up temporarily reopened `TC-CLI-004` and `TC-CLI-005` at commit
+`db4c929`, retaining exact expected-failure characterizations before the fix.
+Commit `cbdb870` replaces the short-option parser with explicit
+character-by-character grammar, stores only structural issue data, validates
+the composed endpoint before settings/player/network side effects, and
+converts both characterizations to ordinary positive regressions.
+
+The new differential invokes the actual pinned Python
+`ConfigurationGetter.getConfiguration()` from commit
+`d1c5f85af377c960c5a940707c4d01bc84fd9c3f`; it does not compare against a
+second handwritten grammar. Side-effecting Python collaborators are stubbed,
+and passwords project only as the fixed string `<redacted>`. It proves
+canonical short-attached forms, separated forms, clusters, optional-value
+fall-through, and exact `-p`/`-psn` precedence. A second differential covers
+the final endpoint boundary. The pinned Python implementation accepts
+`[::1]:notaport` by falling back to the previous/default port; Sorotte
+deliberately remains stricter and rejects that explicit malformed port. The
+report therefore records this one fail-closed delta instead of claiming false
+parity.
+
+Actual-binary integration tests independently inspect stdout, stderr, and the
+returned error for accepted and rejected password canaries. A malformed final
+endpoint is also run with an absent config root and a canary player path; the
+process must exit without creating the config root or reporting a player
+launch. Complete follow-up evidence is in
+[`pro-review-remediation-20260801.md`](pro-review-remediation-20260801.md).
+
 The slice began from committed branch base
 `2e6746b4a0ec4fdee2bbe09328161f064d5ca772`. Two unrelated focused slices were
 committed concurrently, so final focused validation ran with shared worktree
@@ -128,7 +165,8 @@ examples.
 ## Implemented source changes
 
 - `crates/sorotte-cli/src/client_args/parser.rs`
-  - accepts long and short attached values;
+  - accepted long attached values and the campaign's `-x=value` short
+    spelling; canonical `-xVALUE` support is the follow-up described above;
   - replaces host and port as one CLI-layer occurrence;
   - permits empty attached values to clear an earlier CLI-layer occurrence;
   - preserves optional missing room/password behavior; and
@@ -144,7 +182,9 @@ examples.
   - add the five retained regressions and deterministic independent-oracle
     campaign.
 
-No client-app source or central documentation was changed by this slice.
+No client-app source or central documentation was changed by the original
+2026-07-31 slice. The review follow-up updates the central documents and the
+evidence record.
 
 ## Executed proof
 

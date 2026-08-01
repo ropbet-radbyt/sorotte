@@ -1,9 +1,11 @@
 # Sorotte Test Coverage and Verification Strategy
 
 Status: implemented verification program with an explicitly empty
-product-defect registry; documentation-inclusive hosted acceptance passed at
-exact workflow-bearing head `612917ac8461040549217453bdebfc5001f2378c`;
-four capability-scoped system proofs remain externally provisioned
+product-defect registry; the previous documentation-inclusive hosted
+acceptance passed at exact workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c`, and the 2026-08-01 Pro-review
+remediation requires a fresh exact-head run; four capability-scoped system
+proofs remain externally provisioned
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -30,6 +32,7 @@ Real-mpv arming and Plex fixture completion update: 2026-08-01
 Implementation-head hosted acceptance update: 2026-08-01
 CI critical-path parallelization update: 2026-08-01
 Documentation-inclusive hosted closure, verifier deduplication, and Node 24 update: 2026-08-01
+Pro-review CLI, TLS, protocol-reader, and persistence-claim remediation update: 2026-08-01
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -212,7 +215,7 @@ recorded in
 
 The complete assurance stack now contains:
 
-- a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
+- a fail-closed behavior catalog with 21 behavior IDs and 56 exact proofs;
 - two Linux evidence lanes covering exact lifecycle libtests and the complete
   14-scenario GUI semantic inventory;
 - Git SHA, repository, workflow-run, attempt, catalog, OS, selector, command,
@@ -1761,6 +1764,11 @@ replacement, required-value rejection, controlled-room password precedence,
 and credential-redacted diagnostics. `TC-CLI-004` and `TC-CLI-005` are
 ordinary positive regressions. See
 [`cli-argument-configuration-composition-20260731.md`](evidence/test-coverage/cli-argument-configuration-composition-20260731.md).
+The 2026-08-01 review-driven follow-up binds canonical short-attached grammar
+and flag clusters to the actual pinned Python parser, exercises process output
+privacy and pre-side-effect endpoint rejection, bounds loose TLS compatibility
+reads, and removes the reusable production one-shot protocol reader. See
+[`pro-review-remediation-20260801.md`](evidence/test-coverage/pro-review-remediation-20260801.md).
 
 ### 9.2 Coverage-guided fuzzing
 
@@ -1896,6 +1904,15 @@ write/open/rename/delete failure and recovery. OS power-loss durability,
 parent-directory sync, device caches, torn writes, and Sorotte-owned
 multi-file durability protocols remain. See
 [`persistence-platform-syscall-faults-20260730.md`](evidence/test-coverage/persistence-platform-syscall-faults-20260730.md).
+
+The room worker's version arbitration is latest-wins only while the
+asynchronous service continues making progress. Enqueue is not a synchronous
+durability acknowledgement: a newer effect can arrive after the current
+transaction's last version check, and a process exit before the newer effect
+is applied or explicitly flushed can leave the preceding committed state.
+Tests and documentation must reserve durable acknowledgement claims for the
+flush/shutdown boundary and must not generalize queue arbitration into
+instruction-by-instruction crash durability.
 
 Reference: [Rust `fail` crate](https://docs.rs/fail).
 

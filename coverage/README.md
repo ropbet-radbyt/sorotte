@@ -153,6 +153,16 @@ ledger. The hosted closure, retained failed attempt, CI timing checkpoints,
 Node 24 action pins, and unchanged external limits are recorded in
 [`hosted-ci-closure-20260801.md`](../docs/evidence/test-coverage/hosted-ci-closure-20260801.md).
 
+A 2026-08-01 Pro review reopened the CLI proof at the grammar boundary: the
+original generated oracle exercised `-x=value`, but not canonical
+short-attached `-xVALUE` or flag clusters. The correction is differentially
+bound to the actual pinned Python `ConfigurationGetter`, adds actual-process
+privacy and pre-side-effect endpoint tests, bounds loose symlink-following TLS
+reads, removes the reusable production one-shot protocol reader, and narrows
+room-persistence latest-wins wording to an eventual live-service guarantee.
+The complete disposition and validation boundary are recorded in
+[`pro-review-remediation-20260801.md`](../docs/evidence/test-coverage/pro-review-remediation-20260801.md).
+
 The pre-optimization full matrix spent 33m30 executing after its queue wait.
 Parallel Windows producers and an independent Linux coverage producer reduced
 the first complete parallel run to 19m33 while preserving the public
@@ -688,6 +698,16 @@ the CLI inbound framing accumulator and its package-level transport/session
 oracles. A tenth shard binds client playlist snapshot, target-index, shuffle
 seed/PRNG, permutation, and undo decisions. It deliberately does not mutate
 the whole workspace.
+
+Room-persistence arbitration's newest-version rule is an eventual service
+guarantee while the worker remains alive, not synchronous acknowledgement
+durability at every instruction boundary. A newer desired effect can arrive
+after an older effect's final currency check; if the process then terminates
+before the worker applies or an explicit flush/shutdown acknowledges the newer
+effect, recovery may observe the preceding committed state. The arbitration
+proof prevents stale queued work from overtaking newer live work; it does not
+turn asynchronous enqueue into a durable commit acknowledgement.
+
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
 literal source file, the package/library test target and optional test module
 namespace, all-feature locked Cargo execution, two workers, per-command

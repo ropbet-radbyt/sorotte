@@ -389,6 +389,53 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "CFG-CLI-001"
+title = "Legacy CLI grammar, endpoint composition, and diagnostics fail closed without credential reflection"
+risk = "high"
+owners = ["cli", "compatibility", "security"]
+invariants = [
+    "canonical short-attached values and known no-value clusters follow the pinned argparse grammar",
+    "the final host occurrence either atomically replaces host and optional port or blocks startup with a specific error",
+    "unknown attached values are discarded structurally and never retained for later diagnostic formatting",
+]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.grammar"
+kind = "rust-test"
+oracle = "canonical-short-option-table"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::canonical_short_attached_values_and_boolean_clusters_match_argparse_shape"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.endpoint"
+kind = "rust-test"
+oracle = "table-driven-final-occurrence-errors"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::malformed_final_cli_endpoints_fail_closed_with_specific_error_kinds"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "CFG-CLI-001.redaction"
+kind = "rust-test"
+oracle = "structural-secret-nonretention"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::cli_argument_configuration_composition::unknown_attached_values_are_secret_safe_in_diagnostics"
+source = "crates/sorotte-cli/src/tests/cli_argument_configuration_composition.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "NET-TLS-001"
 title = "TLS bundle rotation preserves bounded and atomic connection behavior"
 risk = "high"
@@ -399,6 +446,7 @@ invariants = [
     "an already accepted handshake retains its captured valid context while later clients observe invalid rotation",
     "restoring a valid bundle before retry exhaustion re-enables TLS, while exhaustion remains a terminal gate",
     "generated revision histories match an independent context, acceptability, retry, response, and transport-action model",
+    "loose compatibility members follow regular-file symlinks but reject resolved members above 4 MiB",
 ]
 
 [[behavior.proof]]
@@ -445,6 +493,30 @@ package = "sorotte-server"
 target_kind = "lib"
 test = "tests::runtime_config_tests::tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads"
 source = "crates/sorotte-server/src/tests/runtime_config_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.loose-bound"
+kind = "rust-test"
+oracle = "real-filesystem-plus-one-size-bound"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::tls_snapshot_fault_tests::loose_tls_snapshot_rejects_every_oversized_member_before_unbounded_allocation"
+source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "NET-TLS-001.loose-symlink"
+kind = "rust-test"
+oracle = "real-filesystem-certbot-symlink-compatibility"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::tls_snapshot_fault_tests::loose_tls_snapshot_follows_certbot_style_member_symlinks_with_the_same_bound"
+source = "crates/sorotte-server/src/tests/tls_snapshot_fault_tests.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]

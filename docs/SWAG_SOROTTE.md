@@ -139,7 +139,9 @@ modify a selected generation in place.
 Directly mounting SWAG's live certificate tree into Sorotte remains a
 compatibility fallback, but it broadens what Sorotte can read and exposes three
 independently updated paths. Sorotte requires two matching loose-file captures,
-which reduces renewal races but cannot prove generation identity. Prefer the
+follows Certbot-style member symlinks, and rejects any resolved member above 4
+MiB before installing a capture. This bounds compatibility-mode allocation and
+reduces renewal races but cannot prove generation identity. Prefer the
 atomic copied bundle:
 
 ```text

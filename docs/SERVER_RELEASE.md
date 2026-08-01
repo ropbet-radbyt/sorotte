@@ -143,10 +143,11 @@ Windows reparse points.
 
 For compatibility, a directory containing loose `cert.pem`, `chain.pem`, and
 `privkey.pem` files is still accepted when `current.json` is absent. The server
-requires two matching captures before installing loose files, but no reader can
-prove that three independently replaced paths came from one certificate
-generation. Use loose files only when they are static or publication is
-externally serialized.
+follows member symlinks, limits each resolved regular file to 4 MiB using an
+opened-handle plus-one read, rechecks handle length, and requires two matching
+captures before installing loose files. No reader can prove that three
+independently replaced paths came from one certificate generation. Use loose
+files only when they are static or publication is externally serialized.
 
 Example:
 

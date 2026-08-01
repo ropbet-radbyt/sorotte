@@ -124,6 +124,14 @@ rooms through a capacity-one coalesced wake, replacement after arbitration but
 before commit, concurrent replacement of failed work with exact
 degraded/recovered events, and stats overflow before transaction entry.
 
+That latest-version arbitration is eventual while the persistence service
+remains alive. It is not synchronous enqueue acknowledgement durability. A
+newer desired effect may arrive after the older transaction's final currency
+check; termination before the newer effect is applied or an explicit
+flush/shutdown acknowledges it may leave the preceding committed state. The
+schedule proves live stale-work exclusion and convergence, not durability of
+the newest enqueue at every process instruction boundary.
+
 The updater child is terminated at journal header, first/final prepare,
 first/middle/final replacement, commit, first/middle/final cleanup, and journal
 removal. Every case authenticates the durable journal decision and starts two

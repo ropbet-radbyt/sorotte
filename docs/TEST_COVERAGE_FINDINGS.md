@@ -22,6 +22,7 @@ Client timing, generated Media Match, CLI composition, stalled-HTTP, and hosted-
 Coverage-finalizer update: 2026-07-31
 Real-mpv arming and Plex fixture completion update: 2026-08-01
 Documentation-inclusive hosted closure, CI critical path, and Node 24 update: 2026-08-01
+Pro-review CLI, TLS, protocol-reader, and persistence-claim remediation update: 2026-08-01
 
 Branch: `codex/test-coverage-design`
 
@@ -149,6 +150,39 @@ finalizer to the ordered two-platform map tuple; `TC-HARNESS-045` arms the
 minimum-mpv HTTP stall only after both clients reach exact prepared and started
 baselines; and `TC-HARNESS-046` waits for a complete Plex request header across
 transient socket reads.
+
+## 2026-08-01 Pro-review remediation
+
+Status: **Implemented and locally green; fresh exact-head hosted acceptance is
+required before merge**
+
+The review correctly found that the first CLI campaign modeled the
+noncanonical `-x=value` spelling but did not exercise argparse's canonical
+short-attached `-xVALUE` grammar or known flag clusters. `TC-CLI-004` and
+`TC-CLI-005` were temporarily reopened as exact expected-failure
+characterizations, then converted back to ordinary positive regressions after
+the production correction. A differential now invokes the actual pinned
+`ConfigurationGetter.getConfiguration()` at legacy commit
+`d1c5f85af377c960c5a940707c4d01bc84fd9c3f`, with GUI prompting disabled and
+configuration-path, parsing, checking, saving, and relative-config hooks
+replaced by bounded test stubs. Actual-process
+tests independently prove that accepted and rejected argument paths never
+emit password canaries and that malformed final endpoints exit before config
+creation, player launch, or network startup.
+
+The same review closed two adjacent hardening gaps. Loose TLS compatibility
+members still follow Certbot-style symlinks, but are now opened once and read
+through that handle with a 4 MiB plus-one limit and metadata recheck. The
+production one-shot protocol reader wrapper was removed; reusable connection
+paths must own `InboundProtocolLineReader` state, and a source-bound
+architecture regression protects that constraint. Finally, the server
+persistence prose now describes latest-wins arbitration as eventual while the
+worker remains alive, not as synchronous durability acknowledgement.
+
+The exact defect lifecycle, pinned-parser matrix, one deliberate stricter
+endpoint decision, regression inventory, local commands, and safety boundary
+are retained in
+[`pro-review-remediation-20260801.md`](evidence/test-coverage/pro-review-remediation-20260801.md).
 
 ## 2026-08-01 documentation-inclusive hosted closure and CI runtime
 
@@ -670,7 +704,7 @@ After the coverage tranche was integrated:
   const-context mutation is explicitly matched and expires for review on
   2026-10-31; exact proof is in
   `docs/evidence/test-coverage/targeted-mutation-20260729.md`.
-- The behavior catalog validates 20 behavior IDs, 51 exact proofs, and two
+- The behavior catalog validates 21 behavior IDs, 56 exact proofs, and two
   lanes. Before the closure slice, the executable registry contained six open
   defects and eight exact characterizations. It now validates as zero defects
   and zero characterizations at the closure checkpoint; each former expected
@@ -2452,8 +2486,12 @@ and rejects a mixed Certbot lineage before any target state is staged.
 
 For compatibility, an absent `current.json` still selects loose
 `cert.pem`/`chain.pem`/`privkey.pem` files. The reader accepts only two
-identical consecutive framed captures. This rejects observed replacement
-boundaries, but a stable mixed loose directory remains unknowable; the
+identical consecutive framed captures. Each loose member may follow a
+Certbot-style symlink but is opened once, checked as a regular target, and
+read through the opened handle with the same 4 MiB plus-one rejection bound as
+manifest members; handle length is rechecked after the read. This rejects
+oversized compatibility members and observed replacement boundaries, but a
+stable mixed loose directory remains unknowable; the
 operator guides therefore identify loose mode as static or externally
 serialized compatibility only, not generation-atomic rotation.
 
@@ -3191,8 +3229,8 @@ are retained in
 
 ## TC-CLI-004: CLI argument composition did not preserve legacy occurrence semantics
 
-Status: **Reopened 2026-08-01; the generated grammar omitted canonical
-short-attached options and malformed final endpoints**
+Status: **Resolved 2026-08-01 after review-driven reopening; pinned grammar
+and final endpoint regressions are positive**
 
 Severity: **Medium (valid legacy arguments could be rejected or compose into a
 different startup configuration)**
@@ -3220,6 +3258,15 @@ optional value can clear only the preceding CLI override; optional missing
 room/password values retain legacy fall-through; and required host/name
 occurrences without a value fail closed.
 
+The completed correction parses short options character by character,
+supports attached remainders with or without `=`, clusters known no-value
+flags, and pins the exact `-p`/`-psn` precedence against the reviewed Python
+checkout. Final host occurrences now carry a specific invalid result for empty,
+nonnumeric, out-of-range, and malformed bracketed endpoints; a later valid
+occurrence replaces an earlier error, while a malformed final occurrence exits
+before configuration persistence, player launch, or network startup. A valid
+host without an explicit port still inherits the lower-layer port.
+
 The fixed-seed campaign renders 16 scenario patterns 16 times, producing 208
 valid and 48 invalid cases. Its model independently applies environment,
 stored-setting, and CLI precedence without importing the production parser,
@@ -3227,11 +3274,14 @@ host parser, controlled-room normalizer, or override helper. The complete
 focused module passes 6/6 and the owning CLI library passes 366 tests with its
 eight registered ignores. Exact RED/GREEN counts and limits are retained in
 [`cli-argument-configuration-composition-20260731.md`](evidence/test-coverage/cli-argument-configuration-composition-20260731.md).
+The review-driven canonical grammar and final-endpoint follow-up is retained
+separately in
+[`pro-review-remediation-20260801.md`](evidence/test-coverage/pro-review-remediation-20260801.md).
 
 ## TC-CLI-005: Unknown attached option diagnostics reflected raw values
 
-Status: **Reopened 2026-08-01; canonical `-pSECRET` was rejected and retained
-verbatim before the diagnostic boundary**
+Status: **Resolved 2026-08-01 after review-driven reopening; structural
+argument issues and process privacy regressions are positive**
 
 Severity: **High for diagnostic privacy (an unrecognized credential-shaped
 value could be reproduced in user-visible output)**
@@ -3247,7 +3297,10 @@ The first correction retained the raw token and replaced everything after the
 first `=` only while formatting. It therefore missed canonical
 short-attached passwords, which have no equals sign. Unknown arguments must
 instead retain structural option identity without retaining attached values,
-and startup must use that representation. The focused
+and startup now uses that representation. Actual-binary tests cover
+`-pCANARY`, `-p=CANARY`, `--password=CANARY`, and an unknown attached canary;
+accepted and rejected process output, including the returned `anyhow` error,
+contains no canary. The focused
 regression and every generated case require all server-password,
 controlled-room-password, explicit-password, and unknown attached-value
 canaries to be absent from production `Debug` and diagnostic output. This is
