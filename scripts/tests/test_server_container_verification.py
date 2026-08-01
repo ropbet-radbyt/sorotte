@@ -1515,17 +1515,29 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(sbom["upload-artifact"], "false")
         cosign = self.by_name["Install pinned Cosign"]["with"]
         self.assertEqual(cosign["cosign-release"], "v3.0.6")
+        sign = self.by_name["Keylessly sign and attest the exact tested digest"][
+            "run"
+        ]
+        for required in [
+            '--annotations "sourceSha=$GITHUB_SHA"',
+            '--annotations "workflowSourceSha=$WORKFLOW_SOURCE_SHA"',
+        ]:
+            self.assertIn(required, sign)
+        self.assertEqual(sign.count("--annotations "), 2)
+        self.assertNotIn("--annotation ", sign)
         verify = self.by_name["Verify keyless identity and workflow claims"]["run"]
         for required in [
             "--certificate-identity",
             "--certificate-oidc-issuer",
             "--certificate-github-workflow-repository",
             "--certificate-github-workflow-sha",
-            '--annotation "sourceSha=$GITHUB_SHA"',
-            '--annotation "workflowSourceSha=$WORKFLOW_SOURCE_SHA"',
+            '--annotations "sourceSha=$GITHUB_SHA"',
+            '--annotations "workflowSourceSha=$WORKFLOW_SOURCE_SHA"',
             "verify-attestation",
         ]:
             self.assertIn(required, verify)
+        self.assertEqual(verify.count("--annotations "), 2)
+        self.assertNotIn("--annotation ", verify)
 
     def test_public_comparison_is_anonymous_bounded_and_after_logout(self) -> None:
         names = [step["name"] for step in self.steps]

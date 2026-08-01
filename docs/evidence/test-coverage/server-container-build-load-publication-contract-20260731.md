@@ -236,6 +236,24 @@ The closed runtime report records `startTls: true` in addition to the cipher,
 TLS version, and peer-certificate digest. All five failed runs skipped registry
 login, push, signing, and attestation, so none could mutate GHCR.
 
+Exact-merge publication run
+[`30696424760`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30696424760)
+then passed both plaintext lifecycles, the certificate-verified STARTTLS
+scenario, SBOM generation and binding, registry login, and the exact tested
+image push. It recorded both
+`sha-9042f944d10b5506587c2427832839180dc02240` and `latest` at
+`sha256:a19de4aa20beaf213876ebae7d4d94644756f27b37795c4660a0bd62ad351f64`.
+Unlike the preceding fail-before-login runs, this run did mutate GHCR. It did
+not complete publication assurance: pinned Cosign 3.0.6 rejected the singular
+`cosign sign --annotation` option before creating a signature or attestation,
+and the always-run final gate rejected the missing downstream reports.
+
+Cosign 3.0.6 exposes the long option as `--annotations` for both `sign` and
+`verify`. The workflow now uses that exact interface at both boundaries, and
+the policy regression requires both signed claims while rejecting the invalid
+singular spelling. A later all-green run remains required to supersede the
+unsigned publication and satisfy the completion criteria below.
+
 Follow-up local validation:
 
 ```text
