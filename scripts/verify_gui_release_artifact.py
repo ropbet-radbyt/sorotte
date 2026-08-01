@@ -71,6 +71,10 @@ GUI_EXE = "sorotte-gui.exe"
 UPDATER_EXE = "sorotte-gui-updater.exe"
 BOOTSTRAP_EXE = "sorotte-gui-updater-bootstrap.exe"
 JOURNAL_FILE = ".sorotte-update-journal-v1.jsonl"
+ELEVATED_UPDATER_REFUSAL = (
+    "Sorotte refuses to run automatic replacement from an elevated updater process. "
+    "Install this release manually from a trusted package."
+)
 PACKAGE_PAYLOADS = {
     GUI_EXE,
     UPDATER_EXE,
@@ -519,6 +523,68 @@ def _find_visible_window(pid: int) -> str | None:
     return titles[0] if titles else None
 
 
+def _current_process_is_elevated() -> bool:
+    if os.name != "nt":
+        raise VerificationError("updater elevation inspection requires Windows")
+    from ctypes import wintypes
+
+    token_query = 0x0008
+    token_elevation_class = 20
+
+    class TokenElevation(ctypes.Structure):
+        _fields_ = [("TokenIsElevated", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        token_query,
+        ctypes.byref(token),
+    ):
+        raise VerificationError(
+            f"could not open verifier process token (Win32 error {ctypes.get_last_error()})"
+        )
+    elevation = TokenElevation()
+    returned_length = wintypes.DWORD()
+    queried = advapi32.GetTokenInformation(
+        token,
+        token_elevation_class,
+        ctypes.byref(elevation),
+        ctypes.sizeof(elevation),
+        ctypes.byref(returned_length),
+    )
+    query_error = ctypes.get_last_error()
+    kernel32.CloseHandle(token)
+    if not queried:
+        raise VerificationError(
+            f"could not read verifier elevation state (Win32 error {query_error})"
+        )
+    if returned_length.value != ctypes.sizeof(elevation):
+        raise VerificationError(
+            "Windows returned an unexpected updater elevation record size"
+        )
+    return elevation.TokenIsElevated != 0
+
+
 def smoke_test_gui(gui_path: Path, runtime_root: Path) -> dict[str, object]:
     if os.name != "nt":
         raise VerificationError("GUI runtime smoke is supported only on Windows")
@@ -723,9 +789,11 @@ def smoke_test_updater_success(
     package_path: Path,
     package_digest: str,
     runtime_root: Path,
+    *,
+    process_elevated: bool,
 ) -> dict[str, object]:
     target = runtime_root / "update-success"
-    _seed_old_install(target, package_root / UPDATER_EXE)
+    original = _seed_old_install(target, package_root / UPDATER_EXE)
     expected = _snapshot(package_root, PACKAGE_FILES)
     log_path = runtime_root / "update-success.log"
     command = [
@@ -749,8 +817,39 @@ def smoke_test_updater_success(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise VerificationError(f"installed packaged updater bootstrap failed: {error}") from error
+    log = (
+        log_path.read_text(encoding="utf-8", errors="replace")
+        if log_path.exists()
+        else ""
+    )
+    if process_elevated:
+        if completed.returncode == 0:
+            raise VerificationError(
+                "elevated packaged updater unexpectedly accepted automatic replacement"
+            )
+        if log.strip() != ELEVATED_UPDATER_REFUSAL:
+            raise VerificationError(
+                "elevated packaged updater did not emit the exact fail-closed refusal: "
+                f"{log or 'no updater log was written'}"
+            )
+        _assert_snapshot(target, original, "elevated updater refusal")
+        leftovers = _transaction_leftovers(target)
+        if leftovers:
+            raise VerificationError(
+                f"elevated updater refusal left transaction artifacts: {leftovers}"
+            )
+        return {
+            "performed": True,
+            "installedBootstrap": True,
+            "selfReplacement": False,
+            "exactPackageInstalled": False,
+            "elevatedRefusal": True,
+            "refusedBeforeMutation": True,
+            "transactionArtifactsRemoved": True,
+            "logSha256": hashlib.sha256(log.encode()).hexdigest(),
+            "elapsedMilliseconds": round((time.monotonic() - started) * 1000),
+        }
     if completed.returncode != 0:
-        log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
         raise VerificationError(
             f"installed packaged updater bootstrap exited {completed.returncode}: "
             f"{log or 'no updater log was written'}"
@@ -852,21 +951,32 @@ def run_runtime_experiments(
         raise VerificationError("GUI release runtime experiments require Windows")
     runtime_root.mkdir()
     started = time.monotonic()
+    process_elevated = _current_process_is_elevated()
     gui = smoke_test_gui(package_root / GUI_EXE, runtime_root)
     update = smoke_test_updater_success(
         package_root,
         package_path,
         package_digest,
         runtime_root,
+        process_elevated=process_elevated,
     )
-    rollback = smoke_test_updater_rollback(
-        package_root,
-        package_path,
-        package_digest,
-        runtime_root,
+    rollback = (
+        {
+            "performed": False,
+            "reason": "elevated updater security boundary forbids mutation experiments",
+            "coveredBy": "updaterSuccess.elevatedRefusal",
+        }
+        if process_elevated
+        else smoke_test_updater_rollback(
+            package_root,
+            package_path,
+            package_digest,
+            runtime_root,
+        )
     )
     return {
         "performed": True,
+        "executionContext": {"processElevated": process_elevated},
         "guiLaunch": gui,
         "updaterSuccess": update,
         "updaterRollback": rollback,

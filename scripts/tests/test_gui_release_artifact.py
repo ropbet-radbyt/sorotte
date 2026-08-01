@@ -263,6 +263,177 @@ class GuiArtifactHappyPathTests(unittest.TestCase):
                 [digest(builder.payloads["sorotte-gui.exe"])],
             )
 
+    def test_elevated_runtime_requires_refusal_and_skips_mutation_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package_root = root / "package"
+            package_root.mkdir()
+            runtime_root = root / "runtime"
+            elevated_refusal = {
+                "performed": True,
+                "elevatedRefusal": True,
+                "refusedBeforeMutation": True,
+            }
+            with (
+                mock.patch.object(artifact.os, "name", "nt"),
+                mock.patch.object(
+                    artifact,
+                    "_current_process_is_elevated",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    artifact,
+                    "smoke_test_gui",
+                    return_value={"visibleMainWindow": True},
+                ),
+                mock.patch.object(
+                    artifact,
+                    "smoke_test_updater_success",
+                    return_value=elevated_refusal,
+                ) as updater,
+                mock.patch.object(artifact, "smoke_test_updater_rollback") as rollback,
+            ):
+                report = artifact.run_runtime_experiments(
+                    package_root,
+                    root / "package.zip",
+                    "a" * 64,
+                    runtime_root,
+                )
+
+            self.assertEqual(
+                report["executionContext"],
+                {"processElevated": True},
+            )
+            self.assertEqual(report["updaterSuccess"], elevated_refusal)
+            self.assertFalse(report["updaterRollback"]["performed"])
+            self.assertEqual(
+                report["updaterRollback"]["coveredBy"],
+                "updaterSuccess.elevatedRefusal",
+            )
+            updater.assert_called_once_with(
+                package_root,
+                root / "package.zip",
+                "a" * 64,
+                runtime_root,
+                process_elevated=True,
+            )
+            rollback.assert_not_called()
+
+    def test_non_elevated_runtime_requires_success_and_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package_root = root / "package"
+            package_root.mkdir()
+            runtime_root = root / "runtime"
+            with (
+                mock.patch.object(artifact.os, "name", "nt"),
+                mock.patch.object(
+                    artifact,
+                    "_current_process_is_elevated",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    artifact,
+                    "smoke_test_gui",
+                    return_value={"visibleMainWindow": True},
+                ),
+                mock.patch.object(
+                    artifact,
+                    "smoke_test_updater_success",
+                    return_value={"selfReplacement": True},
+                ) as updater,
+                mock.patch.object(
+                    artifact,
+                    "smoke_test_updater_rollback",
+                    return_value={"originalInstallRestored": True},
+                ) as rollback,
+            ):
+                report = artifact.run_runtime_experiments(
+                    package_root,
+                    root / "package.zip",
+                    "b" * 64,
+                    runtime_root,
+                )
+
+            self.assertEqual(
+                report["executionContext"],
+                {"processElevated": False},
+            )
+            updater.assert_called_once_with(
+                package_root,
+                root / "package.zip",
+                "b" * 64,
+                runtime_root,
+                process_elevated=False,
+            )
+            rollback.assert_called_once_with(
+                package_root,
+                root / "package.zip",
+                "b" * 64,
+                runtime_root,
+            )
+
+    def test_elevated_packaged_updater_refusal_is_exact_and_nonmutating(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package_root = root / "package"
+            payloads = {
+                relative: f"packaged {relative}\n".encode()
+                for relative in artifact.PACKAGE_PAYLOADS
+            }
+            for relative, body in payloads.items():
+                destination = artifact._path(package_root, relative)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(body)
+            (package_root / artifact.INSTALL_MANIFEST).write_bytes(
+                artifact._manifest_bytes("1.0.0", payloads)
+            )
+            package_path = root / "package.zip"
+            package_path.write_bytes(b"exact package fixture")
+            runtime_root = root / "runtime"
+            runtime_root.mkdir()
+
+            def refuse(command: list[str], **_kwargs: object) -> object:
+                log_path = Path(command[command.index("--log") + 1])
+                log_path.write_text(
+                    f"{artifact.ELEVATED_UPDATER_REFUSAL}\n",
+                    encoding="utf-8",
+                )
+                return artifact.subprocess.CompletedProcess(command, 1)
+
+            with mock.patch.object(artifact.subprocess, "run", side_effect=refuse):
+                report = artifact.smoke_test_updater_success(
+                    package_root,
+                    package_path,
+                    artifact.sha256_file(package_path),
+                    runtime_root,
+                    process_elevated=True,
+                )
+
+            self.assertTrue(report["elevatedRefusal"])
+            self.assertTrue(report["refusedBeforeMutation"])
+            self.assertFalse(report["selfReplacement"])
+            self.assertFalse(report["exactPackageInstalled"])
+            self.assertEqual(artifact._transaction_leftovers(runtime_root), [])
+
+            accepted_root = root / "elevated-accepted"
+            accepted_root.mkdir()
+            accepted = artifact.subprocess.CompletedProcess([], 0)
+            with (
+                mock.patch.object(artifact.subprocess, "run", return_value=accepted),
+                self.assertRaisesRegex(
+                    artifact.VerificationError,
+                    "elevated packaged updater unexpectedly accepted",
+                ),
+            ):
+                artifact.smoke_test_updater_success(
+                    package_root,
+                    package_path,
+                    artifact.sha256_file(package_path),
+                    accepted_root,
+                    process_elevated=True,
+                )
+
     def test_failure_report_binds_source_and_channel(self) -> None:
         report = artifact.failure_report(
             SOURCE_SHA.upper(),
