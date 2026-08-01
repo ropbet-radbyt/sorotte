@@ -23,6 +23,7 @@ Coverage-finalizer update: 2026-07-31
 Real-mpv arming and Plex fixture completion update: 2026-08-01
 Documentation-inclusive hosted closure, CI critical path, and Node 24 update: 2026-08-01
 Pro-review CLI, TLS, protocol-reader, and persistence-claim remediation update: 2026-08-01
+Exact-head LLVM mapping diagnostic update: 2026-08-01
 
 Branch: `codex/test-coverage-design`
 
@@ -4080,3 +4081,37 @@ verification, build, version validation, pause/seek/resume, cache-cap drain,
 premature-disconnect recovery, and the full stalled-HTTP recovery harness.
 Full provenance is retained in
 [`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).
+
+## TC-HARNESS-049: Boolean field pattern lacked an LLVM source mapping
+
+Status: **Resolved locally 2026-08-01; focused LLVM replay is positive and a
+fresh exact-head hosted run is required**
+
+Severity: **Harness source mapping (all behavior producers passed, but the
+fail-closed changed-line aggregate correctly rejected one ambiguous line)**
+
+Detection: coverage-diff job `91328082388` in exact-head workflow run
+`30684423737`
+
+Every behavioral and platform producer passed on attempt 1 at
+`c314374f4919dbd7414e34b6be59fae632a0af8b`, including both coverage maps,
+Linux and Windows all-feature tests, lifecycle, semantic, compatibility,
+minimum/newest mpv, packaging, and both strict server verifiers. The policy
+measured 82.53% combined, 80.51% ordinary, and 90.79% critical coverage, but
+failed because one ordinary changed line had no canonical map entry. The
+downloaded report identified only
+`LegacyClientArgumentIssue::UnknownOption`'s multiline
+`attached_value_present: true` match-pattern field. The surrounding arm was
+executed and mapped; the field-pattern line itself had no LLVM region. The
+verification aggregate then failed solely through its required dependency on
+coverage-diff.
+
+Commit `a09698f54b48b48e731949ca9566062b8ae528cf` expresses the same
+decision as an explicit boolean branch and extends the structural-redaction
+proof to the unattached option path. This does not weaken the unmapped-line
+policy or exclude a source line. A focused cargo-llvm-cov 0.8.4 replay maps
+the formerly absent field line with 18 hits, the attached redaction branch
+with 17 hits, and the unattached identity branch with one hit. The 12-test CLI
+composition module, complete 376-test CLI library with eight registered
+ignores, five CLI integration tests, formatting, and warning-denied all-target
+CLI Clippy are green.

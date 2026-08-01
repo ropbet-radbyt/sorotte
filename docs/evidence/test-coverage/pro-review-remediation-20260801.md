@@ -198,6 +198,41 @@ released the loopback server.
 Fresh hosted acceptance remains a separate exact-head publication boundary;
 earlier hosted runs are not reused as acceptance for this change.
 
+## First hosted diagnostic and source-mapping correction
+
+Manual workflow run `30684423737` was bound to exact head
+`c314374f4919dbd7414e34b6be59fae632a0af8b` and explicit base
+`f3964ebc7f7b281b9b78f3bfb243ff65e5122e33`. Every behavior-producing job
+passed on attempt 1: Linux and Windows all-feature tests, lifecycle, semantic,
+complete pinned-Python compatibility, generated Media Match, minimum/newest
+source-built mpv, Windows package checks, both coverage producers, both strict
+server verifiers, and the Windows behavior aggregate. The schedule-only
+nightly job was the sole expected skip.
+
+Coverage-diff job `91328082388` retained a real fail-closed diagnostic. Its
+two source-bound maps measured 82.53% combined, 80.51% ordinary, and 90.79%
+critical coverage, but one ordinary changed Rust line had no LLVM mapping:
+
+```text
+crates/sorotte-cli/src/client_args/types.rs:78
+attached_value_present: true,
+```
+
+The containing redaction arm executed and its neighboring lines were covered;
+LLVM emitted no region for the second field of the multiline match pattern.
+The verification aggregate failed only because coverage-diff is required. The
+downloaded evidence is retained locally under
+`target/hosted/30684423737/coverage-diff/`.
+
+Commit `a09698f54b48b48e731949ca9566062b8ae528cf` keeps the same structural
+privacy behavior but makes the attached/unattached choice an explicit boolean
+branch. The behavior proof now asserts both diagnostics. A focused
+cargo-llvm-cov 0.8.4 replay maps the formerly absent field line with 18 hits,
+the attached redaction line with 17 hits, and the unattached identity line
+with one hit. The complete CLI suite and warning-denied all-target Clippy
+remain green. `TC-HARNESS-049` records this diagnostic; the unmapped-line
+policy was not weakened or bypassed.
+
 ## Safety and scope
 
 Generated framed and argument input is processed only in memory. The Python
