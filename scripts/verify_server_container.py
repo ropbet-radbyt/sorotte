@@ -46,6 +46,8 @@ MAX_PROTOCOL_BYTES = 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 90
 SERVER_START_TIMEOUT_SECONDS = 15
 SERVER_STOP_TIMEOUT_SECONDS = 10
+CONTAINER_LOG_CAPTURE_ATTEMPTS = 20
+CONTAINER_LOG_CAPTURE_RETRY_SECONDS = 0.1
 REGISTRY_ATTEMPTS = 6
 REGISTRY_RETRY_BASE_SECONDS = 0.5
 REGISTRY_REQUEST_TIMEOUT_SECONDS = 15
@@ -732,15 +734,28 @@ def _drain_after_stop(
 
 
 def _write_container_log_and_remove(name: str, path: Path) -> None:
-    logs = _run(["docker", "logs", name], check=False)
-    path.write_text(logs.stdout, encoding="utf-8", newline="\n")
-    _run(["docker", "rm", "--force", name], check=False)
-    if "shutdown requested; draining client sessions" not in path.read_text(
-        encoding="utf-8", errors="replace"
-    ):
-        raise VerificationError(
-            f"{path.stem} container did not log the graceful shutdown barrier"
-        )
+    marker = "shutdown requested; draining client sessions"
+    logs: subprocess.CompletedProcess[str] | None = None
+    try:
+        for attempt in range(CONTAINER_LOG_CAPTURE_ATTEMPTS):
+            logs = _run(["docker", "logs", name], check=False)
+            path.write_text(logs.stdout, encoding="utf-8", newline="\n")
+            if logs.returncode == 0 and marker in logs.stdout:
+                break
+            if attempt + 1 < CONTAINER_LOG_CAPTURE_ATTEMPTS:
+                time.sleep(CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
+        else:
+            command_detail = (
+                f"; docker logs exited {logs.returncode}"
+                if logs is not None and logs.returncode != 0
+                else ""
+            )
+            raise VerificationError(
+                f"{path.stem} container did not log the graceful shutdown barrier"
+                f"{command_detail}"
+            )
+    finally:
+        _run(["docker", "rm", "--force", name], check=False)
 
 
 def _run_plaintext_persistence_scenario(

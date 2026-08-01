@@ -372,6 +372,82 @@ class JsonAndIdentityPolicyTests(unittest.TestCase):
 
 
 class LocalImageConsumerTests(unittest.TestCase):
+    def test_container_log_capture_waits_for_delayed_shutdown_marker(self) -> None:
+        marker = "sorotte-server: shutdown requested; draining client sessions\n"
+        log_results = [
+            subprocess.CompletedProcess(
+                ["docker", "logs"], 0, stdout="sorotte-server listening\n"
+            ),
+            subprocess.CompletedProcess(
+                ["docker", "logs"],
+                0,
+                stdout=f"sorotte-server listening\n{marker}",
+            ),
+            subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            with (
+                mock.patch.object(container, "_run", side_effect=log_results) as run,
+                mock.patch.object(container.time, "sleep") as sleep,
+            ):
+                container._write_container_log_and_remove("container-name", path)
+
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                f"sorotte-server listening\n{marker}",
+            )
+            self.assertEqual(
+                run.call_args_list,
+                [
+                    mock.call(["docker", "logs", "container-name"], check=False),
+                    mock.call(["docker", "logs", "container-name"], check=False),
+                    mock.call(
+                        ["docker", "rm", "--force", "container-name"], check=False
+                    ),
+                ],
+            )
+            sleep.assert_called_once_with(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
+
+    def test_container_log_capture_fails_bounded_and_still_removes_container(
+        self,
+    ) -> None:
+        outputs = [
+            subprocess.CompletedProcess(
+                ["docker", "logs"], 0, stdout=f"snapshot-{index}\n"
+            )
+            for index in range(3)
+        ]
+        outputs.append(subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            with (
+                mock.patch.object(container, "CONTAINER_LOG_CAPTURE_ATTEMPTS", 3),
+                mock.patch.object(container, "_run", side_effect=outputs) as run,
+                mock.patch.object(container.time, "sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(
+                    container.VerificationError,
+                    "did not log the graceful shutdown barrier",
+                ):
+                    container._write_container_log_and_remove("container-name", path)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "snapshot-2\n")
+            self.assertEqual(run.call_count, 4)
+            self.assertEqual(
+                run.call_args_list[-1],
+                mock.call(
+                    ["docker", "rm", "--force", "container-name"], check=False
+                ),
+            )
+            self.assertEqual(
+                sleep.call_args_list,
+                [
+                    mock.call(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS),
+                    mock.call(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS),
+                ],
+            )
+
     def test_local_image_inspection_binds_config_digest_labels_entrypoint_and_layers(
         self,
     ) -> None:
