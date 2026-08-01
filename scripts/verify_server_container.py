@@ -48,6 +48,7 @@ SERVER_START_TIMEOUT_SECONDS = 15
 SERVER_STOP_TIMEOUT_SECONDS = 10
 CONTAINER_LOG_CAPTURE_ATTEMPTS = 20
 CONTAINER_LOG_CAPTURE_RETRY_SECONDS = 0.1
+CONTAINER_STARTUP_LOG_MARKER = "sorotte-server listening on "
 REGISTRY_ATTEMPTS = 6
 REGISTRY_RETRY_BASE_SECONDS = 0.5
 REGISTRY_REQUEST_TIMEOUT_SECONDS = 15
@@ -629,7 +630,15 @@ def _stop_and_inspect_container(name: str) -> dict[str, Any]:
     )
     if not isinstance(state, dict):
         raise VerificationError("stopped container state must be an object")
-    if exit_code != 0 or state.get("ExitCode") != 0 or state.get("OOMKilled") is not False:
+    if (
+        exit_code != 0
+        or state.get("Status") != "exited"
+        or state.get("Running") is not False
+        or state.get("Dead") is not False
+        or state.get("ExitCode") != 0
+        or state.get("OOMKilled") is not False
+        or state.get("Error") != ""
+    ):
         raise VerificationError(f"server container did not stop cleanly: {state!r}")
     return {
         "error": state.get("Error", ""),
@@ -734,13 +743,18 @@ def _drain_after_stop(
 
 
 def _write_container_log_and_remove(name: str, path: Path) -> None:
-    marker = "shutdown requested; draining client sessions"
+    # SIGINT, zero exit status, live-session EOF, and persistence restoration
+    # are the shutdown proof. Docker logs are retained diagnostics; require the
+    # startup record so a missing or unreadable log cannot pass silently.
     logs: subprocess.CompletedProcess[str] | None = None
     try:
         for attempt in range(CONTAINER_LOG_CAPTURE_ATTEMPTS):
             logs = _run(["docker", "logs", name], check=False)
             path.write_text(logs.stdout, encoding="utf-8", newline="\n")
-            if logs.returncode == 0 and marker in logs.stdout:
+            if (
+                logs.returncode == 0
+                and CONTAINER_STARTUP_LOG_MARKER in logs.stdout
+            ):
                 break
             if attempt + 1 < CONTAINER_LOG_CAPTURE_ATTEMPTS:
                 time.sleep(CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
@@ -751,7 +765,7 @@ def _write_container_log_and_remove(name: str, path: Path) -> None:
                 else ""
             )
             raise VerificationError(
-                f"{path.stem} container did not log the graceful shutdown barrier"
+                f"{path.stem} container log did not retain the startup listener marker"
                 f"{command_detail}"
             )
     finally:
@@ -1811,6 +1825,7 @@ def parse_runtime_report(path: Path) -> dict[str, Any]:
         )
         if (
             shutdown["exitCode"] != 0
+            or shutdown["error"] != ""
             or shutdown["oomKilled"] is not False
             or shutdown["signal"] != "SIGINT"
         ):
@@ -1978,6 +1993,7 @@ def parse_runtime_report(path: Path) -> dict[str, Any]:
             )
             if (
                 restart_shutdown["exitCode"] != 0
+                or restart_shutdown["error"] != ""
                 or restart_shutdown["oomKilled"] is not False
                 or restart_shutdown["signal"] != "SIGINT"
             ):
