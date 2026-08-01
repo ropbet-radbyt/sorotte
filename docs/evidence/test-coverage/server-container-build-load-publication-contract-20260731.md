@@ -51,7 +51,9 @@ The final gate keeps distinct identities and cross-binds them:
      second container from the same loaded tag and bind-mounted state
      directory must restore Hello, playlist, index, and periodic playstate
      before another graceful drain;
-   - certificate-authenticated TLS loopback performs a bounded real Hello and
+   - plaintext STARTTLS negotiation requires the exact `send` request and
+     `true` acknowledgement at a clean framing boundary, then the
+     certificate-authenticated TLS loopback performs a bounded real Hello and
      live-session drain. A duplicate TLS restart would add no persistence
      identity proof beyond the plaintext restart.
    In each stop, the verifier sends `SIGINT` directly to the image entrypoint,
@@ -216,19 +218,33 @@ The final correction opens the already-stopped database with SQLite
 `mode=ro&immutable=1`. This retains exact row and integrity inspection without
 creating or changing WAL sidecars in the state directory that the second
 container must reuse. A WAL-mode regression now proves both generic integrity
-and exact-row inspection leave `-wal` and `-shm` absent. All four failed runs
-skipped registry login, push, signing, and attestation, so none could mutate
-GHCR.
+and exact-row inspection leave `-wal` and `-shm` absent.
+
+Publication run
+[`30695636736`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30695636736)
+then proved both plaintext container lifecycles and reached the TLS scenario.
+It failed with `SSL: WRONG_VERSION_NUMBER` because the smoke client attempted
+direct TLS on Sorotte's plaintext STARTTLS listener; the retained server log
+showed the TLS ClientHello being correctly rejected as an invalid plaintext
+protocol line.
+
+The STARTTLS correction now sends the canonical
+`{"TLS":{"startTLS":"send"}}` plaintext frame, requires the exact string
+`{"TLS":{"startTLS":"true"}}` acknowledgement with no buffered bytes beyond
+its line boundary, and only then starts the certificate-verified TLS handshake.
+The closed runtime report records `startTls: true` in addition to the cipher,
+TLS version, and peer-certificate digest. All five failed runs skipped registry
+login, push, signing, and attestation, so none could mutate GHCR.
 
 Follow-up local validation:
 
 ```text
 python -m unittest scripts.tests.test_server_container_verification -v
-  Ran 45 tests
+  Ran 46 tests
   OK
 
 python -m unittest discover scripts/tests -v
-  Ran 559 tests
+  Ran 560 tests
   OK
 
 cargo test -p sorotte-server --all-features --locked

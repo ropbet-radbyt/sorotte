@@ -147,6 +147,7 @@ def valid_runtime_report() -> dict[str, object]:
                 {
                     "cipher": "TLS_AES_256_GCM_SHA384",
                     "peerCertificateSha256": f"sha256:{'6' * 64}",
+                    "startTls": True,
                     "version": "TLSv1.3",
                 }
                 if tls
@@ -372,6 +373,29 @@ class JsonAndIdentityPolicyTests(unittest.TestCase):
 
 
 class LocalImageConsumerTests(unittest.TestCase):
+    def test_starttls_negotiation_requires_exact_ack_and_clean_boundary(self) -> None:
+        session = mock.Mock()
+        session.buffered = b""
+
+        def receive_until(matchers: object, description: str) -> dict[str, object]:
+            matcher = matchers["startTls"]  # type: ignore[index]
+            self.assertEqual(description, "STARTTLS acceptance")
+            self.assertFalse(matcher({"TLS": {"startTLS": "false"}}))
+            self.assertFalse(matcher({"TLS": {"startTLS": True}}))
+            self.assertTrue(matcher({"TLS": {"startTLS": "true"}}))
+            return {"startTls": {"TLS": {"startTLS": "true"}}}
+
+        session.receive_until.side_effect = receive_until
+        container._negotiate_start_tls(session)
+        session.send.assert_called_once_with({"TLS": {"startTLS": "send"}})
+
+        session.buffered = b"unexpected plaintext"
+        with self.assertRaisesRegex(
+            container.VerificationError,
+            "beyond the STARTTLS acknowledgement",
+        ):
+            container._negotiate_start_tls(session)
+
     def test_protocol_hello_rejects_overlong_test_identity(self) -> None:
         with self.assertRaisesRegex(
             container.VerificationError, "default 16-character limit"
@@ -771,6 +795,12 @@ class LocalImageConsumerTests(unittest.TestCase):
             plaintext["shutdown"]["error"] = "daemon failure"  # type: ignore[index]
             write_json(path, drift)
             with self.assertRaisesRegex(container.VerificationError, "shut down cleanly"):
+                container.parse_runtime_report(path)
+            drift = valid_runtime_report()
+            tls = drift["scenarios"][1]  # type: ignore[index]
+            tls["tls"]["startTls"] = False  # type: ignore[index]
+            write_json(path, drift)
+            with self.assertRaisesRegex(container.VerificationError, "prove STARTTLS"):
                 container.parse_runtime_report(path)
 
     def test_raw_persisted_room_row_is_exact_and_does_not_create_wal_sidecars(

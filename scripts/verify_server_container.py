@@ -498,6 +498,24 @@ def _protocol_hello(
     )["hello"]
 
 
+def _negotiate_start_tls(session: _ProtocolSession) -> None:
+    session.send({"TLS": {"startTLS": "send"}})
+    session.receive_until(
+        {
+            "startTls": lambda message: _pointer_equals(
+                message,
+                ["TLS", "startTLS"],
+                "true",
+            )
+        },
+        "STARTTLS acceptance",
+    )
+    if session.buffered:
+        raise VerificationError(
+            "server sent bytes beyond the STARTTLS acknowledgement before the TLS handshake"
+        )
+
+
 def _pointer_equals(message: dict[str, Any], keys: Sequence[str], expected: Any) -> bool:
     value: Any = message
     for key in keys:
@@ -1100,7 +1118,10 @@ def _run_container_scenario(
         )
         connection = raw_connection
         try:
+            plaintext_session = _ProtocolSession(raw_connection)
+            _negotiate_start_tls(plaintext_session)
             context = ssl.create_default_context(cafile=str(tls_root / "cert.pem"))
+            raw_connection.settimeout(SERVER_START_TIMEOUT_SECONDS)
             connection = context.wrap_socket(raw_connection, server_hostname="localhost")
             peer = connection.getpeercert(binary_form=True)
             if not peer:
@@ -1108,6 +1129,7 @@ def _run_container_scenario(
             tls_evidence = {
                 "cipher": connection.cipher()[0],
                 "peerCertificateSha256": f"sha256:{hashlib.sha256(peer).hexdigest()}",
+                "startTls": True,
                 "version": connection.version(),
             }
             protocol = _protocol_hello(
@@ -1908,12 +1930,16 @@ def parse_runtime_report(path: Path) -> dict[str, Any]:
         if scenario["scenario"] == "tls-persistence":
             _require_exact_keys(
                 scenario["tls"],
-                {"cipher", "peerCertificateSha256", "version"},
+                {"cipher", "peerCertificateSha256", "startTls", "version"},
                 "container TLS evidence",
             )
             _validate_digest(
                 scenario["tls"]["peerCertificateSha256"], "TLS peer certificate digest"
             )
+            _require_nonempty_string(scenario["tls"]["cipher"], "TLS cipher")
+            _require_nonempty_string(scenario["tls"]["version"], "TLS version")
+            if scenario["tls"]["startTls"] is not True:
+                raise VerificationError("TLS container scenario did not prove STARTTLS")
             if scenario["restart"] is not None or scenario["persistence"] is not None:
                 raise VerificationError(
                     "TLS Hello/drain scenario must not claim a duplicate restart proof"
