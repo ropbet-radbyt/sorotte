@@ -4082,16 +4082,17 @@ premature-disconnect recovery, and the full stalled-HTTP recovery harness.
 Full provenance is retained in
 [`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md).
 
-## TC-HARNESS-049: Boolean field pattern lacked an LLVM source mapping
+## TC-HARNESS-049: Multiline CLI issue patterns lacked stable LLVM mappings
 
 Status: **Resolved locally 2026-08-01; focused LLVM replay is positive and a
 fresh exact-head hosted run is required**
 
 Severity: **Harness source mapping (all behavior producers passed, but the
-fail-closed changed-line aggregate correctly rejected one ambiguous line)**
+fail-closed changed-line aggregate correctly rejected one ambiguous line in
+each diagnostic run)**
 
-Detection: coverage-diff job `91328082388` in exact-head workflow run
-`30684423737`
+Detection: coverage-diff jobs `91328082388` and `91330310651` in exact-head
+workflow runs `30684423737` and `30685217448`
 
 Every behavioral and platform producer passed on attempt 1 at
 `c314374f4919dbd7414e34b6be59fae632a0af8b`, including both coverage maps,
@@ -4106,12 +4107,23 @@ executed and mapped; the field-pattern line itself had no LLVM region. The
 verification aggregate then failed solely through its required dependency on
 coverage-diff.
 
-Commit `a09698f54b48b48e731949ca9566062b8ae528cf` expresses the same
-decision as an explicit boolean branch and extends the structural-redaction
-proof to the unattached option path. This does not weaken the unmapped-line
-policy or exclude a source line. A focused cargo-llvm-cov 0.8.4 replay maps
-the formerly absent field line with 18 hits, the attached redaction branch
-with 17 hits, and the unattached identity branch with one hit. The 12-test CLI
-composition module, complete 376-test CLI library with eight registered
-ignores, five CLI integration tests, formatting, and warning-denied all-target
-CLI Clippy are green.
+Commit `a09698f54b48b48e731949ca9566062b8ae528cf` expressed the same decision
+as an explicit boolean branch and extended the structural-redaction proof to
+the unattached option path. A focused replay mapped the original boolean
+field, but exact-head run `30685217448` retained a second, narrower diagnostic:
+rustfmt placed the rest pattern `..` alone on line 78, and the conservative
+scanner correctly refused to infer that the punctuation-only pattern was
+non-executable. All behavioral and platform producers again passed; only
+coverage-diff and its required verification aggregate failed.
+
+Commit `d51562a6d101dee3be571446926c535ca33b34fc` removes both multiline
+pattern ambiguities by giving the unknown-option case a dedicated,
+secret-free payload. It does not weaken the unmapped-line policy, add a
+formatter waiver, or exclude a source line. The 12-test CLI composition
+module, complete 376-test CLI library with eight registered ignores, five CLI
+integration tests, formatting, and warning-denied all-target CLI Clippy are
+green. A fresh cargo-llvm-cov 0.8.4 policy replay over the two-file correction
+classified 42 changed Rust lines, found 18 coverable and 15 covered lines, and
+reported zero unmapped lines (83.33% focused coverage). The three uncovered
+lines remain ordinary coverable branches rather than missing source-map
+entries; the full exact-head matrix remains the acceptance boundary.

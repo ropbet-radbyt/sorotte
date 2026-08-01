@@ -198,7 +198,7 @@ released the loopback server.
 Fresh hosted acceptance remains a separate exact-head publication boundary;
 earlier hosted runs are not reused as acceptance for this change.
 
-## First hosted diagnostic and source-mapping correction
+## Hosted diagnostics and source-mapping correction
 
 Manual workflow run `30684423737` was bound to exact head
 `c314374f4919dbd7414e34b6be59fae632a0af8b` and explicit base
@@ -229,9 +229,35 @@ privacy behavior but makes the attached/unattached choice an explicit boolean
 branch. The behavior proof now asserts both diagnostics. A focused
 cargo-llvm-cov 0.8.4 replay maps the formerly absent field line with 18 hits,
 the attached redaction line with 17 hits, and the unattached identity line
-with one hit. The complete CLI suite and warning-denied all-target Clippy
-remain green. `TC-HARNESS-049` records this diagnostic; the unmapped-line
-policy was not weakened or bypassed.
+with one hit.
+
+A second fresh workflow, run `30685217448` at exact head
+`d35c3f06036ddf2c7237395ce18e853326d50ec6`, confirmed the original field
+was mapped. Every behavioral and platform producer again passed, including
+both coverage producers, Windows and Linux all-feature tests, both strict
+server verifiers, compatibility, semantic, lifecycle, packaging, and both mpv
+lanes. Coverage-diff job `91330310651` then retained one remaining unmapped
+line:
+
+```text
+crates/sorotte-cli/src/client_args/types.rs:78
+..
+```
+
+Rustfmt had placed the multiline match rest pattern on its own line. The
+conservative scanner correctly refused to treat that punctuation-only line as
+non-executable without a canonical source map. The downloaded evidence is
+retained locally under `target/hosted/30685217448/coverage-diff/`.
+
+Commit `d51562a6d101dee3be571446926c535ca33b34fc` replaces the multiline
+unknown-option match fields with a dedicated secret-free payload and removes
+both mapping ambiguities. The complete CLI suite and warning-denied all-target
+Clippy remain green. A fresh cargo-llvm-cov 0.8.4 replay through the committed
+policy classified 42 changed Rust lines, found 18 coverable and 15 covered
+lines, and reported zero unmapped lines (83.33% focused coverage). The three
+uncovered lines are ordinary coverable branches, not absent source mappings.
+`TC-HARNESS-049` records both diagnostics; the unmapped-line policy was not
+weakened, bypassed, or given a formatter waiver.
 
 ## Safety and scope
 
