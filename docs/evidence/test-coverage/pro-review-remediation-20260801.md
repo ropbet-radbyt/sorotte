@@ -259,6 +259,38 @@ uncovered lines are ordinary coverable branches, not absent source mappings.
 `TC-HARNESS-049` records both diagnostics; the unmapped-line policy was not
 weakened, bypassed, or given a formatter waiver.
 
+Exact-head run `30685859358` at
+`cca386a256f9e6493f0587f85de64a501a18c003` then passed all 16 required jobs
+on attempt 1. The schedule-only nightly lane was the sole expected skip.
+Coverage-diff passed at 82.49% combined, 80.47% ordinary, and 90.79% critical
+coverage with zero unmapped lines, and the required aggregate passed all 21
+catalog behaviors. The successful coverage and aggregate artifacts are
+retained locally under `target/hosted/30685859358/`.
+
+## PR-triggered fuzz bootstrap diagnostic
+
+Opening the ready PR triggered protocol-fuzz run `30686290291` at the same
+exact head. Jobs `91332682574`, `91332682583`, and `91332682597` all failed in
+the installer step before compiling a fuzz target. The pinned
+`taiki-e/install-action` v2.85.2 revision did not recognize the independently
+pinned `cargo-fuzz@0.13.2`; its disabled fallback correctly made that mismatch
+fatal. The missing-artifact errors followed from the same early bootstrap
+failure.
+
+Commit `b0ae982dab9d0d361d4caf46d95bef686fa6ecd6` removes the unsupported
+installer only from the fuzz jobs and uses the dated nightly Cargo directly:
+
+```text
+cargo +nightly-2026-07-29 install cargo-fuzz --version 0.13.2 --locked
+```
+
+The subsequent exact runtime-version check remains required. The executable
+workflow policy rejects any installer action or action inputs and binds the
+toolchain, crate version, and lock constraint in all three jobs. Actionlint,
+20 protocol-fuzz policy tests, and 19 central CI-policy tests pass locally.
+`TC-HARNESS-050` retains the diagnostic; fresh PR checks and a fresh exact-head
+matrix remain required after this workflow-only correction.
+
 ## Safety and scope
 
 Generated framed and argument input is processed only in memory. The Python

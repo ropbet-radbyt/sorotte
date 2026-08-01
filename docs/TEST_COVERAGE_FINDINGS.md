@@ -4084,8 +4084,8 @@ Full provenance is retained in
 
 ## TC-HARNESS-049: Multiline CLI issue patterns lacked stable LLVM mappings
 
-Status: **Resolved locally 2026-08-01; focused LLVM replay is positive and a
-fresh exact-head hosted run is required**
+Status: **Resolved 2026-08-01; focused LLVM replay and exact-head hosted
+acceptance are positive**
 
 Severity: **Harness source mapping (all behavior producers passed, but the
 fail-closed changed-line aggregate correctly rejected one ambiguous line in
@@ -4127,3 +4127,42 @@ classified 42 changed Rust lines, found 18 coverable and 15 covered lines, and
 reported zero unmapped lines (83.33% focused coverage). The three uncovered
 lines remain ordinary coverable branches rather than missing source-map
 entries; the full exact-head matrix remains the acceptance boundary.
+
+Exact-head run `30685859358` at
+`cca386a256f9e6493f0587f85de64a501a18c003` passed both source-bound
+coverage producers, coverage-diff, and verification-required on attempt 1.
+The final report measured 82.49% combined, 80.47% ordinary, and 90.79%
+critical changed-line coverage with zero unmapped lines. Its required evidence
+aggregate passed all 21 catalog behaviors.
+
+## TC-HARNESS-050: Pinned installer did not support pinned cargo-fuzz
+
+Status: **Resolved locally 2026-08-01; fresh PR checks and exact-head hosted
+acceptance are required**
+
+Severity: **CI bootstrap (all three bounded fuzz jobs failed before target
+compilation, so no fuzz behavior was evaluated)**
+
+Detection: PR-triggered workflow run `30686290291`, jobs `91332682574`,
+`91332682583`, and `91332682597`
+
+The ready-for-review PR triggered all three protocol-fuzz jobs at exact head
+`cca386a256f9e6493f0587f85de64a501a18c003`. Each stopped in `Install pinned
+cargo-fuzz` because the exact `taiki-e/install-action` v2.85.2 revision did not
+recognize `cargo-fuzz@0.13.2` and fallback was correctly disabled. The later
+artifact upload failures were consequences of the bootstrap failure rather
+than independent diagnostics.
+
+Commit `b0ae982dab9d0d361d4caf46d95bef686fa6ecd6` installs the exact crate
+directly with the dated nightly toolchain, Cargo's package-version constraint,
+and the crate's locked dependency graph:
+
+```text
+cargo +nightly-2026-07-29 install cargo-fuzz --version 0.13.2 --locked
+```
+
+The existing `cargo fuzz --version` identity check remains mandatory. The
+executable fuzz policy now rejects an installer action, action inputs, version
+drift, a missing lock constraint, or a toolchain change in every fuzz job.
+Actionlint, all 20 protocol-fuzz policy tests, and all 19 central CI-policy
+tests pass locally. No fallback or fail-open path was introduced.
