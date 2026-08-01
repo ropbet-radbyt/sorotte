@@ -265,6 +265,109 @@ def validate_pull_request_ignored_bindings(
             raise AssertionError(f"{entry['id']} invocation cannot tolerate failure")
 
 
+def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
+    windows_workers = [
+        "rust_windows_tests",
+        "rust_windows_release",
+        "rust_windows_coverage",
+    ]
+    for job_id in windows_workers:
+        job = jobs.get(job_id)
+        if not isinstance(job, dict):
+            raise AssertionError(f"parallel Windows worker {job_id!r} is missing")
+        if job.get("runs-on") != "windows-latest":
+            raise AssertionError(f"parallel Windows worker {job_id!r} moved off Windows")
+        if job.get("if") != "github.event_name != 'schedule'":
+            raise AssertionError(f"parallel Windows worker {job_id!r} is not a PR gate")
+        if "needs" in job:
+            raise AssertionError(f"parallel Windows worker {job_id!r} was serialized")
+        if "continue-on-error" in job:
+            raise AssertionError(f"parallel Windows worker {job_id!r} tolerates failure")
+
+    aggregate = jobs.get("rust_windows")
+    if not isinstance(aggregate, dict):
+        raise AssertionError("rust_windows aggregate is missing")
+    if aggregate.get("needs") != windows_workers:
+        raise AssertionError("rust_windows aggregate is not bound to every worker")
+    if aggregate.get("if") != "${{ always() && github.event_name != 'schedule' }}":
+        raise AssertionError("rust_windows aggregate does not run fail-closed")
+    aggregate_step = named_step(
+        jobs,
+        "rust_windows",
+        "Enforce complete parallel Windows behavior gate",
+    )
+    if aggregate_step.get("env") != {
+        "WINDOWS_TESTS_RESULT": "${{ needs.rust_windows_tests.result }}",
+        "WINDOWS_RELEASE_RESULT": "${{ needs.rust_windows_release.result }}",
+        "WINDOWS_COVERAGE_RESULT": "${{ needs.rust_windows_coverage.result }}",
+    }:
+        raise AssertionError("rust_windows aggregate result bindings changed")
+    if normalized(aggregate_step.get("run", "")) != normalized(
+        """
+        test "$WINDOWS_TESTS_RESULT" = success
+        test "$WINDOWS_RELEASE_RESULT" = success
+        test "$WINDOWS_COVERAGE_RESULT" = success
+        """
+    ):
+        raise AssertionError("rust_windows aggregate does not require every success")
+
+    linux_producer = jobs.get("coverage_linux")
+    if not isinstance(linux_producer, dict) or "needs" in linux_producer:
+        raise AssertionError("Linux coverage producer is missing or serialized")
+    coverage_policy = jobs.get("coverage_diff")
+    if not isinstance(coverage_policy, dict):
+        raise AssertionError("coverage_diff policy job is missing")
+    if coverage_policy.get("needs") != ["rust_windows_coverage", "coverage_linux"]:
+        raise AssertionError("coverage_diff is not bound directly to both producers")
+    step_names = {step.get("name") for step in coverage_policy.get("steps", [])}
+    forbidden_producer_steps = {
+        "Generate merged behavioral coverage profiles",
+        "Export pinned LLVM JSON",
+        "Export native LLVM source view",
+        "Build source-bound physical line map",
+    }
+    if step_names & forbidden_producer_steps:
+        raise AssertionError("coverage production was moved back onto the policy path")
+    expected_downloads = {
+        "Download exact Windows process coverage evidence": {
+            "name": "verification-windows-process-coverage",
+            "path": "target/windows-process-coverage",
+        },
+        "Download exact Linux merged coverage evidence": {
+            "name": "verification-linux-merged-coverage",
+            "path": "target",
+        },
+    }
+    for name, settings in expected_downloads.items():
+        step = named_step(jobs, "coverage_diff", name)
+        if step.get("uses") != PINNED_USES["actions/download-artifact"]:
+            raise AssertionError(f"{name} no longer uses the pinned download action")
+        if step.get("with") != settings:
+            raise AssertionError(f"{name} no longer consumes the exact producer artifact")
+    finalizer = named_step(
+        jobs,
+        "coverage_diff",
+        "Enforce complete changed-line coverage evidence",
+    )
+    producer_result = "${{ needs.coverage_linux.result }}"
+    for key in (
+        "PROFILES_OUTCOME",
+        "LLVM_JSON_OUTCOME",
+        "LLVM_TEXT_OUTCOME",
+        "LINE_MAP_OUTCOME",
+    ):
+        if finalizer.get("env", {}).get(key) != producer_result:
+            raise AssertionError(f"coverage finalizer lost producer binding {key}")
+
+    required_needs = jobs.get("verification_required", {}).get("needs", [])
+    if "rust_windows" not in required_needs or "coverage_diff" not in required_needs:
+        raise AssertionError("public aggregates are not required")
+    if any(worker in required_needs for worker in windows_workers):
+        raise AssertionError("internal Windows workers leaked into the public contract")
+    if "coverage_linux" in required_needs:
+        raise AssertionError("internal Linux producer leaked into the public contract")
+
+
 class CiPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -412,11 +515,13 @@ class CiPolicyTests(unittest.TestCase):
             "checks": ("Setup Rust", "rustfmt, clippy"),
             "lifecycle_contract": ("Setup Rust", "rustfmt, clippy"),
             "gui_semantic": ("Setup Rust", "rustfmt, clippy"),
-            "rust_windows": (
-                "Setup Rust",
+            "rust_windows_tests": ("Setup Rust", "rustfmt, clippy"),
+            "rust_windows_release": ("Setup Rust", "rustfmt, clippy"),
+            "rust_windows_coverage": (
+                "Setup Rust coverage toolchain",
                 "rustfmt, clippy, llvm-tools-preview",
             ),
-            "coverage_diff": (
+            "coverage_linux": (
                 "Setup Rust coverage toolchain",
                 "rustfmt, clippy, llvm-tools-preview",
             ),
@@ -457,7 +562,11 @@ class CiPolicyTests(unittest.TestCase):
             "checks",
             "lifecycle_contract",
             "gui_semantic",
+            "rust_windows_tests",
+            "rust_windows_release",
+            "rust_windows_coverage",
             "rust_windows",
+            "coverage_linux",
             "coverage_diff",
             "compat-live-tls",
             "media-match-generated-media",
@@ -647,35 +756,19 @@ class CiPolicyTests(unittest.TestCase):
             },
         )
 
-        coverage_job = self.jobs["coverage_diff"]
-        self.assertEqual(coverage_job.get("needs"), "rust_windows")
+        coverage_producer = self.jobs["coverage_linux"]
+        self.assertNotIn("needs", coverage_producer)
         self.assertEqual(
-            coverage_job.get("env"),
+            coverage_producer.get("env"),
             {
                 "SYNCPLAY_LEGACY_ROOT": (
                     "${{ github.workspace }}/.interop-cache/syncplay-legacy"
                 )
             },
         )
-        windows_coverage_download = named_step(
-            self.jobs,
-            "coverage_diff",
-            "Download exact Windows process coverage evidence",
-        )
-        self.assertEqual(
-            windows_coverage_download.get("uses"),
-            PINNED_USES["actions/download-artifact"],
-        )
-        self.assertEqual(
-            windows_coverage_download.get("with"),
-            {
-                "name": "verification-windows-process-coverage",
-                "path": "target/windows-process-coverage",
-            },
-        )
         coverage_legacy = named_step(
             self.jobs,
-            "coverage_diff",
+            "coverage_linux",
             "Checkout pinned legacy reference for merged coverage",
         )
         self.assertEqual(
@@ -693,14 +786,14 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assert_exact_run(
             self.jobs,
-            "coverage_diff",
+            "coverage_linux",
             "Install merged coverage prerequisites",
             "python -m pip install --disable-pip-version-check "
             "-r requirements/legacy-python-interop.txt",
         )
         coverage_installer = named_step(
             self.jobs,
-            "coverage_diff",
+            "coverage_linux",
             "Install pinned cargo-llvm-cov",
         )
         self.assertNotIn("if", coverage_installer)
@@ -712,6 +805,142 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             coverage_installer.get("with"),
             {"tool": "cargo-llvm-cov@0.8.4"},
+        )
+        profiles = self.assert_exact_run(
+            self.jobs,
+            "coverage_linux",
+            "Generate merged behavioral coverage profiles",
+            """
+            python scripts/coverage_profile_lanes.py run
+            --repo-root .
+            --output target/verification/coverage-profile-lanes.json
+            """,
+            continue_on_error="true",
+        )
+        self.assertEqual(profiles.get("id"), "coverage_profiles")
+        llvm_json = self.assert_exact_run(
+            self.jobs,
+            "coverage_linux",
+            "Export pinned LLVM JSON",
+            "cargo llvm-cov report --json --skip-functions "
+            "--output-path target/diff-coverage.json",
+            continue_on_error="true",
+            allowed_if="steps.coverage_profiles.outcome == 'success'",
+        )
+        self.assertEqual(llvm_json.get("id"), "llvm_json")
+        llvm_text = self.assert_exact_run(
+            self.jobs,
+            "coverage_linux",
+            "Export native LLVM source view",
+            "cargo llvm-cov report --text "
+            "--output-path target/diff-coverage.txt",
+            continue_on_error="true",
+            allowed_if="steps.coverage_profiles.outcome == 'success'",
+        )
+        self.assertEqual(llvm_text.get("id"), "llvm_text")
+        line_map = self.assert_exact_run(
+            self.jobs,
+            "coverage_linux",
+            "Build source-bound physical line map",
+            """
+            python scripts/llvm_cov_line_map.py
+            --repo-root .
+            --llvm-json target/diff-coverage.json
+            --llvm-text target/diff-coverage.txt
+            --output target/verification/coverage-line-map.json
+            """,
+            continue_on_error="true",
+            allowed_if=(
+                "steps.llvm_json.outcome == 'success' && "
+                "steps.llvm_text.outcome == 'success'"
+            ),
+        )
+        self.assertEqual(line_map.get("id"), "line_map")
+        coverage_upload = named_step(
+            self.jobs,
+            "coverage_linux",
+            "Upload Linux merged coverage evidence",
+        )
+        self.assertEqual(coverage_upload.get("if"), "always()")
+        self.assertEqual(
+            coverage_upload.get("uses"),
+            PINNED_USES["actions/upload-artifact"],
+        )
+        self.assertEqual(
+            coverage_upload.get("with"),
+            {
+                "name": "verification-linux-merged-coverage",
+                "path": (
+                    "target/diff-coverage.json\n"
+                    "target/diff-coverage.txt\n"
+                    "target/verification/coverage-line-map.json\n"
+                    "target/verification/coverage-profile-lanes.json\n"
+                    "target/verification/coverage-profile-logs/\n"
+                ),
+                "if-no-files-found": "warn",
+                "retention-days": "14",
+                "overwrite": "true",
+            },
+        )
+        coverage_enforcement = self.assert_exact_run(
+            self.jobs,
+            "coverage_linux",
+            "Enforce complete Linux coverage producer",
+            """
+            test "$PROFILES_OUTCOME" = success
+            test "$LLVM_JSON_OUTCOME" = success
+            test "$LLVM_TEXT_OUTCOME" = success
+            test "$LINE_MAP_OUTCOME" = success
+            """,
+            allowed_if="always()",
+        )
+        self.assertEqual(
+            coverage_enforcement.get("env"),
+            {
+                "PROFILES_OUTCOME": "${{ steps.coverage_profiles.outcome }}",
+                "LLVM_JSON_OUTCOME": "${{ steps.llvm_json.outcome }}",
+                "LLVM_TEXT_OUTCOME": "${{ steps.llvm_text.outcome }}",
+                "LINE_MAP_OUTCOME": "${{ steps.line_map.outcome }}",
+            },
+        )
+
+        coverage_job = self.jobs["coverage_diff"]
+        self.assertEqual(
+            coverage_job.get("needs"),
+            ["rust_windows_coverage", "coverage_linux"],
+        )
+        self.assertNotIn("env", coverage_job)
+        windows_coverage_download = named_step(
+            self.jobs,
+            "coverage_diff",
+            "Download exact Windows process coverage evidence",
+        )
+        self.assertEqual(
+            windows_coverage_download.get("uses"),
+            PINNED_USES["actions/download-artifact"],
+        )
+        self.assertEqual(
+            windows_coverage_download.get("with"),
+            {
+                "name": "verification-windows-process-coverage",
+                "path": "target/windows-process-coverage",
+            },
+        )
+        linux_coverage_download = named_step(
+            self.jobs,
+            "coverage_diff",
+            "Download exact Linux merged coverage evidence",
+        )
+        self.assertEqual(
+            linux_coverage_download.get("uses"),
+            PINNED_USES["actions/download-artifact"],
+        )
+        self.assertEqual(
+            linux_coverage_download.get("with"),
+            {
+                "name": "verification-linux-merged-coverage",
+                "path": "target",
+            },
         )
         resolve_base = self.assert_exact_run(
             self.jobs,
@@ -746,57 +975,6 @@ class CiPolicyTests(unittest.TestCase):
                 "DISPATCH_BASE_SHA": "${{ inputs.coverage_base_sha || '' }}",
             },
         )
-        profiles = self.assert_exact_run(
-            self.jobs,
-            "coverage_diff",
-            "Generate merged behavioral coverage profiles",
-            """
-            python scripts/coverage_profile_lanes.py run
-            --repo-root .
-            --output target/verification/coverage-profile-lanes.json
-            """,
-            continue_on_error="true",
-            allowed_if="steps.coverage_base.outcome == 'success'",
-        )
-        self.assertEqual(profiles.get("id"), "coverage_profiles")
-        llvm_json = self.assert_exact_run(
-            self.jobs,
-            "coverage_diff",
-            "Export pinned LLVM JSON",
-            "cargo llvm-cov report --json --skip-functions "
-            "--output-path target/diff-coverage.json",
-            continue_on_error="true",
-            allowed_if="steps.coverage_profiles.outcome == 'success'",
-        )
-        self.assertEqual(llvm_json.get("id"), "llvm_json")
-        llvm_text = self.assert_exact_run(
-            self.jobs,
-            "coverage_diff",
-            "Export native LLVM source view",
-            "cargo llvm-cov report --text "
-            "--output-path target/diff-coverage.txt",
-            continue_on_error="true",
-            allowed_if="steps.coverage_profiles.outcome == 'success'",
-        )
-        self.assertEqual(llvm_text.get("id"), "llvm_text")
-        line_map = self.assert_exact_run(
-            self.jobs,
-            "coverage_diff",
-            "Build source-bound physical line map",
-            """
-            python scripts/llvm_cov_line_map.py
-            --repo-root .
-            --llvm-json target/diff-coverage.json
-            --llvm-text target/diff-coverage.txt
-            --output target/verification/coverage-line-map.json
-            """,
-            continue_on_error="true",
-            allowed_if=(
-                "steps.llvm_json.outcome == 'success' && "
-                "steps.llvm_text.outcome == 'success'"
-            ),
-        )
-        self.assertEqual(line_map.get("id"), "line_map")
         policy = self.assert_exact_run(
             self.jobs,
             "coverage_diff",
@@ -813,10 +991,7 @@ class CiPolicyTests(unittest.TestCase):
             --json-out target/verification/diff-coverage.json
             """,
             continue_on_error="true",
-            allowed_if=(
-                "steps.coverage_base.outcome == 'success' && "
-                "steps.line_map.outcome == 'success'"
-            ),
+            allowed_if="steps.coverage_base.outcome == 'success'",
         )
         self.assertEqual(policy.get("id"), "policy")
         finalizer = self.assert_exact_run(
@@ -846,10 +1021,10 @@ class CiPolicyTests(unittest.TestCase):
             finalizer.get("env"),
             {
                 "BASE_OUTCOME": "${{ steps.coverage_base.outcome }}",
-                "PROFILES_OUTCOME": "${{ steps.coverage_profiles.outcome }}",
-                "LLVM_JSON_OUTCOME": "${{ steps.llvm_json.outcome }}",
-                "LLVM_TEXT_OUTCOME": "${{ steps.llvm_text.outcome }}",
-                "LINE_MAP_OUTCOME": "${{ steps.line_map.outcome }}",
+                "PROFILES_OUTCOME": "${{ needs.coverage_linux.result }}",
+                "LLVM_JSON_OUTCOME": "${{ needs.coverage_linux.result }}",
+                "LLVM_TEXT_OUTCOME": "${{ needs.coverage_linux.result }}",
+                "LINE_MAP_OUTCOME": "${{ needs.coverage_linux.result }}",
                 "POLICY_OUTCOME": "${{ steps.policy.outcome }}",
             },
         )
@@ -953,7 +1128,7 @@ class CiPolicyTests(unittest.TestCase):
 
         windows_nextest_installer = named_step(
             self.jobs,
-            "rust_windows",
+            "rust_windows_tests",
             "Install pinned cargo-nextest",
         )
         self.assertNotIn("if", windows_nextest_installer)
@@ -969,24 +1144,9 @@ class CiPolicyTests(unittest.TestCase):
                 "fallback": "none",
             },
         )
-        windows_coverage_installer = named_step(
-            self.jobs,
-            "rust_windows",
-            "Install pinned cargo-llvm-cov for Windows process coverage",
-        )
-        self.assertNotIn("if", windows_coverage_installer)
-        self.assertNotIn("continue-on-error", windows_coverage_installer)
-        self.assertEqual(
-            windows_coverage_installer.get("uses"),
-            PINNED_USES["taiki-e/install-action"],
-        )
-        self.assertEqual(
-            windows_coverage_installer.get("with"),
-            {"tool": "cargo-llvm-cov@0.8.4"},
-        )
         windows_nextest = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_tests",
             "Nextest fail-on-flaky workspace tests",
             "python scripts/nextest_ci.py run --repo-root .",
             continue_on_error="true",
@@ -994,7 +1154,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(windows_nextest.get("id"), "nextest")
         windows_doctests = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_tests",
             "Cargo doctests",
             "cargo test --locked --workspace --all-features --doc",
             continue_on_error="true",
@@ -1002,7 +1162,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(windows_doctests.get("id"), "doctests")
         windows_attempts = named_step(
             self.jobs,
-            "rust_windows",
+            "rust_windows_tests",
             "Upload Windows nextest attempt evidence",
         )
         self.assertEqual(windows_attempts.get("if"), "always()")
@@ -1020,9 +1180,27 @@ class CiPolicyTests(unittest.TestCase):
                 "overwrite": "true",
             },
         )
+        windows_test_enforcement = self.assert_exact_run(
+            self.jobs,
+            "rust_windows_tests",
+            "Enforce complete Windows test gate",
+            """
+            if ($env:NEXTEST_OUTCOME -ne "success") { throw "nextest failed or found a flaky test" }
+            if ($env:DOCTEST_OUTCOME -ne "success") { throw "doctests failed" }
+            """,
+            allowed_if="always()",
+        )
+        self.assertEqual(
+            windows_test_enforcement.get("env"),
+            {
+                "NEXTEST_OUTCOME": "${{ steps.nextest.outcome }}",
+                "DOCTEST_OUTCOME": "${{ steps.doctests.outcome }}",
+            },
+        )
+
         self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_release",
             "Locked release-profile GUI and updater build",
             "cargo build --locked --release -p sorotte-gui "
             "--bin sorotte-gui --bin sorotte-gui-updater",
@@ -1030,21 +1208,56 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_release",
             "Package path boundary regressions",
             "./scripts/package-path-boundary-tests.ps1",
             continue_on_error="true",
         )
         self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_release",
             "Release publication policy regressions",
             "./scripts/release-publication-policy-tests.ps1",
             continue_on_error="true",
         )
+        windows_release_enforcement = self.assert_exact_run(
+            self.jobs,
+            "rust_windows_release",
+            "Enforce complete Windows release gate",
+            """
+            if ($env:RELEASE_BUILD_OUTCOME -ne "success") { throw "release build failed" }
+            if ($env:PACKAGE_PATHS_OUTCOME -ne "success") { throw "package path tests failed" }
+            if ($env:RELEASE_POLICY_OUTCOME -ne "success") { throw "release policy tests failed" }
+            """,
+            allowed_if="always()",
+        )
+        self.assertEqual(
+            windows_release_enforcement.get("env"),
+            {
+                "RELEASE_BUILD_OUTCOME": "${{ steps.release_build.outcome }}",
+                "PACKAGE_PATHS_OUTCOME": "${{ steps.package_paths.outcome }}",
+                "RELEASE_POLICY_OUTCOME": "${{ steps.release_policy.outcome }}",
+            },
+        )
+
+        windows_coverage_installer = named_step(
+            self.jobs,
+            "rust_windows_coverage",
+            "Install pinned cargo-llvm-cov for Windows process coverage",
+        )
+        self.assertNotIn("if", windows_coverage_installer)
+        self.assertNotIn("continue-on-error", windows_coverage_installer)
+        self.assertEqual(
+            windows_coverage_installer.get("uses"),
+            PINNED_USES["taiki-e/install-action"],
+        )
+        self.assertEqual(
+            windows_coverage_installer.get("with"),
+            {"tool": "cargo-llvm-cov@0.8.4"},
+        )
         windows_coverage_checkout = named_step(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Checkout exact Windows coverage revision",
         )
         self.assertEqual(
@@ -1055,13 +1268,12 @@ class CiPolicyTests(unittest.TestCase):
             windows_coverage_checkout.get("with"),
             {
                 "ref": HEAD_REF,
-                "path": "coverage-source",
                 "persist-credentials": "false",
             },
         )
         windows_coverage = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Generate exact Windows process coverage profiles",
             """
             python scripts/coverage_windows_process_lanes.py run
@@ -1071,13 +1283,10 @@ class CiPolicyTests(unittest.TestCase):
             continue_on_error="true",
         )
         self.assertEqual(windows_coverage.get("id"), "windows_coverage")
-        self.assertEqual(
-            windows_coverage.get("working-directory"),
-            "coverage-source",
-        )
+        self.assertNotIn("working-directory", windows_coverage)
         windows_llvm_json = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Export Windows LLVM JSON",
             "cargo llvm-cov report --json --skip-functions "
             "--output-path target/coverage-windows-process.json",
@@ -1085,17 +1294,14 @@ class CiPolicyTests(unittest.TestCase):
             allowed_if="steps.windows_coverage.outcome == 'success'",
         )
         self.assertEqual(windows_llvm_json.get("id"), "windows_llvm_json")
-        self.assertEqual(
-            windows_llvm_json.get("working-directory"),
-            "coverage-source",
-        )
+        self.assertNotIn("working-directory", windows_llvm_json)
         self.assertEqual(
             windows_llvm_json.get("env"),
             {"CARGO_TARGET_DIR": "target/llvm-cov-windows-process"},
         )
         windows_llvm_text = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Export Windows native LLVM source view",
             "cargo llvm-cov report --text "
             "--output-path target/coverage-windows-process.txt",
@@ -1103,17 +1309,14 @@ class CiPolicyTests(unittest.TestCase):
             allowed_if="steps.windows_coverage.outcome == 'success'",
         )
         self.assertEqual(windows_llvm_text.get("id"), "windows_llvm_text")
-        self.assertEqual(
-            windows_llvm_text.get("working-directory"),
-            "coverage-source",
-        )
+        self.assertNotIn("working-directory", windows_llvm_text)
         self.assertEqual(
             windows_llvm_text.get("env"),
             {"CARGO_TARGET_DIR": "target/llvm-cov-windows-process"},
         )
         windows_line_map = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Build Windows source-bound physical line map",
             """
             python scripts/llvm_cov_line_map.py
@@ -1129,13 +1332,10 @@ class CiPolicyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(windows_line_map.get("id"), "windows_line_map")
-        self.assertEqual(
-            windows_line_map.get("working-directory"),
-            "coverage-source",
-        )
+        self.assertNotIn("working-directory", windows_line_map)
         windows_coverage_upload = named_step(
             self.jobs,
-            "rust_windows",
+            "rust_windows_coverage",
             "Upload Windows process coverage evidence",
         )
         self.assertEqual(windows_coverage_upload.get("if"), "always()")
@@ -1160,23 +1360,18 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             windows_upload_settings["path"].splitlines(),
             [
-                "coverage-source/target/coverage-windows-process.json",
-                "coverage-source/target/coverage-windows-process.txt",
-                "coverage-source/target/verification/coverage-windows-process-line-map.json",
-                "coverage-source/target/verification/coverage-windows-process-lanes.json",
-                "coverage-source/target/verification/coverage-windows-process-logs/",
+                "target/coverage-windows-process.json",
+                "target/coverage-windows-process.txt",
+                "target/verification/coverage-windows-process-line-map.json",
+                "target/verification/coverage-windows-process-lanes.json",
+                "target/verification/coverage-windows-process-logs/",
             ],
         )
-        windows_enforcement = self.assert_exact_run(
+        windows_coverage_enforcement = self.assert_exact_run(
             self.jobs,
-            "rust_windows",
-            "Enforce complete Windows behavior gate",
+            "rust_windows_coverage",
+            "Enforce complete Windows coverage gate",
             """
-            if ($env:NEXTEST_OUTCOME -ne "success") { throw "nextest failed or found a flaky test" }
-            if ($env:DOCTEST_OUTCOME -ne "success") { throw "doctests failed" }
-            if ($env:RELEASE_BUILD_OUTCOME -ne "success") { throw "release build failed" }
-            if ($env:PACKAGE_PATHS_OUTCOME -ne "success") { throw "package path tests failed" }
-            if ($env:RELEASE_POLICY_OUTCOME -ne "success") { throw "release policy tests failed" }
             if ($env:WINDOWS_COVERAGE_OUTCOME -ne "success") { throw "Windows process coverage profiles failed" }
             if ($env:WINDOWS_LLVM_JSON_OUTCOME -ne "success") { throw "Windows LLVM JSON export failed" }
             if ($env:WINDOWS_LLVM_TEXT_OUTCOME -ne "success") { throw "Windows LLVM source export failed" }
@@ -1185,17 +1380,44 @@ class CiPolicyTests(unittest.TestCase):
             allowed_if="always()",
         )
         self.assertEqual(
-            windows_enforcement.get("env"),
+            windows_coverage_enforcement.get("env"),
             {
-                "NEXTEST_OUTCOME": "${{ steps.nextest.outcome }}",
-                "DOCTEST_OUTCOME": "${{ steps.doctests.outcome }}",
-                "RELEASE_BUILD_OUTCOME": "${{ steps.release_build.outcome }}",
-                "PACKAGE_PATHS_OUTCOME": "${{ steps.package_paths.outcome }}",
-                "RELEASE_POLICY_OUTCOME": "${{ steps.release_policy.outcome }}",
                 "WINDOWS_COVERAGE_OUTCOME": "${{ steps.windows_coverage.outcome }}",
                 "WINDOWS_LLVM_JSON_OUTCOME": "${{ steps.windows_llvm_json.outcome }}",
                 "WINDOWS_LLVM_TEXT_OUTCOME": "${{ steps.windows_llvm_text.outcome }}",
                 "WINDOWS_LINE_MAP_OUTCOME": "${{ steps.windows_line_map.outcome }}",
+            },
+        )
+
+        windows_aggregate = self.jobs["rust_windows"]
+        self.assertEqual(
+            windows_aggregate.get("if"),
+            "${{ always() && github.event_name != 'schedule' }}",
+        )
+        self.assertEqual(
+            windows_aggregate.get("needs"),
+            [
+                "rust_windows_tests",
+                "rust_windows_release",
+                "rust_windows_coverage",
+            ],
+        )
+        windows_aggregate_step = self.assert_exact_run(
+            self.jobs,
+            "rust_windows",
+            "Enforce complete parallel Windows behavior gate",
+            """
+            test "$WINDOWS_TESTS_RESULT" = success
+            test "$WINDOWS_RELEASE_RESULT" = success
+            test "$WINDOWS_COVERAGE_RESULT" = success
+            """,
+        )
+        self.assertEqual(
+            windows_aggregate_step.get("env"),
+            {
+                "WINDOWS_TESTS_RESULT": "${{ needs.rust_windows_tests.result }}",
+                "WINDOWS_RELEASE_RESULT": "${{ needs.rust_windows_release.result }}",
+                "WINDOWS_COVERAGE_RESULT": "${{ needs.rust_windows_coverage.result }}",
             },
         )
 
@@ -1285,6 +1507,67 @@ class CiPolicyTests(unittest.TestCase):
         }
         for name, command in expected_mpv.items():
             self.assert_exact_run(self.jobs, "mpv-pr-semantics", name, command)
+
+    def test_parallel_ci_graph_rejects_serial_or_fail_open_mutations(self) -> None:
+        validate_parallel_ci_graph(self.jobs)
+        mutations: list[tuple[str, dict[str, Any]]] = []
+
+        missing_worker = copy.deepcopy(self.jobs)
+        missing_worker["rust_windows"]["needs"].remove("rust_windows_release")
+        mutations.append(("missing-windows-worker", missing_worker))
+
+        serialized_windows = copy.deepcopy(self.jobs)
+        serialized_windows["rust_windows_release"]["needs"] = "rust_windows_tests"
+        mutations.append(("serialized-windows-worker", serialized_windows))
+
+        serialized_policy = copy.deepcopy(self.jobs)
+        serialized_policy["coverage_diff"]["needs"] = [
+            "rust_windows",
+            "coverage_linux",
+        ]
+        mutations.append(("serialized-coverage-policy", serialized_policy))
+
+        weakened_aggregate = copy.deepcopy(self.jobs)
+        aggregate = named_step(
+            weakened_aggregate,
+            "rust_windows",
+            "Enforce complete parallel Windows behavior gate",
+        )
+        aggregate["run"] = aggregate["run"].replace(
+            'test "$WINDOWS_RELEASE_RESULT" = success',
+            'test "$WINDOWS_RELEASE_RESULT" != failure',
+        )
+        mutations.append(("weakened-windows-aggregate", weakened_aggregate))
+
+        missing_download = copy.deepcopy(self.jobs)
+        missing_download["coverage_diff"]["steps"] = [
+            step
+            for step in missing_download["coverage_diff"]["steps"]
+            if step.get("name") != "Download exact Linux merged coverage evidence"
+        ]
+        mutations.append(("missing-linux-artifact", missing_download))
+
+        producer_on_policy_path = copy.deepcopy(self.jobs)
+        producer_on_policy_path["coverage_diff"]["steps"].append(
+            {
+                "name": "Generate merged behavioral coverage profiles",
+                "run": "echo serialized",
+            }
+        )
+        mutations.append(("producer-on-policy-path", producer_on_policy_path))
+
+        unbound_finalizer = copy.deepcopy(self.jobs)
+        finalizer = named_step(
+            unbound_finalizer,
+            "coverage_diff",
+            "Enforce complete changed-line coverage evidence",
+        )
+        finalizer["env"]["LINE_MAP_OUTCOME"] = "success"
+        mutations.append(("unbound-producer-result", unbound_finalizer))
+
+        for mutation, jobs in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                validate_parallel_ci_graph(jobs)
 
     def test_mpv_version_matrix_rejects_missing_newest_or_floating_sources(
         self,
@@ -1526,17 +1809,24 @@ class CiPolicyTests(unittest.TestCase):
             self.assertEqual(len(checkouts), 1)
             self.assertNotIn("ref", checkouts[0].get("with", {}))
 
-        windows = self.sorotte_checkouts("rust_windows")
-        self.assertEqual(len(windows), 2)
-        self.assertNotIn("ref", windows[0].get("with", {}))
-        self.assertEqual(windows[1]["with"]["ref"], HEAD_REF)
-        self.assertEqual(windows[1]["with"]["path"], "coverage-source")
-        self.assertNotIn("clean", windows[1]["with"])
+        for job_id in ("rust_windows_tests", "rust_windows_release"):
+            windows = self.sorotte_checkouts(job_id)
+            self.assertEqual(len(windows), 1)
+            self.assertNotIn("ref", windows[0].get("with", {}))
+
+        windows_coverage = self.sorotte_checkouts("rust_windows_coverage")
+        self.assertEqual(len(windows_coverage), 1)
+        self.assertEqual(windows_coverage[0]["with"]["ref"], HEAD_REF)
+        self.assertNotIn("path", windows_coverage[0]["with"])
+        self.assertNotIn("clean", windows_coverage[0]["with"])
+        self.assertEqual(self.sorotte_checkouts("rust_windows"), [])
 
         lifecycle = self.sorotte_checkouts("lifecycle_contract")
+        coverage_producer = self.sorotte_checkouts("coverage_linux")
         coverage = self.sorotte_checkouts("coverage_diff")
         aggregate = self.sorotte_checkouts("verification_required")
         self.assertEqual(lifecycle[0]["with"]["ref"], HEAD_REF)
+        self.assertEqual(coverage_producer[0]["with"]["ref"], HEAD_REF)
         self.assertEqual(coverage[0]["with"]["ref"], HEAD_REF)
         self.assertEqual(coverage[0]["with"]["fetch-depth"], "0")
         self.assertEqual(aggregate[0]["with"]["ref"], HEAD_REF)
@@ -1564,6 +1854,8 @@ class CiPolicyTests(unittest.TestCase):
         expected_artifacts = {
             "lifecycle_contract": "verification-lifecycle-contract",
             "gui_semantic": "verification-gui-semantic",
+            "rust_windows_coverage": "verification-windows-process-coverage",
+            "coverage_linux": "verification-linux-merged-coverage",
             "coverage_diff": "verification-coverage-diff",
             "verification_required": "verification-aggregate",
         }

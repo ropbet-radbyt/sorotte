@@ -37,6 +37,18 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
+Pull-request CI keeps the public `Rust all-feature behavior (Windows)` and
+`coverage-diff` checks stable, but their expensive work is deliberately
+parallel. Windows nextest/doctests, the release/package checks, and exact-head
+Windows process coverage run as three independent workers; the public Windows
+check succeeds only after all three do. Linux merged coverage starts
+immediately in a separate producer, and `coverage-diff` consumes the Linux and
+Windows artifacts only to resolve the immutable base, enforce the two-map
+changed-line policy, and finalize evidence. Do not make either producer depend
+on the public Windows aggregate or move profile generation back into
+`coverage-diff`; `scripts/tests/test_ci_policy.py` treats either change as a
+critical-path and fail-closed policy regression.
+
 ## Real mpv Checks
 
 The required `mpv-pr-semantics` job builds the peeled mpv `v0.41.0` commit and

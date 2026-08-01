@@ -286,6 +286,22 @@ imports, signatures, compile-time declarations, structural expression/pattern
 glue, and punctuation are non-coverable only when the conservative lexical
 classifier can prove a complete structural form.
 
+Pull-request production and policy are separate fail-closed jobs. The
+`coverage_linux` job checks out the exact verification head, runs the complete
+merged-profile producer, exports both pinned LLVM views, builds the canonical
+line map, and uploads `verification-linux-merged-coverage`.
+`rust_windows_coverage` independently creates and uploads the exact-head
+Windows map. Only after both producers succeed does `coverage_diff` download
+their artifacts, resolve the event-specific base, run the two-map policy, and
+revalidate every retained producer artifact through the
+`coverage_ci_guard.py finalize` command. The finalizer's profile, LLVM JSON,
+LLVM text, and line-map outcomes
+are bound to the upstream Linux producer result rather than synthetic success
+values. The public `rust-windows` result is likewise a small always-run
+aggregate over independent Windows test, release, and coverage workers. This
+keeps the required check names stable while removing the former Windows then
+Linux-coverage serial chain.
+
 The required gate consumes the union of the broad Linux merged-profile map and
 an exact-head targeted Windows process map. Each map is source-bound and
 validated independently; duplicate content is rejected, and identical

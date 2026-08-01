@@ -28,6 +28,7 @@ Cross-platform physical-line coverage union and final campaign update: 2026-07-3
 Coverage-finalizer update: 2026-07-31
 Real-mpv arming and Plex fixture completion update: 2026-08-01
 Implementation-head hosted acceptance update: 2026-08-01
+CI critical-path parallelization update: 2026-08-01
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -176,6 +177,22 @@ local Linux/Windows union replay are green. Exact implementation-head workflow
 finalizer at 83.03% combined / 80.92% ordinary / 90.79% critical with zero
 unmapped lines, and the aggregate. Final documentation-inclusive hosted
 acceptance remains the publication boundary.
+
+The subsequent full matrix run `30674012574` established the CI performance
+baseline: 55 minutes 7 seconds elapsed included 21 minutes 37 seconds queued
+behind an earlier non-cancelling manual dispatch, while actual execution took
+33 minutes 30 seconds. Its critical path serialized a 24-minute-33-second
+Windows job, an 8-minute-38-second Linux coverage/diff job, and the final
+aggregate. The current workflow retains every command, exact-head checkout,
+artifact, finalizer validation, and public required-check identity while
+splitting Windows tests, release/package checks, and process coverage into
+three independent workers. Linux coverage production now starts immediately;
+the small `coverage-diff` policy job waits directly for both platform
+artifacts. An always-run `rust_windows` aggregate preserves fail-closed public
+semantics, and adversarial workflow-policy tests reject omitted workers,
+worker serialization, producer work moved back onto the policy path, missing
+downloads, weakened aggregate comparisons, or detached producer outcomes.
+
 The complete assurance stack now contains:
 
 - a fail-closed behavior catalog with 20 behavior IDs and 51 exact proofs;
