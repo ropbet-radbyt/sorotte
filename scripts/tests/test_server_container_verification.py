@@ -223,13 +223,17 @@ def valid_publish_report() -> dict[str, object]:
     }
 
 
-def valid_signature_output() -> list[dict[str, object]]:
+def valid_signature_output(
+    *,
+    docker_reference: str = IMAGE_NAME,
+    signature_type: str = "cosign container image signature",
+) -> list[dict[str, object]]:
     return [
         {
             "critical": {
-                "identity": {"docker-reference": IMAGE_NAME},
+                "identity": {"docker-reference": docker_reference},
                 "image": {"docker-manifest-digest": MANIFEST_DIGEST},
-                "type": "cosign container image signature",
+                "type": signature_type,
             },
             "optional": {
                 "sourceSha": SOURCE_SHA,
@@ -1193,6 +1197,59 @@ class CosignEvidenceTests(unittest.TestCase):
                         "workflowSourceSha": WORKFLOW_SHA,
                     },
                 )
+
+    def test_signature_output_accepts_only_canonical_cosign_v3_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "signature.json"
+            v3_type = "https://sigstore.dev/cosign/sign/v1"
+            digest_identity = f"{IMAGE_NAME}@{MANIFEST_DIGEST}"
+            write_json(
+                path,
+                valid_signature_output(
+                    docker_reference=digest_identity,
+                    signature_type=v3_type,
+                ),
+            )
+            self.assertEqual(
+                container.verify_cosign_signature_output(
+                    path,
+                    expected_image=IMAGE_NAME,
+                    expected_digest=MANIFEST_DIGEST,
+                    expected_annotations={
+                        "sourceSha": SOURCE_SHA,
+                        "workflowSourceSha": WORKFLOW_SHA,
+                    },
+                ),
+                1,
+            )
+            invalid_records = [
+                (f"{IMAGE_NAME}:latest", v3_type),
+                (f"{IMAGE_NAME}@sha256:{'f' * 64}", v3_type),
+                (f"ghcr.io/ropbet-radbyt/other@{MANIFEST_DIGEST}", v3_type),
+                (digest_identity, "https://example.invalid/signature"),
+            ]
+            for docker_reference, signature_type in invalid_records:
+                with self.subTest(
+                    docker_reference=docker_reference,
+                    signature_type=signature_type,
+                ):
+                    write_json(
+                        path,
+                        valid_signature_output(
+                            docker_reference=docker_reference,
+                            signature_type=signature_type,
+                        ),
+                    )
+                    with self.assertRaises(container.VerificationError):
+                        container.verify_cosign_signature_output(
+                            path,
+                            expected_image=IMAGE_NAME,
+                            expected_digest=MANIFEST_DIGEST,
+                            expected_annotations={
+                                "sourceSha": SOURCE_SHA,
+                                "workflowSourceSha": WORKFLOW_SHA,
+                            },
+                        )
 
     def test_attestation_output_binds_spdx_predicate_subject_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

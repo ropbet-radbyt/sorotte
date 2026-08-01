@@ -254,15 +254,36 @@ the policy regression requires both signed claims while rejecting the invalid
 singular spelling. A later all-green run remains required to supersede the
 unsigned publication and satisfy the completion criteria below.
 
+Publication run
+[`30697387744`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30697387744)
+proved the corrected Cosign 3 interface: build, both real runtime boundaries,
+STARTTLS, SBOM binding, push, keyless signature and SPDX attestation creation,
+and exact certificate/annotation verification all passed. It pushed
+`sha-776212abba6f336bee634130b836c912aaf130d6` and `latest` at
+`sha256:aea3984f49e2a8d6d328b6318481790ee7ce5320cacd8d57c8a41f7e5bb9847c`.
+The anonymous cross-binding phase still failed before its registry queries
+because Cosign 3 represents the verified signature's `docker-reference` as
+the exact digest-qualified `image@sha256:...`, while the evidence parser only
+accepted Cosign's legacy bare-image identity.
+
+The parser now accepts precisely those two canonical verified forms: the
+expected bare image or that same image qualified by the already-validated
+expected digest. It also requires either the legacy Cosign signature type or
+the Cosign 3 signature URI, and regressions reject a tag, foreign repository,
+wrong digest, or unknown signature type. The attestation emitted by the same
+run already matched the existing exact image, digest, and SPDX-predicate
+contract. The final gate correctly remained failed until a later run can
+complete anonymous tag/config comparison and produce every passed report.
+
 Follow-up local validation:
 
 ```text
 python -m unittest scripts.tests.test_server_container_verification -v
-  Ran 46 tests
+  Ran 47 tests
   OK
 
 python -m unittest discover scripts/tests -v
-  Ran 560 tests
+  Ran 561 tests
   OK
 
 cargo test -p sorotte-server --all-features --locked
@@ -273,6 +294,11 @@ python -m py_compile scripts/verify_server_container.py \
 cargo fmt --all --check
 git diff --check
   PASS
+
+verify-publication and final-gate replay over the retained run 30697387744
+signature, attestation, SBOM, runtime, and push reports plus anonymous GHCR
+  PASS; all three public references resolved to the recorded digest and the
+  reconstructed final gate passed
 ```
 
 ## CI-owned completion criteria
@@ -292,6 +318,8 @@ produce and retain:
 
 The GHCR package must be anonymously pullable or the public comparison fails.
 The runtime lane currently proves only `linux/amd64`, and its TLS fixture proves
-the server TLS boundary rather than public-PKI issuance. No local Docker,
-Cosign, Syft, GHCR, signature-transparency, or public-package result is claimed
-by this evidence note.
+the server TLS boundary rather than public-PKI issuance. No local Docker build
+or run, Syft generation, Cosign signing, or signature-transparency result is
+claimed by this evidence note; those phases remain CI-owned. The supplementary
+anonymous GHCR replay consumes retained CI evidence and does not replace the
+required all-green hosted workflow run.
