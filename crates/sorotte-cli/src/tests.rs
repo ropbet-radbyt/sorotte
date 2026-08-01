@@ -2,7 +2,7 @@
 use super::spawn_legacy_external_player_from_spec_legacy_compatible;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-    ConnectedSessionExit, LegacyClientArgOverrides,
+    ConnectedSessionExit, HostArgumentError, LegacyClientArgOverrides, LegacyClientArgumentIssue,
     LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
     LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
     ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
@@ -62,7 +62,7 @@ use super::{
     should_run_headless_automatic_update_check_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
     upsert_sorotte_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
-    user_change_notification_message,
+    user_change_notification_message, validate_composed_client_endpoint,
 };
 use serde_json::Value;
 use sorotte_client_app::app_boundary::application::{ClientApplication, ClientApplicationSettings};

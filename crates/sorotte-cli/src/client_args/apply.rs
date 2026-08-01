@@ -26,6 +26,18 @@ pub(crate) fn apply_legacy_client_arg_overrides(
     }
 }
 
+pub(crate) fn validate_composed_client_endpoint(
+    config: &ClientLoopConfig,
+) -> Result<(), HostArgumentError> {
+    if config.host.trim().is_empty() {
+        return Err(HostArgumentError::EmptyHost);
+    }
+    if config.port == 0 {
+        return Err(HostArgumentError::PortOutOfRange);
+    }
+    Ok(())
+}
+
 pub(crate) fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOverrides) {
     if overrides.debug_requested {
         eprintln!("note: legacy --debug enables sorotte-cli diagnostics output");
@@ -53,15 +65,12 @@ pub(crate) fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyCl
     }
 }
 
-pub(crate) fn legacy_unrecognized_arguments_diagnostic_line(unknown_options: &[String]) -> String {
+pub(crate) fn legacy_unrecognized_arguments_diagnostic_line(
+    unknown_options: &[LegacyClientArgumentIssue],
+) -> String {
     let redacted_options = unknown_options
         .iter()
-        .map(|option| {
-            option.split_once('=').map_or_else(
-                || option.to_owned(),
-                |(name, _)| format!("{name}={}", sorotte_secret::REDACTED_SECRET),
-            )
-        })
+        .map(LegacyClientArgumentIssue::diagnostic_fragment)
         .collect::<Vec<_>>();
     format!(
         "error: unrecognized arguments: {}",

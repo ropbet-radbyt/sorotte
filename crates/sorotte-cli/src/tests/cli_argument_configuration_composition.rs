@@ -1,10 +1,7 @@
 use super::*;
 
 #[test]
-#[should_panic(
-    expected = "TC-CLI-005: short-attached password must be accepted without diagnostic exposure"
-)]
-fn known_defect_tc_cli_005_short_attached_password_is_accepted_without_diagnostic_exposure() {
+fn short_attached_password_is_accepted_without_diagnostic_exposure() {
     let overrides = parse_legacy_client_arg_overrides(["-pCLI_PASSWORD_CANARY"]);
 
     assert!(
@@ -14,8 +11,7 @@ fn known_defect_tc_cli_005_short_attached_password_is_accepted_without_diagnosti
 }
 
 #[test]
-#[should_panic(expected = "TC-CLI-004: malformed final host must block endpoint composition")]
-fn known_defect_tc_cli_004_malformed_final_host_blocks_endpoint_composition() {
+fn malformed_final_host_blocks_endpoint_composition() {
     let overrides = parse_legacy_client_arg_overrides([
         "--host",
         "valid.example:8999",
@@ -35,7 +31,14 @@ fn unknown_attached_values_are_secret_safe_in_diagnostics() {
     let overrides = parse_legacy_client_arg_overrides([format!("--api-token={SECRET}")]);
     assert_eq!(
         overrides.unknown_options,
-        vec![format!("--api-token={SECRET}")]
+        vec![LegacyClientArgumentIssue::UnknownOption {
+            name: "--api-token".to_owned(),
+            attached_value_present: true,
+        }]
+    );
+    assert!(
+        !format!("{:?}", overrides.unknown_options).contains(SECRET),
+        "the structural parser issue must not retain the attached value"
     );
 
     let diagnostic = legacy_unrecognized_arguments_diagnostic_line(&overrides.unknown_options);
@@ -112,9 +115,144 @@ fn empty_duplicate_values_clear_the_cli_layer_override() {
 fn missing_required_host_and_name_values_are_invalid_parser_cases() {
     let overrides = parse_legacy_client_arg_overrides(["--host", "--name"]);
 
+    assert!(overrides.unknown_options[0].matches_rejected_token("--host"));
+    assert!(overrides.unknown_options[1].matches_rejected_token("--name"));
+}
+
+#[test]
+fn canonical_short_attached_values_and_boolean_clusters_match_argparse_shape() {
+    let overrides = parse_legacy_client_arg_overrides([
+        "-aexample.org:8999",
+        "-nAlice",
+        "-rroom",
+        "-pCLI_PASSWORD_CANARY",
+        "-dg",
+    ]);
+
+    assert!(overrides.unknown_options.is_empty());
+    assert_eq!(overrides.host.as_deref(), Some("example.org"));
+    assert_eq!(overrides.port, Some(8999));
+    assert_eq!(overrides.username.as_deref(), Some("Alice"));
+    assert_eq!(overrides.room.as_deref(), Some("room"));
     assert_eq!(
-        overrides.unknown_options,
-        vec!["--host".to_owned(), "--name".to_owned()]
+        overrides
+            .controlled_room_password_override
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
+        Some("CLI_PASSWORD_CANARY")
+    );
+    assert!(overrides.debug_requested);
+    assert!(overrides.force_gui_prompt_requested);
+
+    let reverse_cluster = parse_legacy_client_arg_overrides(["-gd"]);
+    assert!(reverse_cluster.debug_requested);
+    assert!(reverse_cluster.force_gui_prompt_requested);
+    assert!(reverse_cluster.unknown_options.is_empty());
+}
+
+#[test]
+fn optional_short_values_and_psn_overlap_follow_pinned_argparse_precedence() {
+    let flag_looking_values = parse_legacy_client_arg_overrides(["-p", "-d", "-r", "-g"]);
+    assert_eq!(flag_looking_values.controlled_room_password_override, None);
+    assert_eq!(flag_looking_values.room, None);
+    assert!(flag_looking_values.debug_requested);
+    assert!(flag_looking_values.force_gui_prompt_requested);
+    assert!(flag_looking_values.unknown_options.is_empty());
+
+    let separated_psn = parse_legacy_client_arg_overrides(["-psn", "VALUE"]);
+    let equals_psn = parse_legacy_client_arg_overrides(["-psn=VALUE"]);
+    for parsed in [&separated_psn, &equals_psn] {
+        assert_eq!(parsed.controlled_room_password_override, None);
+        assert_eq!(parsed.file, None);
+        assert!(parsed.unknown_options.is_empty());
+    }
+
+    let password_prefix = parse_legacy_client_arg_overrides(["-psnVALUE"]);
+    assert_eq!(
+        password_prefix
+            .controlled_room_password_override
+            .as_ref()
+            .map(sorotte_secret::SecretValue::expose_secret),
+        Some("snVALUE")
+    );
+    assert!(password_prefix.unknown_options.is_empty());
+
+    let missing_psn_value = parse_legacy_client_arg_overrides(["-psn"]);
+    assert!(missing_psn_value.unknown_options[0].matches_rejected_token("-psn"));
+}
+
+fn final_host_argument_error(arguments: &[&str]) -> HostArgumentError {
+    let parsed = parse_legacy_client_arg_overrides(arguments);
+    assert_eq!(parsed.unknown_options.len(), 1, "arguments={arguments:?}");
+    match parsed.unknown_options[0] {
+        LegacyClientArgumentIssue::InvalidHost { error, .. } => error,
+        ref issue => panic!("expected invalid-host issue for {arguments:?}, got {issue:?}"),
+    }
+}
+
+#[test]
+fn malformed_final_cli_endpoints_fail_closed_with_specific_error_kinds() {
+    for (value, expected) in [
+        ("example.org:notaport", HostArgumentError::NonNumericPort),
+        ("example.org:", HostArgumentError::EmptyPort),
+        ("example.org:0", HostArgumentError::PortOutOfRange),
+        ("example.org:65536", HostArgumentError::PortOutOfRange),
+        (":1234", HostArgumentError::EmptyHost),
+        ("[::1]:notaport", HostArgumentError::NonNumericPort),
+        ("[::1]:0", HostArgumentError::PortOutOfRange),
+        ("[::1]:65536", HostArgumentError::PortOutOfRange),
+        ("[::1", HostArgumentError::MalformedBracketedIpv6),
+        ("[::1]junk", HostArgumentError::MalformedBracketedIpv6),
+    ] {
+        assert_eq!(
+            final_host_argument_error(&["--host", value]),
+            expected,
+            "value={value:?}"
+        );
+    }
+}
+
+#[test]
+fn final_host_occurrence_controls_failure_and_valid_no_port_inherits_lower_port() {
+    let valid_then_invalid = parse_legacy_client_arg_overrides([
+        "--host",
+        "valid.example:8999",
+        "--host",
+        "invalid.example:notaport",
+    ]);
+    assert_eq!(valid_then_invalid.host, None);
+    assert_eq!(valid_then_invalid.port, None);
+    assert_eq!(valid_then_invalid.unknown_options.len(), 1);
+
+    let invalid_then_valid = parse_legacy_client_arg_overrides([
+        "--host",
+        "invalid.example:notaport",
+        "--host",
+        "valid.example:8123",
+    ]);
+    assert!(invalid_then_valid.unknown_options.is_empty());
+    assert_eq!(invalid_then_valid.host.as_deref(), Some("valid.example"));
+    assert_eq!(invalid_then_valid.port, Some(8123));
+
+    let mut inherited = build_client_loop_config_from_env();
+    inherited.host = "lower.example".to_owned();
+    inherited.port = 4567;
+    let no_port = parse_legacy_client_arg_overrides(["--host", "valid.example"]);
+    apply_legacy_client_arg_overrides(&mut inherited, &no_port);
+    assert_eq!(inherited.host, "valid.example");
+    assert_eq!(inherited.port, 4567);
+    assert_eq!(validate_composed_client_endpoint(&inherited), Ok(()));
+
+    inherited.host.clear();
+    assert_eq!(
+        validate_composed_client_endpoint(&inherited),
+        Err(HostArgumentError::EmptyHost)
+    );
+    inherited.host = "valid.example".to_owned();
+    inherited.port = 0;
+    assert_eq!(
+        validate_composed_client_endpoint(&inherited),
+        Err(HostArgumentError::PortOutOfRange)
     );
 }
 
@@ -727,7 +865,7 @@ fn generated_cli_configuration_composition_matches_independent_precedence_oracle
             .zip(&modeled_cli.invalid_options)
         {
             assert!(
-                actual == expected,
+                actual.matches_rejected_token(expected),
                 "{} parser invalid-option identity or order differs",
                 case.id
             );

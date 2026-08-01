@@ -216,7 +216,10 @@ fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
             controlled_room_password_override: None,
             show_help: false,
             show_version: false,
-            unknown_options: vec!["--wat".to_owned(), "-x".to_owned()],
+            unknown_options: vec![
+                LegacyClientArgumentIssue::unknown_option("--wat"),
+                LegacyClientArgumentIssue::unknown_option("-x"),
+            ],
         }
     );
 }
