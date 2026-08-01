@@ -134,16 +134,34 @@ focused dispositions and positive regressions or exact-artifact replay. The
 committed implementation-head compatibility and WSL fuzz campaigns, 54-test
 Windows process map, and local two-platform coverage replay are green.
 Exact implementation-head workflow `30639113884` also passed every required
-producer, the corrected two-map coverage finalizer, and the aggregate;
-documentation-inclusive hosted acceptance remains pending. Detailed
-records are
+producer, the corrected two-map coverage finalizer, and the aggregate.
+Documentation-inclusive workflow `30679354953` subsequently finished green at
+exact workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c`. Its first attempt retained one
+Windows server-release Python playlist-observation timeout; GitHub's
+failed-job rerun repeated the complete strict job successfully without a
+source change. The final suite contains 16 successful checks, the expected
+schedule-only skip, zero annotations, and nine nonexpired evidence artifacts.
+Detailed records are
 [`client-ping-jitter-drift-schedules-20260731.md`](../docs/evidence/test-coverage/client-ping-jitter-drift-schedules-20260731.md),
 [`media-match-generated-media-capability-20260731.md`](../docs/evidence/test-coverage/media-match-generated-media-capability-20260731.md),
 [`cli-argument-configuration-composition-20260731.md`](../docs/evidence/test-coverage/cli-argument-configuration-composition-20260731.md),
 [`native-gui-real-mpv-stalled-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md),
 and the integrated
 [`next-four-test-slices-20260731.md`](../docs/evidence/test-coverage/next-four-test-slices-20260731.md)
-ledger.
+ledger. The hosted closure, retained failed attempt, CI timing checkpoints,
+Node 24 action pins, and unchanged external limits are recorded in
+[`hosted-ci-closure-20260801.md`](../docs/evidence/test-coverage/hosted-ci-closure-20260801.md).
+
+The pre-optimization full matrix spent 33m30 executing after its queue wait.
+Parallel Windows producers and an independent Linux coverage producer reduced
+the first complete parallel run to 19m33 while preserving the public
+aggregates and exact artifacts. That run exposed the Windows strict server
+verifier as a 19m28 outlier. CI now uses `-NoWorkspace` only to omit the
+workspace test already executed by the required all-feature workers; the
+successful exact-head Windows verifier rerun took 10m49. The first-party
+checkout, Python, upload, and download actions are full-SHA-pinned to Node 24
+majors, and the accepted run emitted no runtime-deprecation annotation.
 
 `NET-DEADLINE-001` makes the first deterministic CLI clock slice required
 evidence. Paused Tokio time proves the exact 100/200/400 ms reconnect schedule
@@ -1014,5 +1032,7 @@ workflow produces its complete green artifact. The contract and that remaining
 execution boundary are recorded in
 [`server-container-build-load-publication-contract-20260731.md`](../docs/evidence/test-coverage/server-container-build-load-publication-contract-20260731.md).
 
-Known product findings deliberately left unfixed by this coverage branch are
-tracked in [`docs/TEST_COVERAGE_FINDINGS.md`](../docs/TEST_COVERAGE_FINDINGS.md).
+Historical product and harness findings, their completed dispositions, the
+explicitly empty current product-defect registry, and the remaining external
+capability boundaries are tracked in
+[`docs/TEST_COVERAGE_FINDINGS.md`](../docs/TEST_COVERAGE_FINDINGS.md).

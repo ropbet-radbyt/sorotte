@@ -1,9 +1,9 @@
 # Sorotte Test Coverage and Verification Strategy
 
 Status: implemented verification program with an explicitly empty
-product-defect registry; all current harness corrections passed exact
-implementation-head hosted acceptance, with documentation-inclusive hosted
-confirmation reserved for the final committed head
+product-defect registry; documentation-inclusive hosted acceptance passed at
+exact workflow-bearing head `612917ac8461040549217453bdebfc5001f2378c`;
+four capability-scoped system proofs remain externally provisioned
 
 Audit date: 2026-07-28
 Lean-fix implementation update: 2026-07-29
@@ -29,6 +29,7 @@ Coverage-finalizer update: 2026-07-31
 Real-mpv arming and Plex fixture completion update: 2026-08-01
 Implementation-head hosted acceptance update: 2026-08-01
 CI critical-path parallelization update: 2026-08-01
+Documentation-inclusive hosted closure, verifier deduplication, and Node 24 update: 2026-08-01
 
 Historical audit baseline: pull request #15, `codex/fix-youtube-buffering-stall` at
 `a08a06ea7c6cada5413b0dba73b16f940cfd46e1`
@@ -175,8 +176,14 @@ Exact-head compatibility, WSL fuzz, the 54-test Windows process map, and the
 local Linux/Windows union replay are green. Exact implementation-head workflow
 `30639113884` also passed every required producer, the corrected coverage
 finalizer at 83.03% combined / 80.92% ordinary / 90.79% critical with zero
-unmapped lines, and the aggregate. Final documentation-inclusive hosted
-acceptance remains the publication boundary.
+unmapped lines, and the aggregate. Documentation-inclusive workflow
+`30679354953` subsequently finished green at exact workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c`. Attempt 1 retained a Windows
+server-release Python playlist-observation timeout; a failed-job rerun passed
+the complete strict job without a source change. The final suite has 16
+successful checks, the expected schedule-only skip, zero annotations, and nine
+nonexpired artifacts, closing the former publication boundary for this
+implementation and evidence set.
 
 The subsequent full matrix run `30674012574` established the CI performance
 baseline: 55 minutes 7 seconds elapsed included 21 minutes 37 seconds queued
@@ -192,6 +199,16 @@ artifacts. An always-run `rust_windows` aggregate preserves fail-closed public
 semantics, and adversarial workflow-policy tests reject omitted workers,
 worker serialization, producer work moved back onto the policy path, missing
 downloads, weakened aggregate comparisons, or detached producer outcomes.
+The first complete parallel run, `30677728038`, passed in 19 minutes 33
+seconds and exposed `server-release-verify (windows-latest)` as the 19-minute-
+28-second outlier. CI now invokes the verifier with `-NoWorkspace`, skipping
+only the workspace test already executed by required all-feature workers; the
+successful Windows rerun in `30679354953` took 10 minutes 49 seconds. The
+repository also moved its full-SHA-pinned checkout, Python, upload, and
+download actions to Node 24 majors, and the accepted run emitted zero
+annotations. Exact chronology, artifacts, and the retained failed attempt are
+recorded in
+[`hosted-ci-closure-20260801.md`](evidence/test-coverage/hosted-ci-closure-20260801.md).
 
 The complete assurance stack now contains:
 
@@ -2732,8 +2749,12 @@ checkpoint passes 82.55%, 80.18%, and 90.79% respectively, also with zero
 unmapped lines. Exact implementation-head workflow `30639113884` subsequently
 passed every producer, the corrected finalizer, and the aggregate with a fresh
 83.03% combined / 80.92% ordinary / 90.79% critical union and zero unmapped
-lines. The final documentation-inclusive exact-source workflow remains a
-separate publication check; a local focused pass is not a substitute for it.
+lines. Documentation-inclusive workflow `30679354953` then passed at exact
+workflow-bearing head `612917ac8461040549217453bdebfc5001f2378c` after one
+retained failed Windows observation and a successful failed-job rerun. That
+closes the separate publication check for the implementation, workflows, and
+evidence present at that head; a later implementation or workflow change must
+earn a new exact-head result.
 
 The most valuable remaining next steps are now execution and promotion of the
 new bounded capabilities:

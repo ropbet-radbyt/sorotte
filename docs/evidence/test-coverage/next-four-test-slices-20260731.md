@@ -35,8 +35,10 @@ commit and positive local regression or exact downloaded-artifact replay. The
 committed implementation-head required-live and WSL fuzz campaigns, 54-test
 Windows process map, and local Linux/Windows coverage union are green. Exact
 implementation-head workflow `30639113884` also passed every required producer,
-the corrected coverage finalizer, and the aggregate. Final
-documentation-inclusive hosted acceptance remains pending.
+the corrected coverage finalizer, and the aggregate. Documentation-inclusive
+workflow `30679354953` subsequently finished green at exact workflow-bearing
+head `612917ac8461040549217453bdebfc5001f2378c`, closing the former publication
+check for this tranche.
 
 ## Scope and safety boundary
 
@@ -437,18 +439,28 @@ GUI SHA-256: 093fc9315c738eb683cf1cb5aa34c226a69307535e27c86faa088ef3cc7dfaf3
 mpv SHA-256: 2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0
 ```
 
-## Implementation-head hosted acceptance and pending publication
+## Documentation-inclusive hosted acceptance
 
 Implementation source and focused corrections are committed and pushed through
 `dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`. The fresh source-bound
 compatibility and framed-mpv campaigns above use that exact implementation
 head. Exact-head workflow `30639113884` passed every originating job, the
-corrected two-map coverage finalizer, and the required aggregate. These
-documentation edits are not yet part of remote HEAD, so the branch has not yet
-been promoted as the final remote head at this checkpoint.
+corrected two-map coverage finalizer, and the required aggregate.
 
-A fresh hosted workflow over the documentation-inclusive source must still
-regenerate and consume both platform maps, pass every originating job and the
-required aggregate, and reach a successful final conclusion. Until that
-occurs, this record claims complete local closure and retained diagnostic
-evidence; it does not claim final exact-source hosted completion.
+Commit `289845ad0eafd8ff94f90b6020818aecb63560f2` then committed the integrated
+documentation and evidence. Later workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c` retained that complete record and
+added only bounded CI topology, verifier, and action-runtime changes.
+Documentation-inclusive workflow `30679354953` regenerated and consumed both
+platform maps, passed every originating job and aggregate, and reached a final
+successful conclusion after rerunning one failed Windows server-release job.
+Attempt 1 retained a legacy Python playlist-observation timeout; the complete
+job passed on attempt 2 without a source change. The final suite has zero
+annotations and nine nonexpired evidence artifacts.
+
+This closes the historical exact-source publication boundary for the tranche.
+It does not promote the separately unexecuted interactive Windows,
+native-Windows minimum/newest mpv, privileged block-replay, or public GHCR
+capabilities. Exact chronology, timing, retained failure, and artifact identity
+are recorded in
+[`hosted-ci-closure-20260801.md`](hosted-ci-closure-20260801.md).

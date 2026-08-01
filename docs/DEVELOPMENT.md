@@ -49,6 +49,19 @@ on the public Windows aggregate or move profile generation back into
 `coverage-diff`; `scripts/tests/test_ci_policy.py` treats either change as a
 critical-path and fail-closed policy regression.
 
+The retained timing checkpoints are intentionally observational, not an SLA.
+Full-matrix run `30674012574` spent 33m30 executing before the split; the first
+complete parallel run, `30677728038`, finished in 19m33. Exact commands,
+worker timings, the retained failed attempt, and artifact identities are in
+[`hosted-ci-closure-20260801.md`](evidence/test-coverage/hosted-ci-closure-20260801.md).
+
+Repository-owned workflows pin first-party JavaScript actions by full commit
+SHA to Node 24 majors: `actions/checkout` v7, `actions/setup-python` v7,
+`actions/upload-artifact` v7, and `actions/download-artifact` v8. Upgrade the
+reviewed major and immutable SHA together, then run the workflow-policy suites
+and actionlint. Do not suppress runtime-deprecation annotations in place of an
+action upgrade.
+
 ## Real mpv Checks
 
 The required `mpv-pr-semantics` job builds the peeled mpv `v0.41.0` commit and
@@ -199,7 +212,10 @@ The scheduled and manually dispatched CI matrix invokes the verifier with
 pass: the same workflow already runs locked, all-feature workspace tests and
 doctests on Linux and Windows. The server tests, live compatibility checks,
 Clippy gate, and strict server release matrix still run on both platforms.
-Standalone release verification keeps the full default command above.
+Standalone release verification keeps the full default command above. The
+first clean parallel run exposed the Windows verifier as the 19m28 critical
+path; the successful exact-head run after this deduplication took 10m49. Treat
+those values as retained observations rather than timeout targets.
 
 ## Compatibility Workflow
 

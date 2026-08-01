@@ -1,5 +1,15 @@
 # Test-coverage continuation handoff — additional slices — 2026-07-30
 
+> **Historical closure notice — 2026-08-01:** This handoff is preserved as the
+> dirty-worktree checkpoint recorded at `9a31b5a`. Its randomized campaigns,
+> evidence, central-document updates, focused commits, push, and remote-head
+> verification were completed before the later 2026-07-31 tranches. Do not use
+> the execution checklist or suggested prompt below as current branch status.
+> The current accepted hosted checkpoint and the remaining external capability
+> boundaries are recorded in
+> [`hosted-ci-closure-20260801.md`](hosted-ci-closure-20260801.md). The original
+> handoff body is otherwise retained unchanged for provenance.
+
 ## Why this handoff exists
 
 The delegated coverage-guided framed-session task was twice interrupted by an

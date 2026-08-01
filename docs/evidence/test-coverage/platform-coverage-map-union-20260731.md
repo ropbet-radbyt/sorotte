@@ -32,8 +32,10 @@ subsequently regenerated both maps, accepted the corrected ordered-map
 finalizer, and passed the required aggregate at
 `dd3012c1bcefa0a68520b063c5ae06f3e1b96f79`. The fresh hosted union passed at
 83.03% combined, 80.92% ordinary, and 90.79% critical with zero unmapped
-lines. Documentation-inclusive exact-head acceptance remains a separate final
-publication check.
+lines. Documentation-inclusive workflow `30679354953` later regenerated and
+consumed both platform maps at exact workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c` and reached a final successful
+conclusion, closing the separate publication check for this evidence set.
 
 ## Retained hosted diagnostic
 
@@ -279,8 +281,13 @@ Passed locally:
   Windows line coverage. The Linux producer remains the broad merged profile.
 - The local replay reused the source-identical Linux artifact from diagnostic
   run `30627601938`. Implementation-head run `30639113884` independently
-  regenerated and consumed both maps successfully. A final workflow at the
-  documentation-inclusive committed SHA remains the publication check.
+  regenerated and consumed both maps successfully. Documentation-inclusive
+  workflow `30679354953` later regenerated and consumed both maps at exact
+  workflow-bearing head `612917ac8461040549217453bdebfc5001f2378c` and
+  reached a final successful conclusion after one unrelated Windows
+  server-release failed-job rerun. That closes this record's publication
+  check; a later implementation or workflow change still requires its own
+  exact-head result.
 - Structural classification is deliberately conservative. Ambiguous or
   unterminated test-support items and executable-looking unmapped lines still
   fail closed.

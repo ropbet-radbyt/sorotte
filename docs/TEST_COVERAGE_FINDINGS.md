@@ -21,6 +21,7 @@ Generated compatibility, Unix kernel IPC/durability, and faulting-HTTP update: 2
 Client timing, generated Media Match, CLI composition, stalled-HTTP, and hosted-harness update: 2026-07-31
 Coverage-finalizer update: 2026-07-31
 Real-mpv arming and Plex fixture completion update: 2026-08-01
+Documentation-inclusive hosted closure, CI critical path, and Node 24 update: 2026-08-01
 
 Branch: `codex/test-coverage-design`
 
@@ -138,13 +139,45 @@ Ubuntu server-release, and Windows nextest lanes, then exposed
 ASan environment diagnostic. All 29 hosted-continuation findings
 (`TC-HARNESS-018` through `TC-HARNESS-046`) have focused dispositions and
 positive regressions or exact-artifact replay. Their exact implementation-head
-hosted confirmation passed; documentation-inclusive acceptance remains the
-final publication boundary. None is a product behavior defect, and the
-product-defect registry remains explicitly empty. `TC-HARNESS-044` binds the coverage
+hosted confirmation passed. Documentation-inclusive workflow `30679354953`
+subsequently finished green at exact workflow-bearing head
+`612917ac8461040549217453bdebfc5001f2378c`, closing that publication boundary
+for the implementation and evidence present at that head. None is a product
+behavior defect, and the product-defect registry remains explicitly empty.
+`TC-HARNESS-044` binds the coverage
 finalizer to the ordered two-platform map tuple; `TC-HARNESS-045` arms the
 minimum-mpv HTTP stall only after both clients reach exact prepared and started
 baselines; and `TC-HARNESS-046` waits for a complete Plex request header across
 transient socket reads.
+
+## 2026-08-01 documentation-inclusive hosted closure and CI runtime
+
+Status: **Hosted-green at the exact workflow-bearing head; no new product or
+harness finding opened**
+
+Run `30679354953` tested
+`612917ac8461040549217453bdebfc5001f2378c`, including the parallel producer
+topology, CI-only server-verifier deduplication, all previously committed
+coverage documentation, and full-SHA-pinned Node 24 action majors. Attempt 1
+retained one Windows strict-server failure: the legacy Python peer timed out
+waiting for the requested playlist state and reported `observed=[]`; the next
+test failed only because that panic poisoned the shared test lock. Every other
+required producer and the aggregate passed. GitHub's failed-job rerun repeated
+the complete Windows job without a source change, and attempt 2 passed. The
+final check suite contains 16 successes, the expected schedule-only skip, zero
+annotations, and nine nonexpired artifacts.
+
+The pre-split matrix executed for 33m30. The first complete parallel run
+executed in 19m33 while preserving every command, evidence artifact, source
+binding, public aggregate, and finalizer assertion. It exposed the Windows
+server verifier as a 19m28 outlier. With CI's duplicate workspace pass omitted
+through `-NoWorkspace`, the successful exact-head Windows rerun took 10m49;
+standalone release verification retains the full default command. These are
+observed timings, not weakened timeouts or a performance guarantee.
+
+Exact chronology, job timing, action identities, artifact inventory, and the
+four unchanged external execution boundaries are retained in
+[`hosted-ci-closure-20260801.md`](evidence/test-coverage/hosted-ci-closure-20260801.md).
 
 ## 2026-08-01 local native UIA development mode
 
@@ -406,7 +439,10 @@ After the coverage tranche was integrated:
   `30639113884` passed every required producer, 83.03% combined / 80.92%
   ordinary / 90.79% critical union coverage with zero unmapped lines, the
   corrected coverage finalizer, and the aggregate. Documentation-inclusive
-  hosted acceptance is recorded only at its actual completion boundary.
+  workflow `30679354953` later passed at exact workflow-bearing head
+  `612917ac8461040549217453bdebfc5001f2378c`; its retained first-attempt
+  Windows failure and successful failed-job rerun are recorded separately
+  rather than normalized into a clean first attempt.
   The committed-source static inventory now contains 3,816 Rust test
   attributes with 23 exact ignored-test dispositions: CLI is 377/8 and sim is
   17/4; all other crate counts are unchanged from the preceding table.
