@@ -50,6 +50,12 @@ fn unknown_attached_values_are_secret_safe_in_diagnostics() {
         diagnostic.contains(sorotte_secret::REDACTED_SECRET),
         "redacted diagnostics must preserve a visible redaction marker: {diagnostic}"
     );
+
+    let unattached = parse_legacy_client_arg_overrides(["--api-token"]);
+    assert_eq!(
+        legacy_unrecognized_arguments_diagnostic_line(&unattached.unknown_options),
+        "error: unrecognized arguments: --api-token"
+    );
 }
 
 #[test]

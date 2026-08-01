@@ -71,13 +71,26 @@ impl LegacyClientArgumentIssue {
         matches!(self, Self::InvalidHost { .. })
     }
 
-    pub(crate) fn diagnostic_fragment(&self) -> String {
+    fn unknown_option_has_attached_value(&self) -> bool {
         match self {
             Self::UnknownOption {
-                name,
-                attached_value_present: true,
-            } => format!("{name}={}", sorotte_secret::REDACTED_SECRET),
-            Self::UnknownOption { name, .. } | Self::MissingValue { name } => name.clone(),
+                attached_value_present,
+                ..
+            } => *attached_value_present,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn diagnostic_fragment(&self) -> String {
+        match self {
+            Self::UnknownOption { name, .. } => {
+                if self.unknown_option_has_attached_value() {
+                    format!("{name}={}", sorotte_secret::REDACTED_SECRET)
+                } else {
+                    name.clone()
+                }
+            }
+            Self::MissingValue { name } => name.clone(),
             Self::InvalidHost { name, error } => format!("{name} ({error})"),
         }
     }
