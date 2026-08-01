@@ -194,6 +194,13 @@ powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1
 
 The verification script writes JSON and Markdown reports under `target/server-release-verify/`.
 
+The scheduled and manually dispatched CI matrix invokes the verifier with
+`-NoWorkspace`. That mode skips only its duplicate `cargo test --workspace`
+pass: the same workflow already runs locked, all-feature workspace tests and
+doctests on Linux and Windows. The server tests, live compatibility checks,
+Clippy gate, and strict server release matrix still run on both platforms.
+Standalone release verification keeps the full default command above.
+
 ## Compatibility Workflow
 
 When matching Python Syncplay behavior:

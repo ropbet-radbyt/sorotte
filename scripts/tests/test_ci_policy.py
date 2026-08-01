@@ -546,6 +546,31 @@ class CiPolicyTests(unittest.TestCase):
                     },
                 )
 
+    def test_server_release_verification_only_deduplicates_workspace(self) -> None:
+        job = self.jobs["server-release-verify"]
+        self.assertEqual(
+            job.get("if"),
+            "github.event_name == 'workflow_dispatch' || "
+            "github.event_name == 'schedule'",
+        )
+        self.assertNotIn("needs", job)
+        self.assertEqual(
+            job.get("strategy"),
+            {
+                "fail-fast": "false",
+                "matrix": {"runner": ["ubuntu-latest", "windows-latest"]},
+            },
+        )
+        self.assertEqual(job.get("runs-on"), "${{ matrix.runner }}")
+
+        verification = self.assert_exact_run(
+            self.jobs,
+            "server-release-verify",
+            "Strict server release verification",
+            "./scripts/server-release-verify.ps1 -NoWorkspace",
+        )
+        self.assertEqual(verification.get("shell"), "pwsh")
+
     def test_package_freshness_compares_timestamp_instants(self) -> None:
         script = PACKAGE_PATH_BOUNDARY_TEST_PATH.read_text(encoding="utf-8")
 

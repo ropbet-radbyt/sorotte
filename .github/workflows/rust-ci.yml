@@ -1200,4 +1200,4 @@ jobs:
 
       - name: Strict server release verification
         shell: pwsh
-        run: ./scripts/server-release-verify.ps1
+        run: ./scripts/server-release-verify.ps1 -NoWorkspace
