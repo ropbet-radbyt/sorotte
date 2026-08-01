@@ -1640,6 +1640,14 @@ def verify_cosign_signature_output(
     records: list[Any] = []
     for value in values:
         records.extend(value if isinstance(value, list) else [value])
+    expected_identities = {
+        expected_image,
+        f"{expected_image}@{expected_digest}",
+    }
+    accepted_signature_types = {
+        "cosign container image signature",
+        "https://sigstore.dev/cosign/sign/v1",
+    }
     matches = 0
     for record in records:
         if not isinstance(record, dict):
@@ -1657,8 +1665,9 @@ def verify_cosign_signature_output(
             and all(optional.get(key) == value for key, value in expected_annotations.items())
         )
         if (
-            image.get("docker-manifest-digest") == expected_digest
-            and identity.get("docker-reference") == expected_image
+            critical.get("type") in accepted_signature_types
+            and image.get("docker-manifest-digest") == expected_digest
+            and identity.get("docker-reference") in expected_identities
             and annotations_match
         ):
             matches += 1
