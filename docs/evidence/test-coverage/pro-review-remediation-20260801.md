@@ -155,9 +155,48 @@ six integration tests; the six-test release verifier included its strict
 defect policy reported zero defects and zero characterizations. The expanded
 behavior catalog validates at 21 behaviors, 56 exact proofs, and two lanes.
 
-The final branch-wide local and hosted matrices are recorded separately after
-the documentation-bearing source is committed; earlier hosted runs are not
-reused as acceptance for this change.
+## Clean documentation-bearing head validation
+
+The documentation-bearing implementation head `e23c4f2` passed:
+
+- `cargo fmt --all -- --check`;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` in
+  9.6 seconds;
+- `cargo test --workspace --all-features` in 225.4 seconds, with every test
+  binary and doctest successful and only the 19 applicable registered ignores
+  skipped;
+- all 545 Python policy and evidence-infrastructure tests in 27.736 seconds;
+- the exact ignored-test, known-defect, and behavior-catalog validators;
+- all 14 GUI semantic scenarios;
+- local UIA-only native smoke, including the five-item AccessKit menu
+  inventory and File -> Exit lifecycle, with zero desktop-input attempts; and
+- `scripts/server-release-verify.ps1 -NoWorkspace` in 256 seconds. Only the
+  already-passed workspace run was deduplicated; the verifier passed its
+  server/compat suites, 21/21 strict live-legacy tests, Clippy, and all six
+  serial release scenarios. Its reports are under
+  `target/server-release-verify/`.
+
+After every build-producing gate, four mutually exclusive real-mpv contracts
+ran against GUI SHA-256
+`8ea1ce25575a2aee7329502f0c6ffe630f97a750f225357b8ed508f4b50ea600`
+and installed mpv SHA-256
+`2ea23bc508acdf8489c26ba79b094a02f9f27a4cef9326daf9ddb5b711a05ef0`
+(`mpv v0.41.0-877-ge5486b96d`):
+
+| Contract | Result | Local retained bundle |
+|---|---:|---|
+| healthy GUI-to-mpv | 13 assertions / 10 artifacts | `target/verification/gui-real-mpv-vertical/20260801T042922947Z-43764` |
+| automatic owned-process replacement | 20 assertions / 13 artifacts | `target/verification/gui-real-mpv-owned-process-recovery/20260801T042948946Z-53968` |
+| malformed loopback-HTTP recovery | 18 assertions / 11 artifacts | `target/verification/gui-real-mpv-faulting-http-recovery/20260801T043024020Z-21384` |
+| valid byte-silent stalled HTTP, run last | 18 assertions / 11 artifacts | `target/verification/gui-real-mpv-stalled-http/20260801T043059675Z-16320` |
+
+The final stalled response remained open and byte-silent for 29,225 ms before
+one same-process recovery GET; the player and IPC identities remained stable,
+the recovery body completed, and native Exit reaped the owned player and
+released the loopback server.
+
+Fresh hosted acceptance remains a separate exact-head publication boundary;
+earlier hosted runs are not reused as acceptance for this change.
 
 ## Safety and scope
 
