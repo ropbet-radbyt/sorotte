@@ -164,8 +164,8 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes \
-            --annotation "sourceSha=$GITHUB_SHA" \
-            --annotation "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
+            --annotations "sourceSha=$GITHUB_SHA" \
+            --annotations "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
             "$DIGEST_REF"
           cosign attest --yes \
             --type spdxjson \
@@ -185,8 +185,8 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
             --certificate-github-workflow-sha "$GITHUB_SHA" \
-            --annotation "sourceSha=$GITHUB_SHA" \
-            --annotation "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
+            --annotations "sourceSha=$GITHUB_SHA" \
+            --annotations "workflowSourceSha=$WORKFLOW_SOURCE_SHA" \
             --output json \
             "$DIGEST_REF" > "$EVIDENCE_DIR/signature-verification.json"
           cosign verify-attestation \
