@@ -773,10 +773,16 @@ class LocalImageConsumerTests(unittest.TestCase):
             with self.assertRaisesRegex(container.VerificationError, "shut down cleanly"):
                 container.parse_runtime_report(path)
 
-    def test_raw_persisted_room_row_requires_exact_payload_and_integrity(self) -> None:
+    def test_raw_persisted_room_row_is_exact_and_does_not_create_wal_sidecars(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = pathlib.Path(temporary) / "rooms.sqlite3"
             connection = sqlite3.connect(path)
+            self.assertEqual(
+                connection.execute("PRAGMA journal_mode=WAL").fetchone(),
+                ("wal",),
+            )
             connection.execute(
                 "CREATE TABLE persistent_rooms ("
                 "name TEXT PRIMARY KEY, playlist TEXT, playlistJson TEXT, "
@@ -799,6 +805,18 @@ class LocalImageConsumerTests(unittest.TestCase):
             )
             connection.commit()
             connection.close()
+            sidecars = [
+                pathlib.Path(f"{path}-shm"),
+                pathlib.Path(f"{path}-wal"),
+            ]
+            self.assertFalse(any(sidecar.exists() for sidecar in sidecars))
+
+            database_evidence = container._verify_sqlite(
+                path,
+                "stopped container rooms database",
+            )
+            self.assertEqual(database_evidence["integrityCheck"], "ok")
+            self.assertFalse(any(sidecar.exists() for sidecar in sidecars))
 
             evidence = container._verify_persisted_room_row(
                 path,
@@ -809,6 +827,7 @@ class LocalImageConsumerTests(unittest.TestCase):
             )
             self.assertEqual(evidence["integrityCheck"], "ok")
             self.assertEqual(evidence["row"]["persistenceVersion"], 4)
+            self.assertFalse(any(sidecar.exists() for sidecar in sidecars))
 
             connection = sqlite3.connect(path)
             connection.execute(
@@ -825,6 +844,7 @@ class LocalImageConsumerTests(unittest.TestCase):
                     playlist_index=1,
                     position=137.25,
                 )
+            self.assertFalse(any(sidecar.exists() for sidecar in sidecars))
 
 
 class SbomPolicyTests(unittest.TestCase):

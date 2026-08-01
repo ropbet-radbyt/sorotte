@@ -511,7 +511,7 @@ def _verify_sqlite(path: Path, description: str) -> dict[str, Any]:
     _require_regular_file(path, description)
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        connection = _open_stopped_sqlite_readonly(path)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.Error as error:
         raise VerificationError(f"{description} is not readable SQLite: {error}") from error
@@ -528,6 +528,14 @@ def _verify_sqlite(path: Path, description: str) -> dict[str, Any]:
     }
 
 
+def _open_stopped_sqlite_readonly(path: Path) -> sqlite3.Connection:
+    """Read stopped-container SQLite state without creating host-owned WAL sidecars."""
+    return sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro&immutable=1",
+        uri=True,
+    )
+
+
 def _verify_persisted_room_row(
     path: Path,
     *,
@@ -539,7 +547,7 @@ def _verify_persisted_room_row(
     _require_regular_file(path, "plaintext persisted rooms database")
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        connection = _open_stopped_sqlite_readonly(path)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         rows = connection.execute(
             "SELECT name, playlist, playlistJson, playlistIndex, position, "
