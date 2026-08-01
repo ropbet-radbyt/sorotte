@@ -58,13 +58,14 @@ The final gate keeps distinct identities and cross-binds them:
    requires both `docker wait` and the inspected container state to report a
    stopped, non-dead exit with code zero, no daemon error, and no OOM kill, and
    proves EOF on every still-open client. The plaintext phase additionally
-   checks SQLite integrity and exact restoration
-   from the same loaded image after restart. Those process, transport, actor,
+   checks SQLite integrity and exact restoration from the same loaded image
+   after restart. Those process, transport, actor,
    and persistence outcomes are the graceful-shutdown proof. Retained Docker
-   logs remain required diagnostics and must contain the startup listener
-   record, but a final shutdown text line is not treated as a second semantic
-   gate because hosted Docker can omit that last record after an otherwise
-   proven clean exit.
+   logs remain required diagnostics: every started container must retain the
+   startup listener record, and every scenario that completes its SIGINT stop
+   must also retain the graceful-shutdown record. A failure before the stop
+   boundary preserves its primary error while still reporting any separate log
+   capture or container-removal failure.
 4. The commit-pinned `anchore/sbom-action` invokes Syft 1.44.0 with the exact
    local test tag. Syft's SPDX 2.3 projection does not provide a guaranteed,
    stable Docker config-ID and RootFS identity field for this verifier to
@@ -177,35 +178,40 @@ compilation and the repository's unittest conventions were used instead.
 
 Manual publication run
 [`30690430335`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30690430335)
-and its retry failed before registry login because the stopped container log
-did not contain the server's final shutdown text line. A first correction
-retried the post-exit `docker logs` snapshot, but run
+and its retry reported a missing final shutdown text line before registry
+login. A first correction retried the post-exit `docker logs` snapshot, but run
 [`30692117813`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30692117813)
-proved that the omission persisted across 20 snapshots. Its retained log
-contained the startup listener record, while `docker wait`, container state,
-live-session EOF, and persisted SQLite state all proved a clean stop. Both
-runs skipped login, push, signing, and attestation, so neither could mutate
-GHCR.
+proved that the line remained absent across 20 snapshots. The log assertion
+ran from `finally`, so it masked the earlier scenario error that prevented the
+test from ever sending SIGINT.
 
-The corrected contract keeps the complete container log as required
-diagnostic evidence and still rejects a missing, unreadable, or wrong-container
-log through the startup listener marker. Graceful shutdown is now gated on the
-direct outcomes: the verifier sends `SIGINT`, requires `docker wait` and Docker
-state to agree on a stopped, non-dead zero exit with no daemon error or OOM,
-requires EOF on every live session, validates both SQLite databases, and
-requires exact same-image restart restoration for the plaintext scenario.
-This removes an unreliable duplicate text assertion without relaxing the
-process, transport, actor-durability, or persistence outcomes.
+Run
+[`30693330321`](https://github.com/ropbet-radbyt/sorotte/actions/runs/30693330321)
+made startup-log capture sufficient only for a pre-stop failure and exposed
+the primary defect: the smoke harness requested 28- to 30-character usernames
+while the server's production default is 16 characters. Sorotte correctly
+canonicalized those identities, but the join matcher waited for the impossible
+untruncated watcher name until its bounded deadline.
+
+The final correction uses distinctive usernames within the production limit,
+rejects an overlong test identity before opening a socket, and requires the
+Hello response to echo the exact requested username and room. Cleanup now
+preserves the primary scenario failure and appends any independent diagnostic
+or removal failure. The shutdown log marker remains mandatory after a
+completed SIGINT stop, together with the direct clean-state, session-drain,
+SQLite-integrity, and same-image restart evidence. All three failed runs
+skipped registry login, push, signing, and attestation, so none could mutate
+GHCR.
 
 Follow-up local validation:
 
 ```text
 python -m unittest scripts.tests.test_server_container_verification -v
-  Ran 40 tests
+  Ran 45 tests
   OK
 
 python -m unittest discover scripts/tests -v
-  Ran 554 tests
+  Ran 559 tests
   OK
 
 cargo test -p sorotte-server --all-features --locked
