@@ -372,6 +372,60 @@ class JsonAndIdentityPolicyTests(unittest.TestCase):
 
 
 class LocalImageConsumerTests(unittest.TestCase):
+    def test_protocol_hello_rejects_overlong_test_identity(self) -> None:
+        with self.assertRaisesRegex(
+            container.VerificationError, "default 16-character limit"
+        ):
+            container._hello_message("u" * 17, "room")
+
+    def test_protocol_hello_requires_exact_canonical_identity_echo(self) -> None:
+        session = mock.Mock()
+        expected = {
+            "Hello": {
+                "username": "writer-7e91",
+                "room": {"name": "room-7e91"},
+            }
+        }
+
+        def receive_until(matchers: object, description: str) -> dict[str, object]:
+            matcher = matchers["hello"]  # type: ignore[index]
+            self.assertEqual(description, "protocol Hello")
+            self.assertFalse(
+                matcher(
+                    {
+                        "Hello": {
+                            "username": "writer-7e9",
+                            "room": {"name": "room-7e91"},
+                        }
+                    }
+                )
+            )
+            self.assertFalse(
+                matcher(
+                    {
+                        "Hello": {
+                            "username": "writer-7e91",
+                            "room": {"name": "other-room"},
+                        }
+                    }
+                )
+            )
+            self.assertTrue(matcher(expected))
+            return {"hello": expected}
+
+        session.receive_until.side_effect = receive_until
+        self.assertEqual(
+            container._protocol_hello(
+                session,
+                username="writer-7e91",
+                room="room-7e91",
+            ),
+            expected,
+        )
+        session.send.assert_called_once_with(
+            container._hello_message("writer-7e91", "room-7e91")
+        )
+
     def test_stop_requires_clean_exited_state_after_direct_sigint(self) -> None:
         command_results = [
             subprocess.CompletedProcess(["docker", "kill"], 0, stdout="name\n"),
@@ -464,7 +518,11 @@ class LocalImageConsumerTests(unittest.TestCase):
                 mock.patch.object(container, "_run", side_effect=log_results) as run,
                 mock.patch.object(container.time, "sleep") as sleep,
             ):
-                container._write_container_log_and_remove("container-name", path)
+                container._write_container_log_and_remove(
+                    "container-name",
+                    path,
+                    require_shutdown_marker=False,
+                )
 
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
@@ -494,20 +552,45 @@ class LocalImageConsumerTests(unittest.TestCase):
                 mock.patch.object(container, "_run", side_effect=log_results) as run,
                 mock.patch.object(container.time, "sleep") as sleep,
             ):
-                container._write_container_log_and_remove("container-name", path)
+                container._write_container_log_and_remove(
+                    "container-name",
+                    path,
+                    require_shutdown_marker=False,
+                )
 
             self.assertEqual(path.read_text(encoding="utf-8"), marker)
             self.assertEqual(run.call_count, 3)
             sleep.assert_called_once_with(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
 
-    def test_container_log_capture_fails_bounded_and_still_removes_container(
+    def test_container_log_capture_accepts_completed_shutdown_marker(self) -> None:
+        log = (
+            "sorotte-server listening on 0.0.0.0:8999\n"
+            "sorotte-server: shutdown requested; draining client sessions\n"
+        )
+        outputs = [
+            subprocess.CompletedProcess(["docker", "logs"], 0, stdout=log),
+            subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            with mock.patch.object(container, "_run", side_effect=outputs):
+                container._write_container_log_and_remove(
+                    "container-name",
+                    path,
+                    require_shutdown_marker=True,
+                )
+
+            self.assertEqual(path.read_text(encoding="utf-8"), log)
+
+    def test_container_log_capture_requires_shutdown_marker_after_completed_stop(
         self,
     ) -> None:
+        startup = "sorotte-server listening on 0.0.0.0:8999\n"
         outputs = [
             subprocess.CompletedProcess(
-                ["docker", "logs"], 0, stdout=f"snapshot-{index}\n"
+                ["docker", "logs"], 0, stdout=startup
             )
-            for index in range(3)
+            for _ in range(3)
         ]
         outputs.append(subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""))
         with tempfile.TemporaryDirectory() as temporary:
@@ -519,11 +602,15 @@ class LocalImageConsumerTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     container.VerificationError,
-                    "did not retain the startup listener marker",
+                    "did not retain the graceful shutdown barrier",
                 ):
-                    container._write_container_log_and_remove("container-name", path)
+                    container._write_container_log_and_remove(
+                        "container-name",
+                        path,
+                        require_shutdown_marker=True,
+                    )
 
-            self.assertEqual(path.read_text(encoding="utf-8"), "snapshot-2\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), startup)
             self.assertEqual(run.call_count, 4)
             self.assertEqual(
                 run.call_args_list[-1],
@@ -538,6 +625,60 @@ class LocalImageConsumerTests(unittest.TestCase):
                     mock.call(container.CONTAINER_LOG_CAPTURE_RETRY_SECONDS),
                 ],
             )
+
+    def test_container_log_capture_preserves_primary_scenario_failure(self) -> None:
+        outputs = [
+            subprocess.CompletedProcess(
+                ["docker", "logs"], 0, stdout="unrelated log\n"
+            ),
+            subprocess.CompletedProcess(["docker", "rm"], 0, stdout=""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            try:
+                raise container.VerificationError("primary watcher join failure")
+            except container.VerificationError:
+                with (
+                    mock.patch.object(container, "CONTAINER_LOG_CAPTURE_ATTEMPTS", 1),
+                    mock.patch.object(container, "_run", side_effect=outputs),
+                    self.assertRaisesRegex(
+                        container.VerificationError,
+                        "primary watcher join failure; container diagnostics/cleanup "
+                        "also failed: .*startup listener marker",
+                    ),
+                ):
+                    container._write_container_log_and_remove(
+                        "container-name",
+                        path,
+                        require_shutdown_marker=False,
+                    )
+
+    def test_container_cleanup_appends_removal_failure_to_primary_error(self) -> None:
+        startup = "sorotte-server listening on 0.0.0.0:8999\n"
+        outputs = [
+            subprocess.CompletedProcess(["docker", "logs"], 0, stdout=startup),
+            subprocess.CompletedProcess(
+                ["docker", "rm"], 1, stdout="container is busy\n"
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "container.log"
+            try:
+                raise container.VerificationError("primary protocol failure")
+            except container.VerificationError:
+                with (
+                    mock.patch.object(container, "_run", side_effect=outputs),
+                    self.assertRaisesRegex(
+                        container.VerificationError,
+                        "primary protocol failure; container diagnostics/cleanup "
+                        "also failed: docker rm exited 1: container is busy",
+                    ),
+                ):
+                    container._write_container_log_and_remove(
+                        "container-name",
+                        path,
+                        require_shutdown_marker=False,
+                    )
 
     def test_local_image_inspection_binds_config_digest_labels_entrypoint_and_layers(
         self,

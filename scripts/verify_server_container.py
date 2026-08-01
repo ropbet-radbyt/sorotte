@@ -49,6 +49,8 @@ SERVER_STOP_TIMEOUT_SECONDS = 10
 CONTAINER_LOG_CAPTURE_ATTEMPTS = 20
 CONTAINER_LOG_CAPTURE_RETRY_SECONDS = 0.1
 CONTAINER_STARTUP_LOG_MARKER = "sorotte-server listening on "
+CONTAINER_SHUTDOWN_LOG_MARKER = "shutdown requested; draining client sessions"
+CONTAINER_TEST_USERNAME_MAX_CHARACTERS = 16
 REGISTRY_ATTEMPTS = 6
 REGISTRY_RETRY_BASE_SECONDS = 0.5
 REGISTRY_REQUEST_TIMEOUT_SECONDS = 15
@@ -450,6 +452,10 @@ def _hello_message(
     *,
     persistent_features: bool = False,
 ) -> dict[str, Any]:
+    if not username or len(username) > CONTAINER_TEST_USERNAME_MAX_CHARACTERS:
+        raise VerificationError(
+            "container smoke username must fit the server's default 16-character limit"
+        )
     hello: dict[str, Any] = {
         "Hello": {
             "username": username,
@@ -482,7 +488,12 @@ def _protocol_hello(
         )
     )
     return session.receive_until(
-        {"hello": lambda message: isinstance(message.get("Hello"), dict)},
+        {
+            "hello": lambda message: (
+                _pointer_equals(message, ["Hello", "username"], username)
+                and _pointer_equals(message, ["Hello", "room", "name"], room)
+            )
+        },
         "protocol Hello",
     )["hello"]
 
@@ -742,19 +753,30 @@ def _drain_after_stop(
     return stop
 
 
-def _write_container_log_and_remove(name: str, path: Path) -> None:
-    # SIGINT, zero exit status, live-session EOF, and persistence restoration
-    # are the shutdown proof. Docker logs are retained diagnostics; require the
-    # startup record so a missing or unreadable log cannot pass silently.
+def _write_container_log_and_remove(
+    name: str,
+    path: Path,
+    *,
+    require_shutdown_marker: bool,
+) -> None:
+    primary_error = sys.exc_info()[1]
+    marker = (
+        CONTAINER_SHUTDOWN_LOG_MARKER
+        if require_shutdown_marker
+        else CONTAINER_STARTUP_LOG_MARKER
+    )
+    marker_description = (
+        "graceful shutdown barrier"
+        if require_shutdown_marker
+        else "startup listener marker"
+    )
     logs: subprocess.CompletedProcess[str] | None = None
+    cleanup_errors: list[str] = []
     try:
         for attempt in range(CONTAINER_LOG_CAPTURE_ATTEMPTS):
             logs = _run(["docker", "logs", name], check=False)
             path.write_text(logs.stdout, encoding="utf-8", newline="\n")
-            if (
-                logs.returncode == 0
-                and CONTAINER_STARTUP_LOG_MARKER in logs.stdout
-            ):
+            if logs.returncode == 0 and marker in logs.stdout:
                 break
             if attempt + 1 < CONTAINER_LOG_CAPTURE_ATTEMPTS:
                 time.sleep(CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
@@ -765,11 +787,30 @@ def _write_container_log_and_remove(name: str, path: Path) -> None:
                 else ""
             )
             raise VerificationError(
-                f"{path.stem} container log did not retain the startup listener marker"
+                f"{path.stem} container log did not retain the {marker_description}"
                 f"{command_detail}"
             )
-    finally:
-        _run(["docker", "rm", "--force", name], check=False)
+    except (OSError, VerificationError) as error:
+        cleanup_errors.append(str(error))
+
+    try:
+        removed = _run(["docker", "rm", "--force", name], check=False)
+        if removed.returncode != 0:
+            cleanup_errors.append(
+                f"docker rm exited {removed.returncode}: {removed.stdout.strip()}"
+            )
+    except VerificationError as error:
+        cleanup_errors.append(str(error))
+
+    if not cleanup_errors:
+        return
+    cleanup_detail = "; ".join(cleanup_errors)
+    if primary_error is not None:
+        raise VerificationError(
+            f"{primary_error}; container diagnostics/cleanup also failed: "
+            f"{cleanup_detail}"
+        ) from primary_error
+    raise VerificationError(cleanup_detail)
 
 
 def _run_plaintext_persistence_scenario(
@@ -780,6 +821,9 @@ def _run_plaintext_persistence_scenario(
     artifacts_root: Path,
 ) -> dict[str, Any]:
     room = "container-persistence-restore-7e91"
+    writer_username = "writer-7e91"
+    watcher_username = "watcher-4b27"
+    restorer_username = "restore-8c13"
     playlist = [
         "container-persistence-alpha-7e91.mkv",
         "container-persistence-beta-4b27.mkv",
@@ -813,7 +857,7 @@ def _run_plaintext_persistence_scenario(
         writer = _ProtocolSession(writer_socket)
         _protocol_hello(
             writer,
-            username="container-persistence-writer",
+            username=writer_username,
             room=room,
             persistent_features=True,
         )
@@ -825,7 +869,7 @@ def _run_plaintext_persistence_scenario(
         watcher = _ProtocolSession(watcher_socket)
         _protocol_hello(
             watcher,
-            username="container-persistence-watcher",
+            username=watcher_username,
             room=room,
             persistent_features=True,
         )
@@ -833,7 +877,7 @@ def _run_plaintext_persistence_scenario(
             {
                 "watcherJoined": lambda message: _pointer_equals(
                     message,
-                    ["Set", "user", "container-persistence-watcher", "event", "joined"],
+                    ["Set", "user", watcher_username, "event", "joined"],
                     True,
                 )
             },
@@ -889,7 +933,11 @@ def _run_plaintext_persistence_scenario(
     finally:
         for connection in first_connections:
             connection.close()
-        _write_container_log_and_remove(first_name, first_log)
+        _write_container_log_and_remove(
+            first_name,
+            first_log,
+            require_shutdown_marker=first_stop is not None,
+        )
     if first_id is None or first_stop is None:
         raise VerificationError("plaintext persistence write phase did not complete")
 
@@ -921,14 +969,21 @@ def _run_plaintext_persistence_scenario(
         restorer = _ProtocolSession(restorer_socket)
         restorer.send(
             _hello_message(
-                "container-persistence-restorer",
+                restorer_username,
                 room,
                 persistent_features=True,
             )
         )
         restorer.receive_until(
             {
-                "hello": lambda message: isinstance(message.get("Hello"), dict),
+                "hello": lambda message: (
+                    _pointer_equals(
+                        message,
+                        ["Hello", "username"],
+                        restorer_username,
+                    )
+                    and _pointer_equals(message, ["Hello", "room", "name"], room)
+                ),
                 "playlist": lambda message: _pointer_equals(
                     message, ["Set", "playlistChange", "files"], playlist
                 ),
@@ -953,7 +1008,11 @@ def _run_plaintext_persistence_scenario(
     finally:
         for connection in restart_connections:
             connection.close()
-        _write_container_log_and_remove(restart_name, restart_log)
+        _write_container_log_and_remove(
+            restart_name,
+            restart_log,
+            require_shutdown_marker=restart_stop is not None,
+        )
     if restart_id is None or restart_stop is None:
         raise VerificationError("plaintext persistence restart phase did not complete")
 
@@ -1045,7 +1104,7 @@ def _run_container_scenario(
             }
             protocol = _protocol_hello(
                 _ProtocolSession(connection),
-                username="container-tls-verifier",
+                username="tls-client-7e91",
                 room="container-tls-verification",
             )
             stop = _drain_after_stop(name=name, connections=[connection])
@@ -1053,7 +1112,11 @@ def _run_container_scenario(
         finally:
             connection.close()
     finally:
-        _write_container_log_and_remove(name, log_path)
+        _write_container_log_and_remove(
+            name,
+            log_path,
+            require_shutdown_marker=stop is not None,
+        )
     if container_id is None or protocol is None or stop is None:
         raise VerificationError(f"{scenario} container scenario did not complete")
     databases = [

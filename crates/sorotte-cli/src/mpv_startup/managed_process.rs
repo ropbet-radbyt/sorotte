@@ -721,8 +721,7 @@ mod process_supervision_tests {
     fn managed_attach_stops_retrying_when_its_child_exits() {
         let fixture = ProcessFixtureDirectory::new("attach-after-child-exit");
         let ipc_path = fixture.marker("never-created-ipc");
-        let timeout = Duration::from_millis(300);
-        let started = std::time::Instant::now();
+        let timeout = Duration::from_secs(1);
         let error = spawn_managed_mpv_and_attach(ManagedMpvLaunchEnvConfig {
             enabled: true,
             mpv_bin: Some(
@@ -737,7 +736,6 @@ mod process_supervision_tests {
         })
         .expect_err("test harness child cannot create mpv JSON IPC")
         .to_string();
-        let elapsed = started.elapsed();
         assert!(
             error.contains("managed mpv launched but JSON IPC attach failed"),
             "failure should reach the managed attach boundary: {error}"
@@ -748,8 +746,8 @@ mod process_supervision_tests {
             "failure should identify the exited child and preserve its status: {error}"
         );
         assert!(
-            elapsed < Duration::from_millis(200),
-            "managed attach must stop retrying when its child exits"
+            !error.contains("timed out"),
+            "managed attach must stop retrying as soon as its child exits: {error}"
         );
     }
 }
