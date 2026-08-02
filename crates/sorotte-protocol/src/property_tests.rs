@@ -415,10 +415,10 @@ fn malformed_json_and_malformed_envelopes_fail_at_the_expected_boundary() {
 #[test]
 fn codec_remains_total_at_line_size_and_recursion_boundaries() {
     const CHAT_OVERHEAD: usize = r#"{"Chat":""}"#.len();
-    let at_limit = format!(
-        r#"{{"Chat":"{}"}}"#,
-        "x".repeat(DEFAULT_MAX_PROTOCOL_LINE_BYTES - CHAT_OVERHEAD)
-    );
+    let chat_payload_at_limit = DEFAULT_MAX_PROTOCOL_LINE_BYTES
+        .checked_sub(CHAT_OVERHEAD)
+        .expect("protocol line limit must fit the Chat envelope");
+    let at_limit = format!(r#"{{"Chat":"{}"}}"#, "x".repeat(chat_payload_at_limit));
     let above_limit = format!(
         r#"{{"Chat":"{}"}}"#,
         "x".repeat(DEFAULT_MAX_PROTOCOL_LINE_BYTES)
