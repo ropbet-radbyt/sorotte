@@ -58,6 +58,7 @@ pub(in crate::app) enum GuiShellAction {
     ApplyPendingApplyRequirementsSnapshot(Vec<GuiSettingApplyRequirement>),
     ApplyGuiConfigurationRuntimeSnapshot(GuiConfigurationRuntimeSnapshot),
     ApplyGuiConfigStorageRuntimeSnapshot(GuiConfigStorageRuntimeSnapshot),
+    ApplySynchronizationProfile(SynchronizationProfileId),
     BeginConfigurationSave,
     CompleteConfigurationSave(StoredClientSettingsMvp),
     CancelConfigurationSave,

@@ -182,6 +182,21 @@ impl GuiWidgetEguiRenderer {
             "configuration:tab:interface-system" => vec![GuiShellAction::SelectConfigurationTab(
                 GuiConfigurationTab::InterfaceSystem,
             )],
+            "settings-profile:private-room:apply" => {
+                vec![GuiShellAction::ApplySynchronizationProfile(
+                    SynchronizationProfileId::PrivateRoom,
+                )]
+            }
+            "settings-profile:large-controlled-room:apply" => {
+                vec![GuiShellAction::ApplySynchronizationProfile(
+                    SynchronizationProfileId::LargeControlledRoom,
+                )]
+            }
+            "settings-profile:public-room:apply" => {
+                vec![GuiShellAction::ApplySynchronizationProfile(
+                    SynchronizationProfileId::PublicRoom,
+                )]
+            }
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
             "config-command:connect-once" => vec![GuiShellAction::BeginConnectOnce],
             "config-command:save-and-connect" => vec![GuiShellAction::BeginSaveAndConnect],

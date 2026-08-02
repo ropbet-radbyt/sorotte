@@ -59,6 +59,9 @@ pub(super) use self::main_window::{
     MainWindowUserRow,
 };
 pub(in crate::app) use self::menu::{MenuActionId, MenuSectionId};
+pub(super) use sorotte_client_app::app_boundary::settings_profiles::{
+    SynchronizationProfileId, detect_synchronization_profile,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuActionShellItem {

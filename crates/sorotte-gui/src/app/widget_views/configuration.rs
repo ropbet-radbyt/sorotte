@@ -20,6 +20,7 @@ impl SorotteGuiShellAppState {
             FirstRunConfigurationDialogState::from_stored_settings(&self.configuration.settings);
         let resolved_persisted =
             FirstRunConfigurationDialogState::from_stored_settings(&self.saved_configuration);
+        let synchronization_profiles = self.synchronization_profiles_widget_tree(&resolved_draft);
         let player_arguments_enabled = self
             .configuration
             .settings
@@ -655,6 +656,7 @@ impl SorotteGuiShellAppState {
                 .chain(self.clear_gui_data_confirmation_widget_tree())
                 .chain(self.setup_pending_apply_widget_tree())
                 .chain([
+                    synchronization_profiles,
                     GuiWidgetNode::layout(
                         "configuration:tabs",
                         "Configuration Tabs",
@@ -710,6 +712,132 @@ impl SorotteGuiShellAppState {
                     commands_panel,
                 ])
                 .collect(),
+        )
+    }
+
+    fn synchronization_profiles_widget_tree(
+        &self,
+        resolved_draft: &FirstRunConfigurationDialogState,
+    ) -> GuiWidgetNode {
+        let draft_settings = self.configuration.to_stored_settings();
+        let current_profile = detect_synchronization_profile(&draft_settings);
+        let can_apply = self.pending_operation.is_none() && self.text_edit_session.is_none();
+        let effective_options = &resolved_draft.streaming.effective_mpv_options;
+        let cache_override_active = [
+            "cache-pause-wait=",
+            "cache-secs=",
+            "demuxer-max-bytes=",
+            "cache-on-disk=",
+        ]
+        .iter()
+        .any(|prefix| {
+            effective_options
+                .split("; ")
+                .any(|option| option.starts_with(prefix) && option.contains("(advanced override)"))
+        });
+
+        let mut summary = vec![GuiWidgetNode::leaf(
+            "settings-profile:current",
+            "Current profile",
+            GuiWidgetKind::Status,
+            Some(
+                current_profile
+                    .map(|profile| profile.label())
+                    .unwrap_or("Custom")
+                    .to_owned(),
+            ),
+            true,
+            false,
+        )];
+        summary.push(GuiWidgetNode::leaf(
+            "settings-profile:disk-usage",
+            "Temporary disk use",
+            GuiWidgetKind::Status,
+            Some(
+                "Episode read-ahead may use temporary disk space approaching the encoded media size; mpv removes it when the media closes."
+                    .to_owned(),
+            ),
+            true,
+            false,
+        ));
+        if cache_override_active {
+            summary.push(GuiWidgetNode::leaf(
+                "settings-profile:cache-override-warning",
+                "Player argument override",
+                GuiWidgetKind::Status,
+                Some(
+                    "Advanced player arguments override one or more cache values from the selected profile."
+                        .to_owned(),
+                ),
+                true,
+                false,
+            ));
+        }
+
+        let cards = SynchronizationProfileId::ALL
+            .iter()
+            .copied()
+            .map(|profile_id| {
+                let profile = profile_id.definition();
+                let active = current_profile == Some(profile_id);
+                GuiWidgetNode::branch(
+                    format!("settings-profile:{}", profile_id.stable_id()),
+                    profile_id.label(),
+                    GuiWidgetKind::Panel,
+                    vec![
+                        GuiWidgetNode::leaf(
+                            format!("settings-profile:{}:description", profile_id.stable_id()),
+                            "Behavior",
+                            GuiWidgetKind::Status,
+                            Some(profile_id.description().to_owned()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("settings-profile:{}:buffer", profile_id.stable_id()),
+                            "Episode cache",
+                            GuiWidgetKind::Status,
+                            Some(format!(
+                                "{:.0}s before playback; up to {:.0} hours read-ahead; {} MiB metadata; disk cache on.",
+                                profile.buffer_target_seconds,
+                                profile.read_ahead_seconds / 3_600.0,
+                                profile.memory_cache_mebibytes,
+                            )),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("settings-profile:{}:apply", profile_id.stable_id()),
+                            if active {
+                                "Selected".to_owned()
+                            } else {
+                                format!("Use {}", profile_id.label())
+                            },
+                            GuiWidgetKind::Button,
+                            None,
+                            can_apply && !active,
+                            active,
+                        ),
+                    ],
+                )
+            })
+            .collect();
+
+        summary.push(GuiWidgetNode::layout(
+            "settings-profile:choices",
+            "Profile choices",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 280.0,
+                max_columns: 3,
+            },
+            cards,
+        ));
+
+        GuiWidgetNode::branch(
+            "settings-profiles",
+            "Synchronization Profiles",
+            GuiWidgetKind::Panel,
+            summary,
         )
     }
 

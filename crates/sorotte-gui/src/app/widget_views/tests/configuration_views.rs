@@ -1,4 +1,118 @@
 use super::*;
+use crate::app::shell_state::SynchronizationProfileId;
+
+#[test]
+fn synchronization_profiles_are_draft_only_detect_custom_values_and_map_buttons() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("sync.example".to_owned()),
+        room: Some("lounge".to_owned()),
+        streaming_quality_preset: Some("720p".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let saved_before = state.saved_configuration.clone();
+
+    let initial = state.configuration_widget_tree();
+    assert_eq!(
+        initial
+            .find("settings-profile:current")
+            .and_then(|node| node.value.as_deref()),
+        Some("Public Room")
+    );
+    let public_button = initial
+        .find("settings-profile:public-room:apply")
+        .expect("public profile button should exist");
+    assert!(public_button.selected);
+    assert!(!public_button.enabled);
+    let private_button = initial
+        .find("settings-profile:private-room:apply")
+        .expect("private profile button should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, private_button),
+        vec![GuiShellAction::ApplySynchronizationProfile(
+            SynchronizationProfileId::PrivateRoom,
+        )]
+    );
+
+    assert!(state.apply(GuiShellAction::ApplySynchronizationProfile(
+        SynchronizationProfileId::PrivateRoom,
+    )));
+    assert_eq!(state.saved_configuration, saved_before);
+    let applied = state.configuration.to_stored_settings();
+    assert_eq!(applied.host.as_deref(), Some("sync.example"));
+    assert_eq!(applied.room.as_deref(), Some("lounge"));
+    assert_eq!(applied.streaming_quality_preset.as_deref(), Some("720p"));
+    assert_eq!(applied.streaming_buffer_target_seconds, Some(120.0));
+    assert_eq!(applied.streaming_read_ahead_seconds, Some(7_200.0));
+    assert_eq!(applied.streaming_memory_cache_mebibytes, Some(256));
+    assert_eq!(applied.streaming_disk_cache_enabled, Some(true));
+    assert!(state.has_unsaved_configuration_changes());
+    assert!(state.notifications.iter().any(|notification| {
+        notification.message == "Private Room applied to the draft. Save changes to keep it."
+    }));
+
+    let profile_tree = state.configuration_widget_tree();
+    assert_eq!(
+        profile_tree
+            .find("settings-profile:current")
+            .and_then(|node| node.value.as_deref()),
+        Some("Private Room")
+    );
+    assert!(
+        profile_tree
+            .find("settings-profile:private-room:apply")
+            .expect("private profile button should remain visible")
+            .selected
+    );
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        id: SettingId::StreamingReadAheadSeconds,
+        value: "3600".to_owned().into(),
+    }));
+    assert_eq!(
+        state
+            .configuration_widget_tree()
+            .find("settings-profile:current")
+            .and_then(|node| node.value.as_deref()),
+        Some("Custom")
+    );
+
+    assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
+        SettingId::ConnectionHost,
+    )));
+    assert!(!state.apply(GuiShellAction::ApplySynchronizationProfile(
+        SynchronizationProfileId::LargeControlledRoom,
+    )));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Finish the active setting edit before applying a synchronization profile.")
+    );
+}
+
+#[test]
+fn synchronization_profiles_warn_when_advanced_player_arguments_override_cache_values() {
+    let mut per_player_arguments = std::collections::BTreeMap::new();
+    per_player_arguments.insert(
+        "mpv".to_owned(),
+        vec![
+            "--cache-secs=90".to_owned(),
+            "--no-cache-on-disk".to_owned(),
+        ],
+    );
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("mpv".to_owned()),
+        per_player_arguments: Some(per_player_arguments),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let tree = state.configuration_widget_tree();
+    assert_eq!(
+        tree.find("settings-profile:cache-override-warning")
+            .and_then(|node| node.value.as_deref()),
+        Some(
+            "Advanced player arguments override one or more cache values from the selected profile."
+        )
+    );
+}
 
 #[test]
 fn gui_shell_app_state_projects_configuration_widget_trees() {

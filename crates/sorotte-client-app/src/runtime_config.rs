@@ -390,10 +390,10 @@ pub struct StreamingBufferConfig {
 impl Default for StreamingBufferConfig {
     fn default() -> Self {
         Self {
-            target: Seconds(5.0),
-            read_ahead: Seconds(30.0),
-            memory_cache_mebibytes: 150,
-            disk_cache_enabled: false,
+            target: Seconds(60.0),
+            read_ahead: Seconds(7_200.0),
+            memory_cache_mebibytes: 256,
+            disk_cache_enabled: true,
         }
     }
 }
@@ -2016,7 +2016,22 @@ mod tests {
         assert!(
             config
                 .network_media_mpv_arguments()
-                .contains(&"--cache-pause-wait=5".to_owned())
+                .contains(&"--cache-pause-wait=60".to_owned())
+        );
+        assert!(
+            config
+                .network_media_mpv_arguments()
+                .contains(&"--cache-secs=7200".to_owned())
+        );
+        assert!(
+            config
+                .network_media_mpv_arguments()
+                .contains(&"--demuxer-max-bytes=256MiB".to_owned())
+        );
+        assert!(
+            config
+                .network_media_mpv_arguments()
+                .contains(&"--cache-on-disk=yes".to_owned())
         );
     }
 
@@ -2094,6 +2109,16 @@ mod tests {
         assert!(
             config
                 .network_media_mpv_arguments()
+                .contains(&"--cache-pause-wait=8".to_owned())
+        );
+        assert!(
+            config
+                .network_media_mpv_arguments()
+                .contains(&"--cache-secs=45".to_owned())
+        );
+        assert!(
+            config
+                .network_media_mpv_arguments()
                 .contains(&"--cache-on-disk=yes".to_owned())
         );
         let coordinator = config.playback_coordinator_config();
@@ -2119,7 +2144,7 @@ mod tests {
             .iter()
             .find(|option| option.name == "cache-pause-wait")
             .expect("wait option should be present");
-        assert_eq!(wait.configured_value, "5");
+        assert_eq!(wait.configured_value, "60");
         assert_eq!(wait.effective_value, "12");
         assert!(wait.overridden_by_advanced_arguments);
 

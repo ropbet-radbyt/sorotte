@@ -170,18 +170,20 @@ Explicit-IPC mode applies a practical subset of startup player options directly 
 
 ## Streaming, Buffering, and Recovery
 
-The GUI Streaming section and the `[client_settings]` section of `sorotte.ini` support typed quality and cache controls. A conservative example is:
+The GUI Streaming section and the `[client_settings]` section of `sorotte.ini` support typed quality and cache controls. The default episode-cache settings are:
 
 ```ini
 [client_settings]
 streamingQualityPreset = 720p
-streamingBufferTarget = 8
-streamingReadAhead = 45
+streamingBufferTarget = 60
+streamingReadAhead = 7200
 streamingMemoryCacheMiB = 256
-streamingDiskCacheEnabled = false
+streamingDiskCacheEnabled = true
 streamingRecoveryPolicy = balanced
 streamingStartPolicy = immediate
 ```
+
+The GUI also provides **Private Room**, **Large Controlled Room**, and **Public Room** synchronization profiles. Profiles update the unsaved draft and are persisted only when **Save** is used; manually changing a profile-owned value produces a **Custom** profile. **Public Room** is the application default.
 
 Quality and buffering values are attached as per-file options to network media that Sorotte opens in managed and attached `mpv` instances. Local files retain the player's own cache defaults and user configuration, and mpv restores those values after a stream ends. Matching per-player advanced arguments take precedence for streamed media; the GUI shows the effective value for generated streaming options.
 
@@ -191,7 +193,7 @@ Configured recovery uses bounded gentle catch-up, hard-seek and retry budgets, a
 
 For finite network media, an mpv `end-file` event well before the known duration is treated as a transport EOF rather than successful completion. Sorotte retries the same local transport at the last observed position with a bounded immediate-attempt budget while preserving the media generation; observed forward progress rearms that budget. On mpv builds with the curl backend, Sorotte also prefers negotiated HTTP/2 for network files when curl protocol selection is still `auto`, avoiding false EOFs caused by exhausted HTTP/3 connection-drain retries. An explicit user `curl-http-version` choice remains authoritative.
 
-See the [Stream Synchronization Guide](STREAM_SYNCHRONIZATION.md) for every setting, exact `mpv` mapping, source-specific guidance, wire lifecycle, diagnostics, tests, and the implemented-versus-planned boundary.
+See the [Stream Synchronization Guide](STREAM_SYNCHRONIZATION.md) for the exact profile values, every setting, `mpv` mappings, source-specific guidance, wire lifecycle, diagnostics, tests, and the implemented-versus-planned boundary.
 
 ## Rooms, Playlists, And Controlled Rooms
 

@@ -9,6 +9,20 @@ setting	plex-sync-enabled	true
 setting	plex-streaming-enabled	true
 assert-selected	configuration-root	true
 assert-value	shell:command:save	disabled
+# Built-in profiles apply only to the unsaved draft. Discarding restores the
+# detected profile from the persisted typed settings.
+assert-value	settings-profile:current	Public Room
+assert-enabled	settings-profile:private-room:apply	true
+activate	settings-profile:private-room:apply
+assert-value	settings-profile:current	Private Room
+assert-selected	settings-profile:private-room:apply	true
+assert-value	shell:command:save	enabled
+activate	config-command:discard
+assert-pending	discard-configuration-changes
+complete-pending
+assert-pending	none
+assert-value	settings-profile:current	Public Room
+assert-value	shell:command:save	disabled
 # Immediate plugin persistence must preserve unrelated draft fields and secret
 # intent. Discard then proves neither draft value was silently promoted to the
 # saved configuration by the plugin toggle.
@@ -75,6 +89,7 @@ enter-text	settings.streaming.buffer_target_seconds	false	8
 enter-text	settings.streaming.read_ahead_seconds	false	45
 enter-text	settings.streaming.memory_cache_mib	false	256
 activate	settings.streaming.disk_cache
+activate	settings.streaming.disk_cache
 enter-text	settings.streaming.recovery_policy	false	balanced
 enter-text	settings.streaming.maximum_catchup_rate	false	1.06
 enter-text	settings.streaming.hard_seek_threshold_seconds	false	9
@@ -90,6 +105,7 @@ enter-text	settings.streaming.start_quorum_percent	false	80
 enter-text	settings.streaming.start_timeout_seconds	false	20
 enter-text	settings.streaming.start_timeout_action	false	remain-paused
 activate	settings.streaming.quality_downgrade_suggestions
+assert-value	settings-profile:current	Custom
 enter-text	settings.media_library.directories	false	C:/Media\nD:/Archive
 enter-text	settings.media_library.first_file_timeout	false	3.0
 enter-text	settings.media_library.search_timeout	false	30.0

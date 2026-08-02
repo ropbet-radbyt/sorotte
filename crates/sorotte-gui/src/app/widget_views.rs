@@ -8,7 +8,7 @@ use super::shell_state::{
     GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase, GuiSettingApplyRequirement,
     GuiSettingValueOrigin, GuiShellModal, GuiShellView, GuiStreamHelperHealth,
     GuiTransientNotificationLevel, SecretDraft, SettingId, SorotteGuiShellAppState,
-    playlist_entries_from_multiline_text,
+    SynchronizationProfileId, detect_synchronization_profile, playlist_entries_from_multiline_text,
 };
 use super::support::{
     bool_label, configured_room_name_text, joined_room_name_text, normalized_editable_text,
