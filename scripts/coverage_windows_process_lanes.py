@@ -231,7 +231,7 @@ EXPECTED_FILTERED_OUT = {
     "updater-installed-self-replacement": 0,
     "mpv-named-pipe": 419,
     "mpv-external-process": 424,
-    "media-tool-process": 1125,
+    "media-tool-process": 1128,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {
