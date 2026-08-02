@@ -292,6 +292,19 @@ class DiffCoverageTests(unittest.TestCase):
         structural = coverage.lexical_non_coverable_lines(source_lines)
         self.assertEqual(structural, set(range(1, 12)))
 
+    def test_module_declarations_are_structural_without_exempting_inline_items(
+        self,
+    ) -> None:
+        source_lines = [
+            "mod private;",
+            "pub mod public;",
+            "pub(crate) mod scoped {",
+            "}",
+            "pub mod compact { pub fn behavior() {} }",
+        ]
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+        self.assertEqual(structural, {1, 2, 3, 4})
+
     def test_attribute_sharing_a_line_with_behavior_is_not_exempt(self) -> None:
         source_lines = [
             "#[cfg(windows)] launch_windows_player();",
