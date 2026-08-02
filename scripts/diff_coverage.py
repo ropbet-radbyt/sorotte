@@ -104,9 +104,9 @@ FUNCTION_SIGNATURE_START = re.compile(
     r"(?:extern(?:\s+\"[A-Za-z0-9_-]+\")?\s+)?"
     r"fn\s+[A-Za-z_][A-Za-z0-9_]*\b"
 )
-TYPE_BLOCK_START = re.compile(
+ITEM_BLOCK_START = re.compile(
     r"^(?:pub(?:\([^)]*\))?\s+)?"
-    r"(?:unsafe\s+)?(?:struct|enum|union|trait|impl)\b"
+    r"(?:unsafe\s+)?(?:struct|enum|union|trait|impl|mod)\b"
 )
 IMPORT_START = re.compile(
     r"^(?:pub(?:\([^)]*\))?\s+)?(?:use\b|extern\s+crate\b)"
@@ -2489,7 +2489,7 @@ def lexical_non_coverable_lines(
                 result.add(number)
                 in_signature = True
             continue
-        if TYPE_BLOCK_START.match(stripped):
+        if ITEM_BLOCK_START.match(stripped):
             # Item headers introduce compile-time structure. Runtime expressions
             # sharing the same line are intentionally not exempt.
             if "{" not in stripped or not stripped.split("{", 1)[1].strip():

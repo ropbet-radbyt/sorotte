@@ -2,7 +2,7 @@
 
 Sorotte uses one source-independent playback coordinator for local files, Plex streams, direct network media, and extractor-backed URLs such as YouTube. Once an active media transaction has established a generation identity, players that expose transport telemetry use the coordinator for room-driven loading, cache stalls, command completion, bounded recovery, reconnect correction, and start acknowledgements; GUI and CLI adapters execute its decisions and forward observations. Adapters without transport telemetry, and sessions with no coordinated media transaction to reconcile, retain the legacy direct-correction path for compatibility and do not receive the coordinator's observation-backed guarantees.
 
-The defaults preserve legacy behavior: starts are immediate and each client buffers independently. Stronger start and room-buffering policies are opt-in.
+The default is the **Public Room** profile: starts are immediate and each client buffers independently. Network VOD uses an episode-scale cache by default: playback waits for 60 seconds of buffered media when the source permits it, mpv may read ahead by up to two hours, and packet data may spill to temporary disk storage. Stronger start and room-buffering policies are opt-in through the built-in profiles.
 
 ## Architecture
 
@@ -97,16 +97,91 @@ A future optional room-level mid-play seek barrier could coordinate prepare, par
 
 Settings live in `[client_settings]` in `sorotte.ini` and are editable in the GUI Streaming section.
 
+### Built-in synchronization profiles
+
+The GUI places three profiles above the configuration tabs. Applying one changes the unsaved draft only; the existing **Save** and **Discard** commands remain authoritative. Sorotte detects the profile from resolved typed values rather than storing a separate profile name, so a manual change to any profile-owned setting is shown as **Custom**. Profile application preserves unrelated settings, existing unsaved edits, secrets, player arguments, quality, and the selected configuration location.
+
+| Profile | Coordinated start | Mid-play buffering | Cache-pause target |
+| --- | --- | --- | ---: |
+| **Private Room** | Wait for all eligible members; continue after 180 seconds | Pause for any eligible member; fail open after 180 seconds | 120 seconds |
+| **Large Controlled Room** | Wait for a 75% quorum; continue after 90 seconds | Pause for a 75% quorum; fail open after 90 seconds | 60 seconds |
+| **Public Room** | Start immediately | Each participant buffers independently | 60 seconds |
+
+All three profiles use up to 7,200 seconds of read-ahead, a 256 MiB packet-metadata limit, temporary disk caching, balanced recovery, a `1.05` maximum catch-up rate, an 8-second hard-seek threshold, one hard seek, a 4-second stability interval, one recovery retry, and a 10-second recovery cooldown. Rewind, fast-forward, and slowdown correction are enabled; rewind starts at 4 seconds and slowdown at 0.75 seconds. The fast-forward threshold is 3 seconds for **Private Room** and 5 seconds for the other profiles.
+
+The two-hour value is a read-ahead horizon, not a promise to download the complete source before playback. Actual cache fill depends on the source, bandwidth, seekability, player limits, and free disk space. Sorotte deliberately does not enable mpv's wait-for-cache-EOF behavior, because that can make live or segmented media wait indefinitely. Temporary disk use can approach the encoded size of the buffered portion and is released by mpv when the media closes. Advanced player arguments still win; the profile panel warns when they override a generated cache value.
+
+For headless deployments, the common profile-owned settings are:
+
+```ini
+[client_settings]
+streamingReadAhead = 7200
+streamingMemoryCacheMiB = 256
+streamingDiskCacheEnabled = true
+streamingRecoveryPolicy = balanced
+streamingMaxCatchupRate = 1.05
+streamingHardSeekThreshold = 8
+streamingMaxHardSeeks = 1
+streamingStabilityInterval = 4
+streamingRecoveryRetryBudget = 1
+streamingRecoveryCooldown = 10
+streamingStartTimeoutAction = continue
+rewindOnDesync = true
+rewindThreshold = 4
+fastforwardOnDesync = true
+slowOnDesync = true
+slowdownThreshold = 0.75
+dontSlowDownWithMe = false
+```
+
+Add one of these profile-specific blocks to the same `[client_settings]` section:
+
+```ini
+# Private Room
+streamingBufferTarget = 120
+streamingRoomBufferingPolicy = pause-eligible
+streamingRoomQuorumPercent = 100
+streamingRoomMaxPause = 180
+streamingStartPolicy = wait-all
+streamingStartQuorumPercent = 100
+streamingStartTimeout = 180
+fastforwardThreshold = 3
+```
+
+```ini
+# Large Controlled Room
+streamingBufferTarget = 60
+streamingRoomBufferingPolicy = quorum
+streamingRoomQuorumPercent = 75
+streamingRoomMaxPause = 90
+streamingStartPolicy = quorum
+streamingStartQuorumPercent = 75
+streamingStartTimeout = 90
+fastforwardThreshold = 5
+```
+
+```ini
+# Public Room (application default)
+streamingBufferTarget = 60
+streamingRoomBufferingPolicy = independent
+streamingRoomQuorumPercent = 75
+streamingRoomMaxPause = 30
+streamingStartPolicy = immediate
+streamingStartQuorumPercent = 75
+streamingStartTimeout = 15
+fastforwardThreshold = 5
+```
+
 ### Quality and mpv cache
 
 | Key | Default | Effect |
 | --- | ---: | --- |
 | `streamingQualityPreset` | `auto` | Optional `ytdl-format`: `auto`, `best`, `balanced`, `1080p`, `720p`, `480p`, `compatibility`, or `custom`. |
 | `streamingCustomFormat` | unset | Exact trimmed format expression when preset is `custom`. |
-| `streamingBufferTarget` | `5` | `cache-pause-wait`. |
-| `streamingReadAhead` | `30` | `cache-secs`; normalized to at least the target. |
-| `streamingMemoryCacheMiB` | `150` | `demuxer-max-bytes`. |
-| `streamingDiskCacheEnabled` | `false` | `cache-on-disk=yes/no`. |
+| `streamingBufferTarget` | `60` | `cache-pause-wait`. |
+| `streamingReadAhead` | `7200` | `cache-secs`; normalized to at least the target. |
+| `streamingMemoryCacheMiB` | `256` | `demuxer-max-bytes`. |
+| `streamingDiskCacheEnabled` | `true` | `cache-on-disk=yes/no`. |
 
 Sorotte also enables `cache=auto`, `cache-pause=yes`, and `cache-pause-initial=yes` for Sorotte-opened network media. These are mpv per-file options in managed and attached players: mpv restores the prior values when the stream ends, so local files keep the player's cache defaults and user configuration. Later advanced player arguments win for network media; the GUI shows both configured and effective values.
 
@@ -132,7 +207,7 @@ Set `SOROTTE_CLIENT_LOG_PLAYER_TELEMETRY=1` for a CLI support reproduction. In a
 | --- | ---: | --- |
 | `streamingRoomBufferingPolicy` | `independent` | `independent`, `pause-controller`, `pause-eligible`, `quorum` |
 | `streamingRoomQuorumPercent` | `75` | 1–100 |
-| `streamingRoomMaxPause` | `30` | positive seconds; server clamps to 1–60 |
+| `streamingRoomMaxPause` | `30` | positive seconds; server clamps to 1–300 |
 
 Non-independent room buffering is accepted only in a controlled room and only from its authenticated controller. This prevents a public-room participant or an unauthenticated client from turning buffering reports into a hostage mechanism.
 
@@ -144,7 +219,7 @@ Capable clients publish generation/revision-bound transitions between buffering 
 | --- | ---: | --- |
 | `streamingStartPolicy` | `immediate` | `immediate`, `wait-controller`, `wait-all`, `quorum` |
 | `streamingStartQuorumPercent` | `75` | 1–100 |
-| `streamingStartTimeout` | `15` | positive seconds; server clamps to 1–30 |
+| `streamingStartTimeout` | `15` | positive seconds; server clamps to 1–300 |
 | `streamingStartTimeoutAction` | `continue` | `continue`, `remain-paused`, `ask-controller` |
 
 An omitted `streamingStartPolicy`, including in settings files created by older releases, keeps the compatibility behavior of starting immediately. Coordinated policies such as `wait-all` remain explicit opt-ins.

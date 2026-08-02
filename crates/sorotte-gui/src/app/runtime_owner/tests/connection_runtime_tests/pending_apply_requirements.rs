@@ -779,11 +779,11 @@ fn failed_streaming_settings_retry_replaces_retry_requirement_with_restart_playe
 
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
-        streaming_read_ahead_seconds: Some(3.0),
+        streaming_read_ahead_seconds: Some(90.0),
         ..StoredClientSettingsMvp::default()
     };
     let desired = StoredClientSettingsMvp {
-        streaming_read_ahead_seconds: Some(9.0),
+        streaming_read_ahead_seconds: Some(120.0),
         ..initial.clone()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -852,11 +852,11 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
 
     let initial = StoredClientSettingsMvp {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
-        streaming_read_ahead_seconds: Some(3.0),
+        streaming_read_ahead_seconds: Some(90.0),
         ..StoredClientSettingsMvp::default()
     };
     let desired = StoredClientSettingsMvp {
-        streaming_read_ahead_seconds: Some(9.0),
+        streaming_read_ahead_seconds: Some(120.0),
         ..initial.clone()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);

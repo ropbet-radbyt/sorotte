@@ -10,6 +10,7 @@ use sorotte_client_core::PrivacyMode;
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
     GuiDialogControlKind, GuiSettingApplyRequirement, SecretDraft, SettingId,
+    SynchronizationProfileId,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -87,6 +88,50 @@ impl FirstRunConfigurationDialogDraft {
         changed.sort_unstable();
         changed.dedup();
         changed
+    }
+
+    pub(super) fn apply_synchronization_profile(&mut self, profile: SynchronizationProfileId) {
+        let mut settings = self.to_stored_settings();
+        profile.apply_to(&mut settings);
+        let profile_values = Self::from_stored_settings(&settings);
+
+        for id in [
+            SettingId::SyncRewindOnDesync,
+            SettingId::SyncFastforwardOnDesync,
+            SettingId::SyncSlowOnDesync,
+            SettingId::SyncDontSlowDownWithMe,
+            SettingId::SyncRewindThreshold,
+            SettingId::SyncFastforwardThreshold,
+            SettingId::SyncSlowdownThreshold,
+            SettingId::StreamingBufferTargetSeconds,
+            SettingId::StreamingReadAheadSeconds,
+            SettingId::StreamingMemoryCacheMib,
+            SettingId::StreamingDiskCache,
+            SettingId::StreamingRecoveryPolicy,
+            SettingId::StreamingMaximumCatchupRate,
+            SettingId::StreamingHardSeekThresholdSeconds,
+            SettingId::StreamingMaximumHardSeeks,
+            SettingId::StreamingStabilityIntervalSeconds,
+            SettingId::StreamingRecoveryRetryBudget,
+            SettingId::StreamingRecoveryCooldownSeconds,
+            SettingId::StreamingRoomBufferingPolicy,
+            SettingId::StreamingRoomQuorumPercent,
+            SettingId::StreamingRoomMaximumPauseSeconds,
+            SettingId::StreamingStartSynchronization,
+            SettingId::StreamingStartQuorumPercent,
+            SettingId::StreamingStartTimeoutSeconds,
+            SettingId::StreamingStartTimeoutAction,
+        ] {
+            let control = profile_values
+                .control(id)
+                .expect("every synchronization profile setting must have a control");
+            let applied = match control.kind {
+                GuiDialogControlKind::Checkbox => self.apply_bool_value(id, control.value == "yes"),
+                kind if kind.is_editable() => self.apply_text_value(id, &control.value),
+                _ => false,
+            };
+            debug_assert!(applied, "profile setting {id:?} must be editable");
+        }
     }
 
     pub(super) fn merge_apply_requirement_from_settings(

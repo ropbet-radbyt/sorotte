@@ -43,7 +43,7 @@ cargo run --release -p sorotte-cli -- --no-gui
 
 - [Install Guide](docs/INSTALL.md): prerequisites, source builds, release builds, and first runs
 - [Client Guide](docs/CLIENT.md): GUI and CLI workflows for `mpv`
-- [Stream Synchronization Guide](docs/STREAM_SYNCHRONIZATION.md): buffering safety, quality/cache controls, transport telemetry, recovery policy status, and the startup barrier protocol
+- [Stream Synchronization Guide](docs/STREAM_SYNCHRONIZATION.md): built-in room profiles, episode-scale cache controls, buffering safety, transport telemetry, recovery policy status, and the startup barrier protocol
 - [Server Guide](docs/SERVER_RELEASE.md): server operation, Docker, release verification, packaging, and publishing
 - [Migration Guide](docs/MIGRATE_TO_SOROTTE.md): manual migration from old Syncplay-named paths and packages
 - [Development Guide](docs/DEVELOPMENT.md): workspace layout, test matrix, compatibility workflow, and contribution rules

@@ -2183,11 +2183,21 @@ fn preparation_and_started_deadlines_degrade_stalled_clients_without_holding_roo
         .filter_map(|(_, message)| barrier_extension(&message))
         .find_map(|extension| extension.prepare)
         .expect("prepare should be broadcast");
-    assert_eq!(prepare.timeout_ms, Some(30_000));
-    assert_eq!(prepare.deadline, Some(130.0));
+    assert_eq!(prepare.timeout_ms, Some(300_000));
+    assert_eq!(prepare.deadline, Some(400.0));
+
+    runtime.set_time_now_override_seconds(Some(350.0));
+    for client_id in ["alice-client", "bob-client"] {
+        runtime
+            .handle_line(
+                client_id,
+                r#"{"State":{"ping":{"latencyCalculation":10.0}}}"#,
+            )
+            .expect("active barrier participants should remain live before the long deadline");
+    }
 
     let timeout_dispatch = runtime
-        .collect_dispatch_at(130.0)
+        .collect_dispatch_at(400.0)
         .expect("deadline should commit best effort");
     let timeout_messages = messages(&timeout_dispatch.outbound_lines);
     let timeout_status = timeout_messages
@@ -2217,7 +2227,7 @@ fn preparation_and_started_deadlines_degrade_stalled_clients_without_holding_roo
     );
 
     let started_timeout = runtime
-        .collect_dispatch_at(140.0)
+        .collect_dispatch_at(410.0)
         .expect("StartedAck deadline should degrade stalled participants");
     let degraded = messages(&started_timeout.outbound_lines)
         .into_iter()
@@ -2675,6 +2685,17 @@ fn maximum_pause_fails_open_and_requires_a_recovered_interval_before_rearming() 
             r#"{"State":{"playstate":{"position":1.0,"paused":false,"doSeek":false}}}"#,
         )
         .expect("room should start playing");
+    let configured_upper_bound = runtime
+        .handle_line_fanout(
+            "alice-client",
+            r#"{"Set":{"sorottePlaybackBarrierV1":{"bufferingPolicy":{"mediaGeneration":3,"policy":"pauseAnyEligible","debounceMs":0,"resumeHysteresisMs":500,"maxPauseMs":999999}}}}"#,
+        )
+        .expect("policy should configure");
+    assert_eq!(
+        buffering_status(&configured_upper_bound).and_then(|status| status.config.max_pause_ms),
+        Some(300_000),
+        "maximum pause is normalized to the safe upper bound"
+    );
     let configured = runtime
         .handle_line_fanout(
             "alice-client",

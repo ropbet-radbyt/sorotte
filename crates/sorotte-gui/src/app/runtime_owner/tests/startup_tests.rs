@@ -1524,7 +1524,7 @@ fn explicit_mpv_ipc_launch_state_honors_selected_players_saved_streaming_overrid
         .iter()
         .find(|option| option.name == "cache-secs")
         .expect("network cache duration should be configured");
-    assert_eq!(cache_secs.configured_value, "30");
+    assert_eq!(cache_secs.configured_value, "7200");
     assert_eq!(cache_secs.effective_value, "75");
     assert!(cache_secs.overridden_by_advanced_arguments);
 }

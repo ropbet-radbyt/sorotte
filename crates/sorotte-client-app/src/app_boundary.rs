@@ -107,6 +107,12 @@ pub mod readiness {
     };
 }
 
+pub mod settings_profiles {
+    pub use crate::synchronization_profiles::{
+        SynchronizationProfile, SynchronizationProfileId, detect_synchronization_profile,
+    };
+}
+
 pub mod storage {
     pub use crate::client_storage_paths::{
         SOROTTE_CLIENT_CONFIG_PATH_ENV, SOROTTE_CLIENT_CONFIG_ROOT_ENV,

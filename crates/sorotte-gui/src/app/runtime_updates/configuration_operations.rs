@@ -9,6 +9,39 @@ use super::super::shell_state::{
 use super::super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
+    pub(in crate::app) fn apply_synchronization_profile(
+        &mut self,
+        profile: super::super::shell_state::SynchronizationProfileId,
+    ) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if self.text_edit_session.is_some() {
+            return self.record_action_error(
+                "Finish the active setting edit before applying a synchronization profile.",
+            );
+        }
+
+        let current_settings = self.configuration.to_stored_settings();
+        if profile.matches(&current_settings) {
+            return self.record_action_error(format!(
+                "{} is already the active synchronization profile.",
+                profile.label()
+            ));
+        }
+
+        self.configuration.apply_synchronization_profile(profile);
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!(
+                "{} applied to the draft. Save changes to keep it.",
+                profile.label()
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     pub(in crate::app) fn replace_pending_apply_requirements(
         &mut self,
         requirements: impl IntoIterator<Item = GuiSettingApplyRequirement>,

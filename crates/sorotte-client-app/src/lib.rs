@@ -13,3 +13,4 @@ mod legacy_settings;
 mod readiness_presentation;
 mod runtime_config;
 mod sorotte_ini;
+mod synchronization_profiles;

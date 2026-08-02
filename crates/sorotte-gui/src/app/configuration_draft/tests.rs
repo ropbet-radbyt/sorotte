@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use super::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, SecretDraft, SettingId,
 };
-use crate::app::shell_state::{GuiSettingApplyRequirement, GuiSettingValueOrigin};
+use crate::app::shell_state::{
+    GuiSettingApplyRequirement, GuiSettingValueOrigin, SynchronizationProfileId,
+    detect_synchronization_profile,
+};
 
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 use sorotte_client_core::UnpauseActionMode;
@@ -281,5 +284,49 @@ fn changed_setting_ids_include_secret_intent_and_same_length_server_replacement(
     assert_eq!(
         SettingId::ConnectionPublicServerCount.apply_requirement(),
         GuiSettingApplyRequirement::OnSave
+    );
+}
+
+#[test]
+fn synchronization_profile_application_preserves_unrelated_draft_edits_and_secret_intent() {
+    let original = StoredClientSettingsMvp {
+        host: Some("saved.example".to_owned()),
+        room: Some("saved-room".to_owned()),
+        server_password: Some("saved-secret".into()),
+        streaming_quality_preset: Some("1080p".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+    assert!(draft.apply_text_value(SettingId::ConnectionHost, "draft.example"));
+    assert!(draft.apply_text_value(SettingId::ConnectionPort, "70000"));
+    draft.begin_server_password_change();
+    assert!(draft.apply_text_value(SettingId::ConnectionServerPassword, "replacement-secret"));
+
+    draft.apply_synchronization_profile(SynchronizationProfileId::PrivateRoom);
+
+    let settings = draft.to_stored_settings();
+    assert_eq!(
+        detect_synchronization_profile(&settings),
+        Some(SynchronizationProfileId::PrivateRoom)
+    );
+    assert_eq!(settings.host.as_deref(), Some("draft.example"));
+    assert_eq!(
+        draft.control_value(SettingId::ConnectionPort),
+        Some("70000"),
+        "an invalid unrelated draft edit must survive profile application"
+    );
+    assert_eq!(settings.room.as_deref(), Some("saved-room"));
+    assert_eq!(settings.streaming_quality_preset.as_deref(), Some("1080p"));
+    assert_eq!(
+        settings
+            .server_password
+            .as_ref()
+            .map(|password| password.expose_secret()),
+        Some("replacement-secret")
+    );
+    assert_eq!(
+        draft.control_value(SettingId::ConnectionServerPassword),
+        Some(""),
+        "committed secret drafts stay masked in the projected control"
     );
 }
