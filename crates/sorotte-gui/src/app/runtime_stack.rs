@@ -5,6 +5,7 @@ mod client_core_adapter;
 mod media_search;
 mod notifications;
 mod player;
+mod playlist_delivery_fence;
 mod public_servers;
 mod runtime_snapshots;
 mod session_adapter;
@@ -58,9 +59,10 @@ pub(super) use self::player::{
     GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter,
     local_file_update_for_player_path,
 };
+pub(super) use self::playlist_delivery_fence::GuiPlaylistProtocolDeliveryFence;
 pub(super) use self::session_adapter::{
-    GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision,
-    GuiPlaylistProtocolDeliveryFence, GuiSessionRoomPlaystate, GuiSessionRuntimeAdapter,
+    GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
+    GuiSessionRuntimeAdapter,
 };
 #[cfg(test)]
 pub(super) use self::transport::GuiTcpSessionTransportDriver;

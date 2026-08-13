@@ -193,16 +193,16 @@ impl ParticipantStatusReportPresentation {
         {
             return "Buffer status unavailable".to_owned();
         }
-        match (
-            self.status.buffered_ahead_seconds,
-            self.status.cache_percent,
-        ) {
-            (Some(buffered), Some(refill)) => {
+        if let Some(buffered) = self.status.buffered_ahead_seconds {
+            if let Some(refill) = self.status.cache_percent {
                 format!("{buffered:.1} s buffered · cache refill {refill:.0}%")
+            } else {
+                format!("{buffered:.1} s buffered")
             }
-            (Some(buffered), None) => format!("{buffered:.1} s buffered"),
-            (None, Some(refill)) => format!("Cache refill {refill:.0}%"),
-            (None, None) => "Buffer status unavailable".to_owned(),
+        } else if let Some(refill) = self.status.cache_percent {
+            format!("Cache refill {refill:.0}%")
+        } else {
+            "Buffer status unavailable".to_owned()
         }
     }
 
@@ -256,14 +256,11 @@ impl ParticipantStatusReportPresentation {
         let stale = self.freshness == ParticipantStatusFreshness::Stale;
         let precise_unavailable =
             stale || self.has_timeline_mismatch() || !self.position_evidence_is_eligible();
-        let terminal_player = matches!(
-            self.status.player_connection,
-            None | Some(
-                ParticipantPlayerConnection::Unavailable
-                    | ParticipantPlayerConnection::Disconnected
-                    | ParticipantPlayerConnection::Failed
-            )
-        );
+        let player_connection = self.status.player_connection;
+        let terminal_player = player_connection.is_none()
+            || player_connection == Some(ParticipantPlayerConnection::Unavailable)
+            || player_connection == Some(ParticipantPlayerConnection::Disconnected)
+            || player_connection == Some(ParticipantPlayerConnection::Failed);
         let player_detail = if stale {
             format!("Last reported player: {}", self.connection_label())
         } else {
@@ -351,10 +348,8 @@ impl ParticipantStatusReportPresentation {
             } else {
                 "Transport revision"
             };
-            details.push(format!(
-                "{media_generation_label}: {}",
-                scope.media_generation
-            ));
+            let media_generation = scope.media_generation;
+            details.push(format!("{media_generation_label}: {media_generation}"));
             if let Some(revision) = scope.state_revision {
                 details.push(format!("{room_revision_label}: {revision}"));
             }

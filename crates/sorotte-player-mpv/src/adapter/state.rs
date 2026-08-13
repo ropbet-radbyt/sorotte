@@ -383,6 +383,7 @@ impl Default for MpvAdapter {
             sorotte_bridge_health: SorotteBridgeHealth::Disabled,
             pending_sorotte_bridge_health_transitions: VecDeque::new(),
             ipc_endpoint: None,
+            ipc_reconnect_not_before: None,
             simulation_mode: false,
             ipc_client: None,
             pending_ipc_connection_events: VecDeque::new(),

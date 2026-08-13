@@ -7,13 +7,67 @@ use crate::app::runtime_owner::{
     player::SelectedPlaylistMediaSyncOutcome,
 };
 use crate::app::runtime_stack::{
-    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+    GuiClientCoreChatSessionRuntimeAdapter, GuiOutboundProtocolDeliveryResult,
+    GuiPlaylistProtocolDeliveryFence, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
+    GuiSessionTransportDriver,
 };
 use crate::app::{GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId, GuiPlaylistSourceStatus};
 use sorotte_plex::{
     PlexCachedMatch, PlexClientConfig, PlexMatchCache, PlexMediaType, parse_plex_playlist_uri,
     server_scoped_cache_key_for_file,
 };
+
+struct DelayedPlaylistReceiptDriver {
+    release_one: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    writes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pending_token: Option<u64>,
+    pending_line: Option<String>,
+}
+
+impl GuiSessionTransportDriver for DelayedPlaylistReceiptDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        if self.pending_token.is_none()
+            && let Some(delivery) = transport.take_outbound_protocol_delivery_for_driver()
+        {
+            self.pending_line = Some(delivery.line().to_owned());
+            self.pending_token = Some(delivery.token());
+        }
+        if self
+            .release_one
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            && let Some(token) = self.pending_token.take()
+        {
+            if let Some(line) = self.pending_line.take() {
+                self.writes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(line);
+            }
+            transport.publish_outbound_protocol_delivery_result(
+                GuiOutboundProtocolDeliveryResult::FrameWritten { token },
+            );
+        }
+        Ok(())
+    }
+}
+
+struct OpenCountingPlayer {
+    opens: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl PlayerAdapter for OpenCountingPlayer {
+    fn name(&self) -> &'static str {
+        "open-counting"
+    }
+
+    fn open_file(&mut self, _path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+        *self
+            .opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+        Ok(())
+    }
+}
 
 fn seeded_loopback_shared_playlist_owner(
     active_index: usize,
@@ -67,6 +121,129 @@ fn seeded_loopback_shared_playlist_owner(
     );
 
     (owner, handle, state)
+}
+
+#[test]
+fn playlist_delivery_fence_replacement_discards_the_superseded_frontier() {
+    let mut pending = GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery {
+        delivery_fence: GuiPlaylistProtocolDeliveryFence::new(["old-set".to_owned()]),
+    };
+
+    pending.replace_delivery_fence(GuiPlaylistProtocolDeliveryFence::new([
+        "replacement-set".to_owned()
+    ]));
+    pending.note_frame_written("old-set");
+    assert!(
+        !pending.delivery_fence_reached(),
+        "a receipt for the superseded mutation must not release the replacement fence"
+    );
+    pending.note_frame_written("replacement-set");
+    assert!(pending.delivery_fence_reached());
+}
+
+#[test]
+fn session_causal_player_effect_cleanup_cancels_a_pending_playlist_fence() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.pending_shared_playlist_open =
+        Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery {
+            delivery_fence: GuiPlaylistProtocolDeliveryFence::new(["pending-set".to_owned()]),
+        });
+
+    owner.clear_session_causal_player_effect_state();
+
+    assert!(owner.pending_shared_playlist_open.is_none());
+}
+
+#[test]
+fn client_core_session_bootstrap_preserves_username_and_room_in_the_hello() {
+    let (mut owner, _) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core session runtime should bootstrap");
+    let lines = owner
+        .session
+        .as_deref_mut()
+        .expect("client-core runtime should be installed")
+        .flush_outbound_protocol_lines()
+        .expect("startup Hello should encode");
+    let hello = lines
+        .iter()
+        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .and_then(|value| value.get("Hello").cloned())
+        .expect("startup output should contain Hello");
+
+    assert_eq!(
+        hello.get("username").and_then(|value| value.as_str()),
+        Some("alice")
+    );
+    assert_eq!(
+        hello
+            .get("room")
+            .and_then(|room| room.get("name"))
+            .and_then(|value| value.as_str()),
+        Some("room1")
+    );
+}
+
+#[test]
+fn every_selected_playlist_mutator_returns_its_real_protocol_delivery_fence() {
+    type Mutation = fn(
+        &mut (dyn GuiSessionRuntimeAdapter + Send),
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String>;
+
+    let cases: [(&str, Mutation); 5] = [
+        ("advance", |session| {
+            session.advance_playlist_index_with_delivery_fence()
+        }),
+        ("delete", |session| {
+            session.delete_playlist_index_with_delivery_fence(1)
+        }),
+        ("undo", |session| {
+            session.undo_playlist_change_with_delivery_fence()
+        }),
+        ("shuffle remaining", |session| {
+            session.shuffle_remaining_playlist_with_delivery_fence()
+        }),
+        ("shuffle entire", |session| {
+            session.shuffle_entire_playlist_with_delivery_fence()
+        }),
+    ];
+
+    for (case, mutate) in cases {
+        let mut session = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core session adapter should bootstrap");
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
+            )
+            .expect("shared-playlist server Hello fixture should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("authoritative playlist files should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("authoritative playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("authoritative local file should apply");
+        if case == "undo" {
+            session
+                .replace_playlist_with_delivery_fence(
+                    vec!["episode3.mkv".to_owned(), "episode2.mkv".to_owned()],
+                    Some(0),
+                )
+                .expect("undo case should first create local playlist history");
+        }
+        let fence = mutate(&mut session)
+            .unwrap_or_else(|error| panic!("{case} should queue a playlist mutation: {error}"));
+        assert!(
+            fence.pending_frame_count() > 0,
+            "{case} must return the exact nonempty protocol delivery frontier"
+        );
+    }
 }
 
 fn seed_cached_plex_match_for_local_path(
@@ -1168,58 +1345,6 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
 
 #[test]
 fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delivery() {
-    struct DelayedTransportDriver {
-        release_one: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        writes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        pending_token: Option<u64>,
-        pending_line: Option<String>,
-    }
-
-    impl GuiSessionTransportDriver for DelayedTransportDriver {
-        fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
-            if self.pending_token.is_none()
-                && let Some(delivery) = transport.take_outbound_protocol_delivery_for_driver()
-            {
-                self.pending_line = Some(delivery.line().to_owned());
-                self.pending_token = Some(delivery.token());
-            }
-            if self
-                .release_one
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-                && let Some(token) = self.pending_token.take()
-            {
-                if let Some(line) = self.pending_line.take() {
-                    self.writes
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(line);
-                }
-                transport.publish_outbound_protocol_delivery_result(
-                    GuiOutboundProtocolDeliveryResult::FrameWritten { token },
-                );
-            }
-            Ok(())
-        }
-    }
-
-    struct OpenCountingPlayer {
-        opens: std::sync::Arc<std::sync::Mutex<usize>>,
-    }
-
-    impl PlayerAdapter for OpenCountingPlayer {
-        fn name(&self) -> &'static str {
-            "open-counting"
-        }
-
-        fn open_file(&mut self, _path: &str) -> Result<(), sorotte_player_api::PlayerError> {
-            *self
-                .opens
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
-            Ok(())
-        }
-    }
-
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
@@ -1235,7 +1360,7 @@ fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delive
 
     let release_one = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    owner = owner.with_session_transport_driver(Box::new(DelayedTransportDriver {
+    owner = owner.with_session_transport_driver(Box::new(DelayedPlaylistReceiptDriver {
         release_one: release_one.clone(),
         writes: writes.clone(),
         pending_token: None,
@@ -1306,6 +1431,22 @@ fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delive
         owner.pending_shared_playlist_open,
         Some(GuiPendingSharedPlaylistOpen::AfterMutation { .. })
     ));
+    owner.detach_player();
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OpenCountingPlayer {
+        opens: opens.clone(),
+    })));
+    owner.sync_active_shared_playlist_media_and_playstate_impl(&state);
+    assert!(matches!(
+        owner.pending_shared_playlist_open,
+        Some(GuiPendingSharedPlaylistOpen::AfterMutation { .. })
+    ));
+    assert_eq!(
+        *opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        0,
+        "a player attachment transition must retain an unsatisfied playlist delivery fence"
+    );
     assert_eq!(
         owner.open_selected_playlist_media_path_through_attached_player_impl(
             &state,
@@ -1421,6 +1562,132 @@ fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delive
         1,
         "later pumps must not replay the completed continuation"
     );
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
+fn ordinary_playlist_selection_mutations_wait_for_their_exact_delivery_receipts() {
+    let media_root = test_temp_root("ordinary-playlist-player-effect-fence");
+    std::fs::create_dir_all(&media_root).expect("media fixture directory should be created");
+    let first_path = media_root.join("episode1.mkv");
+    let second_path = media_root.join("episode2.mkv");
+    std::fs::write(&first_path, b"test").expect("first media fixture should be written");
+    std::fs::write(&second_path, b"test").expect("second media fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    let opens = std::sync::Arc::new(std::sync::Mutex::new(0));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OpenCountingPlayer {
+        opens: opens.clone(),
+    })));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(first_path.to_string_lossy().into_owned()),
+    );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    owner
+        .session
+        .as_mut()
+        .expect("loopback session should remain installed")
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"bob"}}}"#)
+        .expect("initial playlist should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("loopback session should remain installed")
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("initial playlist index should apply");
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    *opens
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = 0;
+
+    let release_one = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    owner = owner.with_session_transport_driver(Box::new(DelayedPlaylistReceiptDriver {
+        release_one: release_one.clone(),
+        writes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        pending_token: None,
+        pending_line: None,
+    }));
+
+    handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+        entry: "episode2.mkv".to_owned(),
+        select_after_queue: true,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(matches!(
+        owner.pending_shared_playlist_open,
+        Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. })
+    ));
+    assert_eq!(
+        *opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        0,
+        "queue-and-select must not open optimistically projected media before its receipt"
+    );
+    for _ in 0..16 {
+        release_one.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if owner.pending_shared_playlist_open.is_none() {
+            break;
+        }
+    }
+    assert!(owner.pending_shared_playlist_open.is_none());
+    assert_eq!(
+        *opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        1,
+        "queue-and-select should open once after its exact playlist receipt"
+    );
+
+    for _ in 0..8 {
+        release_one.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    }
+    *opens
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = 0;
+    handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(0));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(matches!(
+        owner.pending_shared_playlist_open,
+        Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. })
+    ));
+    assert_eq!(
+        *opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        0,
+        "an explicit selected-index mutation must wait for its exact receipt"
+    );
+    for _ in 0..16 {
+        release_one.store(true, std::sync::atomic::Ordering::SeqCst);
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if owner.pending_shared_playlist_open.is_none() {
+            break;
+        }
+    }
+    assert!(owner.pending_shared_playlist_open.is_none());
+    assert_eq!(
+        *opens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        1,
+        "selected-index activation should open once after its exact receipt"
+    );
+
     let _ = std::fs::remove_dir_all(media_root);
 }
 

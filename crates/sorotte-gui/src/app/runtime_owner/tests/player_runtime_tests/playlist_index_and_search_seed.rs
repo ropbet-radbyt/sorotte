@@ -201,6 +201,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenTestSessionTransport));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -248,8 +249,11 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
         .clear();
 
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
+    let mut outbound_protocol_lines = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         let reset_consumed = !owner
             .session
@@ -283,7 +287,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some(selected_media_path.to_string_lossy().as_ref()),
-        "the local index switch should open the newly selected media before its acknowledgment"
+        "the local index switch should open the newly selected media after its delivery receipt"
     );
     assert!(
         !owner
@@ -309,8 +313,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
         recorded_state.set_positions.clear();
     }
     assert!(
-        session_transport
-            .drain_outbound_protocol_lines()
+        outbound_protocol_lines
             .iter()
             .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":1")),
         "the local playlist switch should be published before its delayed acknowledgment"

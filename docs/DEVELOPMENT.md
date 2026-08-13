@@ -341,9 +341,11 @@ Windows coverage or the currently red complete legacy fanout matrix.
 Mutation testing is intentionally shard-based. Install the pinned producer
 and run a scheduled shard (for example `privacy-secret`, `server-auth`,
 `protocol-codec`, `participant-status-protocol`, `client-participant-status`,
-`client-participant-status-runtime`, `server-participant-status`,
-`gui-participant-status`, or
-`gui-playlist-delivery-fence`) with a fresh results root. For example:
+`client-participant-status-runtime`, `client-participant-status-outbox`,
+`server-participant-status`, `gui-participant-status`,
+`gui-playlist-delivery-fence`, `player-mpv-explicit-ipc-retry`,
+`client-app-participant-status-lifecycle`, or
+`cli-participant-status-lifecycle`) with a fresh results root. For example:
 
 ```powershell
 cargo install cargo-mutants --version 27.1.0 --locked
@@ -367,8 +369,22 @@ python scripts/mutation_ci.py verify-report `
 Use a fresh results root for every local run. The wrapper rejects an existing
 `mutants.out` directory so stale artifacts cannot be mistaken for new
 evidence. Before handoff, verify every retained report against the final source
-tree; source hashes are checked both when the campaign runs and when the report
-is consumed. Policy schema 3 binds package-wide versus library testing, any
+tree; mutated-source and workspace test-input hashes are checked both when the
+campaign runs and when the report is consumed. `verify-report` also reruns the
+exact `cargo test --list --format terse` command and rejects a changed test
+inventory. For participant-status handoff, keep only the reports selected by
+`coverage/mutation-report-set.json` and run:
+
+```powershell
+python scripts/mutation_ci.py verify-report-set `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --manifest coverage/mutation-report-set.json
+```
+
+The aggregate verifier requires exactly one manifest-selected current passing
+report for every listed shard, so historical failed or stale attempts cannot be
+mistaken for release evidence. Policy schema 3 binds package-wide versus library testing, any
 focused Rust test selector prefix, and an optional source-bound mutant-name
 regular expression; the wrapper reconciles that scope against every producer
 phase and rejects inventory outside the declared expression. A survivor or

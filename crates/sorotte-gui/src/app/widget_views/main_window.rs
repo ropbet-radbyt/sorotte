@@ -28,16 +28,14 @@ fn participant_status_tone(status: &MainWindowParticipantStatusPresentation) -> 
     {
         return GuiStatusTone::Danger;
     }
+    let player_connection = report.status.player_connection;
+    let player_needs_attention = player_connection.is_none()
+        || player_connection == Some(ParticipantPlayerConnection::Unavailable)
+        || player_connection == Some(ParticipantPlayerConnection::Starting)
+        || player_connection == Some(ParticipantPlayerConnection::Disconnected);
     if report.freshness == MainWindowParticipantStatusFreshness::Delayed
         || report.timeline_mismatch
-        || matches!(
-            report.status.player_connection,
-            None | Some(
-                ParticipantPlayerConnection::Unavailable
-                    | ParticipantPlayerConnection::Starting
-                    | ParticipantPlayerConnection::Disconnected
-            )
-        )
+        || player_needs_attention
         || matches!(
             report.status.phase,
             Some(

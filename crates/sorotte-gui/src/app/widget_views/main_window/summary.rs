@@ -869,13 +869,8 @@ fn member_player_availability_label(status: &MainWindowParticipantStatusPresenta
 fn member_report_evidence_is_unavailable(status: &MainWindowParticipantStatusReport) -> bool {
     status.freshness == MainWindowParticipantStatusFreshness::Stale
         || status.timeline_mismatch
-        || matches!(
-            status.status.correlation,
-            Some(
-                sorotte_protocol::ParticipantStatusCorrelation::Uncorrelated
-                    | sorotte_protocol::ParticipantStatusCorrelation::Superseded
-            )
-        )
+        || status.status.correlation
+            == Some(sorotte_protocol::ParticipantStatusCorrelation::Superseded)
 }
 
 fn member_logical_pause_label(status: &MainWindowParticipantStatusPresentation) -> String {

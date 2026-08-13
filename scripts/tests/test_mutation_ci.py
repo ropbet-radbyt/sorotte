@@ -980,6 +980,43 @@ class MutationRunnerTests(unittest.TestCase):
                 label="mutation results root",
             )
 
+    def test_report_set_manifest_selects_each_shard_exactly_once(self) -> None:
+        manifest = self.repo / "coverage" / "mutation-report-set.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "sorotte-mutation-report-set",
+                    "policy": "coverage/mutation-policy.toml",
+                    "reports": {
+                        "demo": "target/verification/mutation-demo.json",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(mutation_ci, "verify_report", return_value=0) as verify:
+            with contextlib.redirect_stdout(stdout):
+                result = mutation_ci.main(
+                    [
+                        "verify-report-set",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--manifest",
+                        "coverage/mutation-report-set.json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        verify.assert_called_once()
+        call = verify.call_args.args[0]
+        self.assertEqual(call.shard, "demo")
+        self.assertEqual(call.report, "target/verification/mutation-demo.json")
+        self.assertIn("1 uniquely selected shard report", stdout.getvalue())
+
     def test_run_writes_passed_report_after_pre_inventory_reconciliation(self) -> None:
         calls: list[list[str]] = []
 
@@ -1062,6 +1099,11 @@ class MutationRunnerTests(unittest.TestCase):
             report["source_bindings"]["before"],
             report["source_bindings"]["after"],
         )
+        self.assertEqual(
+            report["verification_input_bindings"]["before"],
+            report["verification_input_bindings"]["after"],
+        )
+        self.assertGreaterEqual(len(report["verification_input_bindings"]["before"]), 4)
         self.assertIn("--cargo-arg=--locked", report["command"])
         self.assertIn("--no-config", report["command"])
         self.assertIn("--no-shuffle", report["command"])
@@ -1083,8 +1125,67 @@ class MutationRunnerTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
 
         verification_stdout = io.StringIO()
-        with contextlib.redirect_stdout(verification_stdout):
-            verified = mutation_ci.main(
+        with mock.patch.object(mutation_ci, "run_process", side_effect=fake_run):
+            with contextlib.redirect_stdout(verification_stdout):
+                verified = mutation_ci.main(
+                    [
+                        "verify-report",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--report",
+                        "target/verification/mutation.json",
+                    ]
+                )
+        self.assertEqual(verified, 0)
+        self.assertIn("mutation evidence current: demo", verification_stdout.getvalue())
+
+        def changed_inventory_run(
+            argv: list[str],
+            *,
+            cwd: pathlib.Path,
+        ) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(cwd, self.repo)
+            self.assertEqual(argv[:2], ["cargo", "test"])
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="demo_test: test\nnew_regression: test\n",
+                stderr="",
+            )
+
+        inventory_stderr = io.StringIO()
+        with mock.patch.object(
+            mutation_ci,
+            "run_process",
+            side_effect=changed_inventory_run,
+        ):
+            with contextlib.redirect_stderr(inventory_stderr):
+                stale_inventory = mutation_ci.main(
+                    [
+                        "verify-report",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--report",
+                        "target/verification/mutation.json",
+                    ]
+                )
+        self.assertEqual(stale_inventory, 2)
+        self.assertIn("test inventory is stale", inventory_stderr.getvalue())
+
+        added_test = self.repo / "crates" / "demo" / "tests" / "status.rs"
+        added_test.parent.mkdir()
+        added_test.write_text("#[test]\nfn added_status_test() {}\n", encoding="utf-8")
+        verification_input_stderr = io.StringIO()
+        with contextlib.redirect_stderr(verification_input_stderr):
+            stale_verification_input = mutation_ci.main(
                 [
                     "verify-report",
                     "--repo-root",
@@ -1097,8 +1198,13 @@ class MutationRunnerTests(unittest.TestCase):
                     "target/verification/mutation.json",
                 ]
             )
-        self.assertEqual(verified, 0)
-        self.assertIn("mutation evidence current: demo", verification_stdout.getvalue())
+        self.assertEqual(stale_verification_input, 2)
+        self.assertIn(
+            "verification inputs are stale",
+            verification_input_stderr.getvalue(),
+        )
+        added_test.unlink()
+        added_test.parent.rmdir()
 
         (self.repo / MutationFixture.source).write_bytes(
             b"pub fn demo() -> bool {\n    false\n}\n"

@@ -427,6 +427,18 @@ fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() 
         unreachable!();
     };
     timeline_mismatch.timeline_mismatch = true;
+    let mut uncorrelated_local_evidence = report(
+        Some(ParticipantPlayerConnection::Connected),
+        Some(false),
+        Some(1.25),
+        Some(ParticipantPlaybackScope::new(7).with_state_revision(19)),
+    );
+    let MainWindowParticipantStatusPresentation::Report(uncorrelated) =
+        &mut uncorrelated_local_evidence
+    else {
+        unreachable!();
+    };
+    uncorrelated.status.correlation = Some(ParticipantStatusCorrelation::Uncorrelated);
     let cases = [
         (
             "status unavailable",
@@ -530,6 +542,11 @@ fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() 
                 "unavailable",
                 "unavailable",
             ],
+        ),
+        (
+            "uncorrelated local evidence",
+            uncorrelated_local_evidence,
+            ["connected", "no", "1.25×", "7", "19"],
         ),
         (
             "disconnected with revision unavailable",

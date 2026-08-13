@@ -387,9 +387,10 @@ where
 pub(super) fn report_contained_connected_session_player_failure(
     failure: &ContainedConnectedSessionPlayerFailure,
 ) {
+    let operation = failure.operation;
+    let error = &failure.error;
     eprintln!(
-        "warning: external player step '{}' failed while the Sorotte session remains connected: {}",
-        failure.operation, failure.error
+        "warning: external player step '{operation}' failed while the Sorotte session remains connected: {error}"
     );
     if let Some(error) = failure.status_publish_error.as_ref() {
         eprintln!(

@@ -184,6 +184,39 @@ enum ProtocolDelivery {
     },
 }
 
+impl ProtocolDelivery {
+    fn connection_scoped_state(generation: u64) -> Self {
+        Self::ConnectionScopedState {
+            generation,
+            participant_status_cancelled: false,
+        }
+    }
+
+    fn set_participant_status_cancelled(&mut self, cancelled: bool) {
+        use ProtocolDelivery::ConnectionScopedState;
+        if let ConnectionScopedState {
+            participant_status_cancelled,
+            ..
+        } = self
+        {
+            *participant_status_cancelled = cancelled;
+        }
+    }
+
+    fn participant_status_is_cancelled(&self) -> bool {
+        use ProtocolDelivery::ConnectionScopedState;
+        if let ConnectionScopedState {
+            participant_status_cancelled,
+            ..
+        } = self
+        {
+            *participant_status_cancelled
+        } else {
+            false
+        }
+    }
+}
+
 /// Opaque identity for one staged outbox front.
 ///
 /// A receipt is accepted only while this exact lease still owns the front;
@@ -366,13 +399,8 @@ impl ProtocolOutbox {
 
     pub(crate) fn cancel_pending_participant_status_reports(&mut self) {
         let front_is_leased = self.leased_front.get().is_some();
-        if front_is_leased
-            && let Some(ProtocolDelivery::ConnectionScopedState {
-                participant_status_cancelled,
-                ..
-            }) = self.delivery.front_mut()
-        {
-            *participant_status_cancelled = true;
+        if front_is_leased && let Some(delivery) = self.delivery.front_mut() {
+            delivery.set_participant_status_cancelled(true);
         }
         for index in (0..self.pending.len()).rev() {
             if front_is_leased && index == 0 {
@@ -402,12 +430,8 @@ impl ProtocolOutbox {
         if remove_message {
             self.pending.remove(index);
             self.delivery.remove(index);
-        } else if let Some(ProtocolDelivery::ConnectionScopedState {
-            participant_status_cancelled,
-            ..
-        }) = self.delivery.get_mut(index)
-        {
-            *participant_status_cancelled = false;
+        } else if let Some(delivery) = self.delivery.get_mut(index) {
+            delivery.set_participant_status_cancelled(false);
         }
     }
 
@@ -489,10 +513,9 @@ impl ProtocolOutbox {
         } else {
             self.pending.push_back(message);
             self.delivery
-                .push_back(ProtocolDelivery::ConnectionScopedState {
-                    generation: self.connection_generation,
-                    participant_status_cancelled: false,
-                });
+                .push_back(ProtocolDelivery::connection_scoped_state(
+                    self.connection_generation,
+                ));
         }
         true
     }
@@ -540,13 +563,10 @@ impl ProtocolOutbox {
                 ..
             })
         );
-        let strip_cancelled_participant_status = matches!(
-            self.delivery.front(),
-            Some(ProtocolDelivery::ConnectionScopedState {
-                participant_status_cancelled: true,
-                ..
-            })
-        );
+        let strip_cancelled_participant_status = self
+            .delivery
+            .front()
+            .is_some_and(ProtocolDelivery::participant_status_is_cancelled);
         self.leased_front.set(None);
         if discard_cancelled {
             self.pending.pop_front();

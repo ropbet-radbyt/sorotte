@@ -799,15 +799,13 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         completion: GuiSharedPlaylistOpenCompletion,
     ) {
-        let GuiSharedPlaylistOpenCompletion {
-            dispatch,
-            opened_entry_count,
-            selected_playlist_index,
-            selected_media_source_path,
-            session_playlist_projected,
-            session_success,
-            session_error,
-        } = completion;
+        let dispatch = completion.dispatch;
+        let opened_entry_count = completion.opened_entry_count;
+        let selected_playlist_index = completion.selected_playlist_index;
+        let selected_media_source_path = completion.selected_media_source_path;
+        let session_playlist_projected = completion.session_playlist_projected;
+        let session_success = completion.session_success;
+        let session_error = completion.session_error;
         let selected_media_sync =
             if session_playlist_projected && self.pending_playlist_source_resolution.is_none() {
                 self.open_selected_playlist_media_after_shared_playlist_projection(
@@ -875,6 +873,10 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         match pending {
+            GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. } => {
+                self.sync_active_shared_playlist_media_and_playstate_impl(projected_state);
+                let _ = self.retry_pending_playlist_source_resolution(handle, projected_state);
+            }
             GuiPendingSharedPlaylistOpen::AfterMutation {
                 dispatch,
                 opened_entry_count,

@@ -538,8 +538,8 @@ fn gui_persisted_config_runtime_owner_opens_inbound_selected_shared_playlist_med
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_before_server_echo()
-{
+fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_after_delivery_receipt()
+ {
     let root = test_temp_root("shared-playlist-local-select-before-echo");
     let current_media_path = root.join("episode1.mkv");
     let selected_media_path = root.join("episode2.mkv");
@@ -551,6 +551,7 @@ fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_b
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenTestSessionTransport));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
@@ -609,6 +610,8 @@ fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_b
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        let _ = session_transport.drain_outbound_protocol_lines();
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if state.selection.selected_main_window_playlist == Some(1)
             && owner

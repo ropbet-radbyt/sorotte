@@ -1,5 +1,7 @@
+use crate::MpvAdapter;
 use crate::ipc::{MpvIpcConnectionEvent, MpvJsonIpcClient};
 use serde_json::{Value, json};
+use sorotte_player_api::PlayerAdapter;
 use std::{
     ffi::OsStr,
     io,
@@ -768,6 +770,39 @@ fn windows_named_pipe_replacement_client_recovers_on_the_same_pipe_name() {
         1,
         "replacement client must restart request correlation independently"
     );
+}
+
+#[test]
+fn disconnected_adapter_retries_an_explicit_endpoint_when_it_appears() {
+    let absent_server = NamedPipeServer::unique("late-explicit-endpoint");
+    let pipe_name = absent_server.pipe_name().to_owned();
+    drop(absent_server);
+
+    let mut adapter = MpvAdapter::disconnected_with_json_ipc_retry(&pipe_name);
+    assert_eq!(adapter.transport_is_connected(), Some(false));
+
+    let replacement_server = NamedPipeServer::with_name(pipe_name);
+    let peer = replacement_server.spawn("late-explicit-endpoint", |peer| {
+        let request = peer.read_request();
+        assert_eq!(
+            request.get("command"),
+            Some(&json!(["get_property", "mpv-version"]))
+        );
+        peer.write_lines(
+            &[success_response(request_id(&request), json!("0.41.0"))],
+            DeliveryMode::OneCoalescedWrite,
+        );
+    });
+
+    adapter.maintain_runtime_integrations();
+
+    assert_eq!(
+        adapter.transport_is_connected(),
+        Some(true),
+        "the normal maintenance cadence should reattach the retained explicit endpoint"
+    );
+    let observations = join_peer(peer);
+    assert_eq!(observations.requests.len(), 1);
 }
 
 #[test]

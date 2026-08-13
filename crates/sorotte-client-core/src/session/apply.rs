@@ -386,6 +386,18 @@ impl ClientSession {
                         continue;
                     }
 
+                    if user_payload.joined {
+                        // A joined event for an already-known username is a
+                        // connection-generation replacement, not a metadata
+                        // heartbeat. Retire both the old report and its old
+                        // capability epoch before applying the new event.
+                        self.invalidate_user_participant_status(&username);
+                        self.model
+                            .room
+                            .participant_status_capabilities
+                            .remove(&username);
+                    }
+
                     if let Some(room) = user_payload.room {
                         let room_changed = previous_user_view
                             .as_ref()

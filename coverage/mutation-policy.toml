@@ -73,6 +73,9 @@ id = "client-participant-status"
 owner = "participant-status"
 package = "sorotte-client-core"
 files = [
+    "crates/sorotte-client-core/src/inbound.rs",
+    "crates/sorotte-client-core/src/session/apply.rs",
+    "crates/sorotte-client-core/src/session/helpers.rs",
     "crates/sorotte-client-core/src/session/participant_status.rs",
     "crates/sorotte-client-core/src/views.rs",
 ]
@@ -164,13 +167,42 @@ require_baseline = true
 id = "gui-playlist-delivery-fence"
 owner = "gui-transport"
 package = "sorotte-gui"
-files = ["crates/sorotte-gui/src/app/runtime_owner/player/media_open.rs"]
-mutant_filter = "(open_shared_playlist_dispatch_after_prior_delivery_fence|finish_shared_playlist_open_after_delivery|resume_pending_shared_playlist_open_if_ready)"
+files = [
+    "crates/sorotte-gui/src/app/runtime_owner.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/media_open.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/media_search.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/playlist_sync.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/requests/session_controls.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/session_transport.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/startup_player.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/playlist_delivery_fence.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/delivery_fence.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/runtime_adapter_impl.rs",
+]
+mutant_filter = "(Gui(PendingSharedPlaylistOpen|PlaylistProtocolDeliveryFence)|playlist.*delivery_fence|clear_session_causal_player_effect_state|finish_shared_playlist_open_after_delivery|resume_pending_shared_playlist_open_if_ready|delete field (username|room).*StoredClientSettingsMvp|delete field direct_target.*GuiLocalMediaSearchAliases)"
 test_target = "lib"
 test_filter = "app::runtime_owner::tests::playlist_runtime_tests::open_insert_and_local_media::"
 jobs = 2
 timeout_seconds = 180
 build_timeout_seconds = 300
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "player-mpv-explicit-ipc-retry"
+owner = "participant-status"
+package = "sorotte-player-mpv"
+files = [
+    "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+]
+mutant_filter = "(disconnected_with_json_ipc_retry|maintain_json_ipc_reconnection)"
+test_target = "lib"
+test_filter = "adapter::version_policy_tests::explicit_json_ipc_retry_"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
 minimum_viable_kill_percent = "100.00"
 max_missed = 0
 max_timeouts = 0
@@ -799,6 +831,17 @@ reason = "cargo-mutants requests Default for the explicit freshness and capabili
 review_by = "2026-11-30"
 
 [[accepted_unviable]]
+id = "server-participant-status-correlation-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "participant_status_correlation"
+return_type = "-> ParticipantStatusCorrelation"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the three-way correlation enum, which intentionally has no semantically safe default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
 id = "server-participant-status-compact-snapshot-default"
 shard = "server-participant-status"
 file = "crates/sorotte-server/src/runtime_maintenance.rs"
@@ -885,6 +928,18 @@ return_type = "-> Self"
 genre = "FnValue"
 replacement = "Default::default()"
 reason = "The generated replacement requires Default for a presentation derived from an explicit participant-status view and freshness state, so it cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "player-mpv-explicit-ipc-retry-instant-duration-multiply"
+shard = "player-mpv-explicit-ipc-retry"
+file = "crates/sorotte-player-mpv/src/adapter/reconnection.rs"
+function = "MpvAdapter::maintain_json_ipc_reconnection_using"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "*"
+expected_count = 2
+reason = "cargo-mutants replaces Instant plus Duration with multiplication at both retry deadlines, but Rust deliberately defines no Instant multiplication operator"
 review_by = "2026-11-30"
 
 [[accepted_unviable]]

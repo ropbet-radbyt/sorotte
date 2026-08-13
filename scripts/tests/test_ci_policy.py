@@ -2186,7 +2186,7 @@ done""",
 
     def test_scheduled_mutation_shard_is_pinned_bounded_and_fail_closed(self) -> None:
         jobs = self.mutation_workflow["jobs"]
-        self.assertEqual(set(jobs), {"mutation"})
+        self.assertEqual(set(jobs), {"mutation", "participant-status-evidence-set"})
         self.assertEqual(self.mutation_workflow["permissions"], {"contents": "read"})
         self.assertEqual(
             self.mutation_workflow["on"],
@@ -2196,11 +2196,15 @@ done""",
                     "paths": [
                         ".github/workflows/rust-mutation.yml",
                         "coverage/mutation-policy.toml",
+                        "coverage/mutation-report-set.json",
                         "scripts/mutation_ci.py",
                         "crates/sorotte-protocol/src/lib.rs",
                         "crates/sorotte-protocol/src/state.rs",
                         "crates/sorotte-protocol/src/participant_status.rs",
                         "crates/sorotte-player-api/src/lib.rs",
+                        "crates/sorotte-player-mpv/src/adapter.rs",
+                        "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+                        "crates/sorotte-player-mpv/src/adapter/state.rs",
                         "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
                         "crates/sorotte-client-core/src/**",
                         "crates/sorotte-client-app/src/**",
@@ -2232,6 +2236,7 @@ done""",
             "server-participant-status",
             "gui-participant-status",
             "gui-playlist-delivery-fence",
+            "player-mpv-explicit-ipc-retry",
             "client-app-participant-status-lifecycle",
             "cli-participant-status-lifecycle",
         ]
@@ -2262,6 +2267,9 @@ done""",
             "crates/sorotte-protocol/src/state.rs",
             "crates/sorotte-protocol/src/participant_status.rs",
             "crates/sorotte-player-api/src/lib.rs",
+            "crates/sorotte-player-mpv/src/adapter.rs",
+            "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+            "crates/sorotte-player-mpv/src/adapter/state.rs",
             "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
             "crates/sorotte-client-core/src/**",
             "crates/sorotte-client-app/src/**",
@@ -2366,6 +2374,47 @@ done""",
             },
         )
 
+        evidence_job = jobs["participant-status-evidence-set"]
+        self.assertEqual(evidence_job["name"], "Participant-status mutation evidence set")
+        self.assertEqual(evidence_job["if"], "${{ always() }}")
+        self.assertEqual(evidence_job["needs"], "mutation")
+        self.assertEqual(evidence_job["runs-on"], "ubuntu-latest")
+        self.assertEqual(evidence_job["timeout-minutes"], "30")
+        evidence_checkout = named_step(
+            jobs,
+            "participant-status-evidence-set",
+            "Checkout",
+        )
+        self.assertEqual(evidence_checkout.get("uses"), PINNED_USES["actions/checkout"])
+        download = named_step(
+            jobs,
+            "participant-status-evidence-set",
+            "Download mutation reports",
+        )
+        self.assertEqual(
+            download.get("uses"),
+            PINNED_USES["actions/download-artifact"],
+        )
+        self.assertEqual(
+            download.get("with"),
+            {
+                "pattern": "sorotte-mutation-*",
+                "path": "target",
+                "merge-multiple": "true",
+            },
+        )
+        self.assert_exact_run(
+            jobs,
+            "participant-status-evidence-set",
+            "Verify the uniquely selected participant-status report set",
+            """
+            python scripts/mutation_ci.py verify-report-set
+            --repo-root .
+            --policy coverage/mutation-policy.toml
+            --manifest coverage/mutation-report-set.json
+            """,
+        )
+
         self.assertEqual(
             self.mutation_policy,
             {
@@ -2446,6 +2495,9 @@ done""",
                         "owner": "participant-status",
                         "package": "sorotte-client-core",
                         "files": [
+                            "crates/sorotte-client-core/src/inbound.rs",
+                            "crates/sorotte-client-core/src/session/apply.rs",
+                            "crates/sorotte-client-core/src/session/helpers.rs",
                             "crates/sorotte-client-core/src/session/"
                             "participant_status.rs",
                             "crates/sorotte-client-core/src/views.rs",
@@ -2593,14 +2645,37 @@ done""",
                         "owner": "gui-transport",
                         "package": "sorotte-gui",
                         "files": [
+                            "crates/sorotte-gui/src/app/runtime_owner.rs",
                             "crates/sorotte-gui/src/app/runtime_owner/"
-                            "player/media_open.rs"
+                            "player/media_open.rs",
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "player/media_search.rs",
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "player/playlist_sync.rs",
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "requests/session_controls.rs",
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "session_transport.rs",
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "startup_player.rs",
+                            "crates/sorotte-gui/src/app/runtime_stack/"
+                            "playlist_delivery_fence.rs",
+                            "crates/sorotte-gui/src/app/runtime_stack/"
+                            "client_core_adapter/delivery_fence.rs",
+                            "crates/sorotte-gui/src/app/runtime_stack/"
+                            "client_core_adapter/runtime_adapter_impl.rs",
                         ],
                         "mutant_filter": (
-                            "(open_shared_playlist_dispatch_after_prior_"
-                            "delivery_fence|"
+                            "(Gui(PendingSharedPlaylistOpen|"
+                            "PlaylistProtocolDeliveryFence)|"
+                            "playlist.*delivery_fence|"
+                            "clear_session_causal_player_effect_state|"
                             "finish_shared_playlist_open_after_delivery|"
-                            "resume_pending_shared_playlist_open_if_ready)"
+                            "resume_pending_shared_playlist_open_if_ready|"
+                            "delete field (username|room).*"
+                            "StoredClientSettingsMvp|"
+                            "delete field direct_target.*"
+                            "GuiLocalMediaSearchAliases)"
                         ),
                         "test_target": "lib",
                         "test_filter": (
@@ -2610,6 +2685,30 @@ done""",
                         "jobs": 2,
                         "timeout_seconds": 180,
                         "build_timeout_seconds": 300,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "player-mpv-explicit-ipc-retry",
+                        "owner": "participant-status",
+                        "package": "sorotte-player-mpv",
+                        "files": [
+                            "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+                        ],
+                        "mutant_filter": (
+                            "(disconnected_with_json_ipc_retry|"
+                            "maintain_json_ipc_reconnection)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "adapter::version_policy_tests::"
+                            "explicit_json_ipc_retry_"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
                         "minimum_viable_kill_percent": "100.00",
                         "max_missed": 0,
                         "max_timeouts": 0,
@@ -3326,6 +3425,7 @@ done""",
                                         "client-participant-status-user-view-let-chain-or": 3,
                                         "client-participant-status-apply-update-let-chain-or": 6,
                                         "server-participant-status-snapshot-let-chain-or": 5,
+                                        "player-mpv-explicit-ipc-retry-instant-duration-multiply": 2,
                                     }[identifier]
                                 }
                                 if identifier
@@ -3333,6 +3433,7 @@ done""",
                                     "client-participant-status-user-view-let-chain-or",
                                     "client-participant-status-apply-update-let-chain-or",
                                     "server-participant-status-snapshot-let-chain-or",
+                                    "player-mpv-explicit-ipc-retry-instant-duration-multiply",
                                 }
                                 else {}
                             ),
@@ -3538,6 +3639,28 @@ done""",
                             (
                                 (
                                     "server-participant-status-"
+                                    "correlation-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                "participant_status_correlation",
+                                "-> ParticipantStatusCorrelation",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for the "
+                                    "three-way correlation enum, "
+                                    "which intentionally has no semantically "
+                                    "safe default, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-"
                                     "compact-snapshot-default"
                                 ),
                                 "server-participant-status",
@@ -3727,6 +3850,30 @@ done""",
                                     "Default for a presentation derived from "
                                     "an explicit participant-status view and "
                                     "freshness state, so it cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "player-mpv-explicit-ipc-retry-"
+                                    "instant-duration-multiply"
+                                ),
+                                "player-mpv-explicit-ipc-retry",
+                                (
+                                    "crates/sorotte-player-mpv/src/adapter/"
+                                    "reconnection.rs"
+                                ),
+                                (
+                                    "MpvAdapter::"
+                                    "maintain_json_ipc_reconnection_using"
+                                ),
+                                "",
+                                "BinaryOperator",
+                                "*",
+                                (
+                                    "cargo-mutants replaces Instant plus "
+                                    "Duration with multiplication at both "
+                                    "retry deadlines, but Rust deliberately "
+                                    "defines no Instant multiplication operator"
                                 ),
                             ),
                             (
@@ -3925,6 +4072,34 @@ done""",
             "push_readiness_intent",
             "release_front",
             "acknowledge_front",
+        ):
+            with self.subTest(neighbor=neighbor):
+                self.assertIsNone(re.search(mutant_filter, neighbor))
+
+    def test_gui_playlist_fence_filter_binds_only_observed_context_collateral(self) -> None:
+        shard = next(
+            shard
+            for shard in self.mutation_policy["shard"]
+            if shard["id"] == "gui-playlist-delivery-fence"
+        )
+        mutant_filter = shard["mutant_filter"]
+        for owned in (
+            "GuiPendingSharedPlaylistOpen::replace_delivery_fence",
+            "GuiPlaylistProtocolDeliveryFence::note_frame_written",
+            "queue_playlist_entry_with_delivery_fence",
+            "clear_session_causal_player_effect_state",
+            "delete field username from struct StoredClientSettingsMvp",
+            "delete field room from struct StoredClientSettingsMvp",
+            "delete field direct_target from struct Self expression in GuiLocalMediaSearchAliases::for_target",
+        ):
+            with self.subTest(owned=owned):
+                self.assertRegex(owned, mutant_filter)
+
+        for neighbor in (
+            "delete field player_path from struct StoredClientSettingsMvp",
+            "delete field username from struct StoredClientSettingsRuntimeSnapshot",
+            "delete field fallback_title from struct Self expression in GuiLocalMediaSearchAliases::for_target",
+            "clear_media_match_remote_lookup_state",
         ):
             with self.subTest(neighbor=neighbor):
                 self.assertIsNone(re.search(mutant_filter, neighbor))

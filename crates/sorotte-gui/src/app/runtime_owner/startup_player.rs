@@ -278,7 +278,6 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app) fn clear_session_attached_player_sync_state(&mut self) {
-        self.pending_shared_playlist_open = None;
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         self.pending_local_attached_pause_override = None;
@@ -290,6 +289,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
         self.attached_transport_telemetry_authority = Default::default();
+    }
+
+    pub(in crate::app) fn clear_session_causal_player_effect_state(&mut self) {
+        self.pending_shared_playlist_open = None;
+        self.clear_session_attached_player_sync_state();
     }
 
     pub(in crate::app) fn clear_media_match_remote_lookup_state(&mut self) {

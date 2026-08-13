@@ -14,7 +14,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) {
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active_session_settings = None;
         self.active_session_configured_settings = None;
@@ -35,7 +35,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn remove_session_runtime(&mut self) {
         if self.session.take().is_some() {
-            self.clear_session_attached_player_sync_state();
+            self.clear_session_causal_player_effect_state();
             self.session_generation = self.session_generation.wrapping_add(1);
         }
         self.active_session_settings = None;
@@ -210,7 +210,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
         self.apply_session_transport_disconnect_pause(handle, projected_state);
         self.pending_room_change_request = None;
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
 
         if let Some(delay_seconds) = reconnect_delay
             && !stop_reconnect_requested
@@ -340,7 +340,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
         self.reset_session_transport_reconnect_state();
 
         let mut actions = self.sessionless_projection_actions(projected_state);

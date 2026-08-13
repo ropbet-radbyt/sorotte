@@ -616,6 +616,11 @@ impl ClientSession {
         user_view.controller = controller;
     }
 
+    pub(super) fn invalidate_user_participant_status(&mut self, username: &str) {
+        self.model.room.participant_statuses.remove(username);
+        self.model.room.participant_status_receipts.remove(username);
+    }
+
     pub(super) fn set_user_capabilities(
         &mut self,
         username: &str,
@@ -629,11 +634,20 @@ impl ClientSession {
             .entry(username.to_owned())
             .or_default();
         user_view.capabilities = capabilities;
+        let previous_participant_status_v1 = self
+            .model
+            .room
+            .participant_status_capabilities
+            .get(username)
+            .copied();
         if let Some(participant_status_v1) = participant_status_v1 {
             self.model
                 .room
                 .participant_status_capabilities
                 .insert(username.to_owned(), participant_status_v1);
+            if previous_participant_status_v1 != Some(participant_status_v1) {
+                self.invalidate_user_participant_status(username);
+            }
         }
         if self
             .model
@@ -642,8 +656,7 @@ impl ClientSession {
             .get(username)
             != Some(&true)
         {
-            self.model.room.participant_statuses.remove(username);
-            self.model.room.participant_status_receipts.remove(username);
+            self.invalidate_user_participant_status(username);
         }
     }
 

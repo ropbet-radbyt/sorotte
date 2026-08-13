@@ -197,6 +197,15 @@ impl std::fmt::Debug for SharedFile {
 }
 
 impl SharedFile {
+    // Keep this normalization constructor out of unrelated status mutation expressions while
+    // still deriving every other legacy field from the canonical default.
+    #[allow(clippy::field_reassign_with_default)]
+    fn with_name(name: String) -> Self {
+        let mut file = Self::default();
+        file.name = Some(name);
+        file
+    }
+
     pub fn is_empty(&self) -> bool {
         self.name.is_none()
             && self.duration.is_none()
@@ -238,6 +247,7 @@ pub(crate) struct ClientUserUpdate {
     pub(crate) room: Option<String>,
     pub(crate) file: Option<SharedFile>,
     pub(crate) left: bool,
+    pub(crate) joined: bool,
     pub(crate) capabilities: Option<PeerCapabilities>,
     pub(crate) participant_status_v1: Option<bool>,
     pub(crate) controller: Option<bool>,
@@ -538,10 +548,7 @@ fn normalize_file_value(
 ) -> Option<SharedFile> {
     match value {
         Value::Null => None,
-        Value::String(name) if !name.is_empty() => Some(SharedFile {
-            name: Some(name),
-            ..SharedFile::default()
-        }),
+        Value::String(name) if !name.is_empty() => Some(SharedFile::with_name(name)),
         Value::Object(mut fields) => {
             let was_nonempty = !fields.is_empty();
             let file = SharedFile {
@@ -705,11 +712,25 @@ pub(crate) fn normalize_client_protocol_message(
                                     let file = user.file.and_then(|file| {
                                         normalize_file_value(file, &context, &mut fallbacks)
                                     });
-                                    let participant_status_v1 = user
-                                        .features
+                                    let joined = user
+                                        .event
                                         .as_ref()
-                                        .and_then(participant_status_capability);
-                                    let capabilities = user.features.and_then(|features| {
+                                        .and_then(|event| event.get("joined"))
+                                        .and_then(Value::as_bool)
+                                        == Some(true);
+                                    let event_features = user
+                                        .event
+                                        .as_ref()
+                                        .and_then(|event| event.get("features"))
+                                        .filter(|features| !features.is_null())
+                                        .cloned();
+                                    let features = user
+                                        .features
+                                        .filter(|features| !features.is_null())
+                                        .or(event_features);
+                                    let participant_status_v1 =
+                                        features.as_ref().and_then(participant_status_capability);
+                                    let capabilities = features.and_then(|features| {
                                         peer_capabilities(&features).or_else(|| {
                                             fallbacks.push(
                                             ClientCompatibilityFallback::IgnoredInvalidFeatures {
@@ -729,6 +750,7 @@ pub(crate) fn normalize_client_protocol_message(
                                             .and_then(|event| event.get("left"))
                                             .and_then(Value::as_bool)
                                             == Some(true),
+                                        joined,
                                         capabilities,
                                         participant_status_v1,
                                         controller: user.controller,
@@ -919,7 +941,7 @@ fn decode_client_participant_status_state(
         };
     };
     let mut decoded = DecodedClientParticipantStatusState::default();
-    if let Some(scope) = object.get("scope") {
+    if let Some(scope) = object.get("scope").filter(|value| !value.is_null()) {
         match serde_json::from_value(scope.clone()) {
             Ok(scope) => decoded.scope = Some(scope),
             Err(_) => {
@@ -928,7 +950,7 @@ fn decode_client_participant_status_state(
             }
         }
     }
-    if let Some(snapshot) = object.get("snapshot") {
+    if let Some(snapshot) = object.get("snapshot").filter(|value| !value.is_null()) {
         match serde_json::from_value(snapshot.clone()) {
             Ok(snapshot) => decoded.snapshot = Some(snapshot),
             Err(_) => {

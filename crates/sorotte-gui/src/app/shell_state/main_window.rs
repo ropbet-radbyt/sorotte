@@ -455,11 +455,9 @@ impl MainWindowRoomPlaybackIntent {
             label.push_str(&format_participant_status_timestamp(position));
         }
         if self.participant_count > 0 {
-            label.push_str(&format!(
-                " · {} participant{}",
-                self.participant_count,
-                if self.participant_count == 1 { "" } else { "s" }
-            ));
+            let participant_count = self.participant_count;
+            let suffix = if participant_count == 1 { "" } else { "s" };
+            label.push_str(&format!(" · {participant_count} participant{suffix}"));
         }
         if self.paused == Some(false)
             && let Some(drift) = self.maximum_observed_drift_seconds

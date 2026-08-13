@@ -305,6 +305,7 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenTestSessionTransport));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -352,7 +353,44 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
         select_after_queue: true,
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let outbound_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths
+            .is_empty(),
+        "queue-and-select must remain fenced before its terminal write receipt"
+    );
+    let mut outbound_lines = session_transport.drain_outbound_protocol_lines();
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        outbound_lines.extend(session_transport.drain_outbound_protocol_lines());
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        let recorded = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let opened_target = recorded
+            .opened_paths
+            .iter()
+            .any(|path| path == selected_media_path.to_string_lossy().as_ref());
+        let rewound_target = recorded
+            .set_positions
+            .iter()
+            .any(|position| position.abs() < f64::EPSILON);
+        drop(recorded);
+        let emitted_reset_state = outbound_lines.iter().any(|line| {
+            line.contains("\"State\"")
+                && line.contains("\"position\":0.0")
+                && line.contains("\"paused\":true")
+        });
+        if opened_target && rewound_target && emitted_reset_state {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
     assert!(
         outbound_lines
             .iter()
@@ -369,27 +407,6 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
             && line.contains("\"paused\":true")
     }));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < deadline {
-        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        let recorded = player_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let opened_target = recorded
-            .opened_paths
-            .iter()
-            .any(|path| path == selected_media_path.to_string_lossy().as_ref());
-        let rewound_target = recorded
-            .set_positions
-            .iter()
-            .any(|position| position.abs() < f64::EPSILON);
-        drop(recorded);
-        if opened_target && rewound_target {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-
     {
         let recorded = player_state
             .lock()
@@ -399,7 +416,7 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
                 .opened_paths
                 .iter()
                 .any(|path| path == selected_media_path.to_string_lossy().as_ref()),
-            "queue-and-select should open the optimistic selected media before its echo; recorded={recorded:?}"
+            "queue-and-select should open the selected media after its exact delivery receipt; recorded={recorded:?}"
         );
         assert!(
             recorded

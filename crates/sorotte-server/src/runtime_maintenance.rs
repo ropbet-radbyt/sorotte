@@ -33,6 +33,38 @@ fn participant_status_availability(report_age_ms: u64) -> ParticipantStatusAvail
     }
 }
 
+fn participant_status_correlation(
+    reported_scope: Option<ParticipantPlaybackScope>,
+    current_scope: ParticipantPlaybackScope,
+) -> ParticipantStatusCorrelation {
+    let Some(reported_scope) = reported_scope else {
+        return ParticipantStatusCorrelation::Uncorrelated;
+    };
+    if reported_scope == current_scope {
+        return ParticipantStatusCorrelation::Exact;
+    }
+
+    // Missing optional fence components are an absence of correlation
+    // evidence, not proof that the report belongs to an older epoch. Only an
+    // explicitly comparable mismatch is superseded.
+    let state_revision_conflicts = reported_scope
+        .state_revision
+        .zip(current_scope.state_revision)
+        .is_some_and(|(reported, current)| reported != current);
+    let transport_revision_conflicts = reported_scope
+        .transport_revision
+        .zip(current_scope.transport_revision)
+        .is_some_and(|(reported, current)| reported != current);
+    if reported_scope.media_generation != current_scope.media_generation
+        || state_revision_conflicts
+        || transport_revision_conflicts
+    {
+        ParticipantStatusCorrelation::Superseded
+    } else {
+        ParticipantStatusCorrelation::Uncorrelated
+    }
+}
+
 fn projected_participant_position(
     report: &ParticipantStatusReport,
     report_age_ms: u64,
@@ -257,6 +289,28 @@ impl ServerRuntime {
             .collect();
         due_clients.sort();
 
+        // Remove every timed-out member before producing any recipient's
+        // complete room snapshot. Otherwise lexical client ordering can let a
+        // live recipient observe a zombie that is removed later in the same
+        // maintenance batch.
+        for client_id in &due_clients {
+            if !self.sessions.contains_key(client_id) {
+                continue;
+            }
+            if self.reject_fenced_playback_barrier_transport(client_id) {
+                continue;
+            }
+            if !self.client_timed_out(client_id, now) {
+                continue;
+            }
+            self.pending_transport_actions
+                .push(DirectedTransportAction::new(
+                    client_id,
+                    ServerTransportAction::Close,
+                ));
+            outbound.extend(self.timeout_disconnect_messages(client_id)?);
+        }
+
         for client_id in due_clients {
             if !self.client_next_periodic_state_at.contains_key(&client_id) {
                 continue;
@@ -416,16 +470,11 @@ impl ServerRuntime {
         let Some(cached) = self.participant_status_snapshot_cache.get_mut(room) else {
             return;
         };
-        let representation_escalates = matches!(
-            (cached.snapshot.mode, snapshot.mode),
-            (
-                ParticipantStatusSnapshotMode::Full,
-                ParticipantStatusSnapshotMode::Compact | ParticipantStatusSnapshotMode::Unavailable
-            ) | (
-                ParticipantStatusSnapshotMode::Compact,
-                ParticipantStatusSnapshotMode::Unavailable
-            )
-        );
+        let representation_escalates = (cached.snapshot.mode
+            == ParticipantStatusSnapshotMode::Full
+            && snapshot.mode != ParticipantStatusSnapshotMode::Full)
+            || (cached.snapshot.mode == ParticipantStatusSnapshotMode::Compact
+                && snapshot.mode == ParticipantStatusSnapshotMode::Unavailable);
         if cached.snapshot.revision == snapshot.revision && representation_escalates {
             cached.snapshot = snapshot.clone();
         }
@@ -638,13 +687,10 @@ impl ServerRuntime {
                     && retained.room_join_sequence == self.client_room_join_order(peer_client_id)
                 {
                     let report_age_ms = participant_status_report_age_ms(retained, now_seconds);
-                    let correlation = match retained.report.playback_scope {
-                        Some(reported) if reported == current_scope => {
-                            ParticipantStatusCorrelation::Exact
-                        }
-                        Some(_) => ParticipantStatusCorrelation::Superseded,
-                        None => ParticipantStatusCorrelation::Uncorrelated,
-                    };
+                    let correlation = participant_status_correlation(
+                        retained.report.playback_scope,
+                        current_scope,
+                    );
                     let availability = participant_status_availability(report_age_ms);
                     let mut view = ParticipantStatusView::new(availability);
                     view.correlation = Some(correlation);
@@ -652,10 +698,12 @@ impl ServerRuntime {
                     view.report_age_ms = Some(report_age_ms);
                     if availability != ParticipantStatusAvailability::Stale {
                         // Connection and coarse phase remain useful while a
-                        // player is applying a newer scope. Media-derived
-                        // evidence is exposed only under exact correlation.
+                        // player is applying a newer scope. A legacy or
+                        // partially fenced report may retain its own local
+                        // media evidence, but only exact correlation can
+                        // produce a room-derived offset.
                         view.phase = Some(retained.report.phase);
-                        if correlation == ParticipantStatusCorrelation::Exact {
+                        if correlation != ParticipantStatusCorrelation::Superseded {
                             // Snapshot ages are evaluated at the server's
                             // projection instant. Including report residence
                             // and the validated forward delay exactly once
@@ -716,8 +764,8 @@ impl ServerRuntime {
                                         .saturating_add(report_age_ms)
                                         .saturating_add(forward_delay_ms)
                                 });
-                            let offset_is_safe = availability
-                                == ParticipantStatusAvailability::Fresh
+                            let offset_is_safe = correlation == ParticipantStatusCorrelation::Exact
+                                && availability == ParticipantStatusAvailability::Fresh
                                 && current_scope.state_revision.is_some()
                                 && current_scope.transport_revision.is_some()
                                 && retained.report.playback_scope == Some(current_scope)
@@ -765,6 +813,7 @@ impl ServerRuntime {
                             }
                         }
                     }
+                    view.redact_ineligible_media_evidence();
                     view
                 } else {
                     ParticipantStatusView::new(ParticipantStatusAvailability::AwaitingReport)

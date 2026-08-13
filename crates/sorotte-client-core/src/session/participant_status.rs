@@ -143,15 +143,19 @@ impl ClientSession {
                 || candidate.state_revision == Some(0)
                 || candidate.transport_revision == Some(0)
         }) {
+            // Schema-valid zero values are semantically malformed authority,
+            // just like an undecodable scope. Retire the old epoch without
+            // reopening the monotonic snapshot tombstone.
+            self.invalidate_participant_status_evidence();
             return;
         }
+        let snapshot = snapshot.filter(|snapshot| snapshot.revision != 0);
         if let Some(snapshot) = snapshot.as_ref()
-            && (snapshot.revision == 0
-                || self
-                    .model
-                    .room
-                    .participant_status_snapshot_revision
-                    .is_some_and(|revision| snapshot.revision <= revision))
+            && self
+                .model
+                .room
+                .participant_status_snapshot_revision
+                .is_some_and(|revision| snapshot.revision <= revision)
         {
             // Scope and snapshot share one extension transaction. A stale
             // bundled snapshot cannot roll authoritative scope backward.

@@ -316,6 +316,75 @@ fn two_client_wire_snapshot_is_consumed_as_exact_advisory_client_state() {
 }
 
 #[test]
+fn real_join_metadata_and_same_name_replacement_start_a_new_client_evidence_epoch() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    let mut bob_session = ClientSession::default();
+    for line in runtime
+        .handle_line("bob-transport", &hello("bob", "room", true, false))
+        .unwrap()
+    {
+        bob_session.apply_message_json_at(&line, 100.0).unwrap();
+    }
+    let alice_join = runtime
+        .handle_line_fanout("alice-transport", &hello("alice", "room", true, false))
+        .unwrap();
+    for line in alice_join
+        .into_iter()
+        .filter(|line| line.client_id == "bob-transport")
+    {
+        bob_session
+            .apply_message_json_at(&line.line, 100.0)
+            .unwrap();
+    }
+    assert_eq!(
+        bob_session.user_participant_status_v1_supported("alice"),
+        Some(true),
+        "join-event features must establish peer capability immediately"
+    );
+
+    send_status(
+        &mut runtime,
+        "alice-transport",
+        ParticipantStatusStateExtension::new()
+            .with_report(status_report(1, ParticipantPlaybackPhase::Playing)),
+    );
+    let snapshot = runtime
+        .periodic_state_sync_message_for_client_at("bob-transport", 0.0, true, Some("bob"), 100.1)
+        .unwrap();
+    bob_session
+        .apply_message_json_at(&encode_message_line(&snapshot).unwrap(), 100.1)
+        .unwrap();
+    assert!(
+        bob_session
+            .user_participant_status_at("alice", 100.1)
+            .is_some()
+    );
+
+    let replacement = runtime
+        .handle_line_fanout("alice-transport", &hello("alice", "room", true, false))
+        .expect("same-transport Hello replacement should be accepted");
+    for line in replacement
+        .into_iter()
+        .filter(|line| line.client_id == "bob-transport")
+    {
+        bob_session
+            .apply_message_json_at(&line.line, 100.2)
+            .unwrap();
+    }
+    assert_eq!(
+        bob_session.user_participant_status_v1_supported("alice"),
+        Some(true)
+    );
+    assert!(
+        bob_session
+            .user_participant_status_at("alice", 100.2)
+            .is_none(),
+        "replacement join must not preserve the retired connection's status"
+    );
+}
+
+#[test]
 fn two_client_wire_lifecycle_reports_remain_fresh_without_player_samples() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(100.0));
@@ -1467,6 +1536,102 @@ fn uncorrelated_loading_and_disconnect_keep_coarse_truth_and_age_normally() {
 }
 
 #[test]
+fn uncorrelated_playing_report_keeps_local_timestamp_but_never_room_offset() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(10.0));
+    for client_id in ["alice", "bob"] {
+        runtime
+            .handle_line(client_id, &hello(client_id, "room", true, false))
+            .unwrap();
+        acknowledge_current_server_counter(&mut runtime, client_id);
+    }
+
+    let report = status_report(1, ParticipantPlaybackPhase::Playing)
+        .with_timeline_kind(ParticipantTimelineKind::Vod)
+        .with_position_seconds(42.5)
+        .with_logical_paused(false)
+        .with_playback_rate(1.0)
+        .with_paused_for_cache(false)
+        .with_cache_percent(50.0)
+        .with_buffered_ahead_seconds(8.0)
+        .with_sample_age_ms(0)
+        .with_position_sample_age_ms(0);
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new().with_report(report),
+    );
+
+    let snapshot = periodic_snapshot(&mut runtime, "bob", 10.1).unwrap();
+    let alice = &snapshot.participants["alice"];
+    assert_eq!(
+        alice.correlation,
+        Some(ParticipantStatusCorrelation::Uncorrelated)
+    );
+    assert!(alice.position_seconds.is_some());
+    assert_eq!(alice.logical_paused, Some(false));
+    assert_eq!(alice.playback_rate, Some(1.0));
+    assert_eq!(alice.buffered_ahead_seconds, Some(8.0));
+    assert_eq!(alice.room_offset_seconds, None);
+}
+
+#[test]
+fn partial_matching_scope_is_uncorrelated_while_explicit_conflict_is_superseded() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(10.0));
+    for client_id in ["alice", "bob"] {
+        runtime
+            .handle_line(client_id, &hello(client_id, "room", true, false))
+            .unwrap();
+        acknowledge_current_server_counter(&mut runtime, client_id);
+    }
+    let current_scope = runtime.room_participant_status_scopes["room"].to_wire(None);
+    let partial_scope = ParticipantPlaybackScope::new(current_scope.media_generation);
+    let report = status_report(1, ParticipantPlaybackPhase::Playing)
+        .with_playback_scope(partial_scope)
+        .with_timeline_kind(ParticipantTimelineKind::Vod)
+        .with_position_seconds(42.5)
+        .with_logical_paused(false)
+        .with_playback_rate(1.0)
+        .with_paused_for_cache(false)
+        .with_sample_age_ms(0)
+        .with_position_sample_age_ms(0);
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new().with_report(report),
+    );
+    let partial = periodic_snapshot(&mut runtime, "bob", 10.1).unwrap();
+    assert_eq!(
+        partial.participants["alice"].correlation,
+        Some(ParticipantStatusCorrelation::Uncorrelated)
+    );
+    assert!(partial.participants["alice"].position_seconds.is_some());
+    assert_eq!(partial.participants["alice"].room_offset_seconds, None);
+
+    runtime.set_time_now_override_seconds(Some(11.0));
+    let conflicting_scope = ParticipantPlaybackScope::new(current_scope.media_generation)
+        .with_transport_revision(current_scope.transport_revision.unwrap() + 1);
+    let conflicting = status_report(2, ParticipantPlaybackPhase::Playing)
+        .with_playback_scope(conflicting_scope)
+        .with_timeline_kind(ParticipantTimelineKind::Vod)
+        .with_position_seconds(55.0)
+        .with_sample_age_ms(0)
+        .with_position_sample_age_ms(0);
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new().with_report(conflicting),
+    );
+    let superseded = periodic_snapshot(&mut runtime, "bob", 11.1).unwrap();
+    assert_eq!(
+        superseded.participants["alice"].correlation,
+        Some(ParticipantStatusCorrelation::Superseded)
+    );
+    assert_eq!(superseded.participants["alice"].position_seconds, None);
+}
+
+#[test]
 fn canonical_seek_advances_transport_scope_and_supersedes_old_media_evidence() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(10.0));
@@ -2079,6 +2244,20 @@ fn cached_snapshot_representation_only_escalates_within_one_revision() {
     let full = periodic_snapshot(&mut runtime, "alice", 100.0).unwrap();
     assert_eq!(full.mode, ParticipantStatusSnapshotMode::Full);
 
+    let mut different_same_revision_full = full.clone();
+    different_same_revision_full.participants.clear();
+    runtime.cache_participant_status_snapshot_representation_for_test(
+        "alice",
+        &different_same_revision_full,
+    );
+    assert_eq!(
+        runtime.participant_status_snapshot_cache["room"]
+            .snapshot
+            .participants,
+        full.participants,
+        "a full representation must not replace another full representation"
+    );
+
     let mismatched_compact = ParticipantStatusSnapshot::new(full.revision + 1, BTreeMap::new())
         .with_mode(ParticipantStatusSnapshotMode::Compact);
     runtime.cache_participant_status_snapshot_representation_for_test("alice", &mismatched_compact);
@@ -2169,6 +2348,104 @@ fn same_tick_timeout_rebuilds_cached_snapshot_for_remaining_room_members() {
         bob_snapshot.participants.keys().collect::<Vec<_>>(),
         ["bob"],
         "a cached snapshot created before timeout must not resurrect the removed participant"
+    );
+}
+
+#[test]
+fn same_tick_timeout_removes_later_sorted_member_before_any_snapshot() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    for client_id in ["alice", "zombie"] {
+        runtime
+            .handle_line(client_id, &hello(client_id, "room", true, false))
+            .unwrap();
+        acknowledge_current_server_counter(&mut runtime, client_id);
+        send_status(
+            &mut runtime,
+            client_id,
+            ParticipantStatusStateExtension::new()
+                .with_report(status_report(1, ParticipantPlaybackPhase::Playing)),
+        );
+        runtime
+            .client_next_periodic_state_at
+            .insert(client_id.to_owned(), 200.0);
+    }
+    runtime
+        .client_last_state_update_at
+        .insert("alice".to_owned(), 200.0);
+    runtime
+        .client_last_state_update_at
+        .insert("zombie".to_owned(), 0.0);
+    runtime.set_time_now_override_seconds(Some(200.0));
+
+    let dispatch = runtime
+        .collect_dispatch_at(200.0)
+        .expect("same-timestamp periodic batch should succeed");
+    assert!(runtime.session("zombie").is_none());
+    let alice_snapshot = decode_directed_lines(&dispatch.outbound_lines)
+        .into_iter()
+        .filter(|(client_id, _)| client_id == "alice")
+        .find_map(|(_, message)| {
+            let ProtocolMessage::State(message) = message else {
+                return None;
+            };
+            message
+                .state
+                .participant_status_v1()
+                .ok()
+                .flatten()
+                .and_then(|extension| extension.snapshot)
+        })
+        .expect("live peer should receive a current-room status snapshot");
+    assert_eq!(
+        alice_snapshot.participants.keys().collect::<Vec<_>>(),
+        ["alice"],
+        "a later-sorted timeout must be removed before the first snapshot is generated"
+    );
+}
+
+#[test]
+fn periodic_timeout_prepass_skips_orphans_and_preserves_fenced_sessions() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("fenced", &hello("fenced", "room", true, false))
+        .unwrap();
+    acknowledge_current_server_counter(&mut runtime, "fenced");
+    runtime
+        .client_next_periodic_state_at
+        .insert("fenced".to_owned(), 200.0);
+    runtime
+        .client_last_state_update_at
+        .insert("fenced".to_owned(), 0.0);
+    runtime
+        .playback_barrier_fenced_clients
+        .insert("fenced".to_owned());
+
+    runtime
+        .client_next_periodic_state_at
+        .insert("orphan".to_owned(), 200.0);
+    runtime
+        .client_last_state_update_at
+        .insert("orphan".to_owned(), 0.0);
+    runtime.set_time_now_override_seconds(Some(200.0));
+
+    let dispatch = runtime
+        .collect_dispatch_at(200.0)
+        .expect("incomplete maintenance state should fail closed without aborting the batch");
+    assert!(
+        runtime.session("fenced").is_some(),
+        "a fenced transport remains owned until its disconnect callback"
+    );
+    assert!(dispatch.transport_actions.iter().any(|action| {
+        action.client_id == "fenced" && action.action == ServerTransportAction::Close
+    }));
+    assert!(
+        dispatch
+            .transport_actions
+            .iter()
+            .all(|action| action.client_id != "orphan"),
+        "orphaned scheduler state must not synthesize transport actions"
     );
 }
 

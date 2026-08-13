@@ -19,7 +19,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     "Advancing the shared playlist requires an active session runtime.".to_owned(),
                 );
             };
-            return session.advance_playlist_index();
+            let delivery_fence = session.advance_playlist_index_with_delivery_fence()?;
+            self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+            return Ok(());
         }
 
         for action in attached_player_actions {

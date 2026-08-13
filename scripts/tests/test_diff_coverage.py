@@ -531,6 +531,8 @@ class DiffCoverageTests(unittest.TestCase):
 
     def test_compile_time_items_literals_and_pattern_headers_are_structural(self) -> None:
         source_lines = [
+            "pub mod participant_status {",
+            "mod external_module;",
             "enum Mode {",
             "    First,",
             "    Second(u8),",
@@ -547,7 +549,9 @@ class DiffCoverageTests(unittest.TestCase):
             "    0,",
             "    loop {",
             "        Some(_) => {",
+            "        if let ConnectionScopedState {",
             "        } else {",
+            "        ..",
         ]
 
         structural = coverage.lexical_non_coverable_lines(source_lines)

@@ -4,10 +4,12 @@
 The ordinary cargo-llvm-cov command covers workspace test binaries, but it does
 not execute the GUI semantic suite or strict live compatibility paths. This
 wrapper owns those commands, applies cargo-llvm-cov's machine-readable
-``show-env`` contract to the external Cargo processes, requires a fresh raw
-profile delta from every execution lane, removes and attests stale generated
-profile inputs before execution, validates each lane's behavioral oracle, and
-finally asks cargo-llvm-cov to merge only the current run's profiles.
+``show-env`` contract to external Cargo test processes and runs standalone
+binaries through cargo-llvm-cov itself so their object maps are registered for
+the final merge. It requires a fresh raw profile delta from every execution
+lane, removes and attests stale generated profile inputs before execution,
+validates each lane's behavioral oracle, and finally asks cargo-llvm-cov to
+merge only the current run's profiles.
 
 The resulting JSON is intentionally strict. It lets CI distinguish
 "instrumented and executed" from a green command that produced no coverage,
@@ -56,8 +58,11 @@ WORKSPACE_COMMAND = (
 )
 SEMANTIC_COMMAND = (
     "cargo",
+    "llvm-cov",
     "run",
-    "--quiet",
+    "--no-clean",
+    "--output-path",
+    "target/verification/coverage-semantic-lane.txt",
     "--locked",
     "-p",
     "sorotte-gui",
@@ -164,16 +169,13 @@ LANE_COMMANDS = {
 }
 LANE_INSTRUMENTATION = {
     "workspace-all-features": "cargo-llvm-cov",
-    "gui-semantic": "show-env",
+    "gui-semantic": "cargo-llvm-cov-run",
     "compat-live-tls": "show-env",
     "merge-check": "cargo-llvm-cov-report",
 }
 LANE_ENVIRONMENT_OVERRIDES = {
     "workspace-all-features": (),
-    "gui-semantic": (
-        "CARGO_TARGET_DIR",
-        "SOROTTE_CLIENT_CONFIG_PATH",
-    ),
+    "gui-semantic": ("SOROTTE_CLIENT_CONFIG_PATH",),
     "compat-live-tls": (
         "CARGO_TARGET_DIR",
         "SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY",
@@ -1499,7 +1501,12 @@ def run_collection(args: argparse.Namespace) -> int:
         with tempfile.TemporaryDirectory(
             prefix="sorotte-coverage-semantic-"
         ) as temporary:
-            semantic_environment = dict(instrumented_environment)
+            # A standalone Cargo binary executed only through show-env writes
+            # a profile but is absent from cargo-llvm-cov's object manifest,
+            # so its source hits disappear during `report`. Run the semantic
+            # binary through cargo-llvm-cov with --no-clean: this retains the
+            # workspace profiles while registering the binary object map.
+            semantic_environment = dict(environment)
             semantic_environment["SOROTTE_CLIENT_CONFIG_PATH"] = str(
                 pathlib.Path(temporary) / "sorotte.ini"
             )

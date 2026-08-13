@@ -616,10 +616,8 @@ fn participant_status_legacy_position_fallback(
     transport_telemetry_ever_observed: bool,
 ) -> bool {
     !transport_telemetry_ever_observed
-        && matches!(
-            external_player_availability,
-            None | Some(ExternalPlayerAvailability::Connecting)
-        )
+        && external_player_availability
+            .is_none_or(|availability| availability == ExternalPlayerAvailability::Connecting)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -947,6 +945,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     last_transport_telemetry_received_at_seconds: Option<f64>,
     transport_telemetry_wait_started_at_seconds: Option<f64>,
     transport_telemetry_lifecycle_fence_at_seconds: Option<f64>,
+    participant_status_owner_clock_invalidated: bool,
     reconnect_reconciliation: Option<ReconnectReconciliation>,
     last_applied_revision: Option<u64>,
     last_started_revision: Option<u64>,
@@ -1105,6 +1104,7 @@ impl RuntimePlaybackCoordination {
             self.transport_telemetry_available.then_some(now_seconds);
         self.transport_telemetry_lifecycle_fence_at_seconds =
             now_seconds.is_finite().then_some(now_seconds);
+        self.participant_status_owner_clock_invalidated = false;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
         self.player_command_bindings.clear();
@@ -1198,6 +1198,7 @@ impl RuntimePlaybackCoordination {
             self.transport_telemetry_available.then_some(now_seconds);
         self.transport_telemetry_lifecycle_fence_at_seconds =
             now_seconds.is_finite().then_some(now_seconds);
+        self.participant_status_owner_clock_invalidated = false;
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.last_reported_barrier_ready = None;
@@ -1240,6 +1241,7 @@ impl RuntimePlaybackCoordination {
         self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.transport_telemetry_observed = false;
         self.last_transport_telemetry_received_at_seconds = None;
+        self.participant_status_owner_clock_invalidated = false;
         self.coordinator
             .clear_participant_status_transport_metrics();
         self.last_participant_status_fingerprint = None;
@@ -1342,19 +1344,19 @@ impl RuntimePlaybackCoordination {
         }) {
             return ParticipantPlaybackPhase::Ended;
         }
-        match self.coordinator.diagnostic() {
+        let diagnostic = self.coordinator.diagnostic();
+        let starting_is_seeking = self.latest_observation.as_ref().is_some_and(|observation| {
+            observation.phase == Some(sorotte_player_api::PlayerTransportPhase::Seeking)
+                || observation.seeking == Some(true)
+        });
+        if diagnostic == PlaybackDiagnostic::Starting && starting_is_seeking {
+            return ParticipantPlaybackPhase::Seeking;
+        }
+        match diagnostic {
             PlaybackDiagnostic::Empty => ParticipantPlaybackPhase::Empty,
             PlaybackDiagnostic::Loading => ParticipantPlaybackPhase::Loading,
             PlaybackDiagnostic::Prebuffering => ParticipantPlaybackPhase::Prebuffering,
             PlaybackDiagnostic::ReadyWaitingForRoom => ParticipantPlaybackPhase::ReadyPaused,
-            PlaybackDiagnostic::Starting
-                if self.latest_observation.as_ref().is_some_and(|observation| {
-                    observation.phase == Some(sorotte_player_api::PlayerTransportPhase::Seeking)
-                        || observation.seeking == Some(true)
-                }) =>
-            {
-                ParticipantPlaybackPhase::Seeking
-            }
             PlaybackDiagnostic::Starting => ParticipantPlaybackPhase::Loading,
             PlaybackDiagnostic::Playing => ParticipantPlaybackPhase::Playing,
             PlaybackDiagnostic::Rebuffering => ParticipantPlaybackPhase::Rebuffering,
@@ -1528,6 +1530,20 @@ impl RuntimePlaybackCoordination {
             )
             | None => {}
         }
+        if self.last_external_now_seconds.is_some_and(|last_observed| {
+            now_seconds.is_finite() && last_observed.is_finite() && now_seconds < last_observed
+        }) {
+            // Owner wall-clock rollback is a one-way evidence fence. Merely
+            // catching back up cannot make the pre-rollback observation fresh
+            // again; only a newly accepted current-epoch sample can rebase it.
+            self.participant_status_owner_clock_invalidated = true;
+            self.last_transport_telemetry_received_at_seconds = None;
+            self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+            self.last_participant_status_fingerprint = None;
+        }
+        if self.participant_status_owner_clock_invalidated {
+            return ParticipantPlayerConnection::Unavailable;
+        }
         if self.coordinator.diagnostic() == PlaybackDiagnostic::Failed {
             return ParticipantPlayerConnection::Failed;
         }
@@ -1695,9 +1711,8 @@ impl RuntimePlaybackCoordination {
             .filter(|_| note_evidence(self.participant_status_evidence_times.buffered_ahead));
         report.cache_percent = observation
             .and_then(|observation| observation.cache_buffering_percent)
-            .filter(|value| value.is_finite())
-            .filter(|_| note_evidence(self.participant_status_evidence_times.cache_percent))
-            .map(|value| value.clamp(0.0, 100.0));
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            .filter(|_| note_evidence(self.participant_status_evidence_times.cache_percent));
         let report_now = self.coordinator_now(now_seconds);
         let evidence_age_ms = |observed_at: f64| {
             let age_seconds = report_now - observed_at;
@@ -2474,6 +2489,7 @@ impl RuntimePlaybackCoordination {
         }
         self.last_external_now_seconds = Some(
             self.last_external_now_seconds
+                .filter(|current| external_now_seconds >= *current)
                 .map_or(external_now_seconds, |current| {
                     current.max(external_now_seconds)
                 }),
@@ -2590,8 +2606,8 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
         delivery_reference_seconds: f64,
         candidate_offset_seconds: Option<f64>,
-        replace_latest_observation: bool,
-        replace_position_state: bool,
+        mut replace_latest_observation: bool,
+        mut replace_position_state: bool,
     ) -> bool {
         if self
             .transport_telemetry_lifecycle_fence_at_seconds
@@ -2603,6 +2619,21 @@ impl RuntimePlaybackCoordination {
             )
         {
             return false;
+        }
+        let owner_clock_rolled_back = self.last_external_now_seconds.is_some_and(|last_observed| {
+            external_now_seconds.is_finite()
+                && last_observed.is_finite()
+                && external_now_seconds < last_observed
+        });
+        let replace_participant_status_clock =
+            owner_clock_rolled_back || self.participant_status_owner_clock_invalidated;
+        if replace_participant_status_clock {
+            replace_latest_observation = true;
+            replace_position_state = true;
+            self.latest_observation = None;
+            self.latest_position_observation = None;
+            self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+            self.last_participant_status_fingerprint = None;
         }
         let telemetry_gap_expired = self
             .last_transport_telemetry_received_at_seconds
@@ -2630,14 +2661,18 @@ impl RuntimePlaybackCoordination {
         );
         self.transport_telemetry_ever_observed = true;
         self.transport_telemetry_observed = true;
-        self.last_transport_telemetry_received_at_seconds = Some(
-            self.last_transport_telemetry_received_at_seconds
-                .map_or(external_now_seconds, |received_at| {
-                    received_at.max(external_now_seconds)
-                }),
-        );
+        self.last_transport_telemetry_received_at_seconds =
+            Some(if replace_participant_status_clock {
+                external_now_seconds
+            } else {
+                self.last_transport_telemetry_received_at_seconds
+                    .map_or(external_now_seconds, |received_at| {
+                        received_at.max(external_now_seconds)
+                    })
+            });
         self.transport_telemetry_wait_started_at_seconds = None;
         self.external_player_availability = None;
+        self.participant_status_owner_clock_invalidated = false;
         self.update_participant_status_evidence_times(position_update, replace_position_state);
         self.update_latest_position_observation(position_update, replace_position_state);
         if replace_latest_observation {
@@ -2826,12 +2861,20 @@ impl RuntimePlaybackCoordination {
     }
 
     fn fence_ordered_transport_until_snapshot(&mut self, external_now_seconds: f64) {
+        let lifecycle_fence = self.coordinator_now(external_now_seconds);
         self.awaiting_ordered_snapshot = true;
         self.latest_observation = None;
         self.latest_position_observation = None;
         self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.transport_telemetry_observed = false;
-        let coordinator_now = self.coordinator_now(external_now_seconds);
+        self.last_transport_telemetry_received_at_seconds = None;
+        self.external_player_availability = Some(ExternalPlayerAvailability::Connecting);
+        self.transport_telemetry_wait_started_at_seconds = Some(external_now_seconds);
+        self.transport_telemetry_lifecycle_fence_at_seconds =
+            lifecycle_fence.is_finite().then_some(lifecycle_fence);
+        self.participant_status_owner_clock_invalidated = false;
+        self.last_participant_status_fingerprint = None;
+        let coordinator_now = lifecycle_fence;
         self.coordinator
             .reset_transport_adapter_epoch(coordinator_now);
     }
@@ -6928,7 +6971,7 @@ mod tests {
         assert_eq!(report.position_seconds, None);
         assert_eq!(report.playback_rate, None);
         assert_eq!(report.buffered_ahead_seconds, None);
-        assert_eq!(report.cache_percent, Some(100.0));
+        assert_eq!(report.cache_percent, None);
         assert_eq!(
             report.sample_age_ms,
             Some(PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS)
@@ -7374,6 +7417,67 @@ mod tests {
                 .pending_participant_status_report(&session, true, 10.0)
                 .is_some(),
             "the exact one-second boundary should emit"
+        );
+    }
+
+    #[test]
+    fn participant_status_owner_clock_rollback_requires_new_transport_evidence() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("participant-status-owner-clock").unwrap(),
+            MediaTransportKind::NetworkVod,
+            100.0,
+        );
+        coordination.mark_transport_telemetry_available();
+        coordination
+            .set_external_player_availability(ExternalPlayerAvailability::Connecting, 100.0);
+        coordination.observe_transport(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 42.5),
+            100.0,
+        );
+        let initial = coordination
+            .take_participant_status_report(&session, true, 100.0)
+            .unwrap();
+        assert_eq!(
+            initial.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(initial.position_seconds, Some(42.5));
+
+        let rollback = coordination
+            .take_participant_status_report(&session, true, 50.0)
+            .unwrap();
+        assert_eq!(
+            rollback.player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+        assert_eq!(rollback.position_seconds, None);
+        let catch_up = coordination
+            .take_participant_status_report(&session, true, 100.0)
+            .unwrap();
+        assert_eq!(
+            catch_up.player_connection,
+            ParticipantPlayerConnection::Unavailable,
+            "wall-clock catch-up alone must not rejuvenate pre-rollback evidence"
+        );
+
+        let sparse = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
+        )
+        .with_phase(PlayerTransportPhase::Playing);
+        coordination.observe_transport(sparse, 50.0);
+        let rebased = coordination
+            .take_participant_status_report(&session, true, 50.0)
+            .unwrap();
+        assert_eq!(
+            rebased.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(
+            rebased.position_seconds, None,
+            "the first post-rollback sparse sample must not inherit old precision"
         );
     }
 
@@ -8661,6 +8765,100 @@ mod tests {
             runtime.projected_local_position_at(3.1),
             None,
             "a retained snapshot position must not be relabelled as a fresh actual sample by an unrelated ordered delta"
+        );
+    }
+
+    #[test]
+    fn ordered_attachment_replacement_reports_starting_until_new_epoch_snapshot_has_telemetry() {
+        let first_epoch = PlayerAttachmentEpoch::new(1);
+        let replacement_epoch = PlayerAttachmentEpoch::new(2);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-attachment-replacement-status").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            first_epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                first_epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial ordered snapshot should drain");
+        let connected = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(
+            connected.last().unwrap().player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            replacement_epoch,
+            1,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(replacement_epoch, 1),
+                event: PlayerEvent::AttachmentReplaced {
+                    previous_epoch: first_epoch,
+                },
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("attachment replacement should drain");
+        let starting = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(starting.len(), 1);
+        assert_eq!(
+            starting[0].player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+        assert_eq!(starting[0].position_seconds, None);
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            replacement_epoch,
+            2,
+            3,
+            Some(sorotte_player_api::PlayerAuthoritativeSnapshot {
+                attachment_epoch: replacement_epoch,
+                sequence_boundary: PlayerSequenceBoundary::new(replacement_epoch, 2),
+                ..sorotte_player_api::PlayerAuthoritativeSnapshot::default()
+            }),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.1)
+            .expect("empty replacement snapshot should drain");
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .participant_status_player_availability(2.1),
+            ParticipantPlayerConnection::Starting,
+            "an authoritative empty replacement snapshot cannot revive the retired epoch"
         );
     }
 

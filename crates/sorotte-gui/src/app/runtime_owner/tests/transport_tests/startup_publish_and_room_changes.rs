@@ -33,8 +33,10 @@ fn deliver_detached_session_protocol_lines(
             .pending_shared_playlist_open
             .as_ref()
             .map(|pending| match pending {
-                GuiPendingSharedPlaylistOpen::AfterMutation { delivery_fence, .. } =>
-                    delivery_fence.pending_frame_count(),
+                GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { delivery_fence }
+                | GuiPendingSharedPlaylistOpen::AfterMutation { delivery_fence, .. } => {
+                    delivery_fence.pending_frame_count()
+                }
             }),
     );
     (protocol_lines, actions)
@@ -1208,6 +1210,7 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
     let (room_lines_tx, room_lines_rx) = mpsc::channel();
+    let (room_echo_observed_tx, room_echo_observed_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -1252,6 +1255,9 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         stream
             .flush()
             .expect("test session transport server should flush the inbound room line");
+        room_echo_observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test client should observe the room echo before server teardown");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -1313,6 +1319,9 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         "room change over TCP transport",
     );
     assert_eq!(state.main_window.room_name, "room2");
+    room_echo_observed_tx
+        .send(())
+        .expect("test client should release the room-change server");
 
     server_thread
         .join()

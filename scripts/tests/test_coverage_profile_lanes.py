@@ -50,6 +50,19 @@ class CoverageProfileLaneTests(unittest.TestCase):
             ("cargo", "llvm-cov", "show-env", "--sh"),
         )
 
+    def test_semantic_lane_registers_its_binary_object_map_without_cleaning_profiles(
+        self,
+    ) -> None:
+        command = lanes.SEMANTIC_COMMAND
+        self.assertEqual(command[:3], ("cargo", "llvm-cov", "run"))
+        self.assertIn("--no-clean", command)
+        self.assertIn("--output-path", command)
+        self.assertEqual(
+            lanes.LANE_INSTRUMENTATION["gui-semantic"],
+            "cargo-llvm-cov-run",
+        )
+        self.assertNotIn("CARGO_TARGET_DIR", lanes.LANE_ENVIRONMENT_OVERRIDES["gui-semantic"])
+
     def show_env_output(
         self,
         *,

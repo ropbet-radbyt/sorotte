@@ -544,6 +544,79 @@ fn views_clear_on_room_switch_capability_loss_and_reconnect() {
 }
 
 #[test]
+fn joined_event_features_start_a_new_peer_capability_epoch() {
+    let mut session = status_session();
+    session
+        .apply_message_json_at(&bob_status_state(1, 0, "playing"), 10.0)
+        .unwrap();
+    assert!(session.user_participant_status_at("bob", 10.0).is_some());
+
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"event":{"joined":true,"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}},"carol":{"room":{"name":"room1"},"event":{"joined":true,"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}}}}"#,
+        )
+        .expect("server join metadata should normalize");
+
+    assert_eq!(
+        session.user_participant_status_v1_supported("bob"),
+        Some(true)
+    );
+    assert_eq!(
+        session.user_participant_status_v1_supported("carol"),
+        Some(false)
+    );
+    assert!(
+        session.user_participant_status_at("bob", 10.0).is_none(),
+        "same-name joined events must retire the previous connection's evidence"
+    );
+}
+
+#[test]
+fn capability_epoch_change_retires_unsupported_and_fresh_rows_in_both_directions() {
+    let mut session = status_session();
+    session
+        .apply_message_json(
+            r#"{"Set":{"features":{"username":"bob","features":{"sorotteParticipantStatusV1":false}}}}"#,
+        )
+        .unwrap();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":1,"participants":{"bob":{"availability":"unsupported","reportAgeMs":0}}}}}}"#,
+            1.0,
+        )
+        .unwrap();
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 1.0)
+            .unwrap()
+            .status
+            .availability,
+        ParticipantStatusAvailability::Unsupported
+    );
+
+    session
+        .apply_message_json(
+            r#"{"Set":{"features":{"username":"bob","features":{"sorotteParticipantStatusV1":true}}}}"#,
+        )
+        .unwrap();
+    assert!(
+        session.user_participant_status_at("bob", 1.0).is_none(),
+        "opting in must become awaiting-report rather than retain the legacy row"
+    );
+
+    session
+        .apply_message_json_at(&bob_status_state(2, 0, "playing"), 2.0)
+        .unwrap();
+    assert!(session.user_participant_status_at("bob", 2.0).is_some());
+    session
+        .apply_message_json(
+            r#"{"Set":{"features":{"username":"bob","features":{"sorotteParticipantStatusV1":false}}}}"#,
+        )
+        .unwrap();
+    assert!(session.user_participant_status_at("bob", 2.0).is_none());
+}
+
+#[test]
 fn list_position_is_preserved_only_as_a_named_legacy_snapshot() {
     let mut session = status_session();
     session
@@ -1147,6 +1220,63 @@ fn lifecycle_reports_without_player_samples_age_from_report_heartbeat_only() {
 }
 
 #[test]
+fn explicit_null_directional_status_fields_are_treated_as_absent() {
+    let mut session = status_session();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"report":null,"scope":null,"snapshot":{"revision":1,"participants":{"bob":{"availability":"fresh","correlation":"uncorrelated","playerConnection":"connected","phase":"playing","timelineKind":"vod","positionSeconds":42.5,"sampleAgeMs":0,"positionSampleAgeMs":0,"reportAgeMs":0}}}}}}"#,
+            1.0,
+        )
+        .expect("explicit null optional fields must not poison a valid snapshot");
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 1.0)
+            .and_then(|view| view.status.position_seconds),
+        Some(42.5)
+    );
+    assert!(session.drain_compatibility_fallbacks().is_empty());
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"report":null,"scope":{"mediaGeneration":7,"stateRevision":2,"transportRevision":2},"snapshot":null}}}"#,
+            2.0,
+        )
+        .expect("an explicit null snapshot must not poison a valid scope");
+    assert_eq!(
+        session
+            .participant_status_authoritative_scope()
+            .and_then(|scope| scope.transport_revision),
+        Some(2)
+    );
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 2.0)
+            .and_then(|view| view.status.position_seconds),
+        None
+    );
+    assert!(session.drain_compatibility_fallbacks().is_empty());
+}
+
+#[test]
+fn non_object_participant_status_extension_is_rejected_categorically() {
+    let mut session = status_session();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":"attacker-controlled-shape"}}"#,
+            1.0,
+        )
+        .expect("malformed advisory status must not reject its containing State");
+
+    assert!(session.user_participant_status_at("bob", 1.0).is_none());
+    let fallbacks = session.drain_compatibility_fallbacks();
+    assert_eq!(fallbacks.len(), 1);
+    assert!(
+        !format!("{fallbacks:?}").contains("attacker-controlled-shape"),
+        "categorical compatibility diagnostics must not retain attacker input"
+    );
+}
+
+#[test]
 fn malformed_snapshot_still_applies_valid_advancing_scope_as_an_invalidation() {
     let mut session = status_session();
     session
@@ -1218,6 +1348,74 @@ fn malformed_scope_cannot_advance_snapshot_under_previous_epoch() {
         "old exact evidence must retire when the bundled authority is malformed"
     );
     assert_eq!(session.drain_compatibility_fallbacks().len(), 1);
+}
+
+#[test]
+fn zero_valued_scope_retires_old_evidence_without_reopening_revision_fence() {
+    let initial = r#"{"State":{"sorotteParticipantStatusV1":{"scope":{"mediaGeneration":7,"stateRevision":1,"transportRevision":1},"snapshot":{"revision":1,"participants":{"bob":{"availability":"fresh","correlation":"exact","playbackScope":{"mediaGeneration":7,"stateRevision":1,"transportRevision":1},"playerConnection":"connected","phase":"playing","positionSeconds":42.5,"sampleAgeMs":0,"positionSampleAgeMs":0,"reportAgeMs":0}}}}}}"#;
+    for invalid_scope in [
+        serde_json::json!({"mediaGeneration": 0, "stateRevision": 2, "transportRevision": 2}),
+        serde_json::json!({"mediaGeneration": 7, "stateRevision": 0, "transportRevision": 2}),
+        serde_json::json!({"mediaGeneration": 7, "stateRevision": 2, "transportRevision": 0}),
+    ] {
+        let mut session = status_session();
+        session.apply_message_json_at(initial, 1.0).unwrap();
+        session
+            .apply_message_json_at(
+                &serde_json::json!({
+                    "State": {
+                        "sorotteParticipantStatusV1": {
+                            "scope": invalid_scope,
+                            "snapshot": {"revision": 2, "participants": {}},
+                        },
+                    },
+                })
+                .to_string(),
+                2.0,
+            )
+            .expect("semantic scope validation must remain additive");
+        assert!(session.user_participant_status_at("bob", 2.0).is_none());
+        assert_eq!(session.participant_status_authoritative_scope(), None);
+        assert_eq!(
+            session.model.room.participant_status_snapshot_revision,
+            Some(1),
+            "invalid authority must not retire the previous revision tombstone"
+        );
+    }
+}
+
+#[test]
+fn zero_snapshot_revision_still_applies_valid_scope_as_an_invalidation() {
+    let mut session = status_session();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"scope":{"mediaGeneration":7,"stateRevision":1,"transportRevision":1},"snapshot":{"revision":1,"participants":{"bob":{"availability":"fresh","correlation":"exact","playbackScope":{"mediaGeneration":7,"stateRevision":1,"transportRevision":1},"playerConnection":"connected","phase":"playing","positionSeconds":42.5,"sampleAgeMs":0,"positionSampleAgeMs":0,"reportAgeMs":0}}}}}}"#,
+            1.0,
+        )
+        .unwrap();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"scope":{"mediaGeneration":7,"stateRevision":2,"transportRevision":2},"snapshot":{"revision":0,"participants":{"bob":{"availability":"fresh","correlation":"exact","playerConnection":"connected","phase":"playing","positionSeconds":99.0,"sampleAgeMs":0,"positionSampleAgeMs":0,"reportAgeMs":0}}}}}}"#,
+            2.0,
+        )
+        .expect("an invalid snapshot must not poison its valid authoritative sibling");
+
+    assert_eq!(
+        session
+            .participant_status_authoritative_scope()
+            .and_then(|scope| scope.transport_revision),
+        Some(2)
+    );
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 2.0)
+            .and_then(|view| view.status.position_seconds),
+        None
+    );
+    assert_eq!(
+        session.model.room.participant_status_snapshot_revision,
+        Some(1)
+    );
 }
 
 #[test]
@@ -1310,7 +1508,7 @@ fn explicit_capability_withdrawal_and_snapshot_modes_fail_closed() {
 }
 
 #[test]
-fn zero_scope_components_reject_the_complete_extension_transaction() {
+fn zero_scope_components_invalidate_the_complete_extension_transaction() {
     let mut session = status_session();
     session
         .apply_message_json_at(
@@ -1350,11 +1548,11 @@ fn zero_scope_components_reject_the_complete_extension_transaction() {
                 revision as f64,
             )
             .unwrap();
-        assert_eq!(
+        assert_eq!(session.participant_status_authoritative_scope(), None);
+        assert!(
             session
-                .participant_status_authoritative_scope()
-                .and_then(|scope| scope.transport_revision),
-            Some(1)
+                .user_participant_status_at("bob", revision as f64)
+                .is_none()
         );
         assert_eq!(
             session.model.room.participant_status_snapshot_revision,

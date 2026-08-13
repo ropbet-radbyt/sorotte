@@ -16,7 +16,8 @@ use sorotte_client_app::app_boundary::readiness::{
 };
 use sorotte_client_core::RoomPlaystateAuthority;
 use sorotte_protocol::{
-    ParticipantPlaybackPhase, PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
+    ParticipantPlaybackPhase, ParticipantStatusAvailability, ParticipantStatusCorrelation,
+    PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -197,51 +198,43 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     .flatten();
                 let participant_status = if let Some(status) = participant_status_view {
                     match status.status.availability {
-                        sorotte_protocol::ParticipantStatusAvailability::Unsupported => {
+                        ParticipantStatusAvailability::Unsupported => {
                             MainWindowParticipantStatusPresentation::LegacyClient
                         }
-                        sorotte_protocol::ParticipantStatusAvailability::AwaitingReport => {
+                        ParticipantStatusAvailability::AwaitingReport => {
                             MainWindowParticipantStatusPresentation::WaitingForFirstReport
                         }
-                        sorotte_protocol::ParticipantStatusAvailability::Unavailable => {
+                        ParticipantStatusAvailability::Unavailable => {
                             MainWindowParticipantStatusPresentation::Unavailable
                         }
-                        sorotte_protocol::ParticipantStatusAvailability::Fresh
-                        | sorotte_protocol::ParticipantStatusAvailability::Delayed
-                        | sorotte_protocol::ParticipantStatusAvailability::Stale => {
-                            let timeline_mismatch = match status.status.correlation {
-                                Some(sorotte_protocol::ParticipantStatusCorrelation::Exact)
-                                | Some(
-                                    sorotte_protocol::ParticipantStatusCorrelation::Uncorrelated,
-                                ) => false,
-                                Some(
-                                    sorotte_protocol::ParticipantStatusCorrelation::Superseded,
-                                ) => true,
-                                Some(_) => true,
-                                None => {
-                                    reference_scope.is_some_and(|scope| {
-                                        status.status.playback_scope != Some(scope)
-                                    }) || reference_timeline.is_some_and(
-                                        |(room_generation, room_revision)| {
-                                            let reported_scope = status.status.playback_scope;
-                                            (match (room_generation, reported_scope) {
-                                                (Some(_), None) => true,
-                                                (Some(room), Some(reported)) => {
-                                                    room != reported.media_generation
-                                                }
-                                                (None, _) => false,
-                                            }) || match (
-                                                room_revision,
-                                                reported_scope
-                                                    .and_then(|scope| scope.state_revision),
-                                            ) {
-                                                (Some(_), None) => true,
-                                                (Some(room), Some(reported)) => room != reported,
-                                                (None, _) => false,
-                                            }
-                                        },
-                                    )
-                                }
+                        ParticipantStatusAvailability::Fresh
+                        | ParticipantStatusAvailability::Delayed
+                        | ParticipantStatusAvailability::Stale => {
+                            let correlation = status.status.correlation;
+                            let explicitly_correlated = correlation
+                                == Some(ParticipantStatusCorrelation::Exact)
+                                || correlation == Some(ParticipantStatusCorrelation::Uncorrelated);
+                            let timeline_mismatch = if explicitly_correlated {
+                                false
+                            } else if correlation.is_some() {
+                                true
+                            } else {
+                                let reported_scope = status.status.playback_scope;
+                                let authoritative_scope_mismatch = reference_scope
+                                    .is_some_and(|scope| reported_scope != Some(scope));
+                                let reference_timeline_mismatch = reference_timeline.is_some_and(
+                                    |(room_generation, room_revision)| {
+                                        let reported_generation =
+                                            reported_scope.map(|scope| scope.media_generation);
+                                        let reported_revision =
+                                            reported_scope.and_then(|scope| scope.state_revision);
+                                        room_generation
+                                            .is_some_and(|room| reported_generation != Some(room))
+                                            || room_revision
+                                                .is_some_and(|room| reported_revision != Some(room))
+                                    },
+                                );
+                                authoritative_scope_mismatch || reference_timeline_mismatch
                             };
                             MainWindowParticipantStatusPresentation::Report(
                                 MainWindowParticipantStatusReport::from_client_view(

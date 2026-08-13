@@ -8,44 +8,6 @@ pub(in crate::app) struct GuiSessionRoomPlaystate {
     pub(in crate::app) set_by: Option<String>,
 }
 
-/// The exact reliable playlist frames that must receive terminal write
-/// acknowledgements before a dependent local-player side effect may run.
-///
-/// Unrelated status, chat, or list traffic is intentionally absent. That
-/// keeps the frontier stable when a coalescible tail is cancelled and means
-/// traffic queued after the mutation cannot extend the wait.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(in crate::app) struct GuiPlaylistProtocolDeliveryFence {
-    pending_lines: VecDeque<String>,
-}
-
-impl GuiPlaylistProtocolDeliveryFence {
-    pub(in crate::app) fn new(pending_lines: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            pending_lines: pending_lines.into_iter().collect(),
-        }
-    }
-
-    pub(in crate::app) fn note_frame_written(&mut self, line: &str) {
-        if self
-            .pending_lines
-            .front()
-            .is_some_and(|expected| expected == line)
-        {
-            self.pending_lines.pop_front();
-        }
-    }
-
-    pub(in crate::app) fn is_reached(&self) -> bool {
-        self.pending_lines.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(in crate::app) fn pending_frame_count(&self) -> usize {
-        self.pending_lines.len()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum GuiLocalPlayerUnpauseDecision {
     NotApplicable,
@@ -183,6 +145,15 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         )
     }
 
+    fn queue_playlist_entry_with_delivery_fence(
+        &mut self,
+        entry: String,
+        select_after_queue: bool,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.queue_playlist_entry(entry, select_after_queue)?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
+    }
+
     fn set_playlist_index(&mut self, _index: usize) -> Result<(), String> {
         Err(
             "Attached session runtime does not support shared playlist selection changes."
@@ -190,8 +161,23 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         )
     }
 
+    fn set_playlist_index_with_delivery_fence(
+        &mut self,
+        index: usize,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.set_playlist_index(index)?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
+    }
+
     fn advance_playlist_index(&mut self) -> Result<(), String> {
         Err("Attached session runtime does not support shared playlist advancement.".to_owned())
+    }
+
+    fn advance_playlist_index_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.advance_playlist_index()?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
     }
 
     fn advance_playlist_index_attached_player_actions(
@@ -202,6 +188,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
 
     fn delete_playlist_index(&mut self, _index: usize) -> Result<(), String> {
         Err("Attached session runtime does not support shared playlist removal.".to_owned())
+    }
+
+    fn delete_playlist_index_with_delivery_fence(
+        &mut self,
+        index: usize,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.delete_playlist_index(index)?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
     }
 
     fn replace_playlist(
@@ -228,6 +222,13 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Err("Attached session runtime does not support shared playlist undo.".to_owned())
     }
 
+    fn undo_playlist_change_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.undo_playlist_change()?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
+    }
+
     fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
         Err(
             "Attached session runtime does not support shared playlist shuffle operations."
@@ -235,11 +236,25 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         )
     }
 
+    fn shuffle_remaining_playlist_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.shuffle_remaining_playlist()?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
+    }
+
     fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
         Err(
             "Attached session runtime does not support shared playlist shuffle operations."
                 .to_owned(),
         )
+    }
+
+    fn shuffle_entire_playlist_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.shuffle_entire_playlist()?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
     }
 
     fn sync_local_playback_telemetry(

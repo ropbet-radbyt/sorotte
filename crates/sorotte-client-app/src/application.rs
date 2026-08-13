@@ -1738,10 +1738,10 @@ where
         availability: ExternalPlayerAvailability,
         now_seconds: f64,
     ) -> Result<bool, PlayerError> {
-        debug_assert!(matches!(
-            availability,
-            ExternalPlayerAvailability::Disconnected | ExternalPlayerAvailability::Failed
-        ));
+        debug_assert!(
+            availability == ExternalPlayerAvailability::Disconnected
+                || availability == ExternalPlayerAvailability::Failed
+        );
         let result = self
             .runtime
             .set_external_player_availability(availability, now_seconds);

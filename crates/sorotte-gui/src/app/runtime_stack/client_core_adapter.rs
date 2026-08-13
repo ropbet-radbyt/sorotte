@@ -1,6 +1,7 @@
 use super::*;
 use sorotte_secret::SecretValue;
 
+mod delivery_fence;
 mod event_drain;
 mod runtime_adapter_impl;
 

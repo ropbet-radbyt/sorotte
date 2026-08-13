@@ -100,6 +100,9 @@ enum GuiSessionOutboundDrainDisposition {
 }
 
 enum GuiPendingSharedPlaylistOpen {
+    AwaitingMutationDelivery {
+        delivery_fence: GuiPlaylistProtocolDeliveryFence,
+    },
     AfterMutation {
         dispatch: GuiSharedPlaylistOpenDispatch,
         opened_entry_count: usize,
@@ -121,13 +124,27 @@ struct GuiSharedPlaylistOpenCompletion {
 
 impl GuiPendingSharedPlaylistOpen {
     fn note_frame_written(&mut self, line: &str) {
-        let Self::AfterMutation { delivery_fence, .. } = self;
+        let delivery_fence = match self {
+            Self::AwaitingMutationDelivery { delivery_fence }
+            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        };
         delivery_fence.note_frame_written(line);
     }
 
     fn delivery_fence_reached(&self) -> bool {
-        let Self::AfterMutation { delivery_fence, .. } = self;
+        let delivery_fence = match self {
+            Self::AwaitingMutationDelivery { delivery_fence }
+            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        };
         delivery_fence.is_reached()
+    }
+
+    fn replace_delivery_fence(&mut self, replacement: GuiPlaylistProtocolDeliveryFence) {
+        let delivery_fence = match self {
+            Self::AwaitingMutationDelivery { delivery_fence }
+            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        };
+        *delivery_fence = replacement;
     }
 }
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
