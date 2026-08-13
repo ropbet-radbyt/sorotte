@@ -1,0 +1,2 @@
+1000{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}
+{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":1,"participants":{"alice":{"availability":"fresh","correlation":"uncorrelated","playerConnection":"connected","phase":"playing","timelineKind":"vod","positionSeconds":42.5,"logicalPaused":false,"playbackRate":1.0,"pausedForCache":false,"sampleAgeMs":0,"positionSampleAgeMs":0,"reportAgeMs":0,"roomOffsetSeconds":2.0}}}}}}

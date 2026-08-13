@@ -76,8 +76,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         GuiClientCoreChatSessionRuntimeAdapter::begin_outbound_protocol_delivery(self)
     }
 
-    fn acknowledge_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+    fn acknowledge_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<Option<String>, String> {
         GuiClientCoreChatSessionRuntimeAdapter::acknowledge_outbound_protocol_delivery(self, token)
+            .map(Some)
     }
 
     fn fail_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
@@ -188,6 +192,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime chat dispatch failed: {error}"
             )),
         }
+    }
+
+    fn request_user_list(&mut self) -> Result<bool, String> {
+        self.dispatch_application_command(ClientCommand::RequestUserList)
+            .map_err(|error| {
+                format!("Client-core session runtime user-list dispatch failed: {error}")
+            })
     }
 
     fn attached_player_chat_input_ready(&self) -> bool {
@@ -504,6 +515,33 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn replace_playlist_with_delivery_fence(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.replace_playlist(files, selected_index)?;
+        let pending_playlist_lines = self
+            .runtime
+            .pending_protocol_messages()
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(set)
+                        if set.set.playlist_change.is_some() || set.set.playlist_index.is_some()
+                )
+            })
+            .map(encode_message_line)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!("Queued playlist delivery-fence line encoding failed: {error}")
+            })?;
+        Ok(GuiPlaylistProtocolDeliveryFence::new(
+            pending_playlist_lines,
+        ))
+    }
+
     fn undo_playlist_change(&mut self) -> Result<(), String> {
         match self.runtime.run_undo_playlist_change() {
             Ok(true) => Ok(()),
@@ -602,6 +640,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             },
         ))
         .map(|_| ())
+    }
+
+    fn set_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> Result<bool, String> {
+        self.runtime
+            .set_external_player_availability(availability, now_seconds)
+            .map_err(|error| {
+                format!("Client-core external-player availability update failed: {error}")
+            })
     }
 
     fn prepare_attached_playback_media(

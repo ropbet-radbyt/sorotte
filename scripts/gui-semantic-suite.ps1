@@ -3,6 +3,7 @@ param(
     [switch]$List,
     [string[]]$Scenario = @(),
     [string]$OutputPath,
+    [string]$CargoExecutable = "cargo",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
 )
@@ -40,19 +41,19 @@ $stderrPath = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-stderr-" + [guid]
 $isolatedConfigRoot = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-config-" + [guid]::NewGuid().ToString("N"))
 $isolatedConfigPath = Join-Path $isolatedConfigRoot "sorotte.ini"
 $previousConfigPath = $env:SOROTTE_CLIENT_CONFIG_PATH
-$process = $null
+$suiteExitCode = $null
 $launchError = $null
 
 try {
     New-Item -Path $isolatedConfigRoot -ItemType Directory | Out-Null
     $env:SOROTTE_CLIENT_CONFIG_PATH = $isolatedConfigPath
-    $process = Start-Process -FilePath "cargo" `
-        -ArgumentList $cargoArgs `
-        -NoNewWindow `
-        -Wait `
-        -PassThru `
-        -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath
+    # Windows PowerShell's Start-Process rebuilds the inherited environment
+    # through a case-insensitive dictionary. Hosts that legitimately expose
+    # both `Path` and `PATH` therefore fail before cargo starts. Direct native
+    # invocation preserves the inherited environment block and still gives us
+    # synchronous output capture plus the exact child exit code.
+    & $CargoExecutable @cargoArgs 1> $stdoutPath 2> $stderrPath
+    $suiteExitCode = $LASTEXITCODE
 }
 catch {
     $launchError = $_.Exception.Message
@@ -74,7 +75,7 @@ if ($launchError) {
 Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $isolatedConfigRoot -Recurse -Force -ErrorAction SilentlyContinue
 
-$exitCode = if ($null -eq $process) { 1 } else { $process.ExitCode }
+$exitCode = if ($null -eq $suiteExitCode) { 1 } else { $suiteExitCode }
 
 if ($OutputPath) {
     $directory = Split-Path -Parent $OutputPath

@@ -70,6 +70,7 @@ mod detached_saved_settings;
 mod media_search_cache;
 mod native_seek_telemetry;
 mod offsets_and_recent_rewind;
+mod participant_status_availability;
 mod playlist_index_and_search_seed;
 mod playlist_reset_and_desync_seek;
 mod playlist_switch_and_offsets;

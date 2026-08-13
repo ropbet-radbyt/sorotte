@@ -454,6 +454,10 @@ pub trait ClientEffectSink {
     /// membership. The semantic latest intent remains in the client session
     /// until the server acknowledges its operation identity.
     fn cancel_protocol_readiness_intents(&mut self) {}
+
+    /// Removes unleased advisory status reports when the active server no
+    /// longer negotiates the extension. Other State obligations are retained.
+    fn cancel_protocol_participant_status_reports(&mut self) {}
 }
 
 pub(crate) fn client_effect_player_error(error: ClientEffectError) -> PlayerError {
@@ -658,6 +662,11 @@ impl ClientEffectSink for QueuedRuntimeControl {
         self.outbound_messages.cancel_readiness_intents();
     }
 
+    fn cancel_protocol_participant_status_reports(&mut self) {
+        self.outbound_messages
+            .cancel_pending_participant_status_reports();
+    }
+
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         match effect {
             ClientEffect::SetPlayerPaused(_) => {
@@ -675,6 +684,8 @@ impl ClientEffectSink for QueuedRuntimeControl {
             ClientEffect::SetRoom(room) => {
                 self.outbound_messages.cancel_connection_scoped_reliable();
                 self.outbound_messages.cancel_readiness_intents();
+                self.outbound_messages
+                    .cancel_pending_participant_status_reports();
                 let set_payload = SetPayload::new().with_room(RoomRef::new(room));
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
@@ -762,7 +773,11 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 );
             }
             ClientEffect::SendState(state) => {
-                let _ = self.queue_connection_scoped_state(state);
+                if !self.queue_connection_scoped_state(state) {
+                    return Err(ClientEffectError::OperationFailed(
+                        "state is not valid for the active connection generation".to_owned(),
+                    ));
+                }
             }
             ClientEffect::RequestControllerAuth(payload) => {
                 let set_payload = SetPayload::new().with_controller_auth(payload);

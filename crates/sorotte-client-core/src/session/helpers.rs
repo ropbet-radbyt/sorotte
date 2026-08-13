@@ -323,6 +323,7 @@ impl ClientSession {
 
     pub(super) fn update_local_room(&mut self, room_name: String) {
         if self.model.room.name.as_deref() != Some(room_name.as_str()) {
+            self.clear_participant_status_views();
             self.model.readiness.reconnect_token = None;
             self.reset_playback_barrier();
             self.reset_playlist_index_transition_tracking();
@@ -543,6 +544,8 @@ impl ClientSession {
                 .leave_room(username, previous_room_name);
         }
         if previous_room != room_name {
+            self.model.room.participant_statuses.remove(username);
+            self.model.room.participant_status_receipts.remove(username);
             if self.model.connection.username.as_deref() == Some(username) {
                 self.model.room.media_match_peer_tiers.clear();
             } else {
@@ -593,6 +596,8 @@ impl ClientSession {
         let file_changed = user_view.file != file;
         user_view.file = file;
         if file_changed {
+            self.model.room.participant_statuses.remove(username);
+            self.model.room.participant_status_receipts.remove(username);
             if self.model.connection.username.as_deref() == Some(username) {
                 self.model.room.media_match_peer_tiers.clear();
             } else {
@@ -615,6 +620,7 @@ impl ClientSession {
         &mut self,
         username: &str,
         capabilities: Option<PeerCapabilities>,
+        participant_status_v1: Option<bool>,
     ) {
         let user_view = self
             .model
@@ -623,6 +629,43 @@ impl ClientSession {
             .entry(username.to_owned())
             .or_default();
         user_view.capabilities = capabilities;
+        if let Some(participant_status_v1) = participant_status_v1 {
+            self.model
+                .room
+                .participant_status_capabilities
+                .insert(username.to_owned(), participant_status_v1);
+        }
+        if self
+            .model
+            .room
+            .participant_status_capabilities
+            .get(username)
+            != Some(&true)
+        {
+            self.model.room.participant_statuses.remove(username);
+            self.model.room.participant_status_receipts.remove(username);
+        }
+    }
+
+    pub(super) fn set_user_legacy_list_position_snapshot(
+        &mut self,
+        username: &str,
+        position_seconds: Option<f64>,
+    ) {
+        match position_seconds {
+            Some(position_seconds) => {
+                self.model
+                    .room
+                    .legacy_list_position_snapshots
+                    .insert(username.to_owned(), position_seconds);
+            }
+            None => {
+                self.model
+                    .room
+                    .legacy_list_position_snapshots
+                    .remove(username);
+            }
+        }
     }
 
     pub(super) fn remove_user(&mut self, username: &str) {
@@ -632,5 +675,15 @@ impl ClientSession {
             let _ = self.model.room.domain.leave_room(username, &room_name);
         }
         self.model.room.media_match_peer_tiers.remove(username);
+        self.model
+            .room
+            .participant_status_capabilities
+            .remove(username);
+        self.model
+            .room
+            .legacy_list_position_snapshots
+            .remove(username);
+        self.model.room.participant_statuses.remove(username);
+        self.model.room.participant_status_receipts.remove(username);
     }
 }

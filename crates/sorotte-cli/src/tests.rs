@@ -314,7 +314,7 @@ fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
 }
 
 #[test]
-fn cli_hello_advertises_readiness_v2_with_the_playback_barrier() {
+fn cli_hello_advertises_sorotte_state_extensions() {
     let features = client_hello_features_legacy_compatible(&test_client_loop_config());
 
     assert_eq!(
@@ -326,6 +326,12 @@ fn cli_hello_advertises_readiness_v2_with_the_playback_barrier() {
     assert_eq!(
         features
             .get(sorotte_protocol::SOROTTE_PLAYBACK_BARRIER_V1)
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+    );
+    assert_eq!(
+        features
+            .get(sorotte_protocol::SOROTTE_PARTICIPANT_STATUS_V1)
             .and_then(serde_json::Value::as_bool),
         Some(true),
     );

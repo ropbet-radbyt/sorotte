@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::Md5;
@@ -12,14 +13,18 @@ use sorotte_player_api::{
 };
 use sorotte_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
-    ParticipantReadinessUpdate, PingPayload, PlayerInteractionSurface, PlaylistIndexPayload,
-    PlaystatePayload, ProtocolError, ProtocolMessage, ReadinessIntentRequest,
-    ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
-    RoomReadinessSnapshot, RoomRef, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
-    SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2, SetPayload, StatePayload,
-    TechnicalReadinessReport, UserReadinessIntent, UserReadinessMutationSource,
-    canonical_playlist_files_from_change, decode_message_line, decode_message_line_items,
-    encode_message_line, playlist_change_with_plex_sidecar,
+    PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS, PARTICIPANT_STATUS_MAX_PLAYBACK_RATE,
+    PARTICIPANT_STATUS_MAX_POSITION_SECONDS, PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS,
+    PARTICIPANT_STATUS_MIN_PLAYBACK_RATE, ParticipantReadinessUpdate,
+    ParticipantStatusAvailability, ParticipantStatusCorrelation, ParticipantStatusSnapshot,
+    ParticipantStatusSnapshotMode, ParticipantStatusStateExtension, ParticipantStatusView,
+    PingPayload, PlayerInteractionSurface, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
+    ProtocolMessage, ReadinessIntentRequest, ReadinessRequestResultStatus, ReadinessSetExtension,
+    ReadinessStateExtension, ReadyPayload, RoomReadinessSnapshot, RoomRef,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2,
+    SetPayload, StatePayload, TechnicalReadinessReport, UserReadinessIntent,
+    UserReadinessMutationSource, canonical_playlist_files_from_change, decode_message_line,
+    decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_secret::SecretValue;
 
@@ -222,14 +227,19 @@ pub use self::player_transition::{
     PlayerTransitionTechnicalReason, PlayerTransitionUnknownReason,
 };
 pub use self::runtime::{
-    ClientPlayerIo, ClientRuntime, ClientSessionUpdate, PlaybackBarrierRoomBufferingConfig,
-    PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+    ClientPlayerIo, ClientRuntime, ClientSessionUpdate, ExternalPlayerAvailability,
+    PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
+    PlaybackCoordinationSnapshot,
 };
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
 pub use self::session::{
     ClientSession, DesyncCorrectionDispatchSnapshot, playback_uri_is_trusted_legacy_compatible,
 };
 pub use self::views::{
-    ClientMediaMatchPeerFileState, ClientUserView, RoomPlaylistView, RoomPlaystateAuthority,
-    RoomPlaystateView,
+    ClientMediaMatchPeerFileState, ClientParticipantStatusFreshness, ClientParticipantStatusView,
+    ClientUserView, RoomPlaylistView, RoomPlaystateAuthority, RoomPlaystateView,
+};
+pub use sorotte_protocol::{
+    ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantPlayerConnection,
+    ParticipantStatusReport, ParticipantTimelineKind, SOROTTE_PARTICIPANT_STATUS_V1,
 };

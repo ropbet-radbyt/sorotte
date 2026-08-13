@@ -1548,6 +1548,13 @@ pub enum PlayerEventDeliveryMode {
 
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Cached transport attachment state, when the adapter can provide it
+    /// without issuing player I/O. Owners use transitions from this value to
+    /// publish lifecycle status; telemetry remains the only proof of healthy
+    /// playback state.
+    fn transport_is_connected(&self) -> Option<bool> {
+        None
+    }
     /// Performs strictly nonblocking lease renewal and event servicing.
     ///
     /// Async owners may call this while selecting over unrelated I/O. Implementations must not

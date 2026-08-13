@@ -244,7 +244,7 @@ fn connected_session_runtime_step_actions_legacy_compatible_preserve_execution_o
 }
 
 #[test]
-fn connected_session_runtime_step_actions_legacy_compatible_omits_disabled_actions() {
+fn connected_session_runtime_step_actions_preserve_the_public_heartbeat_action() {
     let actions = connected_session_runtime_step_actions_legacy_compatible(
         ConnectedSessionRuntimeStepPlan {
             run_room_pause_sync: false,
@@ -265,6 +265,7 @@ fn connected_session_runtime_step_actions_legacy_compatible_omits_disabled_actio
             ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck,
             ConnectedSessionRuntimeStepAction::RunDesyncCorrection,
             ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation,
+            ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat,
         ]
     );
 }

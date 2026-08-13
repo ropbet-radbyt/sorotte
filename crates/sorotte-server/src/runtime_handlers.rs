@@ -48,6 +48,76 @@ fn unknown_command_error_message(payload: &Value) -> String {
     format!("{LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX} {payload}")
 }
 
+fn normalize_non_negative_participant_status_value(
+    value: Option<f64>,
+    maximum: f64,
+) -> Option<Option<f64>> {
+    match value {
+        None => Some(None),
+        Some(value) if value.is_finite() && (0.0..=maximum).contains(&value) => Some(Some(value)),
+        Some(_) => None,
+    }
+}
+
+fn normalize_participant_status_report(
+    mut report: ParticipantStatusReport,
+) -> Option<ParticipantStatusReport> {
+    if report.report_sequence == 0 {
+        return None;
+    }
+    if report.playback_scope.is_some_and(|scope| {
+        scope.media_generation == 0
+            || scope.state_revision == Some(0)
+            || scope.transport_revision == Some(0)
+    }) {
+        return None;
+    }
+    report.position_seconds = normalize_non_negative_participant_status_value(
+        report.position_seconds,
+        PARTICIPANT_STATUS_MAX_POSITION_SECONDS,
+    )?;
+    report.buffered_ahead_seconds = normalize_non_negative_participant_status_value(
+        report.buffered_ahead_seconds,
+        PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS,
+    )?;
+    report.cache_percent =
+        normalize_non_negative_participant_status_value(report.cache_percent, 100.0)?;
+    report.playback_rate = match report.playback_rate {
+        None => None,
+        Some(rate)
+            if rate.is_finite()
+                && (PARTICIPANT_STATUS_MIN_PLAYBACK_RATE
+                    ..=PARTICIPANT_STATUS_MAX_PLAYBACK_RATE)
+                    .contains(&rate) =>
+        {
+            Some(rate)
+        }
+        Some(_) => return None,
+    };
+    if report.sample_age_ms > Some(PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS) {
+        return None;
+    }
+    if report.position_sample_age_ms > Some(PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS) {
+        return None;
+    }
+    if report
+        .sample_age_ms
+        .zip(report.position_sample_age_ms)
+        .is_some_and(|(sample_age, position_sample_age)| sample_age < position_sample_age)
+    {
+        return None;
+    }
+    // Position without its own provenance is not safe to project, even for a
+    // paused player. Preserve the rest of the advisory report while dropping
+    // mismatched positional evidence in either direction.
+    if report.position_seconds.is_some() != report.position_sample_age_ms.is_some() {
+        report.position_seconds = None;
+        report.position_sample_age_ms = None;
+    }
+    report.redact_ineligible_media_evidence();
+    Some(report)
+}
+
 struct LineFanoutFailure {
     outbound_messages: Vec<DirectedProtocolMessage>,
     error: ServerRuntimeError,
@@ -302,15 +372,23 @@ impl ServerRuntime {
             return Ok(Vec::new());
         }
         let normalized = normalize_server_protocol_message(message);
-        self.pending_compatibility_fallbacks
-            .extend(normalized.fallbacks);
+        const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
+        let remaining = MAX_PENDING_COMPATIBILITY_FALLBACKS
+            .saturating_sub(self.pending_compatibility_fallbacks.len());
+        self.pending_compatibility_fallbacks.extend(
+            normalized
+                .fallbacks
+                .into_iter()
+                .take(remaining)
+                .map(ServerCompatibilityFallback::bounded),
+        );
         match normalized.command {
             ServerInboundCommand::Hello(hello) => {
                 self.handle_hello_for_peer(client_id, hello, peer_ip)
             }
             ServerInboundCommand::Set(commands) => self.handle_set(client_id, commands),
             ServerInboundCommand::ListRequest => self.handle_list(client_id),
-            ServerInboundCommand::State(state) => self.handle_state(client_id, state),
+            ServerInboundCommand::State(state) => self.handle_state(client_id, *state),
             ServerInboundCommand::Tls(start_tls) => self.handle_tls(client_id, start_tls),
             ServerInboundCommand::Chat(message) => self.handle_chat(client_id, message),
             ServerInboundCommand::Ignore => Ok(Vec::new()),
@@ -465,6 +543,10 @@ impl ServerRuntime {
                 file: None,
             },
         );
+        // Membership itself is represented in participant snapshots even
+        // before the first report, so a same-timestamp cached room projection
+        // must be rebuilt for the new participant.
+        self.participant_status_snapshot_cache.remove(&room_name);
         self.assign_room_join_order(client_id);
         self.seed_client_playback_state(
             client_id,
@@ -672,6 +754,7 @@ impl ServerRuntime {
                     }
 
                     let previous_room = session.room.clone();
+                    self.clear_participant_status_for_client(client_id);
                     outbound_messages.extend(self.detach_readiness_membership(client_id, false)?);
                     outbound_messages.extend(self.mark_playback_barrier_participant_disconnected(
                         client_id,
@@ -728,6 +811,7 @@ impl ServerRuntime {
                     );
                     session.room = new_room_name;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    self.participant_status_snapshot_cache.remove(&session.room);
                     outbound_messages.extend(self.refresh_mixed_readiness_cohort(&previous_room)?);
                     // The moving client must observe its canonical room echo
                     // before any unscoped readiness V2 snapshot for the new
@@ -841,6 +925,9 @@ impl ServerRuntime {
                     };
                     session.file = file_update.clone();
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    // A file transition retires the prior player sample for
+                    // this connection without reopening its sequence fence.
+                    self.clear_participant_status_for_client(client_id);
 
                     let Some(file) = file_update else {
                         continue;
@@ -1014,7 +1101,13 @@ impl ServerRuntime {
                         // distinct Syncplay protocol operations. Preserve the
                         // last explicit index here; clients that want another
                         // item send playlistIndex separately.
+                        let playlist_changed =
+                            self.room_playlist_state(&session.room).files != new_files;
                         self.room_playlist_state_mut(&session.room).files = new_files.clone();
+                        if playlist_changed {
+                            self.advance_participant_status_media_generation(&session.room, None);
+                            self.clear_participant_status_for_room(&session.room);
+                        }
                         if creation_required {
                             self.record_persistent_room_creation(
                                 &session.room,
@@ -1062,6 +1155,10 @@ impl ServerRuntime {
                     {
                         let previous_index = self.room_playlist_state(&session.room).index;
                         self.room_playlist_state_mut(&session.room).index = index;
+                        if previous_index != index {
+                            self.advance_participant_status_media_generation(&session.room, None);
+                            self.clear_participant_status_for_room(&session.room);
+                        }
                         self.persist_room_if_needed(&session.room)?;
                         if previous_index != index
                             && self.room_readiness.get(&session.room).is_some_and(|room| {
@@ -1102,14 +1199,37 @@ impl ServerRuntime {
                     let Some(capabilities) = features.take() else {
                         continue;
                     };
+                    if session.capabilities == capabilities {
+                        // Identical capability reports are heartbeats at best;
+                        // never amplify them into an N-way reliable fanout.
+                        continue;
+                    }
                     let previously_supported = session.capabilities.playback_barrier_v1;
                     let now_supported = capabilities.playback_barrier_v1;
                     let previously_supported_readiness =
                         self.readiness_enabled && session.capabilities.readiness_v2;
                     let now_supported_readiness =
                         self.readiness_enabled && capabilities.readiness_v2;
+                    let previously_supported_participant_status =
+                        session.capabilities.participant_status_v1;
+                    let now_supported_participant_status = capabilities.participant_status_v1;
                     session.capabilities = capabilities;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    if previously_supported_participant_status != now_supported_participant_status {
+                        self.clear_participant_status_for_client(client_id);
+                    }
+                    let feature_update = user_features_update_message(
+                        &session.username,
+                        session.capabilities.to_wire_value(),
+                    );
+                    let recipients = if self.isolate_rooms {
+                        self.clients_in_room(&session.room)
+                    } else {
+                        self.clients_all()
+                    };
+                    outbound_messages.extend(recipients.into_iter().map(|peer_client| {
+                        DirectedProtocolMessage::new(peer_client, feature_update.clone())
+                    }));
                     if !previously_supported && now_supported {
                         outbound_messages
                             .extend(self.refresh_room_buffering_participant(client_id)?);
@@ -1187,6 +1307,11 @@ impl ServerRuntime {
             self.ingest_client_ping_metrics(client_id, ping.latency_calculation, ping.client_rtt);
         }
         self.record_client_state_update_now(client_id);
+        if let Some(extension) = state.participant_status.take()
+            && let Some(report) = extension.report
+        {
+            self.retain_participant_status_report(client_id, &session, report);
+        }
         self.persist_occupied_room_activity_if_due_at(&session.room, self.current_time_seconds())?;
         let had_barrier_ack = state
             .playback_barrier
@@ -1409,5 +1534,45 @@ impl ServerRuntime {
             ),
         ]);
         Ok(barrier_outbound)
+    }
+
+    fn retain_participant_status_report(
+        &mut self,
+        client_id: &str,
+        session: &ServerSession,
+        report: ParticipantStatusReport,
+    ) {
+        if !session.capabilities.participant_status_v1 {
+            return;
+        }
+        let Some(report) = normalize_participant_status_report(report) else {
+            return;
+        };
+        if self
+            .client_participant_status_last_sequence
+            .get(client_id)
+            .is_some_and(|last_sequence| report.report_sequence <= *last_sequence)
+        {
+            return;
+        }
+        self.client_participant_status_last_sequence
+            .insert(client_id.to_owned(), report.report_sequence);
+        let received_at_seconds = self.current_time_seconds();
+        let forward_delay_ms =
+            self.participant_status_forward_delay_ms_at(client_id, received_at_seconds);
+        let room_join_sequence = self.client_room_join_order(client_id);
+        self.client_participant_status.insert(
+            client_id.to_owned(),
+            RetainedParticipantStatus {
+                report,
+                received_at_seconds,
+                max_projected_report_age_ms: MonotonicParticipantStatusAge::new(0),
+                forward_delay_ms,
+                room: session.room.clone(),
+                username: session.username.clone(),
+                room_join_sequence,
+            },
+        );
+        self.participant_status_snapshot_cache.remove(&session.room);
     }
 }

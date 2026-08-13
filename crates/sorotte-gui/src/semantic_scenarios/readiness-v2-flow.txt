@@ -52,3 +52,69 @@ apply-main-window-readiness-v2	alice	not-ready	playable	none	none	false	false	4	
 assert-value	main-window:user:0:readiness	Not Ready
 assert-value	main-window:user:0:readiness-intent	canonical=Not Ready
 assert-value	main-window:user:0:readiness-operation	pending=present, accepted=present, correlated=yes
+
+# Authoritative room intent remains distinct from observed participant playback.
+apply-main-window-runtime	room1	false	true	false	true	true	true	false	alice,true,true,false|bob,false,true,false|carol,false,true,false|dave,false,false,false|eve,false,true,false|frank,false,true,false	placeholder.mkv	system>connected
+apply-main-window-room-intent	paused	755.03	server	server-start-barrier	waiting for Bob to become technically playable
+assert-value	main-window:room-playback-state	Room intent: PAUSED by server · 12:35.0 · Start gate: waiting for Bob to become technically playable
+assert-tooltip-contains	main-window:room-playback-state	Authoritative room intent: paused
+assert-tooltip-contains	main-window:room-playback-state	member playback rows are observed advisory status
+
+# Fresh ordinary playback includes timestamp, server-derived offset, buffer headroom, and heartbeat.
+apply-main-window-participant-status	alice	report	connected	playing	754.82	false	1.0	14.3	none	-0.21	7	19	exact	0	0	0.18	false	started
+assert-value	main-window:user:0:participant-status	Playing · 12:34.8 · 0.2 s behind · 14.3 s buffered · fresh
+assert-value	main-window:user:0:member-position	12:34.8
+assert-value	main-window:user:0:member-offset	0.2 s behind
+assert-value	main-window:user:0:member-buffer	14.3 s buffered
+assert-value	main-window:user:0:member-freshness	fresh · 0.5 s old
+assert-value	main-window:user:0:member-player	connected
+assert-value	main-window:user:0:member-logical-pause	no
+assert-value	main-window:user:0:member-rate	1.00×
+assert-value	main-window:user:0:member-generation	7
+assert-value	main-window:user:0:member-revision	19
+assert-value	main-window:user:0:start-barrier	started
+assert-tone	main-window:user:0:participant-status	success
+assert-tone	main-window:user:browser:0:participant-status	success
+assert-tooltip-contains	main-window:user:0:participant-status	Player: connected
+
+# Rebuffering keeps cache refill distinct from download progress.
+apply-main-window-participant-status	bob	report	connected	rebuffering	751.20	false	1.0	0.4	20	-3.83	7	19	exact	0	0	0.34	false	pending
+assert-value	main-window:user:1:participant-status	Rebuffering · 12:31.2 · 3.8 s behind · 0.4 s buffered · cache refill 20% · fresh
+assert-value	main-window:user:1:member-buffer	0.4 s buffered · cache refill 20%
+assert-value	main-window:user:1:start-barrier	pending
+assert-tone	main-window:user:1:participant-status	warning
+apply-main-window-room-intent	playing	755.03	server	server-start-barrier	none	6	3.83	bob
+assert-value	main-window:room-playback-state	Room intent: PLAYING · 12:35.0 · 6 participants · max observed drift 3.8 s · Buffering: bob
+
+# Capability and heartbeat states are independently visible.
+apply-main-window-participant-status	carol	waiting	ready
+assert-value	main-window:user:2:participant-status	Waiting for first status report
+assert-value	main-window:user:2:member-freshness	Waiting for first heartbeat
+assert-tone	main-window:user:2:participant-status	warning
+apply-main-window-participant-status	dave	legacy	excluded legacy participant
+assert-value	main-window:user:3:participant-status	Status unavailable · legacy client
+assert-value	main-window:user:3:member-player	unavailable (legacy client)
+assert-tone	main-window:user:3:participant-status	muted
+apply-main-window-participant-status	eve	report	unavailable	unknown	none	none	none	none	none	none	7	19	exact	none	none	2	false	none
+assert-value	main-window:user:4:participant-status	Player unavailable · fresh
+assert-value	main-window:user:4:member-player	unavailable
+assert-tone	main-window:user:4:participant-status	warning
+apply-main-window-participant-status	frank	report	connected	seeking	750	true	1.0	1.0	none	-5	7	19	exact	0	0	12	false	degraded
+assert-value	main-window:user:5:participant-status	Status stale · last update 12.0 s ago
+assert-tone	main-window:user:5:participant-status	danger
+assert-tooltip-contains	main-window:user:5:participant-status	Playback evidence: unavailable (status stale)
+assert-value	main-window:user:5:member-freshness	stale · 12.0 s old
+assert-value	main-window:user:5:member-position	Position unavailable
+assert-value	main-window:user:5:member-buffer	Buffer status unavailable
+assert-value	main-window:user:5:member-rate	unavailable
+assert-value	main-window:user:5:member-generation	unavailable
+
+# Different playback scopes suppress every media-specific observation.
+apply-main-window-participant-status	bob	report	connected	playing	760	false	1.0	8	none	-9	8	20	superseded	0	0	0.2	true	started
+assert-value	main-window:user:1:member-position	Position unavailable
+assert-value	main-window:user:1:member-offset	Different playback scope
+assert-value	main-window:user:1:member-buffer	Buffer status unavailable
+assert-value	main-window:user:1:member-rate	unavailable
+assert-value	main-window:user:1:member-generation	unavailable
+assert-value	main-window:user:1:participant-status	Playing · Different playback scope · fresh
+assert-tone	main-window:user:1:participant-status	warning

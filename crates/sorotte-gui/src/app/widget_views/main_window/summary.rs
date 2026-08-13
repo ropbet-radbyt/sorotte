@@ -1,5 +1,8 @@
 use super::*;
-use crate::app::shell_state::GuiPlaylistSourcePolicy;
+use crate::app::shell_state::{
+    GuiPlaylistSourcePolicy, MainWindowParticipantStatusPresentation,
+    MainWindowParticipantStatusReport, MainWindowUserRow,
+};
 
 impl SorotteGuiShellAppState {
     fn seek_preparation_panel(&self) -> Option<GuiWidgetNode> {
@@ -309,11 +312,8 @@ impl SorotteGuiShellAppState {
             _ => "No server is configured.".to_owned(),
         };
         let room_control_tooltip = self.main_window.room_control_status.clone();
-        let room_playback_state_tooltip = if self.main_window.playback_paused {
-            "Room state: paused"
-        } else {
-            "Room state: playing"
-        };
+        let room_playback_intent_label = self.main_window.room_playback_intent.status_label();
+        let room_playback_state_tooltip = self.main_window.room_playback_intent.detail_tooltip();
         let mut participant_indices: Vec<usize> = self
             .main_window
             .users
@@ -365,6 +365,8 @@ impl SorotteGuiShellAppState {
                 } else {
                     format!(" [{}]", cue_parts.join(", "))
                 };
+                let participant_status_tooltip =
+                    participant_status_tooltip(user, readiness, &user.participant_status);
                 let mut user_children = vec![GuiWidgetNode::layout(
                     format!("main-window:user:{user_index}:summary"),
                     format!("{} Summary", user.username),
@@ -384,6 +386,111 @@ impl SorotteGuiShellAppState {
                             )),
                             true,
                             user.is_self,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:participant-status"),
+                            "Observed playback",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.compact_label()),
+                            true,
+                            false,
+                        )
+                        .with_status_tone(participant_status_tone(&user.participant_status))
+                        .with_tooltip(participant_status_tooltip.clone()),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-phase"),
+                            "Playback phase",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.phase_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-position"),
+                            "Media position",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.position_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-offset"),
+                            "Room offset",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.offset_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-buffer"),
+                            "Buffer",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.buffer_label()),
+                            true,
+                            false,
+                        )
+                        .with_tooltip(
+                            "Buffered ahead is playable media headroom. Cache refill is mpv's refill-target progress, not total media download progress.",
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-freshness"),
+                            "Status heartbeat",
+                            GuiWidgetKind::Status,
+                            Some(user.participant_status.freshness_label()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-player"),
+                            "Player availability",
+                            GuiWidgetKind::Status,
+                            Some(member_player_availability_label(&user.participant_status)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-logical-pause"),
+                            "Logical pause",
+                            GuiWidgetKind::Status,
+                            Some(member_logical_pause_label(&user.participant_status)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-rate"),
+                            "Playback rate",
+                            GuiWidgetKind::Status,
+                            Some(member_playback_rate_label(&user.participant_status)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-generation"),
+                            "Media generation",
+                            GuiWidgetKind::Status,
+                            Some(member_generation_label(&user.participant_status)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:member-revision"),
+                            "Room revision",
+                            GuiWidgetKind::Status,
+                            Some(member_revision_label(&user.participant_status)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:start-barrier"),
+                            "Start barrier participant",
+                            GuiWidgetKind::Status,
+                            Some(
+                                user.start_barrier_status
+                                    .clone()
+                                    .unwrap_or_else(|| "inactive or unavailable".to_owned()),
+                            ),
+                            true,
+                            false,
                         ),
                         GuiWidgetNode::leaf(
                             format!("main-window:user:{user_index}:readiness"),
@@ -494,7 +601,7 @@ impl SorotteGuiShellAppState {
                     user_children,
                 );
                 user_panel.selected = user.is_self;
-                user_panel
+                user_panel.with_tooltip(participant_status_tooltip)
             })
             .collect::<Vec<_>>();
         if participant_children.is_empty() {
@@ -545,9 +652,9 @@ impl SorotteGuiShellAppState {
             .with_tooltip(room_control_tooltip),
             GuiWidgetNode::leaf(
                 "main-window:room-playback-state",
-                "Room State",
+                "Room Intent",
                 GuiWidgetKind::Status,
-                Some(bool_label(self.main_window.playback_paused).to_owned()),
+                Some(room_playback_intent_label),
                 true,
                 false,
             )
@@ -753,6 +860,114 @@ fn format_seek_preparation_timestamp(seconds: f64) -> String {
     } else {
         format!("{minutes:02}:{seconds:02}")
     }
+}
+
+fn member_player_availability_label(status: &MainWindowParticipantStatusPresentation) -> String {
+    status.connection_label()
+}
+
+fn member_report_evidence_is_unavailable(status: &MainWindowParticipantStatusReport) -> bool {
+    status.freshness == MainWindowParticipantStatusFreshness::Stale
+        || status.timeline_mismatch
+        || matches!(
+            status.status.correlation,
+            Some(
+                sorotte_protocol::ParticipantStatusCorrelation::Uncorrelated
+                    | sorotte_protocol::ParticipantStatusCorrelation::Superseded
+            )
+        )
+}
+
+fn member_logical_pause_label(status: &MainWindowParticipantStatusPresentation) -> String {
+    let MainWindowParticipantStatusPresentation::Report(status) = status else {
+        return "unavailable".to_owned();
+    };
+    if member_report_evidence_is_unavailable(status) {
+        return "unavailable".to_owned();
+    }
+    status
+        .status
+        .logical_paused
+        .map(|paused| if paused { "yes" } else { "no" }.to_owned())
+        .unwrap_or_else(|| "unavailable".to_owned())
+}
+
+fn member_playback_rate_label(status: &MainWindowParticipantStatusPresentation) -> String {
+    let MainWindowParticipantStatusPresentation::Report(status) = status else {
+        return "unavailable".to_owned();
+    };
+    if member_report_evidence_is_unavailable(status) {
+        return "unavailable".to_owned();
+    }
+    status
+        .status
+        .playback_rate
+        .map(|rate| format!("{rate:.2}×"))
+        .unwrap_or_else(|| "unavailable".to_owned())
+}
+
+fn member_generation_label(status: &MainWindowParticipantStatusPresentation) -> String {
+    let MainWindowParticipantStatusPresentation::Report(status) = status else {
+        return "unavailable".to_owned();
+    };
+    if member_report_evidence_is_unavailable(status) {
+        return "unavailable".to_owned();
+    }
+    status
+        .status
+        .playback_scope
+        .map(|scope| scope.media_generation)
+        .map(|generation| generation.to_string())
+        .unwrap_or_else(|| "unavailable".to_owned())
+}
+
+fn member_revision_label(status: &MainWindowParticipantStatusPresentation) -> String {
+    let MainWindowParticipantStatusPresentation::Report(status) = status else {
+        return "unavailable".to_owned();
+    };
+    if member_report_evidence_is_unavailable(status) {
+        return "unavailable".to_owned();
+    }
+    status
+        .status
+        .playback_scope
+        .and_then(|scope| scope.state_revision)
+        .map(|revision| revision.to_string())
+        .unwrap_or_else(|| "unavailable".to_owned())
+}
+
+fn participant_status_tooltip(
+    user: &MainWindowUserRow,
+    readiness: &sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation,
+    status: &MainWindowParticipantStatusPresentation,
+) -> String {
+    let mut details = vec![
+        "Room session: present".to_owned(),
+        status.detail_label(),
+        format!("Readiness: {}", readiness.status_label()),
+        format!(
+            "Technical readiness: {}",
+            readiness.technical_detail_label()
+        ),
+        format!(
+            "Automatic start cohort: {}",
+            readiness.participation_detail_label()
+        ),
+        format!(
+            "Start barrier participant: {}",
+            user.start_barrier_status
+                .as_deref()
+                .unwrap_or("inactive or unavailable")
+        ),
+    ];
+    if matches!(status, MainWindowParticipantStatusPresentation::Report(report) if report.status.cache_percent.is_some())
+    {
+        details.push(
+            "Cache refill is player refill-target progress, not total media download progress."
+                .to_owned(),
+        );
+    }
+    details.join("\n")
 }
 
 fn playlist_source_tooltip(source_state: &GuiPlaylistSourceState) -> String {

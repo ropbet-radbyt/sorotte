@@ -39,6 +39,27 @@ impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
 {
+    fn queue_connection_scoped_state_with_participant_status(
+        &mut self,
+        mut state: StatePayload,
+        force: bool,
+        now_seconds: f64,
+    ) -> bool {
+        let pending = self
+            .playback_coordination
+            .pending_participant_status_report(&self.session, force, now_seconds);
+        if let Some(pending) = pending.as_ref() {
+            state = state.with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+            );
+        }
+        let queued = self.control.queue_connection_scoped_state(state);
+        if queued && let Some(pending) = pending.as_ref() {
+            self.playback_coordination
+                .commit_participant_status_report(pending);
+        }
+        queued
+    }
     pub(crate) fn outbound_state_sync_position_seconds(
         &self,
         now_seconds: f64,
@@ -165,7 +186,11 @@ where
                 client_rtt,
                 clocks.received_at_seconds,
             );
-            return self.control.queue_connection_scoped_state(outbound_state);
+            return self.queue_connection_scoped_state_with_participant_status(
+                outbound_state,
+                true,
+                clocks.response_at_seconds,
+            );
         };
 
         let outbound_state = self
@@ -181,7 +206,11 @@ where
                     received_at_seconds: clocks.received_at_seconds,
                 },
             );
-        self.control.queue_connection_scoped_state(outbound_state)
+        self.queue_connection_scoped_state_with_participant_status(
+            outbound_state,
+            true,
+            clocks.response_at_seconds,
+        )
     }
 
     pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
@@ -252,7 +281,38 @@ where
             )
         };
 
-        self.control.queue_connection_scoped_state(outbound_state)
+        self.queue_connection_scoped_state_with_participant_status(
+            outbound_state,
+            true,
+            now_seconds,
+        )
+    }
+
+    /// Publishes only the additive participant-status heartbeat. Legacy
+    /// canonical State synchronization remains independently gated until the
+    /// server has established its ordinary State cadence.
+    pub fn run_participant_status_heartbeat(&mut self, now_seconds: f64) -> bool {
+        if !self.session.is_active() {
+            return false;
+        }
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        let Some(pending) = self
+            .playback_coordination
+            .pending_participant_status_report(&self.session, true, now_seconds)
+        else {
+            return false;
+        };
+        self.control.activate_protocol_connection_generation();
+        let queued = self.control.queue_connection_scoped_state(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+            ),
+        );
+        if queued {
+            self.playback_coordination
+                .commit_participant_status_report(&pending);
+        }
+        queued
     }
 
     /// Transfers ownership of every queued protocol message to the caller.

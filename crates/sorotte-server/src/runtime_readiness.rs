@@ -730,10 +730,10 @@ impl ServerRuntime {
     /// separate counter avoids treating unrelated readiness/technical churn
     /// as a transport conflict.
     pub(crate) fn advance_transport_authority_revision(&mut self, room_name: &str) {
-        let Some(room) = self.room_readiness.get_mut(room_name) else {
-            return;
-        };
-        room.transport_authority_revision = room.transport_authority_revision.saturating_add(1);
+        self.advance_participant_status_transport_revision(room_name);
+        if let Some(room) = self.room_readiness.get_mut(room_name) {
+            room.transport_authority_revision = room.transport_authority_revision.saturating_add(1);
+        }
         self.pending_user_transport_by_client
             .retain(|_, pending| pending.room_name != room_name);
     }

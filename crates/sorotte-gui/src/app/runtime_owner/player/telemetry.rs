@@ -2836,6 +2836,12 @@ impl GuiPersistedConfigRuntimeOwner {
             network_options_snapshot = Some(player.network_options_runtime_health_snapshot());
             mpv_connected = player.is_connected();
         }
+        if !mpv_connected {
+            // A queued sample from before IPC loss must not re-establish an
+            // observation-derived Connected status after lifecycle evidence
+            // has declared the player unavailable.
+            self.report_external_player_availability(ExternalPlayerAvailability::Disconnected);
+        }
         for transition in hook_health_transitions {
             match transition {
                 MpvNetworkOptionsHookHealthTransition::Recovered => {
@@ -2912,6 +2918,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         while let Some(update) = player.take_transport_telemetry_update() {
             transport_updates.push(update);
+        }
+        if !mpv_connected {
+            transport_updates.clear();
         }
         while let Some(outcome) = player.take_media_load_outcome() {
             media_load_outcomes.push(outcome);

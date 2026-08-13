@@ -14,6 +14,7 @@ impl ServerRuntime {
     fn fence_and_close_playback_barrier_transport(&mut self, client_id: &str) {
         self.playback_barrier_fenced_clients
             .insert(client_id.to_owned());
+        self.clear_participant_status_for_client(client_id);
         if !self.pending_transport_actions.iter().any(|action| {
             action.client_id == client_id && action.action == ServerTransportAction::Close
         }) {
@@ -1155,8 +1156,12 @@ impl ServerRuntime {
         self.retain_displaced_playback_barrier_requests(&room_name, displaced_requests);
         if replace_room_barrier {
             // The displaced identity was retained atomically before removing
-            // terminal diagnostics from the room's canonical lifecycle.
-            self.room_playback_barriers.remove(&room_name);
+            // terminal diagnostics from the room's canonical lifecycle. The
+            // removable barrier contributes stateRevision to participant
+            // scope, so advance the independent media/transport fence before
+            // dropping it; otherwise Some(old) -> None at equal transport is
+            // a scope regression that observers must reject forever.
+            self.replace_room_barrier_participant_status_scope(&room_name, config.media_generation);
         }
         let old_policy_owned_pause = self
             .room_buffering_controls
@@ -1203,6 +1208,16 @@ impl ServerRuntime {
             );
         }
         Ok(outbound)
+    }
+
+    fn replace_room_barrier_participant_status_scope(
+        &mut self,
+        room_name: &str,
+        media_generation: u64,
+    ) {
+        self.advance_participant_status_media_generation(room_name, Some(media_generation));
+        self.clear_participant_status_for_room(room_name);
+        self.room_playback_barriers.remove(room_name);
     }
 
     fn record_room_buffering_report(
@@ -1471,6 +1486,25 @@ impl ServerRuntime {
         self.advance_transport_authority_revision(room_name);
         self.seed_room_client_playback_states(room_name, room_before.position, now_seconds);
         self.persist_room_if_needed(room_name)?;
+        // Pause ownership is part of the transport-authority fence. Apply the
+        // owner transition before encoding forced State so the published
+        // participant scope is the final scope clients should echo. Retain the
+        // established wire order by appending its readiness messages after the
+        // forced State messages below.
+        let readiness_outbound =
+            if let Some((media_generation, state_revision)) = buffering_identity {
+                let owner = if paused {
+                    RoomPauseOwner::RoomBufferingPolicy {
+                        media_generation,
+                        state_revision,
+                    }
+                } else {
+                    RoomPauseOwner::None
+                };
+                self.set_readiness_pause_owner(room_name, owner, true)
+            } else {
+                Vec::new()
+            };
         let mut outbound: Vec<_> = self
             .clients_in_room(room_name)
             .into_iter()
@@ -1485,17 +1519,7 @@ impl ServerRuntime {
                 DirectedProtocolMessage::new(peer_client, message)
             })
             .collect();
-        if let Some((media_generation, state_revision)) = buffering_identity {
-            let owner = if paused {
-                RoomPauseOwner::RoomBufferingPolicy {
-                    media_generation,
-                    state_revision,
-                }
-            } else {
-                RoomPauseOwner::None
-            };
-            outbound.extend(self.set_readiness_pause_owner(room_name, owner, true));
-        }
+        outbound.extend(readiness_outbound);
         Ok(outbound)
     }
 
@@ -1933,6 +1957,14 @@ impl ServerRuntime {
                 started_deadline: None,
             },
         );
+        // Reports are scoped to a concrete media generation. Clearing them at
+        // the accepted generation boundary prevents an old sample from being
+        // presented while clients load and report the new media.
+        self.advance_participant_status_media_generation(
+            &room_name,
+            Some(prepare.media_generation),
+        );
+        self.clear_participant_status_for_room(&room_name);
         {
             let room_state = self.room_playback_state_mut(&room_name);
             room_state.position = target_position;

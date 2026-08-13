@@ -37,6 +37,9 @@ fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_atta
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(false);
     owner.player_position_seconds = Some(0.0);
     owner.player_local_file = Some(
@@ -362,6 +365,9 @@ fn gui_persisted_config_runtime_owner_applies_desync_seek_when_room_playstate_is
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(false);
     owner.player_position_seconds = Some(10.0);
     owner.player_local_file = Some(

@@ -346,9 +346,18 @@ fn set_features_updates_list_snapshot_features() {
             r#"{"Set":{"features":{"uiMode":"GUI","chat":false}}}"#,
         )
         .expect("feature update should be accepted");
-    assert!(
-        outbound_lines.is_empty(),
-        "Python server stores feature updates without immediate fanout"
+    assert_eq!(outbound_lines.len(), 1);
+    let update = decode_message_line(&outbound_lines[0]).expect("feature update should decode");
+    let ProtocolMessage::Set(update) = update else {
+        panic!("expected canonical Set feature update");
+    };
+    assert_eq!(
+        update.set.features,
+        Some(json!({
+            "username": "alice",
+            "features": {"uiMode":"GUI","chat":false},
+        })),
+        "dynamic capabilities should be echoed with authenticated username"
     );
 
     let outbound_lines = runtime

@@ -638,22 +638,32 @@ impl ClientSession {
     }
 
     pub fn mark_connecting(&mut self) {
+        self.clear_participant_status_views();
+        self.model.connection.participant_status_v1 = false;
         self.model.connection.phase = ConnectionPhase::Connecting;
     }
 
     pub fn mark_awaiting_hello(&mut self) {
+        self.clear_participant_status_views();
+        self.model.connection.participant_status_v1 = false;
         self.model.connection.phase = ConnectionPhase::AwaitingHello;
     }
 
     pub fn mark_reconnecting(&mut self, attempt: u32) {
+        self.clear_participant_status_views();
+        self.model.connection.participant_status_v1 = false;
         self.model.connection.phase = ConnectionPhase::Reconnecting { attempt };
     }
 
     pub fn mark_closing(&mut self) {
+        self.clear_participant_status_views();
+        self.model.connection.participant_status_v1 = false;
         self.model.connection.phase = ConnectionPhase::Closing;
     }
 
     pub fn mark_disconnected(&mut self) {
+        self.clear_participant_status_views();
+        self.model.connection.participant_status_v1 = false;
         self.model.connection.phase = ConnectionPhase::Disconnected;
     }
 

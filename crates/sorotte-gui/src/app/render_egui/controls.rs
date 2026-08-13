@@ -20,6 +20,9 @@ impl GuiWidgetEguiRenderer {
     ) {
         let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
             builder.set_author_id(node.id.clone());
+            if let Some(tooltip) = node.tooltip.as_ref() {
+                builder.set_description(tooltip.clone());
+            }
         });
     }
 

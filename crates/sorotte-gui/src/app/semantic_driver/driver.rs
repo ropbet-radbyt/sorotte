@@ -1,3 +1,4 @@
+use super::super::widget_tree::GuiStatusTone;
 use super::super::{
     GuiDroppedFilesTarget, GuiInteractionRuntimeSnapshot, GuiPendingCompletionRequest,
     GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
@@ -193,6 +194,30 @@ impl GuiSemanticDriver {
         Ok(())
     }
 
+    fn assert_widget_tone(&self, widget_id: &str, tone: GuiStatusTone) -> Result<(), String> {
+        let widget = self.widget(widget_id)?;
+        if widget.status_tone != Some(tone) {
+            return Err(format!(
+                "widget {widget_id} tone mismatch: expected {tone:?}, got {:?}",
+                widget.status_tone
+            ));
+        }
+        Ok(())
+    }
+
+    fn assert_widget_tooltip_contains(&self, widget_id: &str, text: &str) -> Result<(), String> {
+        let widget = self.widget(widget_id)?;
+        let tooltip = widget.tooltip.as_deref().ok_or_else(|| {
+            format!("widget {widget_id} should expose a tooltip containing {text:?}")
+        })?;
+        if !tooltip.contains(text) {
+            return Err(format!(
+                "widget {widget_id} tooltip mismatch: expected it to contain {text:?}, got {tooltip:?}"
+            ));
+        }
+        Ok(())
+    }
+
     fn assert_pending(&self, pending: Option<GuiPendingOperationKind>) -> Result<(), String> {
         let actual = self
             .state
@@ -363,6 +388,32 @@ impl GuiSemanticDriver {
                         .insert(readiness.username.clone(), readiness.clone());
                     self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)]);
                 }
+                GuiSemanticStep::ApplyMainWindowRoomPlaybackIntent(intent) => {
+                    let mut snapshot =
+                        MainWindowRuntimeSnapshot::from_shell_state(&self.state.main_window);
+                    snapshot.room_playback_intent = intent.clone();
+                    self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)]);
+                }
+                GuiSemanticStep::ApplyMainWindowParticipantStatus {
+                    username,
+                    status,
+                    start_barrier_status,
+                } => {
+                    let mut snapshot =
+                        MainWindowRuntimeSnapshot::from_shell_state(&self.state.main_window);
+                    let Some(user) = snapshot
+                        .users
+                        .iter_mut()
+                        .find(|user| user.username == *username)
+                    else {
+                        return Err(format!(
+                            "semantic participant-status update references missing user {username:?}"
+                        ));
+                    };
+                    user.participant_status = status.clone();
+                    user.start_barrier_status = start_barrier_status.clone();
+                    self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)]);
+                }
                 GuiSemanticStep::ApplyMainWindowPlaylistSelection(index) => {
                     let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(&self.state);
                     snapshot.selection.selected_main_window_playlist = *index;
@@ -423,6 +474,12 @@ impl GuiSemanticDriver {
                 } => self.assert_widget_selected(widget_id, *selected)?,
                 GuiSemanticStep::AssertWidgetEnabled { widget_id, enabled } => {
                     self.assert_widget_enabled(widget_id, *enabled)?
+                }
+                GuiSemanticStep::AssertWidgetTone { widget_id, tone } => {
+                    self.assert_widget_tone(widget_id, *tone)?
+                }
+                GuiSemanticStep::AssertWidgetTooltipContains { widget_id, text } => {
+                    self.assert_widget_tooltip_contains(widget_id, text)?
                 }
                 GuiSemanticStep::AssertPending { pending } => self.assert_pending(*pending)?,
                 GuiSemanticStep::CompletePending => self.complete_pending()?,

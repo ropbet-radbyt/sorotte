@@ -1,22 +1,34 @@
+use super::super::widget_tree::GuiStatusTone;
 use super::super::{
     GuiDroppedFilesTarget, GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
     GuiPlayerSetupRuntimeSnapshot, GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase,
-    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState, MainWindowRuntimeChatSnapshot,
+    GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState,
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
+    MainWindowParticipantStatusReport, MainWindowRoomPlaybackIntent, MainWindowRuntimeChatSnapshot,
     MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
 };
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
     ReadinessPresentationProtocol,
 };
+use sorotte_client_core::ClientParticipantStatusView;
 use sorotte_protocol::{
-    RecoveryStage, StartParticipationRole, TechnicalBlockCause, TechnicalPlayabilityPhase,
-    UserReadinessIntent,
+    ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantPlayerConnection,
+    ParticipantStatusAvailability, ParticipantStatusCorrelation, ParticipantStatusView,
+    ParticipantTimelineKind, RecoveryStage, StartParticipationRole, TechnicalBlockCause,
+    TechnicalPlayabilityPhase, UserReadinessIntent,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
     ApplyMainWindowReadinessPresentation(ParticipantReadinessPresentation),
+    ApplyMainWindowRoomPlaybackIntent(MainWindowRoomPlaybackIntent),
+    ApplyMainWindowParticipantStatus {
+        username: String,
+        status: MainWindowParticipantStatusPresentation,
+        start_barrier_status: Option<String>,
+    },
     ApplyMainWindowPlaylistSelection(Option<usize>),
     ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
     ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot),
@@ -51,6 +63,14 @@ pub(in crate::app) enum GuiSemanticStep {
     AssertWidgetEnabled {
         widget_id: String,
         enabled: bool,
+    },
+    AssertWidgetTone {
+        widget_id: String,
+        tone: GuiStatusTone,
+    },
+    AssertWidgetTooltipContains {
+        widget_id: String,
+        text: String,
     },
     AssertPending {
         pending: Option<GuiPendingOperationKind>,
@@ -103,6 +123,20 @@ impl GuiSemanticStep {
         }
     }
 
+    pub(in crate::app) fn assert_widget_tone(widget_id: &str, tone: GuiStatusTone) -> Self {
+        Self::AssertWidgetTone {
+            widget_id: widget_id.to_owned(),
+            tone,
+        }
+    }
+
+    pub(in crate::app) fn assert_widget_tooltip_contains(widget_id: &str, text: &str) -> Self {
+        Self::AssertWidgetTooltipContains {
+            widget_id: widget_id.to_owned(),
+            text: text.to_owned(),
+        }
+    }
+
     pub(in crate::app) fn assert_pending(pending: Option<GuiPendingOperationKind>) -> Self {
         Self::AssertPending { pending }
     }
@@ -126,6 +160,18 @@ impl GuiSemanticStep {
             "true" => Ok(true),
             "false" => Ok(false),
             _ => Err(format!("expected boolean 'true' or 'false', got {token:?}")),
+        }
+    }
+
+    fn parse_status_tone(token: &str) -> Result<GuiStatusTone, String> {
+        match token {
+            "danger" => Ok(GuiStatusTone::Danger),
+            "warning" => Ok(GuiStatusTone::Warning),
+            "success" => Ok(GuiStatusTone::Success),
+            "muted" => Ok(GuiStatusTone::Muted),
+            _ => Err(format!(
+                "expected status tone 'danger', 'warning', 'success', or 'muted', got {token:?}"
+            )),
         }
     }
 
@@ -211,6 +257,71 @@ impl GuiSemanticStep {
             Ok(None)
         } else {
             Self::parse_f64(token, field).map(Some)
+        }
+    }
+
+    fn parse_optional_bool(token: &str) -> Result<Option<bool>, String> {
+        if token == "none" {
+            Ok(None)
+        } else {
+            Self::parse_bool(token).map(Some)
+        }
+    }
+
+    fn parse_optional_u64(token: &str, field: &str) -> Result<Option<u64>, String> {
+        if token == "none" {
+            Ok(None)
+        } else {
+            Self::parse_u64(token, field).map(Some)
+        }
+    }
+
+    fn parse_member_player_availability(
+        token: &str,
+    ) -> Result<ParticipantPlayerConnection, String> {
+        match token {
+            "unavailable" => Ok(ParticipantPlayerConnection::Unavailable),
+            "starting" | "connecting" => Ok(ParticipantPlayerConnection::Starting),
+            "connected" => Ok(ParticipantPlayerConnection::Connected),
+            "disconnected" => Ok(ParticipantPlayerConnection::Disconnected),
+            "telemetry-unavailable" => Ok(ParticipantPlayerConnection::Unavailable),
+            "failed" => Ok(ParticipantPlayerConnection::Failed),
+            _ => Err(format!("unsupported member player availability {token:?}")),
+        }
+    }
+
+    fn parse_member_playback_phase(token: &str) -> Result<ParticipantPlaybackPhase, String> {
+        match token {
+            "unknown" => Ok(ParticipantPlaybackPhase::Unknown),
+            "empty" => Ok(ParticipantPlaybackPhase::Empty),
+            "loading" => Ok(ParticipantPlaybackPhase::Loading),
+            "prebuffering" => Ok(ParticipantPlaybackPhase::Prebuffering),
+            "ready-paused" => Ok(ParticipantPlaybackPhase::ReadyPaused),
+            "waiting-for-room" => Ok(ParticipantPlaybackPhase::ReadyPaused),
+            "starting" => Ok(ParticipantPlaybackPhase::Loading),
+            "playing" => Ok(ParticipantPlaybackPhase::Playing),
+            "rebuffering" => Ok(ParticipantPlaybackPhase::Rebuffering),
+            "seeking" => Ok(ParticipantPlaybackPhase::Seeking),
+            "catching-up" => Ok(ParticipantPlaybackPhase::Playing),
+            "recovering" => Ok(ParticipantPlaybackPhase::Seeking),
+            "degraded" => Ok(ParticipantPlaybackPhase::Unknown),
+            "ended" => Ok(ParticipantPlaybackPhase::Ended),
+            "failed" => Ok(ParticipantPlaybackPhase::Failed),
+            _ => Err(format!("unsupported member playback phase {token:?}")),
+        }
+    }
+
+    fn parse_participant_status_correlation(
+        token: &str,
+    ) -> Result<Option<ParticipantStatusCorrelation>, String> {
+        match token {
+            "none" => Ok(None),
+            "exact" => Ok(Some(ParticipantStatusCorrelation::Exact)),
+            "uncorrelated" => Ok(Some(ParticipantStatusCorrelation::Uncorrelated)),
+            "superseded" => Ok(Some(ParticipantStatusCorrelation::Superseded)),
+            _ => Err(format!(
+                "unsupported participant status correlation {token:?}"
+            )),
         }
     }
 
@@ -357,6 +468,8 @@ impl GuiSemanticStep {
                     filename_differs: false,
                     filesize_differs: false,
                     fileduration_differs: false,
+                    participant_status: MainWindowParticipantStatusPresentation::Unavailable,
+                    start_barrier_status: None,
                 })
             })
             .collect()
@@ -592,6 +705,271 @@ impl GuiSemanticStep {
                     pending,
                     accepted_operation_id,
                 })
+            }
+            "apply-main-window-room-intent" => {
+                let paused = match fields.next().ok_or_else(|| {
+                    "apply-main-window-room-intent requires playing, paused, or unavailable"
+                        .to_owned()
+                })? {
+                    "playing" => Some(false),
+                    "paused" => Some(true),
+                    "unavailable" => None,
+                    token => {
+                        return Err(format!("unsupported room playback intent {token:?}"));
+                    }
+                };
+                let position_seconds = Self::parse_optional_f64(
+                    fields.next().ok_or_else(|| {
+                        "apply-main-window-room-intent requires a position or 'none'".to_owned()
+                    })?,
+                    "room position",
+                )?;
+                let set_by = Self::parse_optional_text(fields.next().ok_or_else(|| {
+                    "apply-main-window-room-intent requires set_by or 'none'".to_owned()
+                })?);
+                let authority = Self::parse_optional_text(fields.next().ok_or_else(|| {
+                    "apply-main-window-room-intent requires authority or 'none'".to_owned()
+                })?);
+                let start_gate = Self::parse_optional_text(fields.next().ok_or_else(|| {
+                    "apply-main-window-room-intent requires start gate or 'none'".to_owned()
+                })?);
+                let summary_fields = fields.collect::<Vec<_>>();
+                let (participant_count, maximum_observed_drift_seconds, buffering_participants) =
+                    match summary_fields.as_slice() {
+                        [] => (0, None, Vec::new()),
+                        [participant_count, maximum_drift, buffering_participants] => {
+                            let participant_count = participant_count.parse::<usize>().map_err(
+                                |_| {
+                                    format!(
+                                        "room participant count must be a non-negative integer, got {participant_count:?}"
+                                    )
+                                },
+                            )?;
+                            let maximum_drift =
+                                Self::parse_optional_f64(maximum_drift, "maximum room drift")?;
+                            let buffering_participants =
+                                Self::parse_optional_text(buffering_participants)
+                                    .map(|names| {
+                                        names
+                                            .split(',')
+                                            .map(str::trim)
+                                            .filter(|name| !name.is_empty())
+                                            .map(str::to_owned)
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                            (participant_count, maximum_drift, buffering_participants)
+                        }
+                        _ => {
+                            return Err(
+                                "apply-main-window-room-intent accepts either five arguments or five plus participant count, maximum drift, and comma-separated buffering names"
+                                    .to_owned(),
+                            );
+                        }
+                    };
+                Self::ApplyMainWindowRoomPlaybackIntent(MainWindowRoomPlaybackIntent {
+                    position_seconds,
+                    paused,
+                    set_by,
+                    authority,
+                    start_gate,
+                    participant_count,
+                    maximum_observed_drift_seconds,
+                    buffering_participants,
+                })
+            }
+            "apply-main-window-participant-status" => {
+                let username = fields
+                    .next()
+                    .ok_or_else(|| {
+                        "apply-main-window-participant-status requires a username".to_owned()
+                    })?
+                    .to_owned();
+                let mode = fields.next().ok_or_else(|| {
+                    "apply-main-window-participant-status requires a status mode".to_owned()
+                })?;
+                let (status, start_barrier_status) = match mode {
+                    "unavailable" | "legacy" | "waiting" => {
+                        let status = match mode {
+                            "unavailable" => MainWindowParticipantStatusPresentation::Unavailable,
+                            "legacy" => MainWindowParticipantStatusPresentation::LegacyClient,
+                            "waiting" => {
+                                MainWindowParticipantStatusPresentation::WaitingForFirstReport
+                            }
+                            _ => unreachable!(),
+                        };
+                        let start_barrier_status =
+                            Self::parse_optional_text(fields.next().ok_or_else(|| {
+                                "apply-main-window-participant-status requires start barrier or 'none'"
+                                    .to_owned()
+                            })?);
+                        (status, start_barrier_status)
+                    }
+                    "report" => {
+                        let player = Self::parse_member_player_availability(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires player availability".to_owned()
+                            })?,
+                        )?;
+                        let phase =
+                            Self::parse_member_playback_phase(fields.next().ok_or_else(|| {
+                                "participant status report requires playback phase".to_owned()
+                            })?)?;
+                        let position_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires position or 'none'".to_owned()
+                            })?,
+                            "member position",
+                        )?;
+                        let logical_paused =
+                            Self::parse_optional_bool(fields.next().ok_or_else(|| {
+                                "participant status report requires logical pause or 'none'"
+                                    .to_owned()
+                            })?)?;
+                        let playback_rate = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires playback rate or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member playback rate",
+                        )?;
+                        let buffered_ahead_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires buffered ahead or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member buffered ahead",
+                        )?;
+                        let cache_refill_percent = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires cache refill or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member cache refill",
+                        )?;
+                        let room_offset_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires room offset or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member room offset",
+                        )?;
+                        let media_generation = Self::parse_optional_u64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires media generation or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member media generation",
+                        )?;
+                        let state_revision = Self::parse_optional_u64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires state revision or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member state revision",
+                        )?;
+                        let correlation =
+                            Self::parse_participant_status_correlation(fields.next().ok_or_else(
+                                || "participant status report requires correlation".to_owned(),
+                            )?)?;
+                        let sample_age_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires sample age or 'none'".to_owned()
+                            })?,
+                            "member sample age",
+                        )?;
+                        let position_sample_age_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires position sample age or 'none'"
+                                    .to_owned()
+                            })?,
+                            "member position sample age",
+                        )?;
+                        let report_age_seconds = Self::parse_optional_f64(
+                            fields.next().ok_or_else(|| {
+                                "participant status report requires report age or 'none'".to_owned()
+                            })?,
+                            "member report age",
+                        )?;
+                        let timeline_mismatch =
+                            Self::parse_bool(fields.next().ok_or_else(|| {
+                                "participant status report requires timeline_mismatch".to_owned()
+                            })?)?;
+                        let start_barrier_status =
+                            Self::parse_optional_text(fields.next().ok_or_else(|| {
+                                "participant status report requires start barrier or 'none'"
+                                    .to_owned()
+                            })?);
+                        let freshness = match report_age_seconds {
+                            None => MainWindowParticipantStatusFreshness::Unknown,
+                            Some(age) if age <= 3.0 => MainWindowParticipantStatusFreshness::Fresh,
+                            Some(age) if age <= 10.0 => {
+                                MainWindowParticipantStatusFreshness::Delayed
+                            }
+                            Some(_) => MainWindowParticipantStatusFreshness::Stale,
+                        };
+                        let availability = match freshness {
+                            MainWindowParticipantStatusFreshness::Unknown => {
+                                ParticipantStatusAvailability::AwaitingReport
+                            }
+                            MainWindowParticipantStatusFreshness::Fresh => {
+                                ParticipantStatusAvailability::Fresh
+                            }
+                            MainWindowParticipantStatusFreshness::Delayed => {
+                                ParticipantStatusAvailability::Delayed
+                            }
+                            MainWindowParticipantStatusFreshness::Stale => {
+                                ParticipantStatusAvailability::Stale
+                            }
+                            _ => ParticipantStatusAvailability::Unavailable,
+                        };
+                        let mut status = ParticipantStatusView::new(availability);
+                        status.correlation = correlation;
+                        status.playback_scope = media_generation.map(|media_generation| {
+                            let mut scope = ParticipantPlaybackScope::new(media_generation);
+                            scope.state_revision = state_revision;
+                            scope
+                        });
+                        status.player_connection = Some(player);
+                        status.phase = Some(phase);
+                        status.timeline_kind = Some(ParticipantTimelineKind::Unknown);
+                        status.position_seconds = position_seconds;
+                        status.logical_paused = logical_paused;
+                        status.playback_rate = playback_rate;
+                        status.paused_for_cache =
+                            (phase == ParticipantPlaybackPhase::Rebuffering).then_some(true);
+                        status.buffered_ahead_seconds = buffered_ahead_seconds;
+                        status.cache_percent = cache_refill_percent;
+                        status.sample_age_ms =
+                            sample_age_seconds.map(|age| (age.max(0.0) * 1_000.0).round() as u64);
+                        status.position_sample_age_ms = position_sample_age_seconds
+                            .map(|age| (age.max(0.0) * 1_000.0).round() as u64);
+                        status.report_age_ms =
+                            report_age_seconds.map(|age| (age.max(0.0) * 1_000.0).round() as u64);
+                        status.room_offset_seconds = room_offset_seconds;
+                        (
+                            MainWindowParticipantStatusPresentation::Report(
+                                MainWindowParticipantStatusReport::from_client_view(
+                                    ClientParticipantStatusView::from_wire(status),
+                                    timeline_mismatch,
+                                ),
+                            ),
+                            start_barrier_status,
+                        )
+                    }
+                    _ => return Err(format!("unsupported participant status mode {mode:?}")),
+                };
+                if fields.next().is_some() {
+                    return Err(
+                        "apply-main-window-participant-status received too many arguments"
+                            .to_owned(),
+                    );
+                }
+                Self::ApplyMainWindowParticipantStatus {
+                    username,
+                    status,
+                    start_barrier_status,
+                }
             }
             "apply-player-setup-runtime" => {
                 let kind =
@@ -858,6 +1236,32 @@ impl GuiSemanticStep {
                     return Err("assert-enabled accepts exactly two arguments".to_owned());
                 }
                 Self::assert_widget_enabled(widget_id, enabled)
+            }
+            "assert-tone" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-tone requires a widget id".to_owned())?;
+                let tone = Self::parse_status_tone(
+                    fields
+                        .next()
+                        .ok_or_else(|| "assert-tone requires a tone".to_owned())?,
+                )?;
+                if fields.next().is_some() {
+                    return Err("assert-tone accepts exactly two arguments".to_owned());
+                }
+                Self::assert_widget_tone(widget_id, tone)
+            }
+            "assert-tooltip-contains" => {
+                let widget_id = fields
+                    .next()
+                    .ok_or_else(|| "assert-tooltip-contains requires a widget id".to_owned())?;
+                let text = fields
+                    .next()
+                    .ok_or_else(|| "assert-tooltip-contains requires expected text".to_owned())?;
+                if fields.next().is_some() {
+                    return Err("assert-tooltip-contains accepts exactly two arguments".to_owned());
+                }
+                Self::assert_widget_tooltip_contains(widget_id, text)
             }
             "assert-pending" => {
                 let pending = Self::parse_pending(

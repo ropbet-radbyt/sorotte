@@ -14,8 +14,9 @@ use std::{
 use sorotte_client_app::app_boundary::state::ClientConfig;
 use sorotte_client_app::app_boundary::state::StreamingQualitySuggestionReason;
 use sorotte_client_core::{
-    CoordinatorCommandId, CoordinatorPlayerCommand, MediaLoadIntent, MediaTransportKind,
-    PlaybackBarrierTimeoutAction, PlayerCommandCause, logical_media_id_for_local_file_update,
+    CoordinatorCommandId, CoordinatorPlayerCommand, ExternalPlayerAvailability, MediaLoadIntent,
+    MediaTransportKind, PlaybackBarrierTimeoutAction, PlayerCommandCause,
+    logical_media_id_for_local_file_update,
 };
 use sorotte_player_api::{
     LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
@@ -73,9 +74,11 @@ use super::{
     GuiAttachedMediaSearchRootRefreshResult, GuiAutomaticMediaResolutionTrigger,
     GuiMediaMatchRemoteLookupResult, GuiPendingAttachedMediaResolution,
     GuiPendingAttachedPlayerPauseCommand, GuiPendingAttachedRoomUnpauseObservation,
-    GuiPersistedConfigRuntimeOwner, GuiPlaylistLocalOriginBindingOutcome, GuiPlexOperationContext,
-    GuiPlexStreamResolveFailure, GuiPlexStreamResolveFailureDisposition,
-    GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult, GuiUserMediaTargetResolution,
+    GuiPendingSharedPlaylistOpen, GuiPersistedConfigRuntimeOwner,
+    GuiPlaylistLocalOriginBindingOutcome, GuiPlexOperationContext, GuiPlexStreamResolveFailure,
+    GuiPlexStreamResolveFailureDisposition, GuiPlexStreamResolveOutcome,
+    GuiPlexStreamResolveWorkerResult, GuiSessionOutboundDrainDisposition,
+    GuiSharedPlaylistOpenCompletion, GuiUserMediaTargetResolution,
     GuiUserMediaTargetResolutionSource,
 };
 

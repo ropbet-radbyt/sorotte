@@ -84,6 +84,68 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "SYNC-PSTATUS-001"
+title = "Authenticated participant status remains advisory and fresh across the real wire"
+risk = "critical"
+owners = ["protocol", "server", "client-core", "client-app", "gui"]
+invariants = [
+    "the server binds identity and room to the authenticated reporting session",
+    "a second client consumes the complete current-room snapshot without changing canonical playback",
+    "lifecycle-only reports remain fresh without synthetic player-sample ages",
+    "server clock rollback cannot rejuvenate one retained report or restore redacted detail",
+    "precise room offsets require explicit exact correlation even for legacy-compatible rows",
+    "reliable traffic cannot turn superseding advisory heartbeats into an unbounded outbox backlog",
+]
+
+[[behavior.proof]]
+id = "SYNC-PSTATUS-001.exact-wire"
+kind = "rust-test"
+oracle = "cross-layer-authenticated-projection"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::participant_status_tests::two_client_wire_snapshot_is_consumed_as_exact_advisory_client_state"
+source = "crates/sorotte-server/src/tests/participant_status_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-PSTATUS-001.lifecycle-wire"
+kind = "rust-test"
+oracle = "cross-layer-lifecycle-freshness"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::participant_status_tests::two_client_wire_lifecycle_reports_remain_fresh_without_player_samples"
+source = "crates/sorotte-server/src/tests/participant_status_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-PSTATUS-001.uncorrelated-offset"
+kind = "rust-test"
+oracle = "cross-layer-fail-closed-projection"
+package = "sorotte-gui"
+target_kind = "lib"
+test = "app::runtime_stack::tests::participant_status_projection_tests::legacy_uncorrelated_wire_rows_never_project_precise_room_offsets"
+source = "crates/sorotte-gui/src/app/runtime_stack/tests/participant_status_projection_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-PSTATUS-001.outbox-bound"
+kind = "rust-test"
+oracle = "bounded-advisory-delivery"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::participant_status_heartbeat_backlog_stays_bounded_when_chat_interleaves"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "PL-EPOCH-001"
 title = "Attachment replacement cannot let an old terminal handoff mutate a reused playlist entry"
 risk = "critical"

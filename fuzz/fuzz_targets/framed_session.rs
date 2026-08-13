@@ -11,7 +11,9 @@ use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 use sorotte_cli::fuzz_support::{InboundProtocolLineReader, MAX_INBOUND_PROTOCOL_LINE_BYTES};
 use sorotte_client_app::app_boundary::application::ClientApplication;
+use sorotte_client_app::app_boundary::participant_status::ParticipantStatusFreshness;
 use sorotte_player_api::PlayerAdapter;
+use sorotte_protocol::{ParticipantStatusAvailability, ParticipantStatusCorrelation};
 use tokio::io::{AsyncBufRead, AsyncRead, ReadBuf};
 use tokio::sync::Notify;
 
@@ -423,7 +425,10 @@ fn session_state(runtime: &ClientApplication<FramedSessionFuzzPlayer>) -> String
     format!("{:?}", runtime.session().model())
 }
 
-fn assert_session_invariants(runtime: &ClientApplication<FramedSessionFuzzPlayer>) {
+fn assert_session_invariants(
+    runtime: &ClientApplication<FramedSessionFuzzPlayer>,
+    now_seconds: f64,
+) {
     let session = runtime.session();
     if session.is_active() {
         assert!(
@@ -438,6 +443,47 @@ fn assert_session_invariants(runtime: &ClientApplication<FramedSessionFuzzPlayer
                 Some(room.as_str()),
                 "the public room and user projections must agree"
             );
+            let Some(status) = session.user_participant_status_at(&username, now_seconds) else {
+                continue;
+            };
+            if status.freshness == ParticipantStatusFreshness::Stale
+                || !matches!(
+                    status.status.availability,
+                    ParticipantStatusAvailability::Fresh
+                        | ParticipantStatusAvailability::Delayed
+                        | ParticipantStatusAvailability::Stale
+                )
+            {
+                assert!(status.status.playback_scope.is_none());
+                assert!(status.status.position_seconds.is_none());
+                assert!(status.status.playback_rate.is_none());
+                assert!(status.status.buffered_ahead_seconds.is_none());
+                assert!(status.status.room_offset_seconds.is_none());
+            }
+            if let Some(scope) = status.status.playback_scope {
+                assert_ne!(scope.media_generation, 0);
+                assert_ne!(scope.state_revision, Some(0));
+                assert_ne!(scope.transport_revision, Some(0));
+            }
+            if status.status.position_seconds.is_some() {
+                assert!(status.status.position_sample_age_ms.is_some());
+            }
+            if status.status.room_offset_seconds.is_some() {
+                assert_eq!(status.freshness, ParticipantStatusFreshness::Fresh);
+                assert_eq!(
+                    status.status.correlation,
+                    Some(ParticipantStatusCorrelation::Exact),
+                    "a precise room offset requires explicit exact correlation"
+                );
+                assert!(status.status.sample_age_ms.is_some());
+                assert!(status.status.position_sample_age_ms.is_some());
+            }
+            if session.user_participant_status_v1_supported(&username) == Some(false) {
+                assert_eq!(
+                    status.status.availability,
+                    ParticipantStatusAvailability::Unsupported
+                );
+            }
         }
     }
 }
@@ -464,7 +510,7 @@ fn apply_session_lines(frames: &[ReferenceFrame]) -> ApplicationTrace {
             );
         }
         accepted.push(result.is_ok());
-        assert_session_invariants(&runtime);
+        assert_session_invariants(&runtime, index as f64 + 1.0);
         session_states.push(session_state(&runtime));
         pending_protocol_counts.push(runtime.pending_protocol_message_count());
     }

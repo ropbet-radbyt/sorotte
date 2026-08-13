@@ -65,6 +65,9 @@ impl ClientSession {
         self.model.controller.pending_local_room_switch_target = None;
         self.model.controller.reidentify_intent = None;
         self.model.room.users.clear();
+        self.model.room.participant_status_capabilities.clear();
+        self.model.room.legacy_list_position_snapshots.clear();
+        self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
         self.model.room.domain = SyncDomain::default();
@@ -173,11 +176,17 @@ impl ClientSession {
 
     pub(crate) fn reconcile_ping_only_state_response(
         &mut self,
-        inbound_state: ClientStateUpdate,
+        mut inbound_state: ClientStateUpdate,
         client_latency_calculation: f64,
         client_rtt: f64,
         received_at_seconds: f64,
     ) -> StatePayload {
+        self.apply_participant_status_update(
+            inbound_state.participant_status_scope.take(),
+            inbound_state.participant_status_snapshot.take(),
+            std::mem::take(&mut inbound_state.participant_status_scope_invalid),
+            received_at_seconds,
+        );
         self.apply_inbound_ignore_counters(&inbound_state);
 
         let has_playstate_update = inbound_state
@@ -243,7 +252,7 @@ impl ClientSession {
 
     pub(crate) fn reconcile_normalized_state_and_build_response_with_local_state_change_override(
         &mut self,
-        inbound_state: ClientStateUpdate,
+        mut inbound_state: ClientStateUpdate,
         local_position: f64,
         local_paused: bool,
         client_latency_calculation: f64,
@@ -254,6 +263,12 @@ impl ClientSession {
             local_state_change_global_playstate,
             received_at_seconds,
         } = context;
+        self.apply_participant_status_update(
+            inbound_state.participant_status_scope.take(),
+            inbound_state.participant_status_snapshot.take(),
+            std::mem::take(&mut inbound_state.participant_status_scope_invalid),
+            received_at_seconds,
+        );
         self.apply_inbound_ignore_counters(&inbound_state);
 
         let has_playstate_update = inbound_state

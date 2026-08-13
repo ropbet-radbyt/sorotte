@@ -28,8 +28,8 @@ use sorotte_client_app::app_boundary::state::{
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
     ClientRuntimeAction, ClientSession, CoordinatorCommandId, CoordinatorPlayerCommand,
-    DesyncCorrectionDispatchSnapshot, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
-    MediaTransportKind, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+    DesyncCorrectionDispatchSnapshot, ExternalPlayerAvailability, LogicalMediaId, MediaLoadIntent,
+    MediaLoadPlan, MediaTransportKind, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
     PlaybackCoordinatorAction, PlayerCommandCause, PrivacyMode, ProtocolLineLease,
     RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
     SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
@@ -59,8 +59,8 @@ pub(super) use self::player::{
     local_file_update_for_player_path,
 };
 pub(super) use self::session_adapter::{
-    GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter,
+    GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision,
+    GuiPlaylistProtocolDeliveryFence, GuiSessionRoomPlaystate, GuiSessionRuntimeAdapter,
 };
 #[cfg(test)]
 pub(super) use self::transport::GuiTcpSessionTransportDriver;

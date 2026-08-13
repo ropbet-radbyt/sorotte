@@ -1,5 +1,49 @@
 use super::*;
 
+fn wait_for_native_participant_status_projection<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    expected_names: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_snapshot = "none".to_owned();
+    loop {
+        if let Ok(nodes) = driver.accessibility_nodes(window) {
+            let participant_nodes = nodes
+                .iter()
+                .filter(|node| node.automation_id.ends_with(":participant-status"))
+                .collect::<Vec<_>>();
+            if let Some(node) = participant_nodes.iter().copied().find(|node| {
+                expected_names.iter().any(|expected| node.name == *expected)
+                    && !node.offscreen
+                    && node.bounds.is_some()
+            }) {
+                return Ok(format!("{}={}", node.automation_id, node.name));
+            }
+            last_snapshot = participant_nodes
+                .iter()
+                .map(|node| {
+                    format!(
+                        "{}={:?} offscreen={} bounds={:?}",
+                        node.automation_id, node.name, node.offscreen, node.bounds
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if last_snapshot.is_empty() {
+                last_snapshot = "none".to_owned();
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for a visible native participant-status node with one of the exact names {expected_names:?}; last participant nodes: {last_snapshot}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -46,7 +90,9 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
     let primary_server = start_phased_mock_session_server(&[
-        r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sharedPlaylists":true}}}"#,
+        r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sharedPlaylists":true,"sorotteParticipantStatusV1":true}}}"#,
+        r#"{"Set":{"user":{"smoke-user":{"room":{"name":"smoke-room"},"features":{"sorotteParticipantStatusV1":true}},"status-peer":{"room":{"name":"smoke-room"},"features":{"sorotteParticipantStatusV1":true}}}}}"#,
+        r#"{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":1,"participants":{"status-peer":{"availability":"fresh","playerConnection":"disconnected","phase":"rebuffering","positionSeconds":40.0,"reportAgeMs":0}}}}}}"#,
     ])?;
 
     let transport_config_path = temp_root.join("sorotte-native-smoke-transport.ini");
@@ -148,6 +194,15 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             ));
         }
         wait_for_shared_playlist_visible(driver, window, step_timeout)?;
+        let participant_status_evidence = wait_for_native_participant_status_projection(
+            driver,
+            window,
+            &["Player disconnected · fresh"],
+            step_timeout,
+        )?;
+        steps.push(format!(
+            "transport-participant-status-accessibility:{participant_status_evidence}"
+        ));
         steps.push("transport-saved-config-startup".to_owned());
 
         driver.close_window(window)?;

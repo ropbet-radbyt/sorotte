@@ -591,6 +591,37 @@ impl OrderedPlayerEventConsumer {
     }
 }
 
+const PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS: f64 = 5.0;
+const PARTICIPANT_STATUS_HEARTBEAT_SECONDS: f64 = 1.0;
+
+/// Lifecycle truth supplied by an externally owned player integration.
+///
+/// `Connected` is intentionally absent: only a current-generation transport
+/// observation can establish that state. An integration uses `Connecting`
+/// when it has attached or restarted a telemetry-capable player,
+/// `TelemetryUnavailable` when a player is usable without transport
+/// telemetry, and `Unavailable`, `Disconnected`, or `Failed` when it has
+/// direct lifecycle evidence for those terminal states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalPlayerAvailability {
+    Unavailable,
+    Connecting,
+    TelemetryUnavailable,
+    Disconnected,
+    Failed,
+}
+
+fn participant_status_legacy_position_fallback(
+    external_player_availability: Option<ExternalPlayerAvailability>,
+    transport_telemetry_ever_observed: bool,
+) -> bool {
+    !transport_telemetry_ever_observed
+        && matches!(
+            external_player_availability,
+            None | Some(ExternalPlayerAvailability::Connecting)
+        )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackBarrierStartConfig {
     pub policy: Option<PlaybackBarrierPolicy>,
@@ -840,6 +871,46 @@ struct TechnicalReadinessFingerprint {
     recovery: Option<RecoveryStage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParticipantStatusFingerprint {
+    room: String,
+    player: ParticipantPlayerConnection,
+    phase: ParticipantPlaybackPhase,
+    timeline_kind: ParticipantTimelineKind,
+    paused_for_cache: Option<bool>,
+    media_generation: Option<u64>,
+    state_revision: Option<u64>,
+    transport_revision: Option<u64>,
+    local_media_generation: Option<u64>,
+    coordination_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParticipantStatusRoomScope {
+    room: String,
+    local_media_generation: u64,
+    media_generation: u64,
+    state_revision: Option<u64>,
+    transport_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct ParticipantStatusEvidenceTimes {
+    position: Option<f64>,
+    logical_pause: Option<f64>,
+    playback_rate: Option<f64>,
+    paused_for_cache: Option<f64>,
+    cache_percent: Option<f64>,
+    buffered_ahead: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingParticipantStatusReport {
+    pub(super) report: ParticipantStatusReport,
+    fingerprint: ParticipantStatusFingerprint,
+    sent_at_seconds: f64,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RuntimePlaybackCoordination {
     coordinator: PlaybackCoordinator,
@@ -856,6 +927,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
     latest_position_observation: Option<LocalPositionObservation>,
+    participant_status_evidence_times: ParticipantStatusEvidenceTimes,
     adapter_clock_offset_seconds: Option<f64>,
     last_external_now_seconds: Option<f64>,
     last_coordinator_now_seconds: Option<f64>,
@@ -869,7 +941,12 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_forced_seek_revision: Option<u64>,
     transport_telemetry_observed: bool,
     transport_telemetry_available: bool,
+    transport_telemetry_ever_observed: bool,
     awaiting_ordered_snapshot: bool,
+    external_player_availability: Option<ExternalPlayerAvailability>,
+    last_transport_telemetry_received_at_seconds: Option<f64>,
+    transport_telemetry_wait_started_at_seconds: Option<f64>,
+    transport_telemetry_lifecycle_fence_at_seconds: Option<f64>,
     reconnect_reconciliation: Option<ReconnectReconciliation>,
     last_applied_revision: Option<u64>,
     last_started_revision: Option<u64>,
@@ -887,6 +964,12 @@ pub(crate) struct RuntimePlaybackCoordination {
     handled_barrier_timeout: Option<(u64, Option<u64>)>,
     pending_barrier_timeout_action: Option<PlaybackBarrierTimeoutAction>,
     last_reported_room_buffering: Option<(u64, u64, Option<u64>, bool)>,
+    next_participant_status_sequence: u64,
+    last_participant_status_fingerprint: Option<ParticipantStatusFingerprint>,
+    last_participant_status_sent_at_seconds: Option<f64>,
+    participant_status_room_scope: Option<ParticipantStatusRoomScope>,
+    participant_status_applied_room_scope: Option<ParticipantStatusRoomScope>,
+    pending_participant_status_room_switch_target: Option<String>,
 }
 
 impl RuntimePlaybackCoordination {
@@ -1015,7 +1098,15 @@ impl RuntimePlaybackCoordination {
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
         self.latest_observation = None;
         self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.transport_telemetry_observed = false;
+        self.last_transport_telemetry_received_at_seconds = None;
+        self.transport_telemetry_wait_started_at_seconds =
+            self.transport_telemetry_available.then_some(now_seconds);
+        self.transport_telemetry_lifecycle_fence_at_seconds =
+            now_seconds.is_finite().then_some(now_seconds);
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
         self.player_command_bindings.clear();
         let classifier_adapter_epoch = self.classifier_adapter_epoch();
         self.player_transition_classifier
@@ -1097,15 +1188,23 @@ impl RuntimePlaybackCoordination {
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
         self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.adapter_clock_offset_seconds = None;
         self.last_external_now_seconds = None;
         self.last_coordinator_now_seconds = None;
         self.transport_telemetry_observed = false;
+        self.last_transport_telemetry_received_at_seconds = None;
+        self.transport_telemetry_wait_started_at_seconds =
+            self.transport_telemetry_available.then_some(now_seconds);
+        self.transport_telemetry_lifecycle_fence_at_seconds =
+            now_seconds.is_finite().then_some(now_seconds);
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.last_reported_barrier_ready = None;
         self.last_reported_barrier_started = None;
         self.last_reported_room_buffering = None;
+        self.last_participant_status_fingerprint = None;
+        self.participant_status_applied_room_scope = None;
         self.pending_barrier_timeout_action = None;
         if let Some(reconciliation) = self.reconnect_reconciliation.as_mut() {
             reconciliation.target_revision = None;
@@ -1116,6 +1215,35 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn mark_transport_telemetry_available(&mut self) {
         self.transport_telemetry_available = true;
+    }
+
+    pub(crate) fn set_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> bool {
+        if self.external_player_availability == Some(availability) {
+            return false;
+        }
+        let lifecycle_fence = self.coordinator_now(now_seconds);
+        self.external_player_availability = Some(availability);
+        self.transport_telemetry_wait_started_at_seconds =
+            (availability == ExternalPlayerAvailability::Connecting).then_some(now_seconds);
+        self.transport_telemetry_lifecycle_fence_at_seconds =
+            lifecycle_fence.is_finite().then_some(lifecycle_fence);
+        // Every explicit lifecycle transition supersedes transport evidence
+        // from the preceding lifecycle. Connecting can become Connected only
+        // after a later accepted sample; TelemetryUnavailable must take
+        // effect immediately instead of inheriting a five-second cache.
+        self.latest_observation = None;
+        self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+        self.transport_telemetry_observed = false;
+        self.last_transport_telemetry_received_at_seconds = None;
+        self.coordinator
+            .clear_participant_status_transport_metrics();
+        self.last_participant_status_fingerprint = None;
+        true
     }
 
     pub(crate) fn reconnect_coordinator_available(&self) -> bool {
@@ -1206,6 +1334,432 @@ impl RuntimePlaybackCoordination {
             last_started_revision: self.last_started_revision,
             last_degraded_reason: self.last_degraded_reason,
         }
+    }
+
+    fn participant_status_phase(&self) -> ParticipantPlaybackPhase {
+        if self.latest_observation.as_ref().is_some_and(|observation| {
+            observation.phase == Some(sorotte_player_api::PlayerTransportPhase::Ended)
+        }) {
+            return ParticipantPlaybackPhase::Ended;
+        }
+        match self.coordinator.diagnostic() {
+            PlaybackDiagnostic::Empty => ParticipantPlaybackPhase::Empty,
+            PlaybackDiagnostic::Loading => ParticipantPlaybackPhase::Loading,
+            PlaybackDiagnostic::Prebuffering => ParticipantPlaybackPhase::Prebuffering,
+            PlaybackDiagnostic::ReadyWaitingForRoom => ParticipantPlaybackPhase::ReadyPaused,
+            PlaybackDiagnostic::Starting
+                if self.latest_observation.as_ref().is_some_and(|observation| {
+                    observation.phase == Some(sorotte_player_api::PlayerTransportPhase::Seeking)
+                        || observation.seeking == Some(true)
+                }) =>
+            {
+                ParticipantPlaybackPhase::Seeking
+            }
+            PlaybackDiagnostic::Starting => ParticipantPlaybackPhase::Loading,
+            PlaybackDiagnostic::Playing => ParticipantPlaybackPhase::Playing,
+            PlaybackDiagnostic::Rebuffering => ParticipantPlaybackPhase::Rebuffering,
+            PlaybackDiagnostic::RecoveringByCatchup => ParticipantPlaybackPhase::Playing,
+            PlaybackDiagnostic::RecoveringBySeek => ParticipantPlaybackPhase::Seeking,
+            PlaybackDiagnostic::Degraded => ParticipantPlaybackPhase::Unknown,
+            PlaybackDiagnostic::Ended => ParticipantPlaybackPhase::Ended,
+            PlaybackDiagnostic::Failed => ParticipantPlaybackPhase::Failed,
+        }
+    }
+
+    fn participant_status_state_revision_for_generation(
+        session: &ClientSession,
+        media_generation: u64,
+    ) -> Option<u64> {
+        session
+            .playback_barrier_status()
+            .filter(|status| status.media_generation == media_generation)
+            .and_then(|status| status.state_revision)
+            .or_else(|| {
+                session
+                    .playback_barrier_active_commit()
+                    .filter(|commit| commit.media_generation == media_generation)
+                    .map(|commit| commit.state_revision)
+            })
+            .or_else(|| {
+                session
+                    .playback_barrier_buffering_policy()
+                    .filter(|policy| policy.media_generation == media_generation)
+                    .and_then(|policy| policy.state_revision)
+            })
+    }
+
+    fn accepted_participant_status_media_generation(&self, session: &ClientSession) -> Option<u64> {
+        let operation = self.accepted_barrier.as_ref()?;
+        if self.coordinator.current_media_generation() != Some(operation.local_media_generation)
+            || session.room() != Some(operation.room.as_str())
+        {
+            return None;
+        }
+
+        session
+            .playback_barrier_prepare()
+            .filter(|prepare| {
+                prepare.request_id.as_deref() == Some(operation.request_id.as_str())
+                    && prepare.request_nonce == operation.request_nonce
+                    && logical_media_ids_match(
+                        &prepare.logical_media_id,
+                        &operation.logical_media_id,
+                    )
+            })
+            .map(|prepare| prepare.media_generation)
+            .or_else(|| {
+                session
+                    .playback_barrier_buffering_policy()
+                    .filter(|policy| {
+                        policy.request_id.as_deref() == Some(operation.request_id.as_str())
+                            && policy.request_nonce == operation.request_nonce
+                    })
+                    .map(|policy| policy.media_generation)
+            })
+    }
+
+    fn refresh_participant_status_room_scope(&mut self, session: &ClientSession) {
+        let Some(local_media_generation) = self.coordinator.current_media_generation() else {
+            self.participant_status_room_scope = None;
+            return;
+        };
+        let Some(room) = session.room() else {
+            self.participant_status_room_scope = None;
+            return;
+        };
+        if self
+            .participant_status_room_scope
+            .as_ref()
+            .is_some_and(|scope| {
+                scope.local_media_generation != local_media_generation || scope.room != room
+            })
+        {
+            self.participant_status_room_scope = None;
+        }
+
+        if let Some(authoritative) = session.participant_status_authoritative_scope() {
+            self.participant_status_room_scope = Some(ParticipantStatusRoomScope {
+                room: room.to_owned(),
+                local_media_generation,
+                media_generation: authoritative.media_generation,
+                state_revision: authoritative.state_revision,
+                transport_revision: authoritative.transport_revision,
+            });
+            return;
+        }
+
+        let accepted_generation = self.accepted_participant_status_media_generation(session);
+        let adopted_generation = self.desired_fingerprint.as_ref().and_then(|desired| {
+            desired
+                .barrier_media_generation
+                .or(desired.buffering_media_generation)
+        });
+        let adopted_generation = adopted_generation.filter(|media_generation| {
+            session.playback_barrier_prepare().is_some_and(|prepare| {
+                prepare.media_generation == *media_generation
+                    && self.current_logical_media_matches(&prepare.logical_media_id)
+            })
+        });
+        if let Some(media_generation) = accepted_generation.or(adopted_generation) {
+            self.participant_status_room_scope = Some(ParticipantStatusRoomScope {
+                room: room.to_owned(),
+                local_media_generation,
+                media_generation,
+                state_revision: Self::participant_status_state_revision_for_generation(
+                    session,
+                    media_generation,
+                ),
+                transport_revision: None,
+            });
+        } else if let Some(scope) = self.participant_status_room_scope.as_mut() {
+            scope.state_revision = Self::participant_status_state_revision_for_generation(
+                session,
+                scope.media_generation,
+            )
+            .or(scope.state_revision);
+        }
+    }
+
+    fn participant_status_generation_and_revision(
+        &mut self,
+        session: &ClientSession,
+    ) -> (Option<u64>, Option<u64>, Option<u64>) {
+        self.refresh_participant_status_room_scope(session);
+        self.participant_status_room_scope
+            .as_ref()
+            .zip(self.participant_status_applied_room_scope.as_ref())
+            .filter(|(current, applied)| current == applied)
+            .map_or((None, None, None), |(scope, _)| {
+                (
+                    Some(scope.media_generation),
+                    scope.state_revision,
+                    scope.transport_revision,
+                )
+            })
+    }
+
+    fn participant_status_telemetry_wait_is_current(&mut self, now_seconds: f64) -> bool {
+        let waiting_since = *self
+            .transport_telemetry_wait_started_at_seconds
+            .get_or_insert(now_seconds);
+        now_seconds.is_finite()
+            && waiting_since.is_finite()
+            && now_seconds >= waiting_since
+            && now_seconds - waiting_since <= PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS
+    }
+
+    fn participant_status_player_availability(
+        &mut self,
+        now_seconds: f64,
+    ) -> ParticipantPlayerConnection {
+        match self.external_player_availability {
+            Some(ExternalPlayerAvailability::Unavailable) => {
+                return ParticipantPlayerConnection::Unavailable;
+            }
+            Some(ExternalPlayerAvailability::Disconnected) => {
+                return ParticipantPlayerConnection::Disconnected;
+            }
+            Some(ExternalPlayerAvailability::Failed) => {
+                return ParticipantPlayerConnection::Failed;
+            }
+            Some(
+                ExternalPlayerAvailability::Connecting
+                | ExternalPlayerAvailability::TelemetryUnavailable,
+            )
+            | None => {}
+        }
+        if self.coordinator.diagnostic() == PlaybackDiagnostic::Failed {
+            return ParticipantPlayerConnection::Failed;
+        }
+
+        let telemetry_is_fresh = self
+            .last_transport_telemetry_received_at_seconds
+            .is_some_and(|received_at| {
+                now_seconds.is_finite()
+                    && received_at.is_finite()
+                    && now_seconds >= received_at
+                    && now_seconds - received_at
+                        <= PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS
+            });
+        if telemetry_is_fresh {
+            return ParticipantPlayerConnection::Connected;
+        }
+        match self.external_player_availability {
+            Some(ExternalPlayerAvailability::Connecting) => {
+                if self.participant_status_telemetry_wait_is_current(now_seconds) {
+                    ParticipantPlayerConnection::Starting
+                } else {
+                    ParticipantPlayerConnection::Unavailable
+                }
+            }
+            Some(ExternalPlayerAvailability::TelemetryUnavailable) => {
+                ParticipantPlayerConnection::Unavailable
+            }
+            Some(
+                ExternalPlayerAvailability::Unavailable
+                | ExternalPlayerAvailability::Disconnected
+                | ExternalPlayerAvailability::Failed,
+            ) => {
+                unreachable!("terminal external availability returned above")
+            }
+            None if self.transport_telemetry_available
+                && self.last_transport_telemetry_received_at_seconds.is_none() =>
+            {
+                if self.participant_status_telemetry_wait_is_current(now_seconds) {
+                    ParticipantPlayerConnection::Starting
+                } else {
+                    ParticipantPlayerConnection::Unavailable
+                }
+            }
+            None => ParticipantPlayerConnection::Unavailable,
+        }
+    }
+
+    pub(super) fn pending_participant_status_report(
+        &mut self,
+        session: &ClientSession,
+        force: bool,
+        now_seconds: f64,
+    ) -> Option<PendingParticipantStatusReport> {
+        if !now_seconds.is_finite() {
+            // Never commit an invalid owner timestamp. In particular, a first
+            // transition at infinity must not poison every later unchanged
+            // heartbeat by becoming the remembered send time.
+            return None;
+        }
+        if !session.is_active()
+            || !session.server_participant_status_v1_supported()
+            || session.room().is_none()
+            || self.pending_participant_status_room_switch_target.is_some()
+        {
+            self.last_participant_status_fingerprint = None;
+            return None;
+        }
+
+        let player = self.participant_status_player_availability(now_seconds);
+        let phase = self.participant_status_phase();
+        let timeline_kind = self
+            .latest_observation
+            .as_ref()
+            .and_then(|observation| observation.timeline_kind)
+            .map_or(ParticipantTimelineKind::Unknown, |kind| match kind {
+                sorotte_player_api::PlayerTimelineKind::Vod => ParticipantTimelineKind::Vod,
+                sorotte_player_api::PlayerTimelineKind::SlidingLive => {
+                    ParticipantTimelineKind::Live
+                }
+                sorotte_player_api::PlayerTimelineKind::Unknown => ParticipantTimelineKind::Unknown,
+            });
+        let paused_for_cache = self
+            .latest_observation
+            .as_ref()
+            .and_then(|observation| observation.paused_for_cache);
+        let (media_generation, state_revision, transport_revision) =
+            self.participant_status_generation_and_revision(session);
+        let fingerprint = ParticipantStatusFingerprint {
+            room: session.room().unwrap_or_default().to_owned(),
+            player,
+            phase,
+            timeline_kind,
+            paused_for_cache,
+            media_generation,
+            state_revision,
+            transport_revision,
+            local_media_generation: self.coordinator.current_media_generation(),
+            coordination_revision: self.desired_revision,
+        };
+        let fingerprint_changed =
+            self.last_participant_status_fingerprint.as_ref() != Some(&fingerprint);
+        if !fingerprint_changed {
+            if !force {
+                return None;
+            }
+            let heartbeat_due =
+                self.last_participant_status_sent_at_seconds
+                    .is_none_or(|last_sent| {
+                        now_seconds.is_finite()
+                            && last_sent.is_finite()
+                            && (now_seconds < last_sent
+                                || now_seconds - last_sent >= PARTICIPANT_STATUS_HEARTBEAT_SECONDS)
+                    });
+            if !heartbeat_due {
+                return None;
+            }
+        }
+
+        let sequence = self.next_participant_status_sequence.checked_add(1)?;
+        let observation = (player == ParticipantPlayerConnection::Connected)
+            .then_some(self.latest_observation.as_ref())
+            .flatten();
+        let mut report =
+            ParticipantStatusReport::new(sequence, player, phase).with_timeline_kind(timeline_kind);
+        let mut oldest_evidence_at: Option<f64> = None;
+        let mut note_evidence = |observed_at: Option<f64>| {
+            if let Some(observed_at) = observed_at.filter(|value| value.is_finite()) {
+                oldest_evidence_at =
+                    Some(oldest_evidence_at.map_or(observed_at, |oldest| oldest.min(observed_at)));
+                true
+            } else {
+                false
+            }
+        };
+        let position_evidence_at = self
+            .participant_status_evidence_times
+            .position
+            .filter(|value| value.is_finite());
+        report.position_seconds = observation
+            .and_then(|observation| observation.position_seconds)
+            .filter(|value| {
+                value.is_finite() && (0.0..=PARTICIPANT_STATUS_MAX_POSITION_SECONDS).contains(value)
+            })
+            .filter(|_| note_evidence(position_evidence_at));
+        report.logical_paused = observation
+            .and_then(|observation| observation.logical_pause)
+            .filter(|_| note_evidence(self.participant_status_evidence_times.logical_pause));
+        report.playback_rate = observation
+            .and_then(|observation| observation.playback_rate)
+            .filter(|value| {
+                value.is_finite()
+                    && (PARTICIPANT_STATUS_MIN_PLAYBACK_RATE..=PARTICIPANT_STATUS_MAX_PLAYBACK_RATE)
+                        .contains(value)
+            })
+            .filter(|_| note_evidence(self.participant_status_evidence_times.playback_rate));
+        report.paused_for_cache = observation
+            .and_then(|observation| observation.paused_for_cache)
+            .filter(|_| note_evidence(self.participant_status_evidence_times.paused_for_cache));
+        report.buffered_ahead_seconds = observation
+            .and_then(|observation| observation.buffered_ahead_seconds)
+            .filter(|value| {
+                value.is_finite()
+                    && (0.0..=PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS).contains(value)
+            })
+            .filter(|_| note_evidence(self.participant_status_evidence_times.buffered_ahead));
+        report.cache_percent = observation
+            .and_then(|observation| observation.cache_buffering_percent)
+            .filter(|value| value.is_finite())
+            .filter(|_| note_evidence(self.participant_status_evidence_times.cache_percent))
+            .map(|value| value.clamp(0.0, 100.0));
+        let report_now = self.coordinator_now(now_seconds);
+        let evidence_age_ms = |observed_at: f64| {
+            let age_seconds = report_now - observed_at;
+            (age_seconds.is_finite() && age_seconds >= 0.0).then(|| {
+                (age_seconds * 1_000.0)
+                    .min(PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS as f64)
+                    .round() as u64
+            })
+        };
+        report.sample_age_ms = oldest_evidence_at.and_then(evidence_age_ms);
+        report.position_sample_age_ms = report
+            .position_seconds
+            .and(position_evidence_at)
+            .and_then(evidence_age_ms);
+        if report.position_seconds.is_some() && report.position_sample_age_ms.is_none() {
+            report.position_seconds = None;
+        }
+        if oldest_evidence_at.is_some() && report.sample_age_ms.is_none() {
+            // Never serialize precise evidence without a trustworthy age. A
+            // rolled-back or inconsistent clock must reduce detail rather
+            // than make an old sparse field appear newly sampled.
+            report.position_seconds = None;
+            report.logical_paused = None;
+            report.playback_rate = None;
+            report.paused_for_cache = None;
+            report.cache_percent = None;
+            report.buffered_ahead_seconds = None;
+            report.position_sample_age_ms = None;
+        }
+        report.playback_scope = media_generation.map(|media_generation| {
+            let mut scope = ParticipantPlaybackScope::new(media_generation);
+            scope.state_revision = state_revision;
+            scope.transport_revision = transport_revision;
+            scope
+        });
+
+        Some(PendingParticipantStatusReport {
+            report,
+            fingerprint,
+            sent_at_seconds: now_seconds,
+        })
+    }
+
+    pub(super) fn commit_participant_status_report(
+        &mut self,
+        pending: &PendingParticipantStatusReport,
+    ) {
+        self.next_participant_status_sequence = pending.report.report_sequence;
+        self.last_participant_status_fingerprint = Some(pending.fingerprint.clone());
+        self.last_participant_status_sent_at_seconds = Some(pending.sent_at_seconds);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_participant_status_report(
+        &mut self,
+        session: &ClientSession,
+        force: bool,
+        now_seconds: f64,
+    ) -> Option<ParticipantStatusReport> {
+        let pending = self.pending_participant_status_report(session, force, now_seconds)?;
+        self.commit_participant_status_report(&pending);
+        Some(pending.report)
     }
 
     pub(crate) fn coordinator_now(&self, external_now_seconds: f64) -> f64 {
@@ -1300,6 +1854,12 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
         self.connection_generation = self.connection_generation.saturating_add(1).max(1);
+        self.next_participant_status_sequence = 0;
+        self.last_participant_status_fingerprint = None;
+        self.last_participant_status_sent_at_seconds = None;
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
+        self.pending_participant_status_room_switch_target = None;
         self.last_technical_readiness_fingerprint = None;
         self.bind_local_control_authority_context(
             session,
@@ -1563,6 +2123,36 @@ impl RuntimePlaybackCoordination {
         self.pending_barrier_recovery = None;
         self.pending_media_coordination = None;
         self.accepted_barrier_terminal = false;
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
+    }
+
+    pub(crate) fn begin_participant_status_room_switch(
+        &mut self,
+        target_room: &str,
+        current_room: Option<&str>,
+    ) {
+        self.pending_participant_status_room_switch_target =
+            (current_room != Some(target_room)).then(|| target_room.to_owned());
+        self.last_participant_status_fingerprint = None;
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
+    }
+
+    pub(crate) fn confirm_participant_status_room_membership(&mut self, session: &ClientSession) {
+        if self
+            .pending_participant_status_room_switch_target
+            .as_deref()
+            .is_some_and(|target_room| {
+                session.username().is_some_and(|username| {
+                    session.room() == Some(target_room)
+                        && session.user_room(username) == Some(target_room)
+                })
+            })
+        {
+            self.pending_participant_status_room_switch_target = None;
+            self.last_participant_status_fingerprint = None;
+        }
     }
 
     pub(crate) fn handle_authoritative_playback_barrier_room_change(&mut self) {
@@ -1571,6 +2161,10 @@ impl RuntimePlaybackCoordination {
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.pending_native_play_authority_fence = None;
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
+        self.pending_participant_status_room_switch_target = None;
+        self.last_participant_status_fingerprint = None;
         self.local_control_authority = Some(ConnectionLocalControlAuthority {
             room: String::new(),
             username: None,
@@ -1959,6 +2553,35 @@ impl RuntimePlaybackCoordination {
         }
     }
 
+    fn update_participant_status_evidence_times(
+        &mut self,
+        update: &PlayerTransportObservation,
+        replace_previous_state: bool,
+    ) {
+        if replace_previous_state {
+            self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+        }
+        let observed_at = update.observed_at_seconds;
+        if update.position_seconds.is_some() {
+            self.participant_status_evidence_times.position = Some(observed_at);
+        }
+        if update.logical_pause.is_some() {
+            self.participant_status_evidence_times.logical_pause = Some(observed_at);
+        }
+        if update.playback_rate.is_some() {
+            self.participant_status_evidence_times.playback_rate = Some(observed_at);
+        }
+        if update.paused_for_cache.is_some() {
+            self.participant_status_evidence_times.paused_for_cache = Some(observed_at);
+        }
+        if update.cache_buffering_percent.is_some() {
+            self.participant_status_evidence_times.cache_percent = Some(observed_at);
+        }
+        if update.buffered_ahead_seconds.is_some() {
+            self.participant_status_evidence_times.buffered_ahead = Some(observed_at);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_mapped_transport_observation(
         &mut self,
@@ -1970,7 +2593,10 @@ impl RuntimePlaybackCoordination {
         replace_latest_observation: bool,
         replace_position_state: bool,
     ) -> bool {
-        if self.coordinator.current_media_generation() != Some(observation.media_generation)
+        if self
+            .transport_telemetry_lifecycle_fence_at_seconds
+            .is_some_and(|fence| observation.observed_at_seconds < fence)
+            || self.coordinator.current_media_generation() != Some(observation.media_generation)
             || !self.observation_timestamp_is_accepted(
                 observation.media_generation,
                 observation.observed_at_seconds,
@@ -1978,12 +2604,41 @@ impl RuntimePlaybackCoordination {
         {
             return false;
         }
+        let telemetry_gap_expired = self
+            .last_transport_telemetry_received_at_seconds
+            .is_some_and(|received_at| {
+                external_now_seconds.is_finite()
+                    && received_at.is_finite()
+                    && external_now_seconds >= received_at
+                    && external_now_seconds - received_at
+                        > PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS
+            });
+        if telemetry_gap_expired {
+            // A first sample after a long transport gap is a new observation
+            // base. Sparse deltas must not inherit old position, rate, cache,
+            // buffer, or skew evidence and republish it as fresh.
+            self.latest_observation = None;
+            self.latest_position_observation = None;
+            self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+            self.coordinator.expire_transport_observation();
+            self.last_participant_status_fingerprint = None;
+        }
         self.commit_observation_clock(
             external_now_seconds,
             delivery_reference_seconds,
             candidate_offset_seconds,
         );
+        self.transport_telemetry_ever_observed = true;
         self.transport_telemetry_observed = true;
+        self.last_transport_telemetry_received_at_seconds = Some(
+            self.last_transport_telemetry_received_at_seconds
+                .map_or(external_now_seconds, |received_at| {
+                    received_at.max(external_now_seconds)
+                }),
+        );
+        self.transport_telemetry_wait_started_at_seconds = None;
+        self.external_player_availability = None;
+        self.update_participant_status_evidence_times(position_update, replace_position_state);
         self.update_latest_position_observation(position_update, replace_position_state);
         if replace_latest_observation {
             self.latest_observation = Some(observation);
@@ -2020,6 +2675,22 @@ impl RuntimePlaybackCoordination {
         // known, reconnect validation must never fall back to direct player
         // correction merely because the current transport is between samples.
         self.transport_telemetry_available = true;
+        if matches!(
+            self.external_player_availability,
+            Some(
+                ExternalPlayerAvailability::Unavailable
+                    | ExternalPlayerAvailability::TelemetryUnavailable
+                    | ExternalPlayerAvailability::Disconnected
+                    | ExternalPlayerAvailability::Failed,
+            )
+        ) {
+            // Detach/failure is a hard lifecycle fence. A sample already in
+            // flight from the retired player must not bind a new adapter
+            // generation, advance clocks, mutate the merged observation, or
+            // drive coordinator/barrier actions. Only an explicit Connecting
+            // transition reopens telemetry ingestion.
+            return Vec::new();
+        }
         let Some(adapter_generation) = update.media_generation else {
             return Vec::new();
         };
@@ -2049,8 +2720,14 @@ impl RuntimePlaybackCoordination {
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         };
+        if self
+            .transport_telemetry_lifecycle_fence_at_seconds
+            .is_some_and(|fence| observation.observed_at_seconds < fence)
+        {
+            return Vec::new();
+        }
         let position_update = observation.clone();
-        self.commit_mapped_transport_observation(
+        let _ = self.commit_mapped_transport_observation(
             observation.clone(),
             &position_update,
             external_now_seconds,
@@ -2073,6 +2750,17 @@ impl RuntimePlaybackCoordination {
         transport: &PlayerTransportSnapshot,
         external_now_seconds: f64,
     ) -> Option<(PlayerTransportObservation, Option<f64>, f64)> {
+        if matches!(
+            self.external_player_availability,
+            Some(
+                ExternalPlayerAvailability::Unavailable
+                    | ExternalPlayerAvailability::TelemetryUnavailable
+                    | ExternalPlayerAvailability::Disconnected
+                    | ExternalPlayerAvailability::Failed,
+            )
+        ) {
+            return None;
+        }
         let adapter_generation = snapshot_known_copy(&transport.media_generation)?;
         let media_generation =
             self.bind_adapter_generation(adapter_generation, external_now_seconds)?;
@@ -2141,6 +2829,7 @@ impl RuntimePlaybackCoordination {
         self.awaiting_ordered_snapshot = true;
         self.latest_observation = None;
         self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.transport_telemetry_observed = false;
         let coordinator_now = self.coordinator_now(external_now_seconds);
         self.coordinator
@@ -2160,6 +2849,7 @@ impl RuntimePlaybackCoordination {
         self.transport_telemetry_available = true;
         self.latest_observation = None;
         self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
         self.transport_telemetry_observed = false;
         let Some((observation, candidate_offset_seconds, delivery_reference_seconds)) =
             self.observation_from_ordered_transport(transport, external_now_seconds)
@@ -2525,8 +3215,30 @@ impl RuntimePlaybackCoordination {
         if self.awaiting_ordered_snapshot {
             return None;
         }
+        if matches!(
+            self.external_player_availability,
+            Some(
+                ExternalPlayerAvailability::Unavailable
+                    | ExternalPlayerAvailability::Disconnected
+                    | ExternalPlayerAvailability::Failed,
+            )
+        ) {
+            return None;
+        }
         if !self.transport_telemetry_observed {
-            return legacy_position_seconds;
+            // The session-model fallback exists only for adapters that never
+            // produced accepted rich transport telemetry. A lifecycle or
+            // adapter-epoch fence must not resurrect that retired adapter's
+            // cached position through the legacy model. A genuinely legacy
+            // adapter may still use the long-standing session-model path.
+            return if participant_status_legacy_position_fallback(
+                self.external_player_availability,
+                self.transport_telemetry_ever_observed,
+            ) {
+                legacy_position_seconds
+            } else {
+                None
+            };
         }
         let observation = self.latest_observation.as_ref()?;
         let position = self.latest_position_observation?;
@@ -3039,6 +3751,7 @@ impl RuntimePlaybackCoordination {
         }
         self.desired_generation = Some(media_generation);
         self.desired_fingerprint = Some(fingerprint);
+        self.refresh_participant_status_room_scope(session);
 
         let coordinator_now = self.coordinator_now(external_now_seconds);
         let superseded_dispatched_seek = if barrier_became_authoritative
@@ -3106,8 +3819,16 @@ impl RuntimePlaybackCoordination {
     fn record_observation_outcomes(&mut self, actions: &[PlaybackCoordinatorAction]) {
         for action in actions {
             match action {
-                PlaybackCoordinatorAction::RevisionApplied { state_revision, .. } => {
+                PlaybackCoordinatorAction::RevisionApplied {
+                    media_generation,
+                    state_revision,
+                } => {
                     self.last_applied_revision = Some(*state_revision);
+                    self.participant_status_applied_room_scope = self
+                        .participant_status_room_scope
+                        .as_ref()
+                        .filter(|scope| scope.local_media_generation == *media_generation)
+                        .cloned();
                     if self.pending_forced_seek_revision == Some(*state_revision) {
                         self.pending_forced_seek_revision = None;
                     }
@@ -3942,6 +4663,29 @@ where
     P: PlayerAdapter,
     C: ClientEffectSink,
 {
+    fn emit_participant_status_transition(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        let Some(pending) = self
+            .playback_coordination
+            .pending_participant_status_report(&self.session, false, now_seconds)
+        else {
+            return Ok(false);
+        };
+        self.control.activate_protocol_connection_generation();
+        self.control
+            .emit(ClientEffect::SendState(
+                StatePayload::new().with_participant_status_v1(
+                    ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+                ),
+            ))
+            .map_err(client_effect_player_error)?;
+        self.playback_coordination
+            .commit_participant_status_report(&pending);
+        Ok(true)
+    }
+
     pub(crate) fn emit_pending_playback_barrier_request_at(
         &mut self,
         now_seconds: f64,
@@ -3985,7 +4729,29 @@ where
     }
 
     pub fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
-        self.playback_coordination.reset_adapter_epoch(now_seconds)
+        let epoch = self.playback_coordination.reset_adapter_epoch(now_seconds);
+        let _ = self.emit_participant_status_transition(now_seconds);
+        epoch
+    }
+
+    /// Records lifecycle evidence for a player owned outside this runtime.
+    ///
+    /// A later accepted current-epoch transport observation promotes
+    /// `Connecting` to the wire-level `Connected` state. `Unavailable` and
+    /// `Failed` fence late observations until the owner explicitly starts a
+    /// new `Connecting` lifecycle.
+    pub fn set_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        if !self
+            .playback_coordination
+            .set_external_player_availability(availability, now_seconds)
+        {
+            return Ok(false);
+        }
+        self.emit_participant_status_transition(now_seconds)
     }
 
     pub fn playback_transport_adapter_epoch(&self) -> u64 {
@@ -4007,6 +4773,7 @@ where
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
+        let _ = self.emit_participant_status_transition(now_seconds);
         actions
     }
 
@@ -4025,6 +4792,7 @@ where
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
+        let _ = self.emit_participant_status_transition(now_seconds);
         actions
     }
 
@@ -4037,7 +4805,9 @@ where
     ) -> Result<(), PlayerError> {
         self.playback_coordination
             .observe_external_end_of_file(now_seconds);
-        self.handle_latest_player_readiness_observation()
+        self.handle_latest_player_readiness_observation()?;
+        let _ = self.emit_participant_status_transition(now_seconds)?;
+        Ok(())
     }
 
     pub fn prepare_playback_media(
@@ -4342,6 +5112,7 @@ where
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
+        let _ = self.emit_participant_status_transition(now_seconds);
         actions
     }
 
@@ -4683,9 +5454,6 @@ where
                     terminal.logical_pause = SnapshotField::Known(true);
                     self.ordered_player_events.transport = terminal.clone();
                     let terminal_delta = PlayerTransportDelta {
-                        load_attempt_id: Some(attempt_id),
-                        media_generation: Some(media_generation),
-                        phase: Some(sorotte_player_api::PlayerTransportPhase::Ended),
                         logical_pause: Some(true),
                         ..PlayerTransportDelta::default()
                     };
@@ -4867,7 +5635,15 @@ where
         if self.player.player_event_delivery_mode()
             == PlayerEventDeliveryMode::OrderedAcknowledgedBatches
         {
-            return self.drain_ordered_player_events(now_seconds);
+            let drain_error = self.drain_ordered_player_events(now_seconds).err();
+            let status_error = self.emit_participant_status_transition(now_seconds).err();
+            if let Some(error) = drain_error {
+                return Err(error);
+            }
+            if let Some(error) = status_error {
+                return Err(error);
+            }
+            return Ok(());
         }
         let mut first_error = None;
         while let Some(progress) = self.player.take_command_progress() {
@@ -4926,6 +5702,11 @@ where
         }
         self.playback_coordination
             .tick_player_transition_classifier(now_seconds);
+        if let Err(error) = self.emit_participant_status_transition(now_seconds)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
         first_error.map_or(Ok(()), Err)
     }
 
@@ -5498,12 +6279,12 @@ mod tests {
     use sorotte_player_api::{
         DisconnectedPlayer, PlayerAdapter, PlayerCapabilities, PlayerCapability, PlayerCommand,
         PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerObservationTimestamp,
-        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+        PlayerPhysicalLoadOutcome, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
     use sorotte_protocol::{
-        CommitStartPayload, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
-        PlaybackBarrierStatusPayload, ProtocolMessage, RoomBufferingPhase,
-        RoomBufferingStatusPayload, SetPayload,
+        CommitStartPayload, ParticipantPlaybackPhase, ParticipantPlayerConnection,
+        PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierStatusPayload,
+        ProtocolMessage, RoomBufferingPhase, RoomBufferingStatusPayload, SetPayload,
     };
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::time::Duration;
@@ -5545,6 +6326,1695 @@ mod tests {
         assert!(
             runtime.control().outbound_messages().is_empty(),
             "room participation must not emit a playback-barrier request"
+        );
+    }
+
+    fn participant_status_session() -> ClientSession {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        session
+    }
+
+    fn reports_in(messages: Vec<ProtocolMessage>) -> Vec<ParticipantStatusReport> {
+        messages
+            .into_iter()
+            .filter_map(|message| match message {
+                ProtocolMessage::State(state) => state
+                    .state
+                    .participant_status_v1()
+                    .ok()
+                    .flatten()
+                    .and_then(|extension| extension.report),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn participant_status_room_scope_is_invalidated_by_each_local_context_axis() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let local_media_generation = coordination
+            .prepare_media(
+                LogicalMediaId::new("participant-status-local-scope").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+
+        coordination.participant_status_room_scope = Some(ParticipantStatusRoomScope {
+            room: "room1".to_owned(),
+            local_media_generation: local_media_generation + 1,
+            media_generation: 41,
+            state_revision: Some(3),
+            transport_revision: Some(5),
+        });
+        coordination.refresh_participant_status_room_scope(&session);
+        assert!(
+            coordination.participant_status_room_scope.is_none(),
+            "a new local media generation must retire the prior room scope"
+        );
+
+        coordination.participant_status_room_scope = Some(ParticipantStatusRoomScope {
+            room: "room2".to_owned(),
+            local_media_generation,
+            media_generation: 41,
+            state_revision: Some(3),
+            transport_revision: Some(5),
+        });
+        coordination.refresh_participant_status_room_scope(&session);
+        assert!(
+            coordination.participant_status_room_scope.is_none(),
+            "a room change must retire the prior room scope even for the same local media"
+        );
+    }
+
+    #[test]
+    fn participant_status_adopted_generation_requires_matching_logical_media() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true,"sorottePlaybackBarrierV1":true}}}"#,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        41,
+                        "authoritative-logical-media",
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_id("participant-status-generation-only-correlation")
+                    .with_request_nonce(7),
+                )
+                .with_status(barrier_status(41, None, PlaybackBarrierPhase::Preparing)),
+        );
+
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("different-local-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.desired_fingerprint = Some(RoomDesiredFingerprint {
+            paused: false,
+            position_seconds: 0.0,
+            do_seek: false,
+            local_echo: false,
+            barrier_media_generation: Some(41),
+            barrier_state_revision: None,
+            buffering_media_generation: None,
+            buffering_state_revision: None,
+        });
+
+        let prepare = session
+            .playback_barrier_prepare()
+            .expect("the adopted generation must have a current prepare");
+        assert_eq!(prepare.media_generation, 41);
+        assert!(
+            !coordination.current_logical_media_matches(&prepare.logical_media_id),
+            "the regression requires generation-only correlation"
+        );
+
+        coordination.refresh_participant_status_room_scope(&session);
+        assert!(
+            coordination.participant_status_room_scope.is_none(),
+            "matching only the generation must not bind unrelated local media to room scope"
+        );
+    }
+
+    #[test]
+    fn participant_status_report_requires_negotiated_server_capability() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}"#,
+            )
+            .unwrap();
+        assert!(session.is_active());
+        assert_eq!(session.room(), Some("room1"));
+        assert!(!session.server_participant_status_v1_supported());
+
+        assert!(
+            RuntimePlaybackCoordination::default()
+                .pending_participant_status_report(&session, true, 1.0)
+                .is_none(),
+            "an otherwise active room session must not report without negotiated support"
+        );
+    }
+
+    #[test]
+    fn participant_status_heartbeat_is_silent_without_negotiated_capability() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}"#,
+            )
+            .unwrap();
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+
+        assert!(!runtime.run_participant_status_heartbeat(1.0));
+        assert!(
+            runtime.flush_queued_protocol_messages().is_empty(),
+            "a legacy peer must not receive an empty advisory State"
+        );
+    }
+
+    #[test]
+    fn participant_status_heartbeat_queues_only_the_negotiated_extension() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+
+        assert!(runtime.run_participant_status_heartbeat(1.0));
+        let messages = runtime.flush_queued_protocol_messages();
+        assert_eq!(messages.len(), 1);
+        let ProtocolMessage::State(state) = &messages[0] else {
+            panic!("status heartbeat should use State");
+        };
+        assert!(state.state.playstate.is_none());
+        assert!(state.state.ping.is_none());
+        assert!(
+            state
+                .state
+                .participant_status_v1()
+                .unwrap()
+                .and_then(|extension| extension.report)
+                .is_some(),
+            "the status-only heartbeat must contain the negotiated extension"
+        );
+    }
+
+    #[test]
+    fn participant_status_heartbeat_backlog_stays_bounded_when_chat_interleaves() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("chat and participant-status capabilities should negotiate");
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+
+        for sequence in 1..=128 {
+            assert!(runtime.run_participant_status_heartbeat(sequence as f64));
+            assert!(
+                runtime
+                    .run_send_chat_message(format!("chat-{sequence}"))
+                    .expect("chat should queue")
+            );
+        }
+
+        let messages = runtime.flush_queued_protocol_messages();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message, ProtocolMessage::Chat(_)))
+                .count(),
+            128,
+            "reliable chat must remain queued"
+        );
+        let reports = reports_in(messages);
+        assert_eq!(
+            reports.len(),
+            1,
+            "reachable periodic advisory status must remain independently coalescible"
+        );
+        assert_eq!(reports[0].report_sequence, 128);
+    }
+
+    #[test]
+    fn participant_status_heartbeat_does_not_treat_equal_time_as_rollback() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination
+            .take_participant_status_report(&session, false, 10.0)
+            .expect("the initial fingerprint should report");
+
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 10.0)
+                .is_none(),
+            "the same timestamp is neither rollback nor a due heartbeat"
+        );
+    }
+
+    #[test]
+    fn participant_status_room_switch_confirmation_requires_authoritative_membership() {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.begin_participant_status_room_switch("room2", Some("room1"));
+        let session_without_authoritative_membership = ClientSession::default();
+
+        coordination
+            .confirm_participant_status_room_membership(&session_without_authoritative_membership);
+        assert_eq!(
+            coordination
+                .pending_participant_status_room_switch_target
+                .as_deref(),
+            Some("room2"),
+            "a pending fence must survive until the session observes authoritative membership"
+        );
+
+        let mut partial_membership = participant_status_session();
+        partial_membership.model.room.name = Some("room2".to_owned());
+        coordination.confirm_participant_status_room_membership(&partial_membership);
+        assert_eq!(
+            coordination
+                .pending_participant_status_room_switch_target
+                .as_deref(),
+            Some("room2"),
+            "the current-room field alone cannot confirm the target membership"
+        );
+
+        partial_membership.model.room.name = Some("room1".to_owned());
+        partial_membership
+            .model
+            .room
+            .users
+            .get_mut("alice")
+            .unwrap()
+            .room = Some("room2".to_owned());
+        coordination.confirm_participant_status_room_membership(&partial_membership);
+        assert_eq!(
+            coordination
+                .pending_participant_status_room_switch_target
+                .as_deref(),
+            Some("room2"),
+            "the self membership row alone cannot confirm the target room"
+        );
+
+        partial_membership.model.room.name = Some("room2".to_owned());
+        coordination.confirm_participant_status_room_membership(&partial_membership);
+        assert!(
+            coordination
+                .pending_participant_status_room_switch_target
+                .is_none(),
+            "matching authoritative room and self membership must release the fence"
+        );
+    }
+
+    #[test]
+    fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbeats() {
+        let base_now = unix_wall_clock_time_seconds_legacy_compatible();
+        let player = CoordinatedTestPlayer {
+            advertises_telemetry: true,
+            ..CoordinatedTestPlayer::default()
+        };
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            player,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("private-local-identity").unwrap(),
+            MediaTransportKind::NetworkVod,
+            base_now,
+        );
+        let mut playing = transport(1, 1.0, PlayerTransportPhase::Playing, 42.5);
+        playing.playback_rate = Some(1.0);
+        playing.cache_buffering_percent = Some(67.0);
+        playing.buffered_ahead_seconds = Some(8.25);
+        runtime.player.transport_updates.push_back(playing);
+
+        runtime
+            .drain_player_transport_coordination(base_now)
+            .expect("playing observation should drain");
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        let report = &reports[0];
+        assert_eq!(report.report_sequence, 1);
+        assert_eq!(
+            report.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
+        assert_eq!(report.position_seconds, Some(42.5));
+        assert_eq!(report.logical_paused, Some(false));
+        assert_eq!(report.playback_rate, Some(1.0));
+        assert_eq!(report.buffered_ahead_seconds, Some(8.25));
+        assert_eq!(report.cache_percent, Some(67.0));
+        assert_eq!(
+            report.playback_scope, None,
+            "client-local media generations must not be published as room generations"
+        );
+
+        runtime
+            .playback_coordination
+            .last_participant_status_sent_at_seconds =
+            Some(base_now - PARTICIPANT_STATUS_HEARTBEAT_SECONDS);
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 2);
+        assert_eq!(reports[0].position_seconds, Some(42.5));
+
+        runtime.player.transport_updates.push_back(transport(
+            1,
+            2.0,
+            PlayerTransportPhase::Playing,
+            43.5,
+        ));
+        runtime
+            .drain_player_transport_coordination(base_now + 1.0)
+            .expect("same coarse phase should drain");
+        assert!(
+            reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+            "ordinary position movement waits for the periodic cadence"
+        );
+
+        let mut buffering = transport(1, 3.0, PlayerTransportPhase::Rebuffering, 43.5);
+        buffering.buffered_ahead_seconds = Some(0.25);
+        runtime.player.transport_updates.push_back(buffering);
+        runtime
+            .drain_player_transport_coordination(base_now + 2.0)
+            .expect("rebuffering transition should drain");
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 3);
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Rebuffering);
+        assert_eq!(reports[0].buffered_ahead_seconds, Some(0.25));
+    }
+
+    #[test]
+    fn failed_participant_status_delivery_retries_the_identical_sequence_transactionally() {
+        #[derive(Default)]
+        struct RejectFirstParticipantStatusControl {
+            attempts: Vec<ParticipantStatusReport>,
+        }
+
+        impl ClientEffectSink for RejectFirstParticipantStatusControl {
+            fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+                if let ClientEffect::SendState(state) = effect
+                    && let Some(report) = state
+                        .participant_status_v1()
+                        .expect("test participant-status payload should decode")
+                        .and_then(|extension| extension.report)
+                {
+                    self.attempts.push(report);
+                    if self.attempts.len() == 1 {
+                        return Err(ClientEffectError::OperationFailed(
+                            "forced participant-status delivery failure".to_owned(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            RejectFirstParticipantStatusControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("participant-status-transaction").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+            .expect_err("the first participant-status delivery should be rejected");
+        assert_eq!(runtime.control.attempts.len(), 1);
+        assert_eq!(runtime.control.attempts[0].report_sequence, 1);
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .next_participant_status_sequence,
+            0
+        );
+
+        assert!(
+            runtime
+                .emit_participant_status_transition(0.1)
+                .expect("the identical pending report should retry successfully")
+        );
+        assert_eq!(runtime.control.attempts.len(), 2);
+        assert_eq!(runtime.control.attempts[0], runtime.control.attempts[1]);
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .next_participant_status_sequence,
+            1
+        );
+
+        assert!(
+            runtime
+                .set_external_player_availability(ExternalPlayerAvailability::Failed, 0.2)
+                .expect("the next transition should deliver")
+        );
+        assert_eq!(runtime.control.attempts.len(), 3);
+        assert_eq!(runtime.control.attempts[2].report_sequence, 2);
+    }
+
+    #[test]
+    fn session_update_retries_failed_participant_status_without_committing_sequence() {
+        #[derive(Default)]
+        struct RejectFirstSessionUpdateStatusControl {
+            attempts: Vec<ParticipantStatusReport>,
+        }
+
+        impl ClientEffectSink for RejectFirstSessionUpdateStatusControl {
+            fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+                if let ClientEffect::SendState(state) = effect
+                    && let Some(report) = state
+                        .participant_status_v1()
+                        .expect("test participant-status payload should decode")
+                        .and_then(|extension| extension.report)
+                {
+                    self.attempts.push(report);
+                    if self.attempts.len() == 1 {
+                        return Err(ClientEffectError::OperationFailed(
+                            "forced session-update participant-status failure".to_owned(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let mut runtime = ClientRuntime::new(
+            ClientSession::default(),
+            DisconnectedPlayer,
+            RejectFirstSessionUpdateStatusControl::default(),
+        );
+        let hello = r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#;
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(hello, 0.0)
+            .expect("the Hello should apply despite advisory delivery failure");
+        assert_eq!(runtime.control.attempts.len(), 1);
+        assert_eq!(runtime.control.attempts[0].report_sequence, 1);
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .next_participant_status_sequence,
+            0,
+            "a swallowed ClientSessionUpdate sink error must not commit the report"
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(hello, 0.1)
+            .expect("the replacement Hello should retry the pending advisory report");
+        assert_eq!(runtime.control.attempts.len(), 2);
+        assert_eq!(runtime.control.attempts[0], runtime.control.attempts[1]);
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .next_participant_status_sequence,
+            1
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(hello, 0.2)
+            .expect("an unchanged replacement Hello should remain a no-op");
+        assert_eq!(
+            runtime.control.attempts.len(),
+            2,
+            "the successful retry must commit its fingerprint exactly once"
+        );
+    }
+
+    #[test]
+    fn sparse_transport_updates_preserve_the_oldest_retained_evidence_age() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("participant-status-sparse-evidence").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let mut complete = transport(1, 10.0, PlayerTransportPhase::Playing, 42.0);
+        complete.playback_rate = Some(1.0);
+        complete.cache_buffering_percent = Some(70.0);
+        complete.buffered_ahead_seconds = Some(8.0);
+        coordination.observe_transport(complete, 10.0);
+        coordination
+            .take_participant_status_report(&session, true, 10.0)
+            .expect("the complete observation should report");
+
+        let sparse_position = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(12.0)),
+        )
+        .with_position_seconds(44.0);
+        coordination.observe_transport(sparse_position, 12.0);
+        let report = coordination
+            .take_participant_status_report(&session, true, 12.0)
+            .expect("the periodic report should retain sparse telemetry fields");
+
+        assert_eq!(report.position_seconds, Some(44.0));
+        assert_eq!(
+            report.position_sample_age_ms,
+            Some(0),
+            "a sparse position refresh owns an independent fresh position age"
+        );
+        assert_eq!(report.logical_paused, Some(false));
+        assert_eq!(report.playback_rate, Some(1.0));
+        assert_eq!(report.paused_for_cache, Some(false));
+        assert_eq!(report.buffered_ahead_seconds, Some(8.0));
+        assert_eq!(report.cache_percent, Some(70.0));
+        assert_eq!(
+            report.sample_age_ms,
+            Some(2_000),
+            "sample age must describe the oldest field still present in the report"
+        );
+    }
+
+    #[test]
+    fn participant_status_omits_out_of_range_optional_telemetry_before_encoding() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.mark_transport_telemetry_available();
+        let mut observation = transport(
+            1,
+            0.0,
+            PlayerTransportPhase::Playing,
+            PARTICIPANT_STATUS_MAX_POSITION_SECONDS + 1.0,
+        );
+        observation.playback_rate = Some(PARTICIPANT_STATUS_MAX_PLAYBACK_RATE + 0.1);
+        observation.buffered_ahead_seconds =
+            Some(PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS + 1.0);
+        observation.cache_buffering_percent = Some(150.0);
+        coordination.observe_transport(observation, 100.0);
+        coordination.last_transport_telemetry_received_at_seconds = Some(200.0);
+
+        let report = coordination
+            .take_participant_status_report(&session, true, 200.0)
+            .expect("invalid optional observations must not suppress the status heartbeat");
+        assert_eq!(
+            report.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(report.position_seconds, None);
+        assert_eq!(report.playback_rate, None);
+        assert_eq!(report.buffered_ahead_seconds, None);
+        assert_eq!(report.cache_percent, Some(100.0));
+        assert_eq!(
+            report.sample_age_ms,
+            Some(PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS)
+        );
+    }
+
+    #[test]
+    fn public_external_epoch_observation_emits_participant_status_transition_immediately() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("external-participant-status-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+            .expect("external lifecycle status should queue");
+        runtime.flush_queued_protocol_messages();
+        assert!(
+            !runtime
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.1,)
+                .expect("repeated lifecycle status should be a no-op")
+        );
+        assert!(runtime.flush_queued_protocol_messages().is_empty());
+
+        let epoch = runtime.playback_transport_adapter_epoch();
+        runtime.observe_external_player_transport_at_epoch(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 12.5),
+            1.0,
+            epoch,
+        );
+
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Playing);
+        assert_eq!(reports[0].position_seconds, Some(12.5));
+
+        runtime.observe_external_player_transport(
+            transport(1, 2.0, PlayerTransportPhase::Rebuffering, 13.0),
+            2.0,
+        );
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Rebuffering);
+
+        runtime
+            .observe_external_player_end_of_file(2.1)
+            .expect("external EOF should be reported");
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Ended);
+    }
+
+    #[test]
+    fn participant_status_public_external_epoch_rebase_emits_transition_immediately() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("external-participant-status-rebase").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+            .expect("external lifecycle status should queue");
+        runtime.flush_queued_protocol_messages();
+
+        let epoch = runtime.playback_transport_adapter_epoch();
+        runtime.rebase_external_player_transport_at_epoch(
+            transport(1, 1.0, PlayerTransportPhase::Playing, 12.5),
+            1.0,
+            epoch,
+        );
+
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Playing);
+        assert_eq!(reports[0].position_seconds, Some(12.5));
+    }
+
+    #[test]
+    fn participant_status_legacy_position_fallback_requires_a_legacy_player() {
+        assert!(participant_status_legacy_position_fallback(None, false));
+        assert!(!participant_status_legacy_position_fallback(None, true));
+        assert!(participant_status_legacy_position_fallback(
+            Some(ExternalPlayerAvailability::Connecting),
+            false,
+        ));
+        assert!(!participant_status_legacy_position_fallback(
+            Some(ExternalPlayerAvailability::Connecting),
+            true,
+        ));
+
+        for availability in [
+            ExternalPlayerAvailability::Unavailable,
+            ExternalPlayerAvailability::TelemetryUnavailable,
+            ExternalPlayerAvailability::Disconnected,
+            ExternalPlayerAvailability::Failed,
+        ] {
+            for transport_telemetry_ever_observed in [false, true] {
+                assert!(
+                    !participant_status_legacy_position_fallback(
+                        Some(availability),
+                        transport_telemetry_ever_observed,
+                    ),
+                    "an explicit {availability:?} lifecycle must fence the legacy position "
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn participant_status_player_availability_ages_and_obeys_explicit_lifecycle() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("availability-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Unavailable, -1.0)
+        );
+        assert!(!coordination.transport_telemetry_available);
+        assert_eq!(
+            coordination.transport_telemetry_wait_started_at_seconds,
+            None
+        );
+        coordination.mark_transport_telemetry_available();
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+        );
+        assert!(coordination.transport_telemetry_available);
+        assert_eq!(
+            coordination.transport_telemetry_wait_started_at_seconds,
+            Some(0.0)
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 0.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+        assert!(
+            !coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 1.0)
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(
+                    &session,
+                    true,
+                    PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS + 0.1,
+                )
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Unavailable,
+            "Connecting without a first sample must age instead of remaining fresh forever"
+        );
+
+        let mut playing = transport(1, 6.0, PlayerTransportPhase::Playing, 5.0);
+        playing.playback_rate = Some(1.25);
+        playing.cache_buffering_percent = Some(60.0);
+        playing.buffered_ahead_seconds = Some(9.0);
+        coordination.observe_transport(playing, 6.0);
+        let connected = coordination
+            .take_participant_status_report(&session, true, 6.0)
+            .unwrap();
+        assert_eq!(
+            connected.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(connected.position_seconds, Some(5.0));
+        assert_eq!(connected.playback_rate, Some(1.25));
+        assert_eq!(connected.cache_percent, Some(60.0));
+        assert_eq!(connected.buffered_ahead_seconds, Some(9.0));
+
+        let stalled = coordination
+            .take_participant_status_report(
+                &session,
+                true,
+                6.0 + PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS + 0.1,
+            )
+            .unwrap();
+        assert_eq!(
+            stalled.player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+        assert_eq!(stalled.position_seconds, None);
+        assert_eq!(stalled.buffered_ahead_seconds, None);
+
+        coordination
+            .coordinator
+            .set_steady_state_skew_seconds_for_test(-3.0);
+        let sparse_recovery = PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(11.2)),
+        )
+        .with_phase(PlayerTransportPhase::Playing);
+        coordination.observe_transport(sparse_recovery, 11.2);
+        let sparse = coordination
+            .take_participant_status_report(&session, false, 11.2)
+            .expect("the first post-gap sample must force an immediate fresh report");
+        assert_eq!(
+            sparse.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(sparse.position_seconds, None);
+        assert_eq!(sparse.logical_paused, None);
+        assert_eq!(sparse.playback_rate, None);
+        assert_eq!(sparse.cache_percent, None);
+        assert_eq!(sparse.buffered_ahead_seconds, None);
+        assert_eq!(
+            coordination.coordinator.metrics().steady_state_skew_seconds,
+            None,
+            "post-gap sparse telemetry must not revive prior skew"
+        );
+
+        let mut complete_recovery = transport(1, 11.3, PlayerTransportPhase::Playing, 6.0);
+        complete_recovery.playback_rate = Some(1.1);
+        complete_recovery.cache_buffering_percent = Some(20.0);
+        complete_recovery.buffered_ahead_seconds = Some(4.0);
+        coordination.observe_transport(complete_recovery, 11.3);
+        let complete = coordination
+            .take_participant_status_report(&session, true, 11.3)
+            .expect("later explicit telemetry should remain reportable");
+        assert_eq!(complete.position_seconds, Some(6.0));
+        assert_eq!(complete.logical_paused, Some(false));
+        assert_eq!(complete.playback_rate, Some(1.1));
+        assert_eq!(complete.cache_percent, Some(20.0));
+        assert_eq!(complete.buffered_ahead_seconds, Some(4.0));
+
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 12.0)
+        );
+        assert!(
+            !coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 12.1)
+        );
+        let unavailable_snapshot = coordination.snapshot();
+        let unavailable_bindings = coordination.adapter_generation_bindings.clone();
+        let unavailable_pending_identity = coordination.pending_media_identity;
+        let unavailable_clock = (
+            coordination.adapter_clock_offset_seconds,
+            coordination.last_external_now_seconds,
+            coordination.last_coordinator_now_seconds,
+        );
+        let unavailable_barrier_state = (
+            coordination.last_reported_barrier_ready,
+            coordination.last_reported_barrier_started,
+            coordination.last_reported_room_buffering,
+        );
+        let raced_actions = coordination
+            .observe_transport(transport(2, 12.2, PlayerTransportPhase::Playing, 6.0), 12.2);
+        assert!(raced_actions.is_empty());
+        assert_eq!(coordination.snapshot(), unavailable_snapshot);
+        assert_eq!(
+            coordination.adapter_generation_bindings, unavailable_bindings,
+            "a late detached-player sample must not bind its adapter generation"
+        );
+        assert_eq!(
+            coordination.pending_media_identity,
+            unavailable_pending_identity
+        );
+        assert_eq!(
+            (
+                coordination.adapter_clock_offset_seconds,
+                coordination.last_external_now_seconds,
+                coordination.last_coordinator_now_seconds,
+            ),
+            unavailable_clock,
+            "a late detached-player sample must not advance the coordination clock"
+        );
+        assert_eq!(
+            (
+                coordination.last_reported_barrier_ready,
+                coordination.last_reported_barrier_started,
+                coordination.last_reported_room_buffering,
+            ),
+            unavailable_barrier_state,
+            "a late detached-player sample must not mutate barrier projection state"
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 12.2)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Unavailable,
+            "late telemetry cannot revive an explicitly unavailable player"
+        );
+
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Failed, 12.25,)
+        );
+        let failed_snapshot = coordination.snapshot();
+        let failed_actions = coordination.observe_transport(
+            transport(2, 12.26, PlayerTransportPhase::Playing, 6.1),
+            12.26,
+        );
+        assert!(failed_actions.is_empty());
+        assert_eq!(coordination.snapshot(), failed_snapshot);
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 12.26)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Failed,
+            "late telemetry cannot revive an explicitly failed player"
+        );
+
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 12.3)
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 12.3)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+        coordination
+            .observe_transport(transport(1, 12.4, PlayerTransportPhase::Playing, 6.2), 12.4);
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 12.4)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+
+        let old_epoch = coordination.adapter_epoch;
+        let new_epoch = coordination.reset_adapter_epoch(13.0);
+        assert_ne!(new_epoch, old_epoch);
+        assert_eq!(
+            coordination.projected_local_position_at(13.0, Some(6.2)),
+            None,
+            "a replacement adapter epoch must not reuse the retired adapter's legacy position"
+        );
+        coordination.observe_transport_at_epoch(
+            transport(1, 13.1, PlayerTransportPhase::Playing, 7.0),
+            13.1,
+            old_epoch,
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 13.1)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Starting,
+            "adapter reset and late old-epoch telemetry cannot retain Connected"
+        );
+
+        let no_telemetry = RuntimePlaybackCoordination::default()
+            .take_participant_status_report(&session, true, 0.0)
+            .unwrap();
+        assert_eq!(
+            no_telemetry.player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+    }
+
+    #[test]
+    fn participant_status_heartbeat_handles_finite_clock_rollback_without_a_liveness_gap() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination
+            .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 10.0);
+        assert!(
+            coordination
+                .take_participant_status_report(&session, false, f64::INFINITY)
+                .is_none(),
+            "an invalid first owner timestamp must not commit a fingerprint or send clock"
+        );
+        assert!(coordination.last_participant_status_fingerprint.is_none());
+        assert!(
+            coordination
+                .last_participant_status_sent_at_seconds
+                .is_none()
+        );
+        coordination
+            .take_participant_status_report(&session, false, 10.0)
+            .expect("the lifecycle transition should establish a fingerprint");
+
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 10.5)
+                .is_none(),
+            "a half-interval must not emit a heartbeat"
+        );
+        coordination.last_participant_status_sent_at_seconds = Some(f64::NEG_INFINITY);
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 10.0)
+                .is_none(),
+            "a non-finite previous clock sample must fail closed"
+        );
+        coordination.last_participant_status_sent_at_seconds = Some(10.0);
+        let rollback = coordination
+            .take_participant_status_report(&session, true, 9.0)
+            .expect("a finite wall-clock rollback should emit once and rebase the cadence");
+        assert_eq!(rollback.report_sequence, 2);
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 9.5)
+                .is_none(),
+            "the rebased cadence must not spin after rollback"
+        );
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 10.0)
+                .is_some(),
+            "the exact rebased interval should emit"
+        );
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, f64::INFINITY)
+                .is_none(),
+            "a non-finite current clock sample must fail closed"
+        );
+        assert!(
+            coordination
+                .pending_participant_status_report(&session, true, 10.0)
+                .is_some(),
+            "the exact one-second boundary should emit"
+        );
+    }
+
+    #[test]
+    fn participant_status_connecting_and_telemetry_unavailable_fence_pre_transition_transport() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("participant-status-lifecycle-fence").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0);
+        coordination.observe_transport(transport(1, 1.0, PlayerTransportPhase::Playing, 12.0), 1.0);
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 1.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 2.0)
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 2.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Starting,
+            "Connecting must immediately supersede a fresh prior observation"
+        );
+        assert!(coordination.latest_observation.is_none());
+        assert_eq!(
+            coordination.projected_local_position_at(2.0, Some(12.0)),
+            None,
+            "Connecting must fence the pre-transition legacy position as well as rich telemetry"
+        );
+        let stale_actions = coordination
+            .observe_transport(transport(1, 1.5, PlayerTransportPhase::Playing, 99.0), 2.1);
+        assert!(stale_actions.is_empty());
+        assert!(coordination.latest_observation.is_none());
+        assert_eq!(
+            coordination.participant_status_player_availability(2.1),
+            ParticipantPlayerConnection::Starting,
+            "an in-flight observation from before the Connecting fence cannot revive Connected"
+        );
+
+        coordination.observe_transport(transport(1, 2.1, PlayerTransportPhase::Playing, 13.0), 2.1);
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 2.1)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+
+        assert!(coordination.set_external_player_availability(
+            ExternalPlayerAvailability::TelemetryUnavailable,
+            2.2,
+        ));
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 2.2)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+        coordination.observe_transport(transport(1, 2.3, PlayerTransportPhase::Playing, 14.0), 2.3);
+        assert!(coordination.latest_observation.is_none());
+        assert_eq!(
+            coordination.participant_status_player_availability(2.3),
+            ParticipantPlayerConnection::Unavailable,
+            "TelemetryUnavailable remains a hard fence until a new Connecting lifecycle"
+        );
+    }
+
+    #[test]
+    fn participant_status_room_switch_cancels_leased_status_and_suppresses_old_room_heartbeats() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
+            .expect("the initial status should queue");
+        let leased = runtime
+            .pending_protocol_line()
+            .unwrap()
+            .expect("the old-room status should be leased");
+
+        assert!(runtime.run_set_room("room2").unwrap());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_report(&runtime.session, true, 2.0)
+                .is_none(),
+            "the old room must remain suppressed until authoritative membership changes"
+        );
+        assert!(runtime.release_protocol_line(leased.lease()));
+        let queued = runtime.flush_queued_protocol_messages();
+        assert!(reports_in(queued.clone()).is_empty());
+        assert!(queued.iter().any(|message| {
+            matches!(message, ProtocolMessage::Set(set) if set.set.room.as_ref().is_some_and(|room| room.name == "room2"))
+        }));
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room2"}}}}}"#,
+                3.0,
+            )
+            .unwrap();
+        let new_room_reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(new_room_reports.len(), 1);
+        assert_eq!(
+            new_room_reports[0].player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+    }
+
+    #[test]
+    fn participant_status_room_switch_requires_the_requested_authoritative_membership() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+
+        assert!(runtime.run_set_room("room1").unwrap());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_report(&runtime.session, true, 1.0)
+                .is_some(),
+            "re-selecting the authoritative current room must not fence reports"
+        );
+
+        assert!(runtime.run_set_room("server-will-normalize-this").unwrap());
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_report(&runtime.session, true, 2.0)
+                .is_none()
+        );
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"List":{"room1":{"alice":{"features":{"sorotteParticipantStatusV1":true}}}}}"#,
+                3.0,
+            )
+            .unwrap();
+        assert!(
+            reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+            "a delayed List for the old room must not release the destination fence"
+        );
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_report(&runtime.session, true, 3.1)
+                .is_none()
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"server-will-normalize-this"}}}}}"#,
+                4.0,
+            )
+            .unwrap();
+        assert_eq!(
+            reports_in(runtime.flush_queued_protocol_messages()).len(),
+            1,
+            "only the authoritative destination membership may release the fence"
+        );
+    }
+
+    #[test]
+    fn participant_status_inactive_phases_cancel_unleased_and_leased_reports() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
+            .unwrap();
+        runtime.session_mut().mark_disconnected();
+        assert!(reports_in(runtime.flush_queued_protocol_messages()).is_empty());
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+        runtime
+            .set_external_player_availability(ExternalPlayerAvailability::Connecting, 1.0)
+            .unwrap();
+        let leased = runtime
+            .pending_protocol_line()
+            .unwrap()
+            .expect("replacement status should be leased");
+        runtime.session_mut().mark_closing();
+        assert!(runtime.release_protocol_line(leased.lease()));
+        assert!(reports_in(runtime.flush_queued_protocol_messages()).is_empty());
+    }
+
+    #[test]
+    fn participant_status_reconnect_reset_cancels_unleased_and_leased_reports() {
+        let mut unleased = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        unleased
+            .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
+            .unwrap();
+        unleased.session_mut().reset_sync_state_for_reconnect();
+        assert!(reports_in(unleased.flush_queued_protocol_messages()).is_empty());
+
+        let mut leased = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        leased
+            .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
+            .unwrap();
+        let staged = leased
+            .pending_protocol_line()
+            .unwrap()
+            .expect("the old-generation status should be leased");
+        leased.session_mut().reset_sync_state_for_reconnect();
+        assert!(leased.release_protocol_line(staged.lease()));
+        assert!(
+            reports_in(leased.flush_queued_protocol_messages()).is_empty(),
+            "a failed leased write must not retry status after reconnect reset"
+        );
+    }
+
+    #[test]
+    fn participant_status_missing_sample_age_omits_precise_evidence() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("participant-status-overflow-age").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0);
+        coordination.observe_transport(transport(1, 1.0, PlayerTransportPhase::Playing, 12.0), 1.0);
+        coordination.last_transport_telemetry_received_at_seconds = Some(f64::MAX);
+        coordination.participant_status_evidence_times.position = Some(-f64::MAX);
+
+        let report = coordination
+            .take_participant_status_report(&session, false, f64::MAX)
+            .expect("the changed playing fingerprint should report");
+        assert_eq!(
+            report.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(report.position_seconds, None);
+        assert_eq!(report.position_sample_age_ms, None);
+        assert_eq!(
+            report.sample_age_ms, None,
+            "overflowed elapsed time must never be serialized as a saturated finite age"
+        );
+    }
+
+    #[test]
+    fn runtime_never_reports_when_server_did_not_negotiate_participant_status() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .unwrap();
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                advertises_telemetry: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("legacy-server-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.player.transport_updates.push_back(transport(
+            1,
+            1.0,
+            PlayerTransportPhase::Playing,
+            5.0,
+        ));
+        runtime.drain_player_transport_coordination(1.0).unwrap();
+        assert!(runtime.flush_queued_protocol_messages().is_empty());
+
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        let messages = runtime.flush_queued_protocol_messages();
+        assert!(reports_in(messages).is_empty());
+    }
+
+    #[test]
+    fn capability_withdrawal_cancels_an_unsent_participant_status_report() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("participant-status-capability-withdrawal").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        assert!(
+            runtime
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+                .expect("initial report should queue")
+        );
+        assert_eq!(
+            reports_in(
+                runtime
+                    .control
+                    .outbound_messages()
+                    .iter()
+                    .cloned()
+                    .collect()
+            )
+            .len(),
+            1
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}"#,
+            )
+            .unwrap();
+        let remaining = runtime.flush_queued_protocol_messages();
+        assert!(
+            reports_in(remaining.clone()).is_empty(),
+            "withdrawn status must not survive in a coalesced State"
+        );
+        assert!(
+            remaining.is_empty(),
+            "the pure advisory frame should disappear"
+        );
+    }
+
+    #[test]
+    fn participant_status_uses_only_applied_authoritative_room_scope_and_never_client_offset() {
+        let logical_id = "authoritative-participant-status-media";
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true,"sorottePlaybackBarrierV1":true}}}"#,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                0.0,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        91,
+                        logical_id,
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_id("participant-status-operation")
+                    .with_request_nonce(5),
+                )
+                .with_status(barrier_status(91, None, PlaybackBarrierPhase::Preparing)),
+        );
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(91, 12, 0.0, 0.0, 10.0))
+                .with_status(barrier_status(
+                    91,
+                    Some(12),
+                    PlaybackBarrierPhase::Committed,
+                )),
+        );
+
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.set_config(PlaybackCoordinatorConfig {
+            recovery_policy: crate::playback_coordinator::RecoveryPolicy::PreserveContent,
+            ..PlaybackCoordinatorConfig::default()
+        });
+        coordination.prepare_media(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        coordination.update_desired_from_session(&session, 0.0);
+        coordination.observe_transport(transport(1, 0.0, PlayerTransportPhase::Playing, 0.0), 0.0);
+        coordination.observe_transport(transport(1, 0.2, PlayerTransportPhase::Playing, 0.2), 0.2);
+        coordination.observe_transport(
+            transport(1, 10.0, PlayerTransportPhase::Rebuffering, 8.0),
+            10.0,
+        );
+        coordination
+            .observe_transport(transport(1, 11.0, PlayerTransportPhase::Playing, 9.0), 11.0);
+        coordination.observe_transport(
+            transport(1, 12.0, PlayerTransportPhase::Playing, 10.0),
+            12.0,
+        );
+
+        let report = coordination
+            .take_participant_status_report(&session, true, 12.0)
+            .expect("negotiated status report should be available");
+        assert_eq!(
+            report.playback_scope,
+            Some(ParticipantPlaybackScope::new(91).with_state_revision(12))
+        );
+        assert!(matches!(
+            report.phase,
+            ParticipantPlaybackPhase::Loading | ParticipantPlaybackPhase::Playing
+        ));
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                13.0,
+            )
+            .unwrap();
+        apply_barrier_extension(
+            &mut session,
+            PlaybackBarrierSetExtension::new()
+                .with_commit(CommitStartPayload::new(91, 13, 10.0, 0.0, 10.0))
+                .with_status(barrier_status(
+                    91,
+                    Some(13),
+                    PlaybackBarrierPhase::Committed,
+                )),
+        );
+        coordination.update_desired_from_session(&session, 13.0);
+        assert_eq!(
+            coordination.coordinator.metrics().steady_state_skew_seconds,
+            None,
+            "adopting a new revision must discard skew from the prior revision even when cached telemetry applies it"
+        );
+        let revision_advanced = coordination
+            .take_participant_status_report(&session, true, 13.0)
+            .expect("new room revision should report without stale offset");
+        assert_eq!(
+            revision_advanced.playback_scope, None,
+            "a new wire revision must not be reported until current telemetry applies it"
+        );
+        let fresh_adoption = coordination.observe_transport(
+            transport(1, 13.1, PlayerTransportPhase::Playing, 10.1),
+            13.1,
+        );
+        assert!(
+            fresh_adoption
+                .iter()
+                .any(|action| matches!(action, PlaybackCoordinatorAction::RevisionApplied { .. }))
+        );
+        let fresh_current_revision = coordination
+            .take_participant_status_report(&session, true, 13.1)
+            .expect("fresh same-revision transport should report");
+        assert_eq!(
+            fresh_current_revision.playback_scope,
+            Some(ParticipantPlaybackScope::new(91).with_state_revision(13))
+        );
+
+        coordination.observe_transport(
+            transport(1, 20.0, PlayerTransportPhase::Rebuffering, 15.0),
+            20.0,
+        );
+        coordination.observe_transport(
+            transport(1, 21.0, PlayerTransportPhase::Playing, 16.0),
+            21.0,
+        );
+        coordination.observe_transport(
+            transport(1, 22.0, PlayerTransportPhase::Playing, 17.0),
+            22.0,
+        );
+        let recomputed = coordination
+            .take_participant_status_report(&session, true, 22.0)
+            .expect("fresh recovery observations should recompute current-revision skew");
+        assert_eq!(
+            recomputed.playback_scope,
+            Some(ParticipantPlaybackScope::new(91).with_state_revision(13))
+        );
+
+        coordination.prepare_media_with_intent(
+            LogicalMediaId::new(logical_id).unwrap(),
+            MediaTransportKind::NetworkVod,
+            MediaLoadIntent::TransportRefresh,
+            23.0,
+        );
+        let refreshed = coordination
+            .take_participant_status_report(&session, true, 23.0)
+            .expect("transport refresh should still report its bound room scope");
+        assert_eq!(
+            refreshed.playback_scope, None,
+            "transport replacement must wait for a current observation before publishing scope"
+        );
+        assert_eq!(
+            coordination.coordinator.metrics().steady_state_skew_seconds,
+            None,
+            "transport replacement must invalidate the old media offset"
+        );
+
+        coordination.prepare_media(
+            LogicalMediaId::new("unrelated-replacement-media").unwrap(),
+            MediaTransportKind::NetworkVod,
+            24.0,
+        );
+        coordination
+            .observe_transport(transport(2, 24.1, PlayerTransportPhase::Playing, 2.0), 24.1);
+        coordination.last_applied_revision = Some(2);
+        coordination
+            .coordinator
+            .set_steady_state_skew_seconds_for_test(4.0);
+        let unrelated = coordination
+            .take_participant_status_report(&session, true, 24.1)
+            .expect("replacement media should still report local player state");
+        assert_eq!(
+            unrelated.playback_scope, None,
+            "retained barrier history must not be paired with unrelated current telemetry"
+        );
+    }
+
+    #[test]
+    fn participant_status_sequence_resets_per_connection_and_room_change_forces_transition() {
+        let mut session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.mark_transport_telemetry_available();
+
+        let first = coordination
+            .take_participant_status_report(&session, true, 0.0)
+            .expect("first connection report should exist");
+        let periodic = coordination
+            .take_participant_status_report(&session, true, PARTICIPANT_STATUS_HEARTBEAT_SECONDS)
+            .expect("due forced heartbeat should report");
+        assert_eq!((first.report_sequence, periodic.report_sequence), (1, 2));
+        assert!(
+            coordination
+                .take_participant_status_report(
+                    &session,
+                    false,
+                    PARTICIPANT_STATUS_HEARTBEAT_SECONDS + 0.1,
+                )
+                .is_none(),
+            "unchanged state must not create another immediate report"
+        );
+
+        session
+            .apply_message_json(r#"{"Set":{"room":{"name":"room2"}}}"#)
+            .unwrap();
+        let room_transition = coordination
+            .take_participant_status_report(
+                &session,
+                false,
+                PARTICIPANT_STATUS_HEARTBEAT_SECONDS + 0.2,
+            )
+            .expect("room scope change should force an immediate report");
+        assert_eq!(room_transition.report_sequence, 3);
+
+        coordination.begin_protocol_connection_generation(&session);
+        let replacement_connection = coordination
+            .take_participant_status_report(
+                &session,
+                false,
+                PARTICIPANT_STATUS_HEARTBEAT_SECONDS + 0.3,
+            )
+            .expect("replacement connection should publish a fresh report");
+        assert_eq!(replacement_connection.report_sequence, 1);
+    }
+
+    #[test]
+    fn runtime_connection_generation_discards_old_status_and_restarts_sequence() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("participant-status-runtime-reconnect").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        assert!(
+            runtime
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
+                .expect("the old-generation report should queue")
+        );
+        let old_reports = reports_in(
+            runtime
+                .control
+                .outbound_messages()
+                .iter()
+                .cloned()
+                .collect(),
+        );
+        assert_eq!(old_reports.len(), 1);
+        assert_eq!(old_reports[0].report_sequence, 1);
+
+        runtime.begin_protocol_connection_generation();
+        assert!(
+            runtime.control.outbound_messages().is_empty(),
+            "connection replacement must discard the old connection-scoped report"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .next_participant_status_sequence,
+            0
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+                0.1,
+            )
+            .expect("the replacement connection Hello should apply");
+        let replacement_reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(
+            replacement_reports.len(),
+            1,
+            "only the replacement connection's report may remain queued"
+        );
+        assert_eq!(replacement_reports[0].report_sequence, 1);
+        assert_eq!(
+            replacement_reports[0].player_connection,
+            ParticipantPlayerConnection::Starting
         );
     }
 
@@ -5897,6 +8367,207 @@ mod tests {
             core_idle: SnapshotField::Known(false),
             ..PlayerTransportSnapshot::default()
         }
+    }
+
+    #[test]
+    fn ordered_player_batch_emits_participant_status_without_waiting_for_heartbeat() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-participant-status").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("ordered snapshot should drain");
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 1);
+        assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Playing);
+        assert_eq!(reports[0].position_seconds, Some(42.0));
+    }
+
+    #[test]
+    fn ordered_player_batch_reports_status_before_returning_application_error() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                reject_pause_commands: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-participant-status-error").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime
+            .playback_coordination
+            .coordinator
+            .update_desired_room_state_with_kind(
+                DesiredRoomPlayback {
+                    media_generation: plan.media_generation,
+                    state_revision: 1,
+                    paused: true,
+                    anchor_position_seconds: 42.0,
+                    anchor_observed_at_seconds: 1.0,
+                    force_seek: false,
+                },
+                DesiredRoomPlaybackUpdateKind::Ordinary,
+            );
+        let acknowledgement_token = PlayerEventAcknowledgementToken::new(epoch, 1);
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        let error = runtime
+            .drain_player_transport_coordination(1.0)
+            .expect_err("the rejected pause command should remain the drain result");
+        assert_eq!(
+            error,
+            PlayerError::OperationFailed(
+                "test player rejected tracked pause/play command".to_owned()
+            )
+        );
+        assert_eq!(
+            runtime.player.acknowledged_batches,
+            vec![acknowledgement_token],
+            "the ordered batch should be acknowledged before its application error is returned"
+        );
+
+        let reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(
+            reports.len(),
+            1,
+            "a phase-changing ordered batch must still queue participant status when applying it fails"
+        );
+        assert_eq!(reports[0].report_sequence, 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(reports[0].position_seconds, Some(42.0));
+    }
+
+    #[test]
+    fn participant_status_ordered_terminal_records_precise_pause_evidence() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-participant-status-terminal").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+
+        let mut initial_transport = ordered_playing_transport(
+            media_generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+            42.0,
+        );
+        initial_transport.logical_pause = SnapshotField::KnownAbsent;
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                initial_transport,
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial ordered snapshot should drain");
+        let initial_reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(initial_reports.len(), 1);
+        assert_eq!(initial_reports[0].logical_paused, None);
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::LogicalPlaybackTerminal {
+                    attempt_id,
+                    media_generation,
+                    outcome: PlayerPhysicalLoadOutcome::Ended,
+                },
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("terminal ordered event should drain");
+
+        let terminal_reports = reports_in(runtime.flush_queued_protocol_messages());
+        assert_eq!(terminal_reports.len(), 1);
+        assert_eq!(terminal_reports[0].phase, ParticipantPlaybackPhase::Ended);
+        assert_eq!(terminal_reports[0].logical_paused, Some(true));
+        assert_eq!(terminal_reports[0].sample_age_ms, Some(0));
     }
 
     #[test]

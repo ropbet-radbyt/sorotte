@@ -4,12 +4,13 @@ use sorotte_client_core::{
     AutoplayCountdownNotification, ChatNotification, ClientEffect, ClientEffectError,
     ClientPlayerIo, ClientRuntime, ClientSession, ClientSessionUpdate,
     ControlledRoomCreationNotification, ControllerAuthTransitionNotification, CoordinatorCommandId,
-    FileSize, LogicalMediaId, MediaLoadIntent, MediaLoadPlan, MediaTransportKind,
-    PendingProtocolLine, PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig,
-    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot, PlaybackCoordinatorAction,
-    PlaybackCoordinatorConfig, PrivacyMode, ProtocolLineLease, QueuedRuntimeControl,
-    ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionStateSnapshot,
-    ReconnectTransitionNotification, RoomPlaystateView, UserChangeNotification,
+    ExternalPlayerAvailability, FileSize, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
+    MediaTransportKind, PendingProtocolLine, PlaybackBarrierRoomBufferingConfig,
+    PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
+    PlaybackCoordinatorAction, PlaybackCoordinatorConfig, PrivacyMode, ProtocolLineLease,
+    QueuedRuntimeControl, ReconnectStateRestoreCorrectionMetrics,
+    ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
+    RoomPlaystateView, UserChangeNotification,
 };
 use sorotte_player_api::{
     PlayerAdapter, PlayerCommandId, PlayerError, PlayerMediaGeneration,
@@ -335,6 +336,8 @@ where
     endpoint: Option<String>,
     plex: Option<ClientPlexService>,
     streaming_playback_config: StreamingPlaybackConfig,
+    player_connection_observed: Option<bool>,
+    player_was_connected: bool,
 }
 
 impl<P> ClientApplication<P>
@@ -372,12 +375,45 @@ where
     }
 
     pub fn from_runtime(runtime: ClientRuntime<P, QueuedRuntimeControl>) -> Self {
+        // Construction does not have an owner-clock timestamp. Defer the
+        // first lifecycle observation to `synchronize_player_availability`
+        // instead of manufacturing a `0.0` observation that can already be
+        // expired when the first real runtime tick arrives.
+        let player_was_connected = runtime.player().transport_is_connected() == Some(true);
         Self {
             runtime,
             endpoint: None,
             plex: None,
             streaming_playback_config: StreamingPlaybackConfig::default(),
+            player_connection_observed: None,
+            player_was_connected,
         }
+    }
+
+    /// Publishes cached adapter lifecycle transitions without polling the
+    /// player. GUI and CLI owners can call this from their existing runtime
+    /// cadence; adapters without an attachment signal remain unchanged.
+    pub fn synchronize_player_availability(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        let Some(connected) = self.runtime.player().transport_is_connected() else {
+            return Ok(false);
+        };
+        if self.player_connection_observed == Some(connected) {
+            return Ok(false);
+        }
+        self.player_connection_observed = Some(connected);
+        let availability = if connected {
+            self.player_was_connected = true;
+            ExternalPlayerAvailability::Connecting
+        } else if self.player_was_connected {
+            ExternalPlayerAvailability::Disconnected
+        } else {
+            ExternalPlayerAvailability::Unavailable
+        };
+        self.runtime
+            .set_external_player_availability(availability, now_seconds)
     }
 
     pub fn into_runtime(self) -> ClientRuntime<P, QueuedRuntimeControl> {
@@ -1005,6 +1041,10 @@ where
 
     pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.runtime.pending_protocol_line()
+    }
+
+    pub fn pending_protocol_line_count(&self) -> usize {
+        self.runtime.control().outbound_messages().len()
     }
 
     /// Decodes a transport line and applies its domain messages in wire order.
@@ -1675,6 +1715,54 @@ where
             .reset_playback_transport_adapter_epoch(now_seconds)
     }
 
+    pub fn set_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .set_external_player_availability(availability, now_seconds)
+    }
+
+    /// Records a contained player fault without making its terminal lifecycle
+    /// state permanent when the adapter remains attached.
+    ///
+    /// `Disconnected` and `Failed` deliberately fence late telemetry. A
+    /// contained failure while the adapter is still attached forgets the
+    /// cached observation so the next owner cadence publishes an explicit
+    /// `Connecting` transition. An authoritative detached observation stays
+    /// cached, preventing `Disconnected` from bouncing back to the
+    /// never-observed `Unavailable` state on every cadence.
+    pub fn record_contained_external_player_failure(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        debug_assert!(matches!(
+            availability,
+            ExternalPlayerAvailability::Disconnected | ExternalPlayerAvailability::Failed
+        ));
+        let result = self
+            .runtime
+            .set_external_player_availability(availability, now_seconds);
+        self.player_connection_observed =
+            if availability == ExternalPlayerAvailability::Disconnected {
+                // NotConnected is itself an authoritative detached observation.
+                // Retain it so the next cadence does not downgrade Disconnected
+                // to never-attached Unavailable. A later true attachment still
+                // differs and publishes Connecting before telemetry is accepted.
+                Some(false)
+            } else {
+                // Failed while still attached must reopen through Connecting.
+                None
+            };
+        result
+    }
+
+    pub fn run_participant_status_heartbeat(&mut self, now_seconds: f64) -> bool {
+        self.runtime.run_participant_status_heartbeat(now_seconds)
+    }
+
     pub fn playback_transport_adapter_epoch(&self) -> u64 {
         self.runtime.playback_transport_adapter_epoch()
     }
@@ -2028,6 +2116,286 @@ mod tests {
                 None => Ok(()),
             }
         }
+    }
+
+    struct InitiallyConnectedPlayer;
+
+    impl PlayerAdapter for InitiallyConnectedPlayer {
+        fn name(&self) -> &'static str {
+            "initially-connected-test"
+        }
+
+        fn transport_is_connected(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    struct InitiallyDisconnectedPlayer;
+
+    impl PlayerAdapter for InitiallyDisconnectedPlayer {
+        fn name(&self) -> &'static str {
+            "initially-disconnected-test"
+        }
+
+        fn transport_is_connected(&self) -> Option<bool> {
+            Some(false)
+        }
+    }
+
+    #[test]
+    fn initially_connected_player_uses_the_first_owner_timestamp_for_starting() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(session, InitiallyConnectedPlayer);
+
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("initial protocol messages should encode")
+        {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+
+        assert!(
+            application
+                .synchronize_player_availability(30.0)
+                .expect("the first owner observation should publish")
+        );
+        let pending = application
+            .pending_protocol_line()
+            .expect("starting status should encode")
+            .expect("first owner observation should queue a starting status");
+        let message = application
+            .acknowledge_protocol_line(pending.lease())
+            .expect("starting status should acknowledge");
+        let ProtocolMessage::State(state) = message else {
+            panic!("expected participant status State");
+        };
+        let report = state
+            .state
+            .participant_status_v1()
+            .expect("participant-status extension should decode")
+            .and_then(|extension| extension.report)
+            .expect("starting status should contain a report");
+        assert_eq!(
+            report.player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Starting
+        );
+    }
+
+    #[test]
+    fn participant_status_heartbeat_runs_without_an_ordinary_state_sync() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(session, InitiallyConnectedPlayer);
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("initial protocol messages should encode")
+        {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+        assert!(application.synchronize_player_availability(30.0).unwrap());
+        let starting = application
+            .pending_protocol_line()
+            .unwrap()
+            .expect("the lifecycle transition should queue");
+        let _ = application.acknowledge_protocol_line(starting.lease());
+
+        assert!(
+            application.run_participant_status_heartbeat(31.1),
+            "status liveness must not depend on the ordinary State-sync gate"
+        );
+        let heartbeat = application
+            .pending_protocol_line()
+            .unwrap()
+            .expect("the status-only heartbeat should queue");
+        let ProtocolMessage::State(heartbeat) = application
+            .acknowledge_protocol_line(heartbeat.lease())
+            .expect("status-only heartbeat should acknowledge")
+        else {
+            panic!("expected participant status State");
+        };
+        let report = heartbeat
+            .state
+            .participant_status_v1()
+            .expect("participant-status extension should decode")
+            .and_then(|extension| extension.report)
+            .expect("status-only heartbeat should carry a report");
+        assert_eq!(report.report_sequence, 2);
+        assert_eq!(
+            report.player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Starting
+        );
+        assert!(heartbeat.state.playstate.is_none());
+    }
+
+    #[test]
+    fn participant_status_heartbeat_is_silent_for_legacy_servers() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5"}}"#,
+            )
+            .expect("legacy Hello should apply");
+        let mut application = ClientApplication::new(session, InitiallyConnectedPlayer);
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("initial protocol messages should encode")
+        {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+
+        assert!(!application.run_participant_status_heartbeat(31.1));
+        assert!(
+            application.pending_protocol_line().unwrap().is_none(),
+            "a legacy peer must not receive an empty advisory State"
+        );
+    }
+
+    #[test]
+    fn contained_terminal_player_status_requires_a_fresh_connecting_transition() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(session, InitiallyConnectedPlayer);
+
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("initial protocol messages should encode")
+        {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+        assert!(
+            application
+                .synchronize_player_availability(30.0)
+                .expect("initial attachment should publish")
+        );
+        let starting = application
+            .pending_protocol_line()
+            .expect("starting status should encode")
+            .expect("starting status should queue");
+        let _ = application.acknowledge_protocol_line(starting.lease());
+
+        assert!(
+            application
+                .record_contained_external_player_failure(ExternalPlayerAvailability::Failed, 31.0,)
+                .expect("contained failure should publish")
+        );
+        let failed = application
+            .pending_protocol_line()
+            .expect("failed status should encode")
+            .expect("failed status should queue");
+        let ProtocolMessage::State(failed) = application
+            .acknowledge_protocol_line(failed.lease())
+            .expect("failed status should acknowledge")
+        else {
+            panic!("expected participant status State");
+        };
+        assert_eq!(
+            failed
+                .state
+                .participant_status_v1()
+                .expect("participant-status extension should decode")
+                .and_then(|extension| extension.report)
+                .expect("failed status should contain a report")
+                .player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Failed
+        );
+
+        assert!(
+            application
+                .synchronize_player_availability(32.0)
+                .expect("the attached adapter should begin a fresh lifecycle")
+        );
+        let reconnecting = application
+            .pending_protocol_line()
+            .expect("reconnecting status should encode")
+            .expect("reconnecting status should queue");
+        let ProtocolMessage::State(reconnecting) = application
+            .acknowledge_protocol_line(reconnecting.lease())
+            .expect("reconnecting status should acknowledge")
+        else {
+            panic!("expected participant status State");
+        };
+        assert_eq!(
+            reconnecting
+                .state
+                .participant_status_v1()
+                .expect("participant-status extension should decode")
+                .and_then(|extension| extension.report)
+                .expect("reconnecting status should contain a report")
+                .player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Starting
+        );
+    }
+
+    #[test]
+    fn contained_disconnect_does_not_bounce_back_to_never_attached_unavailable() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(session, InitiallyDisconnectedPlayer);
+
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("initial protocol messages should encode")
+        {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+        assert!(
+            application
+                .record_contained_external_player_failure(
+                    ExternalPlayerAvailability::Disconnected,
+                    30.0,
+                )
+                .expect("contained disconnect should publish")
+        );
+        let disconnected = application
+            .pending_protocol_line()
+            .expect("disconnected status should encode")
+            .expect("disconnected status should queue");
+        let ProtocolMessage::State(disconnected) = application
+            .acknowledge_protocol_line(disconnected.lease())
+            .expect("disconnected status should acknowledge")
+        else {
+            panic!("expected participant status State");
+        };
+        assert_eq!(
+            disconnected
+                .state
+                .participant_status_v1()
+                .expect("participant-status extension should decode")
+                .and_then(|extension| extension.report)
+                .expect("disconnected status should contain a report")
+                .player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Disconnected
+        );
+
+        assert!(
+            !application
+                .synchronize_player_availability(31.0)
+                .expect("reobserving the same detached transport should be a no-op")
+        );
+        assert!(
+            application
+                .pending_protocol_line()
+                .expect("the empty outbox should remain encodable")
+                .is_none(),
+            "a detached cadence must not overwrite Disconnected with Unavailable"
+        );
     }
 
     fn configured_runtime_settings() -> ClientConfig {
@@ -2504,6 +2872,54 @@ mod tests {
                 .autoplay_delay_seconds,
             17.25
         );
+    }
+
+    #[test]
+    fn application_settings_propagate_room_buffering_policy_to_wire() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+            )
+            .expect("barrier-capable Hello should apply");
+        let mut application = ClientApplication::new(session, TestPlayer::default());
+        let mut config = ClientConfig::default();
+        config.playback.streaming.room_buffering.policy = RoomBufferingPolicy::Quorum;
+        config.playback.streaming.room_buffering.quorum =
+            crate::runtime_config::Percent::new(63.0).unwrap();
+        config.playback.streaming.room_buffering.maximum_pause =
+            crate::runtime_config::Seconds::new(47.25).unwrap();
+        let _ = application.dispatch(ClientCommand::update_settings(
+            ClientApplicationSettings::new(config).with_active_room("room-a"),
+        ));
+
+        application.prepare_playback_media(
+            LogicalMediaId::new("media-sha256:settings-propagation").unwrap(),
+            MediaTransportKind::NetworkVod,
+            10.0,
+        );
+        let pending = application
+            .pending_protocol_line()
+            .unwrap()
+            .expect("media preparation should queue a playback-barrier Set");
+        let ProtocolMessage::Set(set) = application
+            .acknowledge_protocol_line(pending.lease())
+            .expect("playback-barrier Set should acknowledge")
+        else {
+            panic!("expected playback-barrier Set");
+        };
+        let buffering = set
+            .set
+            .playback_barrier_v1()
+            .unwrap()
+            .and_then(|extension| extension.buffering_policy)
+            .expect("room-buffering policy should be emitted");
+        assert_eq!(
+            buffering.policy,
+            sorotte_protocol::RoomBufferingPolicy::Quorum
+        );
+        assert_eq!(buffering.quorum_percent, Some(63));
+        assert_eq!(buffering.max_pause_ms, Some(47_250));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::super::shell_state::SorotteGuiShellAppState;
-use super::super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
+use super::super::widget_tree::{GuiStatusTone, GuiWidgetKind, GuiWidgetNode};
 use super::{GuiPanelShellOptions, GuiWidgetEguiRenderer};
 
 #[derive(Clone, Copy)]
@@ -11,6 +11,7 @@ struct CombinedRoomIdentityNodes<'a> {
     room: Option<&'a GuiWidgetNode>,
     room_control: Option<&'a GuiWidgetNode>,
     playback_state: Option<&'a GuiWidgetNode>,
+    render_trailing_icons: bool,
 }
 
 impl GuiWidgetEguiRenderer {
@@ -61,10 +62,10 @@ impl GuiWidgetEguiRenderer {
             } else if room_actions.is_some() {
                 138.0
             } else {
-                118.0
+                136.0
             }
         } else {
-            64.0
+            78.0
         };
 
         self.render_panel_shell_with_header(
@@ -85,6 +86,7 @@ impl GuiWidgetEguiRenderer {
                             room: room_node,
                             room_control: room_control_node,
                             playback_state: playback_state_node,
+                            render_trailing_icons: true,
                         },
                         header_content_width,
                     );
@@ -132,7 +134,8 @@ impl GuiWidgetEguiRenderer {
                                         server: server_node,
                                         room: room_node,
                                         room_control: None,
-                                        playback_state: None,
+                                        playback_state: playback_state_node,
+                                        render_trailing_icons: false,
                                     },
                                     identity_width,
                                 );
@@ -235,8 +238,12 @@ impl GuiWidgetEguiRenderer {
                 self.render_connection_status_dot(ui, status_node);
                 ui.add_space(8.0);
             }
-            let icon_count = usize::from(nodes.room_control.is_some())
-                + usize::from(nodes.playback_state.is_some());
+            let icon_count = if nodes.render_trailing_icons {
+                usize::from(nodes.room_control.is_some())
+                    + usize::from(nodes.playback_state.is_some())
+            } else {
+                0
+            };
             let icon_width = if icon_count == 0 {
                 0.0
             } else {
@@ -281,9 +288,27 @@ impl GuiWidgetEguiRenderer {
                     if server_label != "(not configured)" {
                         server_response.on_hover_text(server_label.to_owned());
                     }
+                    if let Some(playback_state) = nodes.playback_state {
+                        let intent_label = playback_state
+                            .value
+                            .as_deref()
+                            .unwrap_or("Room intent unavailable");
+                        let intent_response = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(intent_label)
+                                    .small()
+                                    .color(Self::palette_for_ui(ui).neutral_text),
+                            )
+                            .truncate(),
+                        );
+                        Self::register_automation_id(ui, &intent_response, playback_state);
+                        let _ = Self::attach_node_tooltip(intent_response, playback_state);
+                    }
                 },
             );
-            if nodes.room_control.is_some() || nodes.playback_state.is_some() {
+            if nodes.render_trailing_icons
+                && (nodes.room_control.is_some() || nodes.playback_state.is_some())
+            {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(room_control_node) = nodes.room_control {
                         self.render_room_control_icon(ui, room_control_node);
@@ -458,6 +483,8 @@ impl GuiWidgetEguiRenderer {
         let file_node = Self::find_descendant_by_suffix(user_node, ":file");
         let size_node = Self::find_descendant_by_suffix(user_node, ":size");
         let duration_node = Self::find_descendant_by_suffix(user_node, ":duration");
+        let participant_status_node =
+            Self::find_descendant_by_suffix(user_node, ":participant-status");
         let ready_action = user_node
             .children
             .iter()
@@ -530,6 +557,32 @@ impl GuiWidgetEguiRenderer {
                                     Self::render_inline_controller_icon(ui);
                                 }
                             });
+                            if let Some(participant_status_node) = participant_status_node {
+                                let value = participant_status_node
+                                    .value
+                                    .as_deref()
+                                    .unwrap_or("Status unavailable");
+                                let response = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(value).small().color(
+                                            Self::participant_status_text_color(
+                                                ui,
+                                                participant_status_node
+                                                    .status_tone
+                                                    .unwrap_or(GuiStatusTone::Muted),
+                                            ),
+                                        ),
+                                    )
+                                    .truncate(),
+                                );
+                                Self::register_automation_id(
+                                    ui,
+                                    &response,
+                                    participant_status_node,
+                                );
+                                let _ =
+                                    Self::attach_node_tooltip(response, participant_status_node);
+                            }
                             let file_response = ui.add(
                                 egui::Label::new(egui::RichText::new(&file_text).small())
                                     .truncate(),
@@ -925,6 +978,8 @@ impl GuiWidgetEguiRenderer {
         let file_node = Self::find_descendant_by_suffix(user_node, ":file");
         let size_node = Self::find_descendant_by_suffix(user_node, ":size");
         let duration_node = Self::find_descendant_by_suffix(user_node, ":duration");
+        let participant_status_node =
+            Self::find_descendant_by_suffix(user_node, ":participant-status");
         let action_nodes = [
             Self::find_descendant_by_suffix(user_node, ":open"),
             Self::find_descendant_by_suffix(user_node, ":folder"),
@@ -1017,6 +1072,31 @@ impl GuiWidgetEguiRenderer {
                         }
                         if !metadata.is_empty() {
                             ui.label(egui::RichText::new(metadata).small().weak());
+                        }
+                        if let Some(participant_status_node) = participant_status_node {
+                            let value = participant_status_node
+                                .value
+                                .as_deref()
+                                .unwrap_or("Status unavailable");
+                            let response = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(value)
+                                        .small()
+                                        .color(Self::participant_status_text_color(
+                                            ui,
+                                            participant_status_node
+                                                .status_tone
+                                                .unwrap_or(GuiStatusTone::Muted),
+                                        )),
+                                )
+                                .truncate(),
+                            );
+                            Self::register_automation_id(
+                                ui,
+                                &response,
+                                participant_status_node,
+                            );
+                            let _ = Self::attach_node_tooltip(response, participant_status_node);
                         }
                     });
                 });
@@ -1137,6 +1217,16 @@ impl GuiWidgetEguiRenderer {
                 (Some(flag), Some("yes" | "true")) if flag == key
             )
         })
+    }
+
+    fn participant_status_text_color(ui: &egui::Ui, tone: GuiStatusTone) -> egui::Color32 {
+        let palette = Self::palette_for_ui(ui);
+        match tone {
+            GuiStatusTone::Danger => palette.danger,
+            GuiStatusTone::Warning => palette.warning_text,
+            GuiStatusTone::Success => palette.success_text,
+            GuiStatusTone::Muted => palette.muted_text,
+        }
     }
 
     fn browser_file_and_cues(value: &str) -> (String, Vec<String>) {

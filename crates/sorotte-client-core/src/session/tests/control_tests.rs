@@ -1,8 +1,9 @@
 use super::*;
 use crate::PlaybackBarrierRequestScope;
 use sorotte_protocol::{
-    MediaLoadIntent, PlaybackBarrierPolicy, PrepareMediaPayload, RoomBufferingPolicy,
-    RoomBufferingPolicyPayload,
+    MediaLoadIntent, ParticipantPlaybackPhase, ParticipantPlayerConnection,
+    ParticipantStatusReport, ParticipantStatusStateExtension, PlaybackBarrierPolicy,
+    PrepareMediaPayload, RoomBufferingPolicy, RoomBufferingPolicyPayload,
 };
 
 #[test]
@@ -175,8 +176,20 @@ fn queued_runtime_control_set_ready_emits_protocol_set_ready_message() {
 }
 
 #[test]
-fn queued_runtime_control_set_room_emits_protocol_set_room_message() {
+fn queued_runtime_control_set_room_cancels_participant_status_before_protocol_message() {
     let mut control = QueuedRuntimeControl::default();
+    control.activate_protocol_connection_generation();
+    control
+        .emit(ClientEffect::SendState(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(
+                    1,
+                    ParticipantPlayerConnection::Connected,
+                    ParticipantPlaybackPhase::Playing,
+                )),
+            ),
+        ))
+        .expect("old-room advisory status should queue");
     control
         .emit(ClientEffect::SetRoom("room2".to_owned()))
         .expect("room effect should be supported");
@@ -391,7 +404,7 @@ fn room_media_and_explicit_cancellation_drop_only_playback_barrier_requests() {
 }
 
 #[test]
-fn authoritative_inbound_room_change_cancels_queued_playback_barrier_request() {
+fn authoritative_inbound_room_change_cancels_barrier_and_participant_status() {
     let mut session = ClientSession::default();
     session.initialize_local_identity("alice".to_owned(), "room-one".to_owned());
     let mut control = QueuedRuntimeControl::default();
@@ -409,6 +422,17 @@ fn authoritative_inbound_room_change_cancels_queued_playback_barrier_request() {
             PlaybackBarrierRequestScope::new("room-one", 31, 7),
         ))
         .expect("barrier should queue");
+    control
+        .emit(ClientEffect::SendState(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(
+                    1,
+                    ParticipantPlayerConnection::Connected,
+                    ParticipantPlaybackPhase::Playing,
+                )),
+            ),
+        ))
+        .expect("old-room status should queue");
     let mut runtime = ClientRuntime::new(session, RecordingPlayer::default(), control);
 
     runtime

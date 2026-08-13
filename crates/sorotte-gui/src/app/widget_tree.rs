@@ -45,6 +45,14 @@ pub(super) enum GuiWidgetKind {
     Status,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiStatusTone {
+    Danger,
+    Warning,
+    Success,
+    Muted,
+}
+
 impl GuiWidgetKind {
     #[cfg(test)]
     pub(super) fn label(self) -> &'static str {
@@ -74,6 +82,7 @@ pub(super) struct GuiWidgetNode {
     pub(super) value: Option<String>,
     pub(super) enabled: bool,
     pub(super) selected: bool,
+    pub(super) status_tone: Option<GuiStatusTone>,
     pub(super) tooltip: Option<String>,
     pub(super) layout_mode: Option<GuiLayoutMode>,
     pub(super) column_span: usize,
@@ -96,6 +105,7 @@ impl std::fmt::Debug for GuiWidgetNode {
             .field("value", &value)
             .field("enabled", &self.enabled)
             .field("selected", &self.selected)
+            .field("status_tone", &self.status_tone)
             .field("tooltip", &self.tooltip)
             .field("layout_mode", &self.layout_mode)
             .field("children", &self.children)
@@ -124,6 +134,7 @@ impl GuiWidgetNode {
             value,
             enabled,
             selected,
+            status_tone: None,
             tooltip: None,
             layout_mode: None,
             column_span: 1,
@@ -145,6 +156,7 @@ impl GuiWidgetNode {
             value: None,
             enabled: true,
             selected: false,
+            status_tone: None,
             tooltip: None,
             layout_mode: None,
             column_span: 1,
@@ -166,6 +178,7 @@ impl GuiWidgetNode {
             value: None,
             enabled: true,
             selected: false,
+            status_tone: None,
             tooltip: None,
             layout_mode: Some(mode),
             column_span: 1,
@@ -186,6 +199,11 @@ impl GuiWidgetNode {
 
     pub(super) fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub(super) fn with_status_tone(mut self, status_tone: GuiStatusTone) -> Self {
+        self.status_tone = Some(status_tone);
         self
     }
 

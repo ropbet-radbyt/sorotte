@@ -9,11 +9,11 @@ mod playback_coordination;
 mod queued_control;
 
 pub use accessors::{ClientPlayerIo, ClientSessionUpdate};
-use playback_coordination::{OrderedPlayerEventConsumer, RuntimePlaybackCoordination};
 pub use playback_coordination::{
-    PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction,
-    PlaybackCoordinationSnapshot,
+    ExternalPlayerAvailability, PlaybackBarrierRoomBufferingConfig, PlaybackBarrierStartConfig,
+    PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
 };
+use playback_coordination::{OrderedPlayerEventConsumer, RuntimePlaybackCoordination};
 
 #[derive(Debug)]
 pub struct ClientRuntime<P, C> {

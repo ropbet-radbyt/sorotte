@@ -287,6 +287,14 @@ impl GuiQueuedSessionTransportHandle {
         })
     }
 
+    pub(in crate::app) fn has_pending_outbound_protocol_delivery(&self) -> bool {
+        self.tracked_outbound_protocol_delivery
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .is_some()
+    }
+
     pub(in crate::app) fn publish_outbound_protocol_delivery_result(
         &self,
         result: GuiOutboundProtocolDeliveryResult,

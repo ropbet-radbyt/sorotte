@@ -1,16 +1,64 @@
 use super::super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
 use super::super::shell_state::{
-    GuiInteractionRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
-    MainWindowRuntimeUserSnapshot, MainWindowShellState, MenuActionId, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState, browser_format_duration_label,
-    browser_format_size_label, browser_is_url, browser_uri_is_trusted,
+    GuiInteractionRuntimeSnapshot, MainWindowParticipantStatusFreshness,
+    MainWindowParticipantStatusPresentation, MainWindowParticipantStatusReport,
+    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    MainWindowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    SorotteGuiShellAppState, browser_format_duration_label, browser_format_size_label,
+    browser_is_url, browser_uri_is_trusted,
 };
-use super::super::support::{nonempty_room_name_text, normalized_editable_text};
+use super::super::support::{
+    nonempty_room_name_text, normalized_editable_text, system_time_seconds,
+};
 use super::GuiClientCoreChatSessionRuntimeAdapter;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
 };
-use std::collections::BTreeMap;
+use sorotte_client_core::RoomPlaystateAuthority;
+use sorotte_protocol::{
+    ParticipantPlaybackPhase, PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
+};
+use std::collections::{BTreeMap, BTreeSet};
+
+fn playback_barrier_participant_label(phase: PlaybackBarrierParticipantPhase) -> &'static str {
+    match phase {
+        PlaybackBarrierParticipantPhase::Pending => "pending",
+        PlaybackBarrierParticipantPhase::Ready => "ready",
+        PlaybackBarrierParticipantPhase::Started => "started",
+        PlaybackBarrierParticipantPhase::Degraded => "degraded",
+        PlaybackBarrierParticipantPhase::PrepareTimedOut => "prepare timed out",
+        PlaybackBarrierParticipantPhase::StartedAckTimedOut => "start acknowledgement timed out",
+    }
+}
+
+fn playback_barrier_phase_label(phase: PlaybackBarrierPhase) -> &'static str {
+    match phase {
+        PlaybackBarrierPhase::Preparing => "preparing; waiting for participant readiness",
+        PlaybackBarrierPhase::Committed => "committed by server",
+        PlaybackBarrierPhase::AwaitingDecision => "awaiting controller decision",
+        PlaybackBarrierPhase::Complete => "complete",
+        PlaybackBarrierPhase::Degraded => "degraded",
+    }
+}
+
+fn room_playstate_authority_label(authority: RoomPlaystateAuthority) -> String {
+    match authority {
+        RoomPlaystateAuthority::LegacyRemoteUser => "remote user (legacy playstate)".to_owned(),
+        RoomPlaystateAuthority::LegacyLocalEcho => "local echo (legacy playstate)".to_owned(),
+        RoomPlaystateAuthority::ServerBarrier {
+            media_generation,
+            state_revision,
+        } => state_revision.map_or_else(
+            || format!("server start barrier, generation {media_generation}"),
+            |revision| {
+                format!("server start barrier, generation {media_generation}, revision {revision}")
+            },
+        ),
+        RoomPlaystateAuthority::ServerBufferingPolicy { media_generation } => {
+            format!("server buffering policy, generation {media_generation}")
+        }
+    }
+}
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
     fn session_readiness_presentations(
@@ -106,6 +154,25 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let trusted_domains = &playback.trusted_domains;
         let only_switch_to_trusted_domains = playback.only_switch_to_trusted_domains;
         let local_username = session.username();
+        let current_room = session.room();
+        let now_seconds = system_time_seconds();
+        let server_participant_status_supported = session.server_participant_status_v1_supported();
+        let playback_barrier_status = session.playback_barrier_status();
+        let local_participant_status = local_username
+            .and_then(|username| session.user_participant_status_at(username, now_seconds));
+        let reference_scope = session.participant_status_authoritative_scope();
+        let reference_timeline = reference_scope
+            .map(|scope| (Some(scope.media_generation), scope.state_revision))
+            .or_else(|| {
+                playback_barrier_status
+                    .map(|status| (Some(status.media_generation), status.state_revision))
+            })
+            .or_else(|| {
+                local_participant_status
+                    .as_ref()
+                    .and_then(|status| status.status.playback_scope)
+                    .map(|scope| (Some(scope.media_generation), scope.state_revision))
+            });
         let mut users = Vec::new();
         for room_name in session.room_names() {
             for username in session.usernames_in_room(&room_name) {
@@ -124,6 +191,92 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 let differences = session
                     .file_differences_for_user(&username)
                     .unwrap_or_default();
+                let in_current_room = current_room == Some(room_name.as_str());
+                let participant_status_view = in_current_room
+                    .then(|| session.user_participant_status_at(&username, now_seconds))
+                    .flatten();
+                let participant_status = if let Some(status) = participant_status_view {
+                    match status.status.availability {
+                        sorotte_protocol::ParticipantStatusAvailability::Unsupported => {
+                            MainWindowParticipantStatusPresentation::LegacyClient
+                        }
+                        sorotte_protocol::ParticipantStatusAvailability::AwaitingReport => {
+                            MainWindowParticipantStatusPresentation::WaitingForFirstReport
+                        }
+                        sorotte_protocol::ParticipantStatusAvailability::Unavailable => {
+                            MainWindowParticipantStatusPresentation::Unavailable
+                        }
+                        sorotte_protocol::ParticipantStatusAvailability::Fresh
+                        | sorotte_protocol::ParticipantStatusAvailability::Delayed
+                        | sorotte_protocol::ParticipantStatusAvailability::Stale => {
+                            let timeline_mismatch = match status.status.correlation {
+                                Some(sorotte_protocol::ParticipantStatusCorrelation::Exact)
+                                | Some(
+                                    sorotte_protocol::ParticipantStatusCorrelation::Uncorrelated,
+                                ) => false,
+                                Some(
+                                    sorotte_protocol::ParticipantStatusCorrelation::Superseded,
+                                ) => true,
+                                Some(_) => true,
+                                None => {
+                                    reference_scope.is_some_and(|scope| {
+                                        status.status.playback_scope != Some(scope)
+                                    }) || reference_timeline.is_some_and(
+                                        |(room_generation, room_revision)| {
+                                            let reported_scope = status.status.playback_scope;
+                                            (match (room_generation, reported_scope) {
+                                                (Some(_), None) => true,
+                                                (Some(room), Some(reported)) => {
+                                                    room != reported.media_generation
+                                                }
+                                                (None, _) => false,
+                                            }) || match (
+                                                room_revision,
+                                                reported_scope
+                                                    .and_then(|scope| scope.state_revision),
+                                            ) {
+                                                (Some(_), None) => true,
+                                                (Some(room), Some(reported)) => room != reported,
+                                                (None, _) => false,
+                                            }
+                                        },
+                                    )
+                                }
+                            };
+                            MainWindowParticipantStatusPresentation::Report(
+                                MainWindowParticipantStatusReport::from_client_view(
+                                    status,
+                                    timeline_mismatch,
+                                ),
+                            )
+                        }
+                        _ => MainWindowParticipantStatusPresentation::Unavailable,
+                    }
+                } else if !in_current_room || !server_participant_status_supported {
+                    MainWindowParticipantStatusPresentation::Unavailable
+                } else {
+                    match session.user_participant_status_v1_supported(&username) {
+                        Some(false) => MainWindowParticipantStatusPresentation::LegacyClient,
+                        Some(true) => {
+                            MainWindowParticipantStatusPresentation::WaitingForFirstReport
+                        }
+                        None => MainWindowParticipantStatusPresentation::Unavailable,
+                    }
+                };
+                let start_barrier_status = playback_barrier_status.and_then(|status| {
+                    status
+                        .participants
+                        .get(&username)
+                        .map(|participant| {
+                            playback_barrier_participant_label(participant.phase).to_owned()
+                        })
+                        .or_else(|| {
+                            status
+                                .excluded_legacy_clients
+                                .contains(&username)
+                                .then(|| "excluded legacy participant".to_owned())
+                        })
+                });
                 users.push(MainWindowRuntimeUserSnapshot {
                     username: username.clone(),
                     room_name: room_name.clone(),
@@ -143,6 +296,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     filename_differs: differences.filename,
                     filesize_differs: differences.filesize,
                     fileduration_differs: differences.fileduration,
+                    participant_status,
+                    start_barrier_status,
                 });
             }
         }
@@ -192,8 +347,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 filename_differs: user.filename_differs,
                 filesize_differs: user.filesize_differs,
                 fileduration_differs: user.fileduration_differs,
+                participant_status: user.participant_status.clone(),
+                start_barrier_status: user.start_barrier_status.clone(),
             })
             .collect();
+        snapshot.room_playback_intent = baseline_main_window.room_playback_intent.clone();
         snapshot.playlist = baseline_main_window
             .playlist
             .iter()
@@ -254,10 +412,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.autoplay_countdown_seconds = session
             .autoplay_timer_is_running()
             .then(|| session.autoplay_time_left_seconds().max(0.0).floor() as u32);
-        if let Some(playstate) = session.current_room_playstate()
-            && let Some(paused) = playstate.paused
-        {
-            snapshot.playback_paused = paused;
+        let now_seconds = system_time_seconds();
+        if let Some(playstate) = session.current_room_playstate_at(now_seconds) {
+            snapshot.room_playback_intent.position_seconds = playstate.position;
+            snapshot.room_playback_intent.paused = playstate.paused;
+            snapshot.room_playback_intent.set_by = playstate.set_by;
+            snapshot.room_playback_intent.authority = session
+                .current_room_playstate_authority()
+                .map(room_playstate_authority_label);
+            if let Some(paused) = snapshot.room_playback_intent.paused {
+                snapshot.playback_paused = paused;
+            }
         }
         if let Some(paused) = session.local_paused() {
             snapshot.playback_paused = paused;
@@ -266,6 +431,75 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.can_set_others_ready = session.server_set_others_readiness_supported()
             && session.local_can_control().unwrap_or(false);
         snapshot.readiness = self.session_readiness_presentations(&snapshot.users);
+        snapshot.room_playback_intent.start_gate = snapshot
+            .readiness
+            .values()
+            .next()
+            .map(ParticipantReadinessPresentation::start_gate_detail_label)
+            .or_else(|| {
+                session
+                    .playback_barrier_status()
+                    .map(|status| playback_barrier_phase_label(status.phase).to_owned())
+            });
+        let current_room = snapshot.room_name.as_str();
+        snapshot.room_playback_intent.participant_count = snapshot
+            .users
+            .iter()
+            .filter(|user| user.room_name == current_room)
+            .count();
+        snapshot.room_playback_intent.maximum_observed_drift_seconds = snapshot
+            .users
+            .iter()
+            .filter(|user| user.room_name == current_room)
+            .filter_map(|user| {
+                let MainWindowParticipantStatusPresentation::Report(status) =
+                    &user.participant_status
+                else {
+                    return None;
+                };
+                (status.freshness == MainWindowParticipantStatusFreshness::Fresh
+                    && !status.timeline_mismatch
+                    && status.status.correlation
+                        == Some(sorotte_protocol::ParticipantStatusCorrelation::Exact))
+                .then_some(status.status.room_offset_seconds)
+                .flatten()
+                .map(f64::abs)
+            })
+            .reduce(f64::max);
+        let mut buffering_participants: BTreeSet<String> = session
+            .playback_barrier_buffering_status()
+            .map(|status| status.buffering_clients.clone())
+            .unwrap_or_default();
+        buffering_participants.extend(
+            snapshot
+                .users
+                .iter()
+                .filter(|user| user.room_name == current_room)
+                .filter_map(|user| {
+                    let MainWindowParticipantStatusPresentation::Report(status) =
+                        &user.participant_status
+                    else {
+                        return None;
+                    };
+                    (status.freshness == MainWindowParticipantStatusFreshness::Fresh
+                        && !status.timeline_mismatch
+                        && status.status.player_connection
+                            == Some(sorotte_protocol::ParticipantPlayerConnection::Connected)
+                        && status.status.phase == Some(ParticipantPlaybackPhase::Rebuffering)
+                        && status.status.paused_for_cache == Some(true))
+                    .then(|| user.username.clone())
+                }),
+        );
+        let current_room_usernames: BTreeSet<&str> = snapshot
+            .users
+            .iter()
+            .filter(|user| user.room_name == current_room)
+            .map(|user| user.username.as_str())
+            .collect();
+        buffering_participants
+            .retain(|username| current_room_usernames.contains(username.as_str()));
+        snapshot.room_playback_intent.buffering_participants =
+            buffering_participants.into_iter().collect();
         (!snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window))
             .then_some(snapshot)
     }

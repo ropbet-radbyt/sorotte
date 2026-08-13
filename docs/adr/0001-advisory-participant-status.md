@@ -1,0 +1,3 @@
+# Keep participant status advisory and epoch-bound
+
+Participant status is transient same-room evidence, not canonical playback or readiness input. A report or snapshot belongs atomically to one status epoch (connection generation, negotiated capability, room membership, and authoritative playback scope), and observation age remains separate from server receipt and projection time, with position retaining a specific age alongside the report-wide oldest-evidence age. We chose this over server-side player polling or reusing canonical State because stale, malicious, or partially updated telemetry must fail closed without seeking, pausing, admitting, or removing anyone.

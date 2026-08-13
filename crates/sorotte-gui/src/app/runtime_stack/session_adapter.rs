@@ -8,6 +8,44 @@ pub(in crate::app) struct GuiSessionRoomPlaystate {
     pub(in crate::app) set_by: Option<String>,
 }
 
+/// The exact reliable playlist frames that must receive terminal write
+/// acknowledgements before a dependent local-player side effect may run.
+///
+/// Unrelated status, chat, or list traffic is intentionally absent. That
+/// keeps the frontier stable when a coalescible tail is cancelled and means
+/// traffic queued after the mutation cannot extend the wait.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(in crate::app) struct GuiPlaylistProtocolDeliveryFence {
+    pending_lines: VecDeque<String>,
+}
+
+impl GuiPlaylistProtocolDeliveryFence {
+    pub(in crate::app) fn new(pending_lines: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            pending_lines: pending_lines.into_iter().collect(),
+        }
+    }
+
+    pub(in crate::app) fn note_frame_written(&mut self, line: &str) {
+        if self
+            .pending_lines
+            .front()
+            .is_some_and(|expected| expected == line)
+        {
+            self.pending_lines.pop_front();
+        }
+    }
+
+    pub(in crate::app) fn is_reached(&self) -> bool {
+        self.pending_lines.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn pending_frame_count(&self) -> usize {
+        self.pending_lines.len()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum GuiLocalPlayerUnpauseDecision {
     NotApplicable,
@@ -71,8 +109,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(None)
     }
 
-    fn acknowledge_outbound_protocol_delivery(&mut self, _token: u64) -> Result<(), String> {
-        Ok(())
+    /// Acknowledges a staged frame and returns its exact encoded line. Owners
+    /// use the receipt payload to advance causal delivery frontiers without
+    /// coupling them to the mutable global outbox length.
+    fn acknowledge_outbound_protocol_delivery(
+        &mut self,
+        _token: u64,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
     }
 
     fn fail_outbound_protocol_delivery(&mut self, _token: u64) -> Result<(), String> {
@@ -98,6 +142,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _received_at_seconds: f64,
     ) -> Result<(), String> {
         self.apply_message_json(json_line)
+    }
+
+    fn request_user_list(&mut self) -> Result<bool, String> {
+        Ok(false)
     }
 
     fn set_room(&mut self, _room: String) -> Result<(), String> {
@@ -167,6 +215,15 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         )
     }
 
+    fn replace_playlist_with_delivery_fence(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.replace_playlist(files, selected_index)?;
+        Ok(GuiPlaylistProtocolDeliveryFence::default())
+    }
+
     fn undo_playlist_change(&mut self) -> Result<(), String> {
         Err("Attached session runtime does not support shared playlist undo.".to_owned())
     }
@@ -199,6 +256,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _cache_buffering_percent: Option<f64>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn set_external_player_availability(
+        &mut self,
+        _availability: ExternalPlayerAvailability,
+        _now_seconds: f64,
+    ) -> Result<bool, String> {
+        Ok(false)
     }
 
     fn prepare_attached_playback_media(

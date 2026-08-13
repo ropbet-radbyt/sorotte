@@ -152,6 +152,16 @@ impl ClientSession {
         }
 
         let provisional_user = self.model.room.users.remove(&provisional_username);
+        let provisional_participant_status_capability = self
+            .model
+            .room
+            .participant_status_capabilities
+            .remove(&provisional_username);
+        let provisional_legacy_position = self
+            .model
+            .room
+            .legacy_list_position_snapshots
+            .remove(&provisional_username);
         let provisional_room = provisional_user
             .as_ref()
             .and_then(|user| user.room.clone())
@@ -193,12 +203,27 @@ impl ClientSession {
                 assigned_user.file = Some(provisional_file);
             }
         }
+        if let Some(capability) = provisional_participant_status_capability {
+            self.model
+                .room
+                .participant_status_capabilities
+                .entry(assigned_username.to_owned())
+                .or_insert(capability);
+        }
+        if let Some(position) = provisional_legacy_position {
+            self.model
+                .room
+                .legacy_list_position_snapshots
+                .entry(assigned_username.to_owned())
+                .or_insert(position);
+        }
 
         true
     }
 
     pub(super) fn apply_hello(&mut self, hello: ClientHello) {
         self.reset_playback_barrier();
+        self.clear_participant_status_views();
         if self.model.reconnect.in_progress {
             self.model.reconnect.in_progress = false;
             self.model.reconnect.connected_intent = true;
@@ -280,6 +305,7 @@ impl ClientSession {
         }
 
         let readiness_v2 = hello.capabilities.readiness_v2;
+        self.model.connection.participant_status_v1 = hello.participant_status_v1;
         self.model.connection.phase = ConnectionPhase::Active(hello.capabilities);
         if readiness_v2 {
             // V2 start commits are server-owned. Retain the preference for
@@ -317,7 +343,8 @@ impl ClientSession {
                 ClientSetCommand::Features {
                     username,
                     capabilities,
-                } => features = Some((username, capabilities)),
+                    participant_status_v1,
+                } => features = Some((username, capabilities, participant_status_v1)),
                 ClientSetCommand::PlaybackBarrier(extension) => {
                     playback_barrier = Some(*extension);
                 }
@@ -389,8 +416,14 @@ impl ClientSession {
                         self.set_user_controller(&username, controller);
                     }
 
-                    if let Some(capabilities) = user_payload.capabilities {
-                        self.set_user_capabilities(&username, Some(capabilities));
+                    if user_payload.capabilities.is_some()
+                        || user_payload.participant_status_v1.is_some()
+                    {
+                        self.set_user_capabilities(
+                            &username,
+                            user_payload.capabilities,
+                            user_payload.participant_status_v1,
+                        );
                     }
 
                     if let Some(is_ready) = user_payload.ready {
@@ -420,10 +453,14 @@ impl ClientSession {
                 }
             }
 
-            if let Some((username, capabilities)) = features {
+            if let Some((username, capabilities, participant_status_v1)) = features {
                 let target_username = username.or_else(|| self.model.connection.username.clone());
                 if let Some(target_username) = target_username {
-                    self.set_user_capabilities(&target_username, Some(capabilities));
+                    self.set_user_capabilities(
+                        &target_username,
+                        Some(capabilities),
+                        Some(participant_status_v1),
+                    );
                 }
             }
 
@@ -599,6 +636,8 @@ impl ClientSession {
                             .get(&room_name)
                             .map(|playlist| playlist.files.clone())
                             .unwrap_or_default();
+                        let current_room_media_changed = current_files != playlist_change_files
+                            && self.model.room.name.as_deref() == Some(room_name.as_str());
                         self.capture_playlist_undo_snapshot_legacy_compatible(
                             &room_name,
                             &current_files,
@@ -629,6 +668,9 @@ impl ClientSession {
                         }
                         playlist.files = playlist_change_files;
                         playlist.set_by = playlist_change_user;
+                        if current_room_media_changed {
+                            self.invalidate_participant_status_evidence();
+                        }
                     } else {
                         let pending_playlist = self
                             .model
@@ -723,9 +765,14 @@ impl ClientSession {
                         .rooms
                         .entry(room_name.to_owned())
                         .or_default();
+                    let current_room_media_changed = playlist.index != playlist_index_value
+                        && self.model.room.name.as_deref() == Some(room_name);
                     playlist.index = playlist_index_value;
                     if playlist_index_user.is_some() {
                         playlist.set_by = playlist_index_user;
+                    }
+                    if current_room_media_changed {
+                        self.invalidate_participant_status_evidence();
                     }
                 } else {
                     let pending_playlist = self
@@ -750,6 +797,9 @@ impl ClientSession {
 
     pub(super) fn apply_list(&mut self, rooms: BTreeMap<String, BTreeMap<String, ClientListUser>>) {
         self.model.room.users.clear();
+        self.model.room.participant_status_capabilities.clear();
+        self.model.room.legacy_list_position_snapshots.clear();
+        self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
         self.model.room.domain = SyncDomain::default();
@@ -767,7 +817,12 @@ impl ClientSession {
                 self.set_user_file(&username, user_entry.file);
                 self.set_user_controller(&username, user_entry.controller);
                 self.set_user_ready_state(&username, user_entry.ready);
-                self.set_user_capabilities(&username, user_entry.capabilities);
+                self.set_user_capabilities(
+                    &username,
+                    user_entry.capabilities,
+                    user_entry.participant_status_v1,
+                );
+                self.set_user_legacy_list_position_snapshot(&username, user_entry.position);
                 if current_username.as_deref() == Some(username.as_str()) {
                     resolved_self_room = Some(room_name.clone());
                 }
@@ -781,9 +836,15 @@ impl ClientSession {
 
     pub(super) fn apply_state_at(
         &mut self,
-        state_payload: ClientStateUpdate,
+        mut state_payload: ClientStateUpdate,
         now_seconds: Option<f64>,
     ) {
+        self.apply_participant_status_update(
+            state_payload.participant_status_scope.take(),
+            state_payload.participant_status_snapshot.take(),
+            std::mem::take(&mut state_payload.participant_status_scope_invalid),
+            now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+        );
         let Some(playstate) = state_payload.playstate else {
             return;
         };

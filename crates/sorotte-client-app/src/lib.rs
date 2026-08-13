@@ -10,6 +10,7 @@ mod legacy_reconnect_diagnostics;
 mod legacy_runtime_config;
 mod legacy_session_loop;
 mod legacy_settings;
+mod participant_status_presentation;
 mod readiness_presentation;
 mod runtime_config;
 mod sorotte_ini;

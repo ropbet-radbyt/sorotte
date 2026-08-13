@@ -556,6 +556,12 @@ impl PlayerAdapter for MpvAdapter {
         "mpv"
     }
 
+    fn transport_is_connected(&self) -> Option<bool> {
+        // The deterministic simulated adapter is a live command endpoint even
+        // though it intentionally has no OS IPC handle.
+        Some(self.is_connected() || self.simulation_mode)
+    }
+
     fn maintain_runtime_leases_nonblocking(&mut self) {
         self.maintain_runtime_leases_nonblocking_inner();
     }

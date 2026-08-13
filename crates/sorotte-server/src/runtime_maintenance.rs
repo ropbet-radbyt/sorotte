@@ -1,5 +1,92 @@
 use super::*;
 
+fn participant_status_report_age_ms(retained: &RetainedParticipantStatus, now_seconds: f64) -> u64 {
+    let elapsed_seconds = now_seconds - retained.received_at_seconds;
+    let observed_age_ms = if !elapsed_seconds.is_finite() || elapsed_seconds < 0.0 {
+        // Clock rollback is a one-way fence for this report. A replacement
+        // report creates a new retained value and therefore a new clock.
+        u64::MAX
+    } else {
+        // Positive float-to-integer conversion saturates, so overflow and
+        // positive infinity become the same fail-closed maximum age.
+        (elapsed_seconds * 1_000.0).ceil() as u64
+    };
+    let monotonic_age_ms = retained
+        .max_projected_report_age_ms
+        .get()
+        .max(observed_age_ms);
+    retained.max_projected_report_age_ms.set(monotonic_age_ms);
+    monotonic_age_ms
+}
+
+fn participant_status_availability(report_age_ms: u64) -> ParticipantStatusAvailability {
+    // Availability describes the Sorotte report stream, not the age of any
+    // optional player sample carried by the report. Lifecycle-only reports
+    // (starting, disconnected, failed, unavailable) deliberately have no
+    // player evidence and must remain fresh while they continue arriving.
+    if report_age_ms <= PARTICIPANT_STATUS_FRESH_MILLIS {
+        ParticipantStatusAvailability::Fresh
+    } else if report_age_ms <= PARTICIPANT_STATUS_DELAYED_MILLIS {
+        ParticipantStatusAvailability::Delayed
+    } else {
+        ParticipantStatusAvailability::Stale
+    }
+}
+
+fn projected_participant_position(
+    report: &ParticipantStatusReport,
+    report_age_ms: u64,
+    forward_delay_ms: Option<u64>,
+) -> Option<f64> {
+    let mut position = report.position_seconds?;
+    let position_sample_age_ms = report.position_sample_age_ms?;
+    if report.player_connection == ParticipantPlayerConnection::Connected
+        && report.phase == ParticipantPlaybackPhase::Playing
+        && report.logical_paused == Some(false)
+        && report.paused_for_cache == Some(false)
+    {
+        let playback_rate = report.playback_rate?;
+        let total_sample_age_ms = position_sample_age_ms
+            .saturating_add(report_age_ms)
+            .saturating_add(forward_delay_ms.unwrap_or_default());
+        position += total_sample_age_ms as f64 / 1_000.0 * playback_rate;
+    }
+    position.is_finite().then_some(position)
+}
+
+fn compact_participant_status_snapshot(
+    snapshot: &ParticipantStatusSnapshot,
+) -> ParticipantStatusSnapshot {
+    let participants = snapshot
+        .participants
+        .iter()
+        .map(|(username, full)| {
+            let mut compact = ParticipantStatusView::new(full.availability);
+            compact.correlation = full.correlation;
+            compact.player_connection = full.player_connection;
+            compact.phase = full.phase;
+            // Compact rows retain the report-stream clock for coarse
+            // connection/phase freshness, but intentionally omit player
+            // evidence and its independent sample clocks.
+            compact.report_age_ms = full.report_age_ms;
+            (username.clone(), compact)
+        })
+        .collect();
+    ParticipantStatusSnapshot::new(snapshot.revision, participants)
+        .with_mode(ParticipantStatusSnapshotMode::Compact)
+}
+
+fn unavailable_participant_status_snapshot(
+    snapshot: &ParticipantStatusSnapshot,
+) -> ParticipantStatusSnapshot {
+    ParticipantStatusSnapshot::new(snapshot.revision, BTreeMap::new())
+        .with_mode(ParticipantStatusSnapshotMode::Unavailable)
+}
+
+pub(crate) fn protocol_line_exceeds_maximum(encoded_len: usize) -> bool {
+    encoded_len > DEFAULT_MAX_PROTOCOL_LINE_BYTES
+}
+
 impl ServerRuntime {
     fn observe_tls_certificate_bundle(
         &self,
@@ -151,6 +238,17 @@ impl ServerRuntime {
         now: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let mut outbound = self.collect_due_playback_barrier_updates_at(now)?;
+        if now.is_finite() {
+            if self
+                .last_periodic_schedule_observed_at_seconds
+                .is_some_and(|last_observed| now < last_observed)
+            {
+                for next_state_at in self.client_next_periodic_state_at.values_mut() {
+                    *next_state_at = now + SERVER_STATE_INTERVAL_SECONDS;
+                }
+            }
+            self.last_periodic_schedule_observed_at_seconds = Some(now);
+        }
         let mut due_clients: Vec<String> = self
             .client_next_periodic_state_at
             .iter()
@@ -160,26 +258,16 @@ impl ServerRuntime {
         due_clients.sort();
 
         for client_id in due_clients {
-            let Some(mut next_state_at) =
-                self.client_next_periodic_state_at.get(&client_id).copied()
-            else {
+            if !self.client_next_periodic_state_at.contains_key(&client_id) {
                 continue;
-            };
-            while next_state_at <= now {
-                self.client_next_periodic_state_at.insert(
-                    client_id.clone(),
-                    next_state_at + SERVER_STATE_INTERVAL_SECONDS,
-                );
-                outbound.extend(self.collect_periodic_tick_for_client_at(
-                    &client_id,
-                    next_state_at,
-                    now,
-                )?);
-                if !self.sessions.contains_key(&client_id) {
-                    break;
-                }
-                next_state_at += SERVER_STATE_INTERVAL_SECONDS;
             }
+            // Coalescible periodic State has no useful intermediate history.
+            // Rebase the cadence from the one materialized update. This is
+            // constant-time after any clock jump and prevents an immediate
+            // second tick caused by floating-point catch-up arithmetic.
+            self.client_next_periodic_state_at
+                .insert(client_id.clone(), now + SERVER_STATE_INTERVAL_SECONDS);
+            outbound.extend(self.collect_periodic_tick_for_client_at(&client_id, now, now)?);
         }
 
         Ok(outbound)
@@ -271,20 +359,87 @@ impl ServerRuntime {
         if server_ignoring_counter > 0 {
             return None;
         }
+        let participant_status =
+            self.participant_status_snapshot_for_client_at(client_id, now_seconds);
+        let build_message = |participant_status| {
+            state_sync_message(
+                position,
+                paused,
+                false,
+                StateSyncOptions {
+                    set_by,
+                    client_latency_calculation: pending_client_latency,
+                    client_ignoring_counter: pending_client_ignoring,
+                    server_rtt_seconds,
+                    latency_calculation_seconds: Some(now_seconds),
+                    participant_status,
+                    ..StateSyncOptions::default()
+                },
+            )
+        };
+        let mut message = build_message(participant_status.clone());
+        if protocol_line_exceeds_maximum(encode_message_line(&message).ok()?.len())
+            && let Some(mut compact) = participant_status.clone()
+            && let Some(snapshot) = compact.snapshot.as_ref()
+        {
+            let compact_snapshot = compact_participant_status_snapshot(snapshot);
+            self.cache_participant_status_snapshot_representation(client_id, &compact_snapshot);
+            compact.snapshot = Some(compact_snapshot);
+            message = build_message(Some(compact.clone()));
+            if protocol_line_exceeds_maximum(encode_message_line(&message).ok()?.len())
+                && let Some(snapshot) = compact.snapshot.as_ref()
+            {
+                let unavailable_snapshot = unavailable_participant_status_snapshot(snapshot);
+                self.cache_participant_status_snapshot_representation(
+                    client_id,
+                    &unavailable_snapshot,
+                );
+                compact.snapshot = Some(unavailable_snapshot);
+                message = build_message(Some(compact));
+            }
+        }
+        Some(message)
+    }
 
-        Some(state_sync_message(
-            position,
-            paused,
-            false,
-            StateSyncOptions {
-                set_by,
-                client_latency_calculation: pending_client_latency,
-                client_ignoring_counter: pending_client_ignoring,
-                server_rtt_seconds,
-                latency_calculation_seconds: Some(now_seconds),
-                ..StateSyncOptions::default()
-            },
-        ))
+    fn cache_participant_status_snapshot_representation(
+        &mut self,
+        client_id: &str,
+        snapshot: &ParticipantStatusSnapshot,
+    ) {
+        let Some(room) = self
+            .sessions
+            .get(client_id)
+            .map(|session| session.room.as_str())
+        else {
+            return;
+        };
+        let Some(cached) = self.participant_status_snapshot_cache.get_mut(room) else {
+            return;
+        };
+        let representation_escalates = matches!(
+            (cached.snapshot.mode, snapshot.mode),
+            (
+                ParticipantStatusSnapshotMode::Full,
+                ParticipantStatusSnapshotMode::Compact | ParticipantStatusSnapshotMode::Unavailable
+            ) | (
+                ParticipantStatusSnapshotMode::Compact,
+                ParticipantStatusSnapshotMode::Unavailable
+            )
+        );
+        if cached.snapshot.revision == snapshot.revision && representation_escalates {
+            cached.snapshot = snapshot.clone();
+        }
+    }
+
+    /// Mutation/invariant-only seam for verifying that cached snapshot
+    /// degradation is revision-scoped without widening the release API.
+    #[cfg(test)]
+    pub(crate) fn cache_participant_status_snapshot_representation_for_test(
+        &mut self,
+        client_id: &str,
+        snapshot: &ParticipantStatusSnapshot,
+    ) {
+        self.cache_participant_status_snapshot_representation(client_id, snapshot);
     }
 
     pub(crate) fn client_timed_out(&self, client_id: &str, now_seconds: f64) -> bool {
@@ -338,12 +493,18 @@ impl ServerRuntime {
     }
 
     pub(crate) fn remove_session_tracking(&mut self, client_id: &str) -> Option<ServerSession> {
+        if !self.sessions.contains_key(client_id) {
+            return None;
+        }
+        self.clear_participant_status_for_client(client_id);
         let session = self.sessions.remove(client_id)?;
         self.playback_barrier_fenced_clients.remove(client_id);
         let _ = self.domain.leave_room(&session.username, &session.room);
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
+        self.client_participant_status_last_sequence
+            .remove(client_id);
         self.client_room_join_sequence.remove(client_id);
         self.pending_user_transport_by_client.remove(client_id);
         self.readiness_reconnect_identity_by_client
@@ -355,6 +516,276 @@ impl ServerRuntime {
         self.client_next_periodic_state_at.remove(client_id);
         self.client_peer_ips.remove(client_id);
         Some(session)
+    }
+
+    /// Retires one connection's advisory status and every cached projection
+    /// that could still contain its old membership or report. The session
+    /// room is included even when no report was retained, because cached
+    /// snapshots also contain `AwaitingReport` and `Unsupported` members.
+    pub(crate) fn clear_participant_status_for_client(&mut self, client_id: &str) {
+        let retained_room = self
+            .client_participant_status
+            .remove(client_id)
+            .map(|retained| retained.room);
+        let session_room = self
+            .sessions
+            .get(client_id)
+            .map(|session| session.room.clone());
+
+        if let Some(room) = retained_room.as_deref() {
+            self.participant_status_snapshot_cache.remove(room);
+        }
+        if let Some(room) = session_room.as_deref()
+            && retained_room.as_deref() != Some(room)
+        {
+            self.participant_status_snapshot_cache.remove(room);
+        }
+    }
+
+    pub(crate) fn clear_participant_status_for_room(&mut self, room: &str) {
+        self.client_participant_status
+            .retain(|_, retained| retained.room != room);
+        self.participant_status_snapshot_cache.remove(room);
+    }
+
+    pub(crate) fn advance_participant_status_media_generation(
+        &mut self,
+        room: &str,
+        authoritative_generation: Option<u64>,
+    ) {
+        self.ensure_room_state(room);
+        let scope = self
+            .room_participant_status_scopes
+            .entry(room.to_owned())
+            .or_default();
+        scope.media_generation = authoritative_generation
+            .filter(|generation| *generation > 0)
+            .unwrap_or_else(|| scope.media_generation.saturating_add(1));
+        scope.transport_revision = scope.transport_revision.saturating_add(1);
+        self.participant_status_snapshot_cache.remove(room);
+    }
+
+    pub(crate) fn advance_participant_status_transport_revision(&mut self, room: &str) {
+        self.ensure_room_state(room);
+        let scope = self
+            .room_participant_status_scopes
+            .entry(room.to_owned())
+            .or_default();
+        scope.transport_revision = scope.transport_revision.saturating_add(1);
+        self.participant_status_snapshot_cache.remove(room);
+    }
+
+    fn participant_status_scope_for_room(&self, room: &str) -> ParticipantPlaybackScope {
+        let state_revision = self
+            .room_playback_barriers
+            .get(room)
+            .and_then(|barrier| barrier.state_revision);
+        self.room_participant_status_scopes
+            .get(room)
+            .copied()
+            .unwrap_or_default()
+            .to_wire(state_revision)
+    }
+
+    fn participant_status_snapshot_for_client_at(
+        &mut self,
+        client_id: &str,
+        now_seconds: f64,
+    ) -> Option<ParticipantStatusStateExtension> {
+        let recipient = self.sessions.get(client_id)?.clone();
+        if !recipient.capabilities.participant_status_v1 {
+            return None;
+        }
+        let generated_at_bits = now_seconds.to_bits();
+        if let Some(cached) = self.participant_status_snapshot_cache.get(&recipient.room)
+            && cached.generated_at_bits == generated_at_bits
+        {
+            return Some(
+                ParticipantStatusStateExtension::new()
+                    .with_scope(self.participant_status_scope_for_room(&recipient.room))
+                    .with_snapshot(cached.snapshot.clone()),
+            );
+        }
+
+        let revision = self
+            .room_participant_status_snapshot_revisions
+            .entry(recipient.room.clone())
+            .or_default();
+        *revision = revision.checked_add(1)?;
+        let revision = *revision;
+
+        let current_scope = self.participant_status_scope_for_room(&recipient.room);
+        let room_position = self
+            .room_playback_states
+            .get(&recipient.room)
+            .map(|state| state.position_at(now_seconds));
+
+        let participants = self
+            .sessions
+            .iter()
+            .filter(|(peer_client_id, session)| {
+                session.room == recipient.room
+                    && !self
+                        .playback_barrier_fenced_clients
+                        .contains(*peer_client_id)
+            })
+            .map(|(peer_client_id, session)| {
+                let view = if !session.capabilities.participant_status_v1 {
+                    ParticipantStatusView::new(ParticipantStatusAvailability::Unsupported)
+                } else if let Some(retained) = self.client_participant_status.get(peer_client_id)
+                    && retained.room == session.room
+                    && retained.username == session.username
+                    && retained.room_join_sequence == self.client_room_join_order(peer_client_id)
+                {
+                    let report_age_ms = participant_status_report_age_ms(retained, now_seconds);
+                    let correlation = match retained.report.playback_scope {
+                        Some(reported) if reported == current_scope => {
+                            ParticipantStatusCorrelation::Exact
+                        }
+                        Some(_) => ParticipantStatusCorrelation::Superseded,
+                        None => ParticipantStatusCorrelation::Uncorrelated,
+                    };
+                    let availability = participant_status_availability(report_age_ms);
+                    let mut view = ParticipantStatusView::new(availability);
+                    view.correlation = Some(correlation);
+                    view.player_connection = Some(retained.report.player_connection);
+                    view.report_age_ms = Some(report_age_ms);
+                    if availability != ParticipantStatusAvailability::Stale {
+                        // Connection and coarse phase remain useful while a
+                        // player is applying a newer scope. Media-derived
+                        // evidence is exposed only under exact correlation.
+                        view.phase = Some(retained.report.phase);
+                        if correlation == ParticipantStatusCorrelation::Exact {
+                            // Snapshot ages are evaluated at the server's
+                            // projection instant. Including report residence
+                            // and the validated forward delay exactly once
+                            // lets receivers continue the same evidence clock
+                            // instead of granting a second fresh window.
+                            let projected_sample_age_ms =
+                                retained.report.sample_age_ms.map(|sample_age_ms| {
+                                    sample_age_ms.saturating_add(report_age_ms).saturating_add(
+                                        retained.forward_delay_ms.unwrap_or_default(),
+                                    )
+                                });
+                            let projected_position_sample_age_ms =
+                                retained.report.position_sample_age_ms.map(|sample_age_ms| {
+                                    sample_age_ms.saturating_add(report_age_ms).saturating_add(
+                                        retained.forward_delay_ms.unwrap_or_default(),
+                                    )
+                                });
+                            view.playback_scope = retained.report.playback_scope;
+                            view.sample_age_ms = projected_sample_age_ms;
+                            view.position_sample_age_ms = projected_position_sample_age_ms;
+
+                            if projected_position_sample_age_ms.is_some_and(|sample_age_ms| {
+                                sample_age_ms <= PARTICIPANT_STATUS_DELAYED_MILLIS
+                            }) {
+                                view.timeline_kind = Some(retained.report.timeline_kind);
+                                view.position_seconds = projected_participant_position(
+                                    &retained.report,
+                                    report_age_ms,
+                                    retained.forward_delay_ms,
+                                );
+                            }
+                            if projected_sample_age_ms.is_some_and(|sample_age_ms| {
+                                sample_age_ms <= PARTICIPANT_STATUS_DELAYED_MILLIS
+                            }) {
+                                view.logical_paused = retained.report.logical_paused;
+                                view.playback_rate = retained.report.playback_rate;
+                                view.paused_for_cache = retained.report.paused_for_cache;
+                                view.cache_percent = retained.report.cache_percent;
+                                view.buffered_ahead_seconds =
+                                    retained.report.buffered_ahead_seconds;
+                            }
+
+                            let total_sample_age_ms = retained
+                                .report
+                                .sample_age_ms
+                                .zip(retained.forward_delay_ms)
+                                .map(|(sample_age, forward_delay_ms)| {
+                                    sample_age
+                                        .saturating_add(report_age_ms)
+                                        .saturating_add(forward_delay_ms)
+                                });
+                            let total_position_sample_age_ms = retained
+                                .report
+                                .position_sample_age_ms
+                                .zip(retained.forward_delay_ms)
+                                .map(|(sample_age, forward_delay_ms)| {
+                                    sample_age
+                                        .saturating_add(report_age_ms)
+                                        .saturating_add(forward_delay_ms)
+                                });
+                            let offset_is_safe = availability
+                                == ParticipantStatusAvailability::Fresh
+                                && current_scope.state_revision.is_some()
+                                && current_scope.transport_revision.is_some()
+                                && retained.report.playback_scope == Some(current_scope)
+                                && retained.report.player_connection
+                                    == ParticipantPlayerConnection::Connected
+                                && retained.report.timeline_kind == ParticipantTimelineKind::Vod
+                                && matches!(
+                                    retained.report.phase,
+                                    ParticipantPlaybackPhase::Playing
+                                        | ParticipantPlaybackPhase::ReadyPaused
+                                        | ParticipantPlaybackPhase::Rebuffering
+                                )
+                                && match retained.report.phase {
+                                    ParticipantPlaybackPhase::Playing => {
+                                        retained.report.logical_paused == Some(false)
+                                            && retained.report.playback_rate.is_some()
+                                            && retained.report.paused_for_cache == Some(false)
+                                    }
+                                    ParticipantPlaybackPhase::ReadyPaused => {
+                                        retained.report.logical_paused == Some(true)
+                                            && retained.report.paused_for_cache == Some(false)
+                                    }
+                                    ParticipantPlaybackPhase::Rebuffering => {
+                                        retained.report.paused_for_cache == Some(true)
+                                    }
+                                    _ => false,
+                                }
+                                && total_sample_age_ms.is_some_and(|sample_age| {
+                                    sample_age <= PARTICIPANT_STATUS_FRESH_MILLIS
+                                })
+                                && total_position_sample_age_ms.is_some_and(|sample_age| {
+                                    sample_age <= PARTICIPANT_STATUS_FRESH_MILLIS
+                                });
+                            if offset_is_safe
+                                && let (Some(participant_position), Some(room_position)) =
+                                    (view.position_seconds, room_position)
+                            {
+                                let offset = participant_position - room_position;
+                                if offset.is_finite()
+                                    && offset.abs()
+                                        <= PARTICIPANT_STATUS_MAX_ABSOLUTE_ROOM_OFFSET_SECONDS
+                                {
+                                    view.room_offset_seconds = Some(offset);
+                                }
+                            }
+                        }
+                    }
+                    view
+                } else {
+                    ParticipantStatusView::new(ParticipantStatusAvailability::AwaitingReport)
+                };
+                (session.username.clone(), view)
+            })
+            .collect();
+
+        let snapshot = ParticipantStatusSnapshot::new(revision, participants);
+        self.participant_status_snapshot_cache.insert(
+            recipient.room.clone(),
+            CachedParticipantStatusSnapshot {
+                generated_at_bits,
+                snapshot: snapshot.clone(),
+            },
+        );
+        Some(
+            ParticipantStatusStateExtension::new()
+                .with_scope(current_scope)
+                .with_snapshot(snapshot),
+        )
     }
 
     pub(crate) fn apply_persisted_rooms_snapshot(
@@ -411,6 +842,9 @@ impl ServerRuntime {
                 .or_default();
             room_playback.position = position;
             room_playback.updated_at_seconds = now_seconds;
+            self.room_participant_status_scopes
+                .entry(room_name.clone())
+                .or_default();
             if !has_valid_persisted_activity && self.room_persistence.is_some() {
                 // Make the startup-time fallback a one-time migration. Without
                 // this write-back, repeatedly restarting a legacy database
@@ -474,6 +908,9 @@ impl ServerRuntime {
                     index: Some(0),
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
+            self.room_participant_status_scopes
+                .entry(room_name.clone())
+                .or_default();
             self.room_playback_states
                 .entry(room_name)
                 .or_insert_with(|| RoomPlaybackState::new_at(now_seconds));
@@ -821,6 +1258,10 @@ impl ServerRuntime {
         self.room_playback_states.remove(room_name);
         self.room_playback_barriers.remove(room_name);
         self.room_buffering_controls.remove(room_name);
+        self.room_participant_status_scopes.remove(room_name);
+        self.room_participant_status_snapshot_revisions
+            .remove(room_name);
+        self.participant_status_snapshot_cache.remove(room_name);
         self.playback_barrier_request_tombstones
             .retain(|(tombstone_room, _), _| tombstone_room != room_name);
         self.playback_barrier_new_identity_rate_by_room
@@ -839,6 +1280,9 @@ impl ServerRuntime {
         self.room_playback_states
             .entry(room_name.to_owned())
             .or_insert_with(|| RoomPlaybackState::new_at(now_seconds));
+        self.room_participant_status_scopes
+            .entry(room_name.to_owned())
+            .or_default();
     }
 
     pub(crate) fn room_playlist_state_mut(&mut self, room_name: &str) -> &mut RoomPlaylistState {
@@ -1053,7 +1497,8 @@ impl ServerRuntime {
             return;
         }
 
-        let current_rtt_seconds = self.current_time_seconds() - latency_calculation;
+        let observed_at_seconds = self.current_time_seconds();
+        let current_rtt_seconds = observed_at_seconds - latency_calculation;
         if !current_rtt_seconds.is_finite() || current_rtt_seconds < 0.0 {
             return;
         }
@@ -1076,6 +1521,7 @@ impl ServerRuntime {
             state_counters.ping_forward_delay_seconds =
                 state_counters.ping_average_rtt_seconds / 2.0;
         }
+        state_counters.ping_metrics_observed_at_seconds = Some(observed_at_seconds);
     }
 
     pub(crate) fn server_rtt_seconds(&self, client_id: &str) -> f64 {
@@ -1090,6 +1536,35 @@ impl ServerRuntime {
             .get(client_id)
             .map(|state_counters| state_counters.ping_forward_delay_seconds)
             .unwrap_or_default()
+    }
+
+    /// Returns the server-owned one-way estimate already used for canonical
+    /// inbound playback timing. Participant projection accepts it only while
+    /// both the estimate and its monotonic observation age are finite and
+    /// within the live protocol timeout. Clock rollback and ancient ping
+    /// echoes therefore fail closed instead of manufacturing timing evidence.
+    pub(crate) fn participant_status_forward_delay_ms_at(
+        &mut self,
+        client_id: &str,
+        now_seconds: f64,
+    ) -> Option<u64> {
+        let state_counters = self.client_state_counters.get_mut(client_id)?;
+        let observed_at_seconds = state_counters.ping_metrics_observed_at_seconds?;
+        let observation_age_seconds = now_seconds - observed_at_seconds;
+        if !observation_age_seconds.is_finite()
+            || !(0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&observation_age_seconds)
+        {
+            state_counters.ping_metrics_observed_at_seconds = None;
+            return None;
+        }
+        let forward_delay_seconds = state_counters.ping_forward_delay_seconds;
+        if !forward_delay_seconds.is_finite()
+            || !(0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&forward_delay_seconds)
+        {
+            state_counters.ping_metrics_observed_at_seconds = None;
+            return None;
+        }
+        Some((forward_delay_seconds * 1_000.0).ceil() as u64)
     }
 
     pub(crate) fn take_client_passthrough_state_metadata(
@@ -1135,6 +1610,15 @@ impl ServerRuntime {
         let server_rtt_seconds = self.server_rtt_seconds(client_id);
         let (pending_client_latency, pending_client_ignoring) =
             self.take_client_passthrough_state_metadata(client_id);
+        let participant_status = self
+            .sessions
+            .get(client_id)
+            .filter(|session| session.capabilities.participant_status_v1)
+            .map(|session| session.room.clone())
+            .map(|room| {
+                ParticipantStatusStateExtension::new()
+                    .with_scope(self.participant_status_scope_for_room(&room))
+            });
         state_sync_message(
             position,
             paused,
@@ -1146,6 +1630,7 @@ impl ServerRuntime {
                 client_ignoring_counter: pending_client_ignoring,
                 server_rtt_seconds,
                 latency_calculation_seconds: Some(self.current_time_seconds()),
+                participant_status,
             },
         )
     }

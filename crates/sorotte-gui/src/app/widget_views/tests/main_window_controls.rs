@@ -1,7 +1,11 @@
 use super::*;
 
 use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation;
-use sorotte_protocol::{MixedReadinessPolicy, RoomStartGatePhase, StartGateDegradedReason};
+use sorotte_protocol::{
+    MixedReadinessPolicy, ParticipantPlaybackPhase, ParticipantPlaybackScope,
+    ParticipantPlayerConnection, ParticipantStatusAvailability, ParticipantStatusCorrelation,
+    ParticipantStatusView, ParticipantTimelineKind, RoomStartGatePhase, StartGateDegradedReason,
+};
 
 #[test]
 fn main_window_contact_info_follows_the_saved_gui_preference() {
@@ -243,6 +247,478 @@ fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
             .and_then(|node| node.value.as_deref()),
         Some("automatic start unavailable: a room member does not support readiness V2")
     );
+}
+
+#[test]
+fn room_intent_and_member_observation_remain_explicit_and_separate() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("Alice".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.room_playback_intent.position_seconds = Some(755.03);
+    state.main_window.room_playback_intent.paused = Some(false);
+    state.main_window.room_playback_intent.set_by = Some("server".to_owned());
+    state.main_window.room_playback_intent.authority =
+        Some("server start barrier, generation 7, revision 19".to_owned());
+    state.main_window.room_playback_intent.start_gate = Some("committed by server".to_owned());
+    let mut observed = ParticipantStatusView::new(ParticipantStatusAvailability::Delayed);
+    observed.correlation = Some(ParticipantStatusCorrelation::Exact);
+    observed.playback_scope = Some(ParticipantPlaybackScope::new(7).with_state_revision(19));
+    observed.player_connection = Some(ParticipantPlayerConnection::Connected);
+    observed.phase = Some(ParticipantPlaybackPhase::Rebuffering);
+    observed.timeline_kind = Some(ParticipantTimelineKind::Vod);
+    observed.position_seconds = Some(751.2);
+    observed.logical_paused = Some(false);
+    observed.playback_rate = Some(1.0);
+    observed.buffered_ahead_seconds = Some(0.4);
+    observed.cache_percent = Some(20.0);
+    observed.report_age_ms = Some(4_200);
+    observed.sample_age_ms = Some(4_200);
+    observed.position_sample_age_ms = Some(4_200);
+    observed.room_offset_seconds = Some(-3.83);
+    state.main_window.users[0].participant_status = MainWindowParticipantStatusPresentation::Report(
+        MainWindowParticipantStatusReport::from_client_view(
+            sorotte_client_core::ClientParticipantStatusView::from_wire(observed),
+            false,
+        ),
+    );
+    state.main_window.users[0].start_barrier_status = Some("pending".to_owned());
+
+    let tree = state.main_window_widget_tree();
+    let room_intent = tree
+        .find("main-window:room-playback-state")
+        .expect("authoritative room intent should be visible");
+    assert_eq!(
+        room_intent.value.as_deref(),
+        Some("Room intent: PLAYING · 12:35.0 · Start gate: committed by server")
+    );
+    let room_tooltip = room_intent
+        .tooltip
+        .as_deref()
+        .expect("room intent should explain its authority");
+    assert!(room_tooltip.contains("Authoritative room intent: playing"));
+    assert!(room_tooltip.contains("Set by: server"));
+    assert!(room_tooltip.contains("member playback rows are observed advisory status"));
+
+    let participant_status = tree
+        .find("main-window:user:0:participant-status")
+        .expect("participant status should be visible");
+    assert_eq!(participant_status.status_tone, Some(GuiStatusTone::Warning));
+    assert_eq!(
+        participant_status.value.as_deref(),
+        Some(
+            "Rebuffering · 12:31.2 · Offset unavailable · 0.4 s buffered · cache refill 20% · delayed"
+        )
+    );
+    let member_tooltip = participant_status
+        .tooltip
+        .as_deref()
+        .expect("participant status should expose detailed diagnostics");
+    for expected in [
+        "Room session: present",
+        "Sorotte connection: delayed · 4.5 s old",
+        "Player: connected",
+        "Logical pause: no",
+        "Playback rate: 1.00×",
+        "Media generation: 7",
+        "Room revision: 19",
+        "Technical readiness:",
+        "Automatic start cohort:",
+        "Start barrier participant: pending",
+        "not total media download progress",
+    ] {
+        assert!(member_tooltip.contains(expected), "missing {expected:?}");
+    }
+    let browser_status = tree
+        .find("main-window:user:browser:0:participant-status")
+        .expect("room browser participant status should use the same typed projection");
+    assert_eq!(browser_status.status_tone, Some(GuiStatusTone::Warning));
+    assert!(
+        browser_status
+            .tooltip
+            .as_deref()
+            .is_some_and(|tooltip| tooltip.contains("Player: connected"))
+    );
+
+    let MainWindowParticipantStatusPresentation::Report(report) =
+        &mut state.main_window.users[0].participant_status
+    else {
+        panic!("test participant should retain a report");
+    };
+    report.freshness = MainWindowParticipantStatusFreshness::Stale;
+    report.report_age_seconds = Some(12.0);
+    let stale_tree = state.main_window_widget_tree();
+    let stale_status = stale_tree
+        .find("main-window:user:0:participant-status")
+        .expect("stale participant status should remain projected");
+    assert_eq!(
+        stale_status.value.as_deref(),
+        Some("Status stale · last update 12.0 s ago"),
+        "stale summaries must not repeat old position, phase, offset, or buffer evidence"
+    );
+    assert_eq!(stale_status.status_tone, Some(GuiStatusTone::Danger));
+    let stale_tooltip = stale_status
+        .tooltip
+        .as_deref()
+        .expect("stale participant status should retain truthful diagnostics");
+    assert!(stale_tooltip.contains("Last reported player: connected"));
+    assert!(stale_tooltip.contains("Playback evidence: unavailable (status stale)"));
+    assert!(!stale_tooltip.contains("Playback: Rebuffering"));
+    assert!(!stale_tooltip.contains("Timestamp: 12:31.2"));
+}
+
+#[test]
+fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("Alice".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let report = |player_connection, logical_paused, playback_rate, playback_scope| {
+        let mut status = ParticipantStatusView::new(ParticipantStatusAvailability::Fresh);
+        status.player_connection = player_connection;
+        status.phase = Some(ParticipantPlaybackPhase::Playing);
+        status.logical_paused = logical_paused;
+        status.playback_rate = playback_rate;
+        status.playback_scope = playback_scope;
+        status.sample_age_ms = Some(0);
+        status.report_age_ms = Some(500);
+        MainWindowParticipantStatusPresentation::Report(
+            MainWindowParticipantStatusReport::from_client_view(
+                sorotte_client_core::ClientParticipantStatusView::from_wire(status),
+                false,
+            ),
+        )
+    };
+    let mut post_construction_scope_mismatch = report(
+        Some(ParticipantPlayerConnection::Connected),
+        Some(false),
+        Some(1.5),
+        Some(ParticipantPlaybackScope::new(10).with_state_revision(22)),
+    );
+    let MainWindowParticipantStatusPresentation::Report(mismatched) =
+        &mut post_construction_scope_mismatch
+    else {
+        unreachable!();
+    };
+    mismatched.status.correlation = Some(ParticipantStatusCorrelation::Superseded);
+    let mut post_construction_stale = report(
+        Some(ParticipantPlayerConnection::Connected),
+        Some(false),
+        Some(1.5),
+        Some(ParticipantPlaybackScope::new(10).with_state_revision(22)),
+    );
+    let MainWindowParticipantStatusPresentation::Report(stale) = &mut post_construction_stale
+    else {
+        unreachable!();
+    };
+    stale.freshness = MainWindowParticipantStatusFreshness::Stale;
+    let mut post_construction_timeline_mismatch = report(
+        Some(ParticipantPlayerConnection::Connected),
+        Some(false),
+        Some(1.5),
+        Some(ParticipantPlaybackScope::new(10).with_state_revision(22)),
+    );
+    let MainWindowParticipantStatusPresentation::Report(timeline_mismatch) =
+        &mut post_construction_timeline_mismatch
+    else {
+        unreachable!();
+    };
+    timeline_mismatch.timeline_mismatch = true;
+    let cases = [
+        (
+            "status unavailable",
+            MainWindowParticipantStatusPresentation::Unavailable,
+            [
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "legacy client",
+            MainWindowParticipantStatusPresentation::LegacyClient,
+            [
+                "unavailable (legacy client)",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "waiting for first report",
+            MainWindowParticipantStatusPresentation::WaitingForFirstReport,
+            [
+                "waiting for first report",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "report without player evidence",
+            report(None, None, None, None),
+            [
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "player starting",
+            report(
+                Some(ParticipantPlayerConnection::Starting),
+                None,
+                None,
+                None,
+            ),
+            [
+                "starting",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "connected with zero-valued scope",
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(true),
+                Some(1.25),
+                Some(ParticipantPlaybackScope::new(0).with_state_revision(0)),
+            ),
+            ["connected", "yes", "1.25×", "0", "0"],
+        ),
+        (
+            "post-construction scope mismatch",
+            post_construction_scope_mismatch,
+            [
+                "connected",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "post-construction stale evidence",
+            post_construction_stale,
+            [
+                "connected",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "post-construction timeline mismatch",
+            post_construction_timeline_mismatch,
+            [
+                "connected",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
+        ),
+        (
+            "disconnected with revision unavailable",
+            report(
+                Some(ParticipantPlayerConnection::Disconnected),
+                Some(false),
+                Some(0.75),
+                Some(ParticipantPlaybackScope::new(8)),
+            ),
+            [
+                "disconnected",
+                "unavailable",
+                "unavailable",
+                "8",
+                "unavailable",
+            ],
+        ),
+        (
+            "player failed",
+            report(
+                Some(ParticipantPlayerConnection::Failed),
+                Some(false),
+                Some(1.0),
+                Some(ParticipantPlaybackScope::new(9).with_state_revision(21)),
+            ),
+            ["failed", "unavailable", "unavailable", "9", "21"],
+        ),
+    ];
+    let diagnostic_ids = [
+        "main-window:user:0:member-player",
+        "main-window:user:0:member-logical-pause",
+        "main-window:user:0:member-rate",
+        "main-window:user:0:member-generation",
+        "main-window:user:0:member-revision",
+    ];
+
+    for (case, presentation, expected_values) in cases {
+        state.main_window.users[0].participant_status = presentation;
+        let tree = state.main_window_widget_tree();
+        for (widget_id, expected_value) in diagnostic_ids.iter().zip(expected_values) {
+            let node = tree
+                .find(widget_id)
+                .unwrap_or_else(|| panic!("{case}: missing production widget {widget_id}"));
+            assert_eq!(
+                node.value.as_deref(),
+                Some(expected_value),
+                "{case}: {widget_id} must project the exact participant evidence label"
+            );
+        }
+    }
+}
+
+#[test]
+fn participant_status_tones_are_derived_from_typed_status_not_display_text() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("Alice".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let report = |player_connection, phase, freshness, timeline_mismatch| {
+        let (availability, report_age_ms) = match freshness {
+            MainWindowParticipantStatusFreshness::Fresh => {
+                (ParticipantStatusAvailability::Fresh, 500)
+            }
+            MainWindowParticipantStatusFreshness::Delayed => {
+                (ParticipantStatusAvailability::Delayed, 4_000)
+            }
+            MainWindowParticipantStatusFreshness::Stale => {
+                (ParticipantStatusAvailability::Stale, 12_000)
+            }
+            _ => (ParticipantStatusAvailability::Fresh, 500),
+        };
+        let mut status = ParticipantStatusView::new(availability);
+        status.player_connection = player_connection;
+        status.phase = phase;
+        status.report_age_ms = Some(report_age_ms);
+        let mut report = MainWindowParticipantStatusReport::from_client_view(
+            sorotte_client_core::ClientParticipantStatusView::from_wire(status),
+            timeline_mismatch,
+        );
+        report.freshness = freshness;
+        MainWindowParticipantStatusPresentation::Report(report)
+    };
+    let cases = [
+        (
+            MainWindowParticipantStatusPresentation::Unavailable,
+            GuiStatusTone::Warning,
+        ),
+        (
+            MainWindowParticipantStatusPresentation::WaitingForFirstReport,
+            GuiStatusTone::Warning,
+        ),
+        (
+            MainWindowParticipantStatusPresentation::LegacyClient,
+            GuiStatusTone::Muted,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(ParticipantPlaybackPhase::Playing),
+                MainWindowParticipantStatusFreshness::Fresh,
+                false,
+            ),
+            GuiStatusTone::Success,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(ParticipantPlaybackPhase::Playing),
+                MainWindowParticipantStatusFreshness::Unknown,
+                false,
+            ),
+            GuiStatusTone::Muted,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(ParticipantPlaybackPhase::ReadyPaused),
+                MainWindowParticipantStatusFreshness::Fresh,
+                false,
+            ),
+            GuiStatusTone::Muted,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(ParticipantPlaybackPhase::ReadyPaused),
+                MainWindowParticipantStatusFreshness::Fresh,
+                true,
+            ),
+            GuiStatusTone::Warning,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Unavailable),
+                Some(ParticipantPlaybackPhase::Unknown),
+                MainWindowParticipantStatusFreshness::Fresh,
+                false,
+            ),
+            GuiStatusTone::Warning,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Disconnected),
+                Some(ParticipantPlaybackPhase::Playing),
+                MainWindowParticipantStatusFreshness::Fresh,
+                false,
+            ),
+            GuiStatusTone::Warning,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Failed),
+                Some(ParticipantPlaybackPhase::Playing),
+                MainWindowParticipantStatusFreshness::Fresh,
+                false,
+            ),
+            GuiStatusTone::Danger,
+        ),
+        (
+            report(
+                Some(ParticipantPlayerConnection::Connected),
+                Some(ParticipantPlaybackPhase::Playing),
+                MainWindowParticipantStatusFreshness::Stale,
+                false,
+            ),
+            GuiStatusTone::Danger,
+        ),
+    ];
+
+    for (status, expected_tone) in cases {
+        state.main_window.users[0].participant_status = status;
+        let tree = state.main_window_widget_tree();
+        for widget_id in [
+            "main-window:user:0:participant-status",
+            "main-window:user:browser:0:participant-status",
+        ] {
+            let node = tree
+                .find(widget_id)
+                .unwrap_or_else(|| panic!("{widget_id} should be projected"));
+            assert_eq!(
+                node.status_tone,
+                Some(expected_tone),
+                "{widget_id} should carry the typed presentation tone for {:?}",
+                state.main_window.users[0].participant_status
+            );
+        }
+    }
 }
 
 #[test]

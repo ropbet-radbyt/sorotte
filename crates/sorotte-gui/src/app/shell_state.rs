@@ -47,16 +47,19 @@ pub(super) use self::configuration_dialog::{
     GuiPrivacySection, GuiReadinessSection, GuiResolvedSettingValue, GuiSettingApplyRequirement,
     GuiSettingValueOrigin, GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
 };
+#[cfg(feature = "gui-semantic-smoke")]
+pub(super) use self::main_window::MainWindowRoomPlaybackIntent;
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 pub(super) use self::main_window::MainWindowRuntimeChatSnapshot;
 pub(super) use self::main_window::{
     GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId, GuiPlaylistDefaultSourceOption,
     GuiPlaylistDefaultSourceState, GuiPlaylistEntryId, GuiPlaylistResolutionStep,
     GuiPlaylistSourceOption, GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin,
-    GuiPlaylistSourceState, GuiPlaylistSourceStatus, MainWindowChatRow, MainWindowPlaybackControls,
-    MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeRoomSnapshot,
-    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
-    MainWindowUserRow,
+    GuiPlaylistSourceState, GuiPlaylistSourceStatus, MainWindowChatRow,
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
+    MainWindowParticipantStatusReport, MainWindowPlaybackControls, MainWindowPlaylistRow,
+    MainWindowRoomRow, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, MainWindowShellState, MainWindowUserRow,
 };
 pub(in crate::app) use self::menu::{MenuActionId, MenuSectionId};
 

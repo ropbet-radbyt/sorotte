@@ -630,6 +630,95 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
 }
 
 #[test]
+fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wide_widths() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.room_playback_intent.paused = Some(true);
+    state.main_window.room_playback_intent.position_seconds = Some(42.0);
+    state.main_window.room_playback_intent.set_by = Some("server".to_owned());
+    state.main_window.room_playback_intent.authority = Some("server start barrier".to_owned());
+    state.main_window.room_playback_intent.start_gate = Some("waiting for bob".to_owned());
+
+    let mut observed = sorotte_protocol::ParticipantStatusView::new(
+        sorotte_protocol::ParticipantStatusAvailability::Fresh,
+    );
+    observed.player_connection = Some(sorotte_protocol::ParticipantPlayerConnection::Disconnected);
+    observed.phase = Some(sorotte_protocol::ParticipantPlaybackPhase::Rebuffering);
+    observed.position_seconds = Some(40.0);
+    observed.report_age_ms = Some(1_000);
+    state.main_window.users[0].participant_status =
+        crate::app::shell_state::MainWindowParticipantStatusPresentation::Report(
+            crate::app::shell_state::MainWindowParticipantStatusReport::from_client_view(
+                sorotte_client_core::ClientParticipantStatusView::from_wire(observed),
+                false,
+            ),
+        );
+    let tree = state.main_window_widget_tree();
+    let room_panel = tree
+        .find("main-window:connection")
+        .expect("the production room panel should be projected");
+
+    for width in [360.0, 1_280.0] {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 900.0),
+            )),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .entry(input.viewport_id)
+            .or_default()
+            .inner_rect = input.screen_rect;
+
+        let output = context.run_ui(input, |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            renderer.render_combined_room_panel(ui, room_panel, &state);
+        });
+        let accesskit_update = output
+            .platform_output
+            .accesskit_update
+            .expect("the accessibility pass should produce a tree update");
+
+        for (automation_id, expected_name, expected_description) in [
+            (
+                "main-window:room-playback-state",
+                "Room intent: PAUSED by server · 00:42.0 · Start gate: waiting for bob",
+                "Authoritative room intent: paused",
+            ),
+            (
+                "main-window:user:0:participant-status",
+                "Player disconnected · fresh",
+                "Last reported playback: Rebuffering",
+            ),
+        ] {
+            let node = accesskit_update
+                .nodes
+                .iter()
+                .find_map(|(_, node)| (node.author_id() == Some(automation_id)).then_some(node))
+                .unwrap_or_else(|| {
+                    panic!("{automation_id} should remain accessible at {width} points")
+                });
+            assert_eq!(node.value(), Some(expected_name));
+            assert!(
+                node.description()
+                    .is_some_and(|description| description.contains(expected_description)),
+                "{automation_id} should expose its explanatory tooltip at {width} points: {:?}",
+                node.description()
+            );
+        }
+    }
+}
+
+#[test]
 fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 

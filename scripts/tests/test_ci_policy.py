@@ -633,6 +633,14 @@ class CiPolicyTests(unittest.TestCase):
                 )
             },
         )
+        linux_checkout = named_step(self.jobs, "checks", "Checkout")
+        self.assertEqual(
+            linux_checkout.get("with"),
+            {
+                "fetch-depth": "0",
+                "persist-credentials": "false",
+            },
+        )
         linux_legacy_checkout = named_step(
             self.jobs,
             "checks",
@@ -751,6 +759,54 @@ class CiPolicyTests(unittest.TestCase):
                 "fallback": "none",
             },
         )
+        linux_semver_installer = named_step(
+            self.jobs,
+            "checks",
+            "Install pinned cargo-semver-checks",
+        )
+        self.assertEqual(
+            linux_semver_installer.get("if"),
+            "github.event_name == 'pull_request'",
+        )
+        self.assertNotIn("continue-on-error", linux_semver_installer)
+        self.assertEqual(
+            linux_semver_installer.get("uses"),
+            PINNED_USES["taiki-e/install-action"],
+        )
+        self.assertEqual(
+            linux_semver_installer.get("with"),
+            {
+                "tool": "cargo-semver-checks@0.50.0",
+                "fallback": "none",
+            },
+        )
+        linux_semver = self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Enforce public Rust API compatibility",
+            """set -euo pipefail
+for package in \\
+  sorotte-protocol \\
+  sorotte-client-core \\
+  sorotte-player-api \\
+  sorotte-client-app \\
+  sorotte-player-mpv \\
+  sorotte-cli \\
+  sorotte-server \\
+  sorotte-gui
+do
+  cargo semver-checks \\
+    --package "$package" \\
+    --baseline-rev "${{ github.event.pull_request.base.sha }}"
+done""",
+            allowed_if="github.event_name == 'pull_request'",
+        )
+        self.assertLess(
+            linux_step_names.index("Install pinned cargo-semver-checks"),
+            linux_step_names.index("Enforce public Rust API compatibility"),
+        )
+        self.assertNotIn("env", linux_semver)
+        self.assertEqual(linux_semver.get("shell"), "bash")
         linux_nextest = self.assert_exact_run(
             self.jobs,
             "checks",
@@ -1201,6 +1257,12 @@ class CiPolicyTests(unittest.TestCase):
             continue_on_error="true",
         )
         self.assertEqual(windows_nextest.get("id"), "nextest")
+        self.assert_exact_run(
+            self.jobs,
+            "rust_windows_tests",
+            "Validate Windows semver wrapper",
+            "python -m unittest scripts.tests.test_semver_wrapper -v",
+        )
         windows_doctests = self.assert_exact_run(
             self.jobs,
             "rust_windows_tests",
@@ -2130,6 +2192,23 @@ class CiPolicyTests(unittest.TestCase):
             self.mutation_workflow["on"],
             {
                 "workflow_dispatch": "",
+                "pull_request": {
+                    "paths": [
+                        ".github/workflows/rust-mutation.yml",
+                        "coverage/mutation-policy.toml",
+                        "scripts/mutation_ci.py",
+                        "crates/sorotte-protocol/src/lib.rs",
+                        "crates/sorotte-protocol/src/state.rs",
+                        "crates/sorotte-protocol/src/participant_status.rs",
+                        "crates/sorotte-player-api/src/lib.rs",
+                        "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
+                        "crates/sorotte-client-core/src/**",
+                        "crates/sorotte-client-app/src/**",
+                        "crates/sorotte-cli/src/**",
+                        "crates/sorotte-server/src/**",
+                        "crates/sorotte-gui/src/**",
+                    ]
+                },
                 "schedule": [{"cron": "15 4 * * 0"}],
             },
         )
@@ -2144,24 +2223,62 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(job["name"], "Mutation (${{ matrix.shard }})")
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], "120")
+        self.assertNotIn("if", job, "job-level if cannot access matrix context")
+        pull_request_shards = [
+            "participant-status-protocol",
+            "client-participant-status",
+            "client-participant-status-runtime",
+            "client-participant-status-outbox",
+            "server-participant-status",
+            "gui-participant-status",
+            "gui-playlist-delivery-fence",
+            "client-app-participant-status-lifecycle",
+            "cli-participant-status-lifecycle",
+        ]
+        all_shards = [
+            "privacy-secret",
+            "server-auth",
+            "protocol-codec",
+            *pull_request_shards,
+            "client-reconnect-state",
+            "client-runtime-config",
+            "client-ping",
+            "server-persistence-arbitration",
+            "client-inbound-order",
+            "client-playlist-shuffle",
+            "cli-framing",
+        ]
+        compact_json = lambda values: '["' + '","'.join(values) + '"]'
+        matrix_expression = (
+            "${{ fromJSON(\n"
+            "  github.event_name == 'pull_request'\n"
+            f"  && '{compact_json(pull_request_shards)}'\n"
+            f"  || '{compact_json(all_shards)}'\n"
+            ") }}"
+        )
+
+        participant_status_boundaries = {
+            "crates/sorotte-protocol/src/lib.rs",
+            "crates/sorotte-protocol/src/state.rs",
+            "crates/sorotte-protocol/src/participant_status.rs",
+            "crates/sorotte-player-api/src/lib.rs",
+            "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
+            "crates/sorotte-client-core/src/**",
+            "crates/sorotte-client-app/src/**",
+            "crates/sorotte-cli/src/**",
+            "crates/sorotte-server/src/**",
+            "crates/sorotte-gui/src/**",
+        }
+        self.assertLessEqual(
+            participant_status_boundaries,
+            set(self.mutation_workflow["on"]["pull_request"]["paths"]),
+            "every participant-status production boundary must trigger its mutation shards",
+        )
         self.assertEqual(
             job["strategy"],
             {
                 "fail-fast": "false",
-                "matrix": {
-                    "shard": [
-                        "privacy-secret",
-                        "server-auth",
-                        "protocol-codec",
-                        "client-reconnect-state",
-                        "client-runtime-config",
-                        "client-ping",
-                        "server-persistence-arbitration",
-                        "client-inbound-order",
-                        "client-playlist-shuffle",
-                        "cli-framing",
-                    ]
-                },
+                "matrix": {"shard": matrix_expression},
             },
         )
         self.assertNotIn("continue-on-error", job)
@@ -2217,6 +2334,18 @@ class CiPolicyTests(unittest.TestCase):
             --output target/verification/mutation-${{ matrix.shard }}.json
             """,
         )
+        self.assert_exact_run(
+            jobs,
+            "mutation",
+            "Verify mutation evidence matches current source",
+            """
+            python scripts/mutation_ci.py verify-report
+            --repo-root .
+            --policy coverage/mutation-policy.toml
+            --shard ${{ matrix.shard }}
+            --report target/verification/mutation-${{ matrix.shard }}.json
+            """,
+        )
         upload = named_step(jobs, "mutation", "Upload mutation evidence")
         self.assertEqual(upload.get("if"), "always()")
         self.assertEqual(
@@ -2240,7 +2369,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             self.mutation_policy,
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "cargo_mutants_version": "27.1.0",
                 "shard": [
                     {
@@ -2248,6 +2377,7 @@ class CiPolicyTests(unittest.TestCase):
                         "owner": "secrets",
                         "package": "sorotte-secret",
                         "files": ["crates/sorotte-secret/src/lib.rs"],
+                        "mutant_filter": "",
                         "test_target": "package",
                         "test_filter": "",
                         "jobs": 2,
@@ -2263,6 +2393,7 @@ class CiPolicyTests(unittest.TestCase):
                         "owner": "server-security",
                         "package": "sorotte-server",
                         "files": ["crates/sorotte-server/src/auth.rs"],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "auth::tests::",
                         "jobs": 2,
@@ -2281,11 +2412,264 @@ class CiPolicyTests(unittest.TestCase):
                             "crates/sorotte-protocol/src/codec.rs",
                             "crates/sorotte-protocol/src/redacted_debug.rs",
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "participant-status-protocol",
+                        "owner": "participant-status",
+                        "package": "sorotte-protocol",
+                        "files": [
+                            "crates/sorotte-protocol/src/participant_status.rs"
+                        ],
+                        "mutant_filter": "",
+                        "test_target": "lib",
+                        "test_filter": "",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-participant-status",
+                        "owner": "participant-status",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/session/"
+                            "participant_status.rs",
+                            "crates/sorotte-client-core/src/views.rs",
+                        ],
+                        "mutant_filter": (
+                            "(participant_status|ParticipantStatus|"
+                            "ClientParticipantStatus)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "session::tests::participant_status_tests::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 90,
+                        "build_timeout_seconds": 180,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-participant-status-runtime",
+                        "owner": "participant-status",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/runtime/"
+                            "accessors.rs",
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination.rs",
+                            "crates/sorotte-client-core/src/runtime/"
+                            "queued_control.rs",
+                        ],
+                        "mutant_filter": (
+                            "((pending|commit|take)_"
+                            "participant_status_report|"
+                            "emit_participant_status_transition|"
+                            "run_participant_status_heartbeat|"
+                            "reset_sync_state_for_reconnect|"
+                            "begin_(protocol_connection_generation|"
+                            "participant_status_room_switch)|"
+                            "participant_status_room_(membership|scope)|"
+                            "participant_status_(player_availability|"
+                            "telemetry_wait_is_current|"
+                            "legacy_position_fallback)|"
+                            "update_participant_status_evidence_times|"
+                            "delete field logical_pause from struct "
+                            "PlayerTransportDelta expression in "
+                            "ClientRuntime<P, C>::apply_ordered_event)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "runtime::playback_coordination::tests::"
+                            "participant_status_"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-participant-status-outbox",
+                        "owner": "participant-status",
+                        "package": "sorotte-client-core",
+                        "files": ["crates/sorotte-client-core/src/outbox.rs"],
+                        "mutant_filter": (
+                            "(cancel_pending_participant_status_reports|"
+                            "strip_participant_status_at|"
+                            "push_connection_scoped_state)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": "outbox::tests::participant_status_",
+                        "jobs": 2,
+                        "timeout_seconds": 90,
+                        "build_timeout_seconds": 180,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "server-participant-status",
+                        "owner": "participant-status",
+                        "package": "sorotte-server",
+                        "files": [
+                            "crates/sorotte-server/src/inbound.rs",
+                            "crates/sorotte-server/src/runtime_handlers.rs",
+                            "crates/sorotte-server/src/runtime_maintenance.rs",
+                            "crates/sorotte-server/src/runtime_playback_barrier.rs",
+                        ],
+                        "mutant_filter": (
+                            "(participant_status|ParticipantStatus|"
+                            "collect_due_periodic_updates_at|"
+                            "delete field (set_by|"
+                            "client_latency_calculation|"
+                            "client_ignoring_counter|server_rtt_seconds|"
+                            "latency_calculation_seconds) from struct "
+                            "StateSyncOptions expression in ServerRuntime::"
+                            "periodic_state_sync_message_for_client_at)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": "tests::participant_status_tests::",
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "gui-participant-status",
+                        "owner": "participant-status",
+                        "package": "sorotte-gui",
+                        "files": [
+                            "crates/sorotte-gui/src/app/widget_views/"
+                            "main_window/summary.rs"
+                        ],
+                        "mutant_filter": (
+                            "(participant_status|"
+                            "member_report_evidence_is_unavailable|"
+                            "member_player_availability_label|"
+                            "member_logical_pause_label|"
+                            "member_playback_rate_label|"
+                            "member_generation_label|"
+                            "member_revision_label)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "app::widget_views::tests::"
+                            "main_window_controls::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "gui-playlist-delivery-fence",
+                        "owner": "gui-transport",
+                        "package": "sorotte-gui",
+                        "files": [
+                            "crates/sorotte-gui/src/app/runtime_owner/"
+                            "player/media_open.rs"
+                        ],
+                        "mutant_filter": (
+                            "(open_shared_playlist_dispatch_after_prior_"
+                            "delivery_fence|"
+                            "finish_shared_playlist_open_after_delivery|"
+                            "resume_pending_shared_playlist_open_if_ready)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "app::runtime_owner::tests::playlist_runtime_"
+                            "tests::open_insert_and_local_media::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 180,
+                        "build_timeout_seconds": 300,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-app-participant-status-lifecycle",
+                        "owner": "participant-status",
+                        "package": "sorotte-client-app",
+                        "files": [
+                            "crates/sorotte-client-app/src/application.rs",
+                            "crates/sorotte-client-app/src/"
+                            "participant_status_presentation.rs",
+                        ],
+                        "mutant_filter": (
+                            "(synchronize_player_availability|"
+                            "record_contained_external_player_failure|"
+                            "run_participant_status_heartbeat|"
+                            "ParticipantStatusReportPresentation::("
+                            "from_client_view|position_evidence_is_eligible|"
+                            "buffer_evidence_is_eligible|headline_label)|"
+                            "delete field (policy|quorum_percent|"
+                            "maximum_pause_seconds) from struct "
+                            "PlaybackBarrierRoomBufferingConfig expression in "
+                            "ClientApplication<P>::apply_settings)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": "",
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "cli-participant-status-lifecycle",
+                        "owner": "participant-status",
+                        "package": "sorotte-cli",
+                        "files": [
+                            "crates/sorotte-cli/src/session_runner/"
+                            "connected_session/execution.rs"
+                        ],
+                        "mutant_filter": (
+                            "(synchronize_connected_session_player_availability|"
+                            "contain_connected_session_player_failure|"
+                            "planned_local_runtime_action_is_player_bound|"
+                            "contain_planned_local_runtime_action_result|"
+                            "run_contained_planned_local_runtime_action|"
+                            "run_connected_session_branch_runtime_steps_"
+                            "legacy_compatible)"
+                        ),
+                        "test_target": "lib",
+                        "test_filter": (
+                            "session_runner::connected_session::execution::tests::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
                         "minimum_viable_kill_percent": "100.00",
                         "max_missed": 0,
                         "max_timeouts": 0,
@@ -2298,6 +2682,7 @@ class CiPolicyTests(unittest.TestCase):
                         "files": [
                             "crates/sorotte-client-core/src/session/reconnect.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "session::tests::",
                         "jobs": 2,
@@ -2316,6 +2701,7 @@ class CiPolicyTests(unittest.TestCase):
                             "crates/sorotte-client-app/src/"
                             "legacy_runtime_config.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "legacy_runtime_config::tests::",
                         "jobs": 2,
@@ -2333,6 +2719,7 @@ class CiPolicyTests(unittest.TestCase):
                         "files": [
                             "crates/sorotte-client-core/src/ping.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "session::tests::ping_tests::",
                         "jobs": 2,
@@ -2351,6 +2738,7 @@ class CiPolicyTests(unittest.TestCase):
                             "crates/sorotte-server/src/persistence_actor/"
                             "persistence_arbitration.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": (
                             "persistence_actor::persistence_arbitration_tests::"
@@ -2370,6 +2758,7 @@ class CiPolicyTests(unittest.TestCase):
                         "files": [
                             "crates/sorotte-client-core/src/inbound_order.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "session::tests::protocol_tests::",
                         "jobs": 2,
@@ -2388,6 +2777,7 @@ class CiPolicyTests(unittest.TestCase):
                             "crates/sorotte-client-core/src/session/playlist/"
                             "shuffle_helpers.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": (
                             "session::tests::playlist_tests::"
@@ -2408,6 +2798,7 @@ class CiPolicyTests(unittest.TestCase):
                         "files": [
                             "crates/sorotte-cli/src/protocol_io.rs"
                         ],
+                        "mutant_filter": "",
                         "test_target": "package",
                         "test_filter": "",
                         "jobs": 2,
@@ -2748,9 +3139,874 @@ class CiPolicyTests(unittest.TestCase):
                         ),
                         "review_by": "2026-10-31",
                     },
+                    *[
+                        {
+                            "id": identifier,
+                            "shard": "participant-status-protocol",
+                            "file": (
+                                "crates/sorotte-protocol/src/"
+                                "participant_status.rs"
+                            ),
+                            "function": function,
+                            "return_type": "-> Self",
+                            "genre": "FnValue",
+                            "replacement": "Default::default()",
+                            "reason": (
+                                "The extensible protocol builder return type "
+                                "intentionally has no Default because a "
+                                "default would invent required status "
+                                "identity, so the generated replacement "
+                                "cannot type-check"
+                            ),
+                            "review_by": "2026-11-30",
+                        }
+                        for identifier, function in [
+                            (
+                                "participant-status-scope-state-revision-default",
+                                "ParticipantPlaybackScope::with_state_revision",
+                            ),
+                            (
+                                "participant-status-scope-transport-revision-default",
+                                "ParticipantPlaybackScope::with_transport_revision",
+                            ),
+                            (
+                                "participant-status-report-playback-scope-default",
+                                "ParticipantStatusReport::with_playback_scope",
+                            ),
+                            (
+                                "participant-status-report-timeline-default",
+                                "ParticipantStatusReport::with_timeline_kind",
+                            ),
+                            (
+                                "participant-status-report-position-default",
+                                "ParticipantStatusReport::with_position_seconds",
+                            ),
+                            (
+                                "participant-status-report-logical-pause-default",
+                                "ParticipantStatusReport::with_logical_paused",
+                            ),
+                            (
+                                "participant-status-report-playback-rate-default",
+                                "ParticipantStatusReport::with_playback_rate",
+                            ),
+                            (
+                                "participant-status-report-cache-pause-default",
+                                "ParticipantStatusReport::with_paused_for_cache",
+                            ),
+                            (
+                                "participant-status-report-cache-percent-default",
+                                "ParticipantStatusReport::with_cache_percent",
+                            ),
+                            (
+                                "participant-status-report-buffered-ahead-default",
+                                "ParticipantStatusReport::with_buffered_ahead_seconds",
+                            ),
+                            (
+                                "participant-status-report-sample-age-default",
+                                "ParticipantStatusReport::with_sample_age_ms",
+                            ),
+                            (
+                                "participant-status-report-position-age-default",
+                                "ParticipantStatusReport::with_position_sample_age_ms",
+                            ),
+                            (
+                                "participant-status-snapshot-mode-default",
+                                "ParticipantStatusSnapshot::with_mode",
+                            ),
+                        ]
+                    ],
+                    {
+                        "id": "participant-status-directional-report-default",
+                        "shard": "participant-status-protocol",
+                        "file": (
+                            "crates/sorotte-protocol/src/"
+                            "participant_status.rs"
+                        ),
+                        "function": "decode_report",
+                        "return_type": (
+                            "-> serde_json::Result<Option<"
+                            "ParticipantStatusReport>>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Ok(Some(Default::default()))",
+                        "reason": (
+                            "The directional decoder's generated success "
+                            "value requires Default for "
+                            "ParticipantStatusReport, but a report requires "
+                            "explicit sequence and lifecycle evidence and "
+                            "intentionally has no valid Default"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": (
+                            "client-participant-status-runtime-"
+                            "player-availability-default"
+                        ),
+                        "shard": "client-participant-status-runtime",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::"
+                            "participant_status_player_availability"
+                        ),
+                        "return_type": "-> ParticipantPlayerConnection",
+                        "genre": "FnValue",
+                        "replacement": "Default::default()",
+                        "reason": (
+                            "cargo-mutants requests Default for the explicit "
+                            "player-availability enum, which intentionally "
+                            "has no semantically safe default, so the "
+                            "generated replacement cannot type-check"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": (
+                            "client-participant-status-runtime-"
+                            "pending-report-default"
+                        ),
+                        "shard": "client-participant-status-runtime",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::"
+                            "pending_participant_status_report"
+                        ),
+                        "return_type": (
+                            "-> Option<PendingParticipantStatusReport>"
+                        ),
+                        "genre": "FnValue",
+                        "replacement": "Some(Default::default())",
+                        "reason": (
+                            "cargo-mutants requests Default for a pending "
+                            "report whose report, fingerprint, and send "
+                            "timestamp are all required, so the generated "
+                            "replacement cannot type-check"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": (
+                            "client-participant-status-outbox-"
+                            "cancel-let-chain-or"
+                        ),
+                        "shard": "client-participant-status-outbox",
+                        "file": "crates/sorotte-client-core/src/outbox.rs",
+                        "function": (
+                            "ProtocolOutbox::"
+                            "cancel_pending_participant_status_reports"
+                        ),
+                        "return_type": "",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "reason": (
+                            "cargo-mutants changes the && connector before "
+                            "a Rust let-chain to ||, which rustc rejects "
+                            "because let-chain conditions support only &&"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    *[
+                        {
+                            "id": identifier,
+                            "shard": shard,
+                            "file": file,
+                            "function": function,
+                            "return_type": return_type,
+                            "genre": genre,
+                            "replacement": replacement,
+                            **(
+                                {
+                                    "expected_count": {
+                                        "client-participant-status-user-view-let-chain-or": 3,
+                                        "client-participant-status-apply-update-let-chain-or": 6,
+                                        "server-participant-status-snapshot-let-chain-or": 5,
+                                    }[identifier]
+                                }
+                                if identifier
+                                in {
+                                    "client-participant-status-user-view-let-chain-or",
+                                    "client-participant-status-apply-update-let-chain-or",
+                                    "server-participant-status-snapshot-let-chain-or",
+                                }
+                                else {}
+                            ),
+                            "reason": reason,
+                            "review_by": "2026-11-30",
+                        }
+                        for (
+                            identifier,
+                            shard,
+                            file,
+                            function,
+                            return_type,
+                            genre,
+                            replacement,
+                            reason,
+                        ) in [
+                            (
+                                "client-participant-status-view-from-wire-default",
+                                "client-participant-status",
+                                "crates/sorotte-client-core/src/views.rs",
+                                "ClientParticipantStatusView::from_wire",
+                                "-> Self",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "client status view that requires an "
+                                    "explicit server projection and derived "
+                                    "freshness state, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                "client-participant-status-view-aged-by-default",
+                                "client-participant-status",
+                                "crates/sorotte-client-core/src/views.rs",
+                                "ClientParticipantStatusView::aged_by",
+                                "-> Self",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "client status view that requires an "
+                                    "explicit server projection and derived "
+                                    "freshness state, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-view-"
+                                    "fail-closed-default"
+                                ),
+                                "client-participant-status",
+                                "crates/sorotte-client-core/src/views.rs",
+                                "ClientParticipantStatusView::fail_closed_stale",
+                                "-> Self",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "client status view that requires an "
+                                    "explicit server projection and derived "
+                                    "freshness state, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                "client-participant-status-user-view-default",
+                                "client-participant-status",
+                                (
+                                    "crates/sorotte-client-core/src/session/"
+                                    "participant_status.rs"
+                                ),
+                                "ClientSession::user_participant_status_at",
+                                "-> Option<ClientParticipantStatusView>",
+                                "FnValue",
+                                "Some(Default::default())",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "client status view inside Some, but the "
+                                    "view requires an explicit server "
+                                    "projection and derived freshness state, "
+                                    "so the replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-user-view-"
+                                    "let-chain-or"
+                                ),
+                                "client-participant-status",
+                                (
+                                    "crates/sorotte-client-core/src/session/"
+                                    "participant_status.rs"
+                                ),
+                                "ClientSession::user_participant_status_at",
+                                "-> Option<ClientParticipantStatusView>",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes each of three "
+                                    "observed && connectors in a Rust "
+                                    "let-chain to ||, which rustc rejects "
+                                    "because let-chain conditions support "
+                                    "only &&"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-"
+                                    "authoritative-scope-default"
+                                ),
+                                "client-participant-status",
+                                (
+                                    "crates/sorotte-client-core/src/session/"
+                                    "participant_status.rs"
+                                ),
+                                (
+                                    "ClientSession::"
+                                    "participant_status_authoritative_scope"
+                                ),
+                                "-> Option<ParticipantPlaybackScope>",
+                                "FnValue",
+                                "Some(Default::default())",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "playback scope inside Some, but the scope "
+                                    "requires an explicit media generation "
+                                    "and intentionally has no Default, so the "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-apply-update-"
+                                    "let-chain-or"
+                                ),
+                                "client-participant-status",
+                                (
+                                    "crates/sorotte-client-core/src/session/"
+                                    "participant_status.rs"
+                                ),
+                                (
+                                    "ClientSession::"
+                                    "apply_participant_status_update"
+                                ),
+                                "",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes each of six "
+                                    "observed && connectors in Rust let-chain "
+                                    "conditions to ||, which rustc rejects "
+                                    "because let-chain conditions support "
+                                    "only &&"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-"
+                                    "normalize-report-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_handlers.rs"
+                                ),
+                                "normalize_participant_status_report",
+                                "-> Option<ParticipantStatusReport>",
+                                "FnValue",
+                                "Some(Default::default())",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "participant report inside Some, but a "
+                                    "report requires an explicit sequence, "
+                                    "player connection, and playback phase, "
+                                    "so the replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-"
+                                    "availability-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                "participant_status_availability",
+                                "-> ParticipantStatusAvailability",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for the "
+                                    "explicit freshness and capability "
+                                    "availability enum, which intentionally "
+                                    "has no semantically safe default, so the "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-"
+                                    "compact-snapshot-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                "compact_participant_status_snapshot",
+                                "-> ParticipantStatusSnapshot",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "status snapshot that requires an "
+                                    "explicit revision, projection mode, and "
+                                    "participant map, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-"
+                                    "unavailable-snapshot-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                "unavailable_participant_status_snapshot",
+                                "-> ParticipantStatusSnapshot",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "status snapshot that requires an "
+                                    "explicit revision, projection mode, and "
+                                    "participant map, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-periodic-"
+                                    "updates-element-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                (
+                                    "ServerRuntime::"
+                                    "collect_due_periodic_updates_at"
+                                ),
+                                (
+                                    "-> Result<Vec<DirectedProtocolMessage>, "
+                                    "ServerRuntimeError>"
+                                ),
+                                "FnValue",
+                                "Ok(vec![Default::default()])",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "directed protocol message inside Ok, "
+                                    "but every message requires an explicit "
+                                    "authenticated recipient and protocol "
+                                    "payload, so the generated replacement "
+                                    "cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-clear-client-"
+                                    "let-chain-or"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                (
+                                    "ServerRuntime::"
+                                    "clear_participant_status_for_client"
+                                ),
+                                "",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the observed && "
+                                    "connector in a Rust let-chain to ||, "
+                                    "which rustc rejects because let-chain "
+                                    "conditions support only &&"
+                                ),
+                            ),
+                            (
+                                "server-participant-status-scope-default",
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                (
+                                    "ServerRuntime::"
+                                    "participant_status_scope_for_room"
+                                ),
+                                "-> ParticipantPlaybackScope",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "playback scope that requires an explicit "
+                                    "media generation and intentionally has "
+                                    "no Default, so the generated replacement "
+                                    "cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-snapshot-"
+                                    "let-chain-or"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                (
+                                    "ServerRuntime::"
+                                    "participant_status_snapshot_for_client_at"
+                                ),
+                                (
+                                    "-> Option<"
+                                    "ParticipantStatusStateExtension>"
+                                ),
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes five observed && "
+                                    "connectors in Rust let-chain conditions "
+                                    "to ||, which rustc rejects because "
+                                    "let-chain conditions support only &&"
+                                ),
+                            ),
+                            (
+                                (
+                                    "gui-playlist-delivery-fence-finish-"
+                                    "let-chain-or"
+                                ),
+                                "gui-playlist-delivery-fence",
+                                (
+                                    "crates/sorotte-gui/src/app/runtime_owner/"
+                                    "player/media_open.rs"
+                                ),
+                                (
+                                    "GuiPersistedConfigRuntimeOwner::"
+                                    "finish_shared_playlist_open_after_delivery"
+                                ),
+                                "",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the observed && "
+                                    "connector in a Rust let-chain to ||, "
+                                    "which rustc rejects because let-chain "
+                                    "conditions support only &&"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-app-participant-status-"
+                                    "presentation-default"
+                                ),
+                                "client-app-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-client-app/src/"
+                                    "participant_status_presentation.rs"
+                                ),
+                                (
+                                    "ParticipantStatusReportPresentation::"
+                                    "from_client_view"
+                                ),
+                                "-> Self",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "The generated replacement requires "
+                                    "Default for a presentation derived from "
+                                    "an explicit participant-status view and "
+                                    "freshness state, so it cannot type-check"
+                                ),
+                            ),
+                            (
+                                "cli-contained-player-failure-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                "contain_connected_session_player_failure",
+                                "-> ContainedConnectedSessionPlayerFailure",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "the contained failure intentionally "
+                                    "retains an anyhow error and has no valid "
+                                    "Default, so the generated replacement "
+                                    "cannot type-check"
+                                ),
+                            ),
+                            (
+                                "cli-run-contained-player-action-true-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                "run_contained_planned_local_runtime_action",
+                                (
+                                    "-> anyhow::Result<(bool, Option<"
+                                    "ContainedConnectedSessionPlayerFailure>)>"
+                                ),
+                                "FnValue",
+                                "Ok((true, Some(Default::default())))",
+                                (
+                                    "the generated Some payload requires "
+                                    "Default for the contained failure type, "
+                                    "which intentionally has no valid Default"
+                                ),
+                            ),
+                            (
+                                "cli-run-contained-player-action-false-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                "run_contained_planned_local_runtime_action",
+                                (
+                                    "-> anyhow::Result<(bool, Option<"
+                                    "ContainedConnectedSessionPlayerFailure>)>"
+                                ),
+                                "FnValue",
+                                "Ok((false, Some(Default::default())))",
+                                (
+                                    "the generated Some payload requires "
+                                    "Default for the contained failure type, "
+                                    "which intentionally has no valid Default"
+                                ),
+                            ),
+                            (
+                                "cli-contain-player-action-result-true-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                "contain_planned_local_runtime_action_result",
+                                (
+                                    "-> anyhow::Result<(bool, Option<"
+                                    "ContainedConnectedSessionPlayerFailure>)>"
+                                ),
+                                "FnValue",
+                                "Ok((true, Some(Default::default())))",
+                                (
+                                    "the generated Some payload requires "
+                                    "Default for the contained failure type, "
+                                    "which intentionally has no valid Default"
+                                ),
+                            ),
+                            (
+                                "cli-contain-player-action-result-false-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                "contain_planned_local_runtime_action_result",
+                                (
+                                    "-> anyhow::Result<(bool, Option<"
+                                    "ContainedConnectedSessionPlayerFailure>)>"
+                                ),
+                                "FnValue",
+                                "Ok((false, Some(Default::default())))",
+                                (
+                                    "the generated Some payload requires "
+                                    "Default for the contained failure type, "
+                                    "which intentionally has no valid Default"
+                                ),
+                            ),
+                            (
+                                "cli-branch-runtime-player-failure-default",
+                                "cli-participant-status-lifecycle",
+                                (
+                                    "crates/sorotte-cli/src/session_runner/"
+                                    "connected_session/execution.rs"
+                                ),
+                                (
+                                    "run_connected_session_branch_runtime_"
+                                    "steps_legacy_compatible"
+                                ),
+                                (
+                                    "-> Option<"
+                                    "ContainedConnectedSessionPlayerFailure>"
+                                ),
+                                "FnValue",
+                                "Some(Default::default())",
+                                (
+                                    "the generated Some payload requires "
+                                    "Default for the contained failure type, "
+                                    "which intentionally has no valid Default"
+                                ),
+                            ),
+                        ]
+                    ],
                 ],
             },
         )
+
+    def test_runtime_status_mutant_filter_binds_context_collateral(self) -> None:
+        shard = next(
+            shard
+            for shard in self.mutation_policy["shard"]
+            if shard["id"] == "client-participant-status-runtime"
+        )
+        self.assertIn(
+            "crates/sorotte-client-core/src/runtime/accessors.rs",
+            shard["files"],
+        )
+        mutant_filter = shard["mutant_filter"]
+        self.assertRegex(
+            "ClientSessionUpdate<'a>::reset_sync_state_for_reconnect",
+            mutant_filter,
+        )
+        context = (
+            " from struct PlayerTransportDelta expression in "
+            "ClientRuntime<P, C>::apply_ordered_event"
+        )
+
+        self.assertRegex(
+            f"delete field logical_pause{context}",
+            mutant_filter,
+        )
+
+        for neighbor in (
+            f"delete field load_attempt_id{context}",
+            f"delete field media_generation{context}",
+            f"delete field phase{context}",
+            f"delete field playback_rate{context}",
+            (
+                "delete field load_attempt_id from struct PlayerSnapshotDelta "
+                "expression in ClientRuntime<P, C>::apply_ordered_event"
+            ),
+            (
+                "delete field load_attempt_id from struct PlayerTransportDelta "
+                "expression in ClientRuntime<P, C>::apply_player_event"
+            ),
+        ):
+            with self.subTest(neighbor=neighbor):
+                self.assertIsNone(re.search(mutant_filter, neighbor))
+
+    def test_outbox_status_mutant_filter_is_narrow_and_behavior_owned(self) -> None:
+        shard = next(
+            shard
+            for shard in self.mutation_policy["shard"]
+            if shard["id"] == "client-participant-status-outbox"
+        )
+        self.assertEqual(
+            shard["files"],
+            ["crates/sorotte-client-core/src/outbox.rs"],
+        )
+        self.assertEqual(
+            shard["test_filter"],
+            "outbox::tests::participant_status_",
+        )
+        mutant_filter = shard["mutant_filter"]
+        for function in (
+            "cancel_pending_participant_status_reports",
+            "strip_participant_status_at",
+            "push_connection_scoped_state",
+        ):
+            with self.subTest(function=function):
+                self.assertRegex(function, mutant_filter)
+        for neighbor in (
+            "push_back",
+            "push_readiness_intent",
+            "release_front",
+            "acknowledge_front",
+        ):
+            with self.subTest(neighbor=neighbor):
+                self.assertIsNone(re.search(mutant_filter, neighbor))
+
+    def test_server_status_mutant_filter_binds_context_collateral(self) -> None:
+        shard = next(
+            shard
+            for shard in self.mutation_policy["shard"]
+            if shard["id"] == "server-participant-status"
+        )
+        mutant_filter = shard["mutant_filter"]
+        context = (
+            " from struct StateSyncOptions expression in ServerRuntime::"
+            "periodic_state_sync_message_for_client_at"
+        )
+
+        for field in (
+            "set_by",
+            "client_latency_calculation",
+            "client_ignoring_counter",
+            "server_rtt_seconds",
+            "latency_calculation_seconds",
+        ):
+            with self.subTest(field=field):
+                self.assertRegex(f"delete field {field}{context}", mutant_filter)
+
+        for neighbor in (
+            f"delete field playback_revision{context}",
+            (
+                "delete field set_by from struct OtherStateSyncOptions "
+                "expression in ServerRuntime::"
+                "periodic_state_sync_message_for_client_at"
+            ),
+            (
+                "delete field set_by from struct StateSyncOptions expression "
+                "in ServerRuntime::periodic_state_sync_message"
+            ),
+        ):
+            with self.subTest(neighbor=neighbor):
+                self.assertIsNone(re.search(mutant_filter, neighbor))
+
+    def test_client_app_status_mutant_filter_binds_context_collateral(self) -> None:
+        shard = next(
+            shard
+            for shard in self.mutation_policy["shard"]
+            if shard["id"] == "client-app-participant-status-lifecycle"
+        )
+        self.assertIn(
+            "crates/sorotte-client-app/src/participant_status_presentation.rs",
+            shard["files"],
+        )
+        mutant_filter = shard["mutant_filter"]
+        for function in (
+            "ParticipantStatusReportPresentation::from_client_view",
+            "ParticipantStatusReportPresentation::position_evidence_is_eligible",
+            "ParticipantStatusReportPresentation::buffer_evidence_is_eligible",
+            "ParticipantStatusReportPresentation::headline_label",
+        ):
+            with self.subTest(function=function):
+                self.assertRegex(function, mutant_filter)
+        context = (
+            " from struct PlaybackBarrierRoomBufferingConfig expression in "
+            "ClientApplication<P>::apply_settings"
+        )
+
+        for field in ("policy", "quorum_percent", "maximum_pause_seconds"):
+            with self.subTest(field=field):
+                self.assertRegex(f"delete field {field}{context}", mutant_filter)
+
+        for neighbor in (
+            f"delete field grace_seconds{context}",
+            (
+                "delete field policy from struct OtherRoomBufferingConfig "
+                "expression in ClientApplication<P>::apply_settings"
+            ),
+            (
+                "delete field policy from struct PlaybackBarrierRoomBufferingConfig "
+                "expression in ClientApplication<P>::apply_other_settings"
+            ),
+        ):
+            with self.subTest(neighbor=neighbor):
+                self.assertIsNone(re.search(mutant_filter, neighbor))
 
     def test_feature_pushes_are_not_duplicated_with_pull_request_runs(self) -> None:
         triggers = self.workflow["on"]

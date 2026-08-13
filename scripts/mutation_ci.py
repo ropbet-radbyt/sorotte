@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REPORT_KIND = "sorotte-mutation-evidence"
 DEFAULT_POLICY = "coverage/mutation-policy.toml"
 MUTANTS_DIRECTORY = "mutants.out"
@@ -45,8 +45,9 @@ IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 PACKAGE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TEST_FILTER = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+::$"
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+(?:::)?$"
 )
+MAX_MUTANT_FILTER_BYTES = 512
 PERCENT = re.compile(
     r"^(?:100(?:\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\.[0-9]{1,2})?)$"
 )
@@ -83,6 +84,7 @@ class AcceptedUnviable:
     replacement: str
     reason: str
     review_by: dt.date
+    expected_count: int = 1
 
     def identity(self) -> tuple[str, str, str, str, str]:
         return (
@@ -100,6 +102,7 @@ class ShardPolicy:
     owner: str
     package: str
     files: tuple[str, ...]
+    mutant_filter: str
     test_target: str
     test_filter: str
     jobs: int
@@ -410,6 +413,7 @@ def load_policy(
                 "owner",
                 "package",
                 "files",
+                "mutant_filter",
                 "test_target",
                 "test_filter",
                 "jobs",
@@ -451,6 +455,25 @@ def load_policy(
                 raise MutationCiError(
                     f"{source} belongs to package {actual_package!r}, not {package!r}"
                 )
+        mutant_filter = require_string(
+            table["mutant_filter"],
+            label=f"{identifier}.mutant_filter",
+            allow_empty=True,
+        )
+        if len(mutant_filter.encode("utf-8")) > MAX_MUTANT_FILTER_BYTES:
+            raise MutationCiError(
+                f"{identifier}.mutant_filter exceeds {MAX_MUTANT_FILTER_BYTES} bytes"
+            )
+        if "\r" in mutant_filter or "\n" in mutant_filter:
+            raise MutationCiError(
+                f"{identifier}.mutant_filter must remain on one line"
+            )
+        try:
+            re.compile(mutant_filter)
+        except re.error as error:
+            raise MutationCiError(
+                f"{identifier}.mutant_filter is not a valid regular expression: {error}"
+            ) from error
         test_target = require_string(
             table["test_target"],
             label=f"{identifier}.test_target",
@@ -470,8 +493,7 @@ def load_policy(
             )
         if test_filter and not TEST_FILTER.fullmatch(test_filter):
             raise MutationCiError(
-                f"{identifier}.test_filter must be a Rust test module namespace "
-                "ending in '::'"
+                f"{identifier}.test_filter must be a Rust test selector prefix"
             )
         require_baseline = require_bool(
             table["require_baseline"],
@@ -487,6 +509,7 @@ def load_policy(
                 owner=owner,
                 package=package,
                 files=files,
+                mutant_filter=mutant_filter,
                 test_target=test_target,
                 test_filter=test_filter,
                 jobs=require_int(
@@ -535,21 +558,25 @@ def load_policy(
     effective_today = today or dt.date.today()
     for index, item in enumerate(accepted_values):
         table = require_mapping(item, label=f"accepted_unviable[{index}]")
-        require_exact_keys(
-            table,
-            {
-                "id",
-                "shard",
-                "file",
-                "function",
-                "return_type",
-                "genre",
-                "replacement",
-                "reason",
-                "review_by",
-            },
-            label=f"accepted_unviable[{index}]",
-        )
+        required_keys = {
+            "id",
+            "shard",
+            "file",
+            "function",
+            "return_type",
+            "genre",
+            "replacement",
+            "reason",
+            "review_by",
+        }
+        actual_keys = set(table)
+        unknown_keys = actual_keys - required_keys - {"expected_count"}
+        missing_keys = required_keys - actual_keys
+        if unknown_keys or missing_keys:
+            raise MutationCiError(
+                f"accepted_unviable[{index}] fields do not match schema: unexpected keys "
+                f"{sorted(unknown_keys)!r} and missing keys {sorted(missing_keys)!r}"
+            )
         identifier = require_identifier(
             table["id"],
             label=f"accepted_unviable[{index}].id",
@@ -599,12 +626,19 @@ def load_policy(
             return_type=require_string(
                 table["return_type"],
                 label=f"{identifier}.return_type",
+                allow_empty=True,
             ),
             genre=require_string(table["genre"], label=f"{identifier}.genre"),
             replacement=require_string(
                 table["replacement"],
                 label=f"{identifier}.replacement",
                 allow_empty=True,
+            ),
+            expected_count=require_int(
+                table.get("expected_count", 1),
+                label=f"{identifier}.expected_count",
+                minimum=1,
+                maximum=100_000,
             ),
             reason=reason,
             review_by=review_by,
@@ -754,6 +788,10 @@ def require_mutant(
     prefix = f"{source}:{span['start']['line']}:{span['start']['column']}: "
     if not name.startswith(prefix):
         raise MutationCiError(f"{label}.name is not bound to its source span")
+    if shard.mutant_filter and re.search(shard.mutant_filter, name) is None:
+        raise MutationCiError(
+            f"{label}.name is outside shard mutant_filter {shard.mutant_filter!r}"
+        )
     function = (
         None
         if mutant["function"] is None
@@ -818,7 +856,7 @@ def parse_test_inventory(stdout: str, *, shard: ShardPolicy) -> list[str]:
             )
         if shard.test_filter and not selector.startswith(shard.test_filter):
             raise MutationCiError(
-                "cargo test inventory escaped the configured test namespace: "
+                "cargo test inventory escaped the configured test selector prefix: "
                 f"{selector!r}"
             )
         tests.append(selector)
@@ -1268,10 +1306,12 @@ def evaluate_results(
     accepted_by_identity = {entry.identity(): entry for entry in accepted}
     accepted_matches: list[dict[str, Any]] = []
     observed_unviable_identities: set[tuple[str, str, str, str, str]] = set()
+    observed_unviable_counts: dict[tuple[str, str, str, str, str], int] = {}
     for name in observed_by_summary["Unviable"]:
         mutant = inventory_by_name[name]
         identity = mutant_identity(mutant)
         observed_unviable_identities.add(identity)
+        observed_unviable_counts[identity] = observed_unviable_counts.get(identity, 0) + 1
         entry = accepted_by_identity.get(identity)
         if entry is None:
             continue
@@ -1279,6 +1319,7 @@ def evaluate_results(
             {
                 "id": entry.identifier,
                 "actual_mutant": name,
+                "expected_count": entry.expected_count,
                 "reason": entry.reason,
                 "review_by": entry.review_by.isoformat(),
             }
@@ -1308,6 +1349,13 @@ def evaluate_results(
             f"timed-out mutants {counts['timeout']} exceed maximum "
             f"{shard.max_timeouts}"
         )
+    for identity, entry in accepted_by_identity.items():
+        observed_count = observed_unviable_counts.get(identity, 0)
+        if observed_count != entry.expected_count:
+            failures.append(
+                f"accepted-unviable {entry.identifier!r} expected "
+                f"{entry.expected_count} occurrence(s), observed {observed_count}"
+            )
     if viable == 0:
         failures.append("mutation shard has no viable mutants")
     elif kill_percent < shard.minimum_viable_kill_percent:
@@ -1419,6 +1467,8 @@ def cargo_mutants_base_command(shard: ShardPolicy) -> list[str]:
     ]
     for source in shard.files:
         command.extend(["--file", source])
+    if shard.mutant_filter:
+        command.extend(["--re", shard.mutant_filter])
     command.extend(
         [
             "--no-config",
@@ -1534,10 +1584,13 @@ def resolve_output_path(repo_root: pathlib.Path, value: str, *, label: str) -> p
     if not candidate.is_absolute():
         candidate = repo_root / candidate
     resolved = candidate.resolve(strict=False)
+    target_root = (repo_root / "target").resolve(strict=False)
     try:
-        resolved.relative_to(repo_root)
+        relative = resolved.relative_to(target_root)
     except ValueError as error:
-        raise MutationCiError(f"{label} must remain inside the repository") from error
+        raise MutationCiError(f"{label} must remain below the repository target directory") from error
+    if relative == pathlib.Path("."):
+        raise MutationCiError(f"{label} must name a path below the repository target directory")
     return resolved
 
 
@@ -1699,6 +1752,66 @@ def validate_policy(args: argparse.Namespace) -> int:
         return 2
 
 
+def verify_report(args: argparse.Namespace) -> int:
+    """Reject mutation evidence that is stale for the current source tree."""
+
+    repo_root = pathlib.Path(args.repo_root).resolve()
+    try:
+        if not (repo_root / "Cargo.toml").is_file():
+            raise MutationCiError("repository root must contain Cargo.toml")
+        policy_path = resolve_policy_path(repo_root, args.policy)
+        policy = load_policy(repo_root, policy_path)
+        shard = policy.shard(args.shard)
+        report_path = resolve_output_path(
+            repo_root,
+            args.report,
+            label="mutation evidence report",
+        )
+        if not report_path.is_file():
+            raise MutationCiError("mutation evidence report must be an existing file")
+        report_value, _ = load_json(report_path, label="mutation evidence report")
+        report = require_mapping(report_value, label="mutation evidence report")
+        if report.get("schema_version") != SCHEMA_VERSION:
+            raise MutationCiError("mutation evidence report has the wrong schema version")
+        if report.get("kind") != REPORT_KIND:
+            raise MutationCiError("mutation evidence report has the wrong kind")
+        if report.get("status") != "passed":
+            raise MutationCiError("mutation evidence report did not pass")
+        if report.get("shard") != shard.identifier:
+            raise MutationCiError("mutation evidence report names a different shard")
+
+        bindings = require_mapping(
+            report.get("source_bindings"),
+            label="mutation evidence source_bindings",
+        )
+        current_bindings = source_bindings(repo_root, shard.files)
+        if bindings.get("before") != current_bindings:
+            raise MutationCiError(
+                "mutation evidence source bindings are stale before execution"
+            )
+        if bindings.get("after") != current_bindings:
+            raise MutationCiError(
+                "mutation evidence source bindings are stale after execution"
+            )
+
+        summary = require_mapping(
+            report.get("summary"),
+            label="mutation evidence summary",
+        )
+        if summary.get("missed") != 0 or summary.get("timeout") != 0:
+            raise MutationCiError("mutation evidence contains a survivor or timeout")
+        if summary.get("caught") != summary.get("viable_mutants"):
+            raise MutationCiError("mutation evidence does not catch every viable mutant")
+        print(
+            f"mutation evidence current: {shard.identifier} "
+            f"({summary['caught']}/{summary['viable_mutants']} viable mutants caught)"
+        )
+        return 0
+    except MutationCiError as error:
+        print(f"mutation evidence error: {error}", file=sys.stderr)
+        return 2
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     subparsers = value.add_subparsers(dest="command", required=True)
@@ -1714,6 +1827,12 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--shard", required=True)
     run.add_argument("--results-root", required=True)
     run.add_argument("--output", required=True)
+
+    verify = subparsers.add_parser("verify-report")
+    verify.add_argument("--repo-root", default=".")
+    verify.add_argument("--policy", default=DEFAULT_POLICY)
+    verify.add_argument("--shard", required=True)
+    verify.add_argument("--report", required=True)
     return value
 
 
@@ -1723,6 +1842,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return validate_policy(args)
     if args.command == "run":
         return run_shard(args)
+    if args.command == "verify-report":
+        return verify_report(args)
     raise AssertionError(f"unknown command {args.command!r}")
 
 

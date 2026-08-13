@@ -15,6 +15,7 @@ pub struct ClientModel {
 pub struct ConnectionState {
     pub(crate) username: Option<String>,
     pub(crate) phase: ConnectionPhase,
+    pub(crate) participant_status_v1: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -52,11 +53,33 @@ pub struct RoomState {
     pub(crate) name: Option<String>,
     pub(crate) domain: SyncDomain,
     pub(crate) users: BTreeMap<String, ClientUserView>,
+    pub(crate) participant_status_capabilities: BTreeMap<String, bool>,
+    pub(crate) legacy_list_position_snapshots: BTreeMap<String, f64>,
     pub(crate) media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     pub(crate) known_rooms: BTreeSet<String>,
     pub(crate) playstates: BTreeMap<String, RoomPlaystateView>,
     pub(crate) playstate_updated_at_seconds: BTreeMap<String, f64>,
     pub(crate) playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
+    pub(crate) participant_statuses: BTreeMap<String, ClientParticipantStatusView>,
+    pub(crate) participant_status_receipts: BTreeMap<String, ParticipantStatusReceipt>,
+    pub(crate) participant_status_snapshot_revision: Option<u64>,
+    pub(crate) participant_status_snapshot_mode: ParticipantStatusSnapshotMode,
+    pub(crate) participant_status_authoritative_scope: Option<ParticipantPlaybackScope>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ParticipantStatusReceipt {
+    pub(crate) received_at_seconds: f64,
+    pub(crate) clock_invalidated: AtomicBool,
+}
+
+impl ParticipantStatusReceipt {
+    pub(crate) fn new(received_at_seconds: f64) -> Self {
+        Self {
+            received_at_seconds,
+            clock_invalidated: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Debug, Default)]

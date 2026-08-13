@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::GuiPlaylistProtocolDeliveryFence;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_main_window_user_media_runtime_impl(
@@ -495,6 +496,32 @@ impl GuiPersistedConfigRuntimeOwner {
         dispatch: GuiSharedPlaylistOpenDispatch,
         playlist_insert_slot: Option<usize>,
     ) {
+        self.open_shared_playlist_dispatch_after_prior_delivery_fence(
+            handle,
+            projected_state,
+            selected_paths,
+            dispatch,
+            playlist_insert_slot,
+        );
+    }
+
+    fn open_shared_playlist_dispatch_after_prior_delivery_fence(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        selected_paths: Vec<String>,
+        dispatch: GuiSharedPlaylistOpenDispatch,
+        playlist_insert_slot: Option<usize>,
+    ) {
+        if self.pending_shared_playlist_open.is_some() {
+            Self::push_runtime_unavailable(
+                handle,
+                "Another shared-playlist media open is waiting for its session update to be delivered. Try again after it completes."
+                    .to_owned(),
+            );
+            return;
+        }
+
         let current_playlist_entry_count = projected_state.main_window.playlist.len();
         let current_playlist_index =
             self.shared_playlist_mutation_current_index(projected_state, false);
@@ -590,10 +617,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 &dispatch,
                 &opened_rows,
             );
-            let _ = Self::mark_bound_shared_playlist_entries_as_local_sources(
+            Self::mark_bound_shared_playlist_entries_as_local_sources(
                 projected_state,
                 &binding_outcome.bound_row_ids,
-            ) | Self::mark_unavailable_shared_playlist_local_origins(
+            );
+            Self::mark_unavailable_shared_playlist_local_origins(
                 projected_state,
                 &binding_outcome.unavailable_row_ids,
             );
@@ -658,8 +686,10 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return;
         };
-        let session_result =
-            session.replace_playlist(playlist_entries.clone(), selected_playlist_index);
+        let session_result = session.replace_playlist_with_delivery_fence(
+            playlist_entries.clone(),
+            selected_playlist_index,
+        );
         let session_success = session_result.is_ok();
         if session_success {
             self.active_shared_playlist_index = selected_playlist_index;
@@ -674,7 +704,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 selected_playlist_index,
                 playlist_insert_slot.is_none(),
             );
-        if session_playlist_projected {
+        let selected_media_source_path = if session_playlist_projected {
             let opened_rows = Self::shared_playlist_rows_corresponding_to_dispatch(
                 projected_state,
                 &dispatch,
@@ -688,35 +718,106 @@ impl GuiPersistedConfigRuntimeOwner {
                 &dispatch,
                 &opened_rows,
             );
-            let _ = Self::mark_bound_shared_playlist_entries_as_local_sources(
+            Self::mark_bound_shared_playlist_entries_as_local_sources(
                 projected_state,
                 &binding_outcome.bound_row_ids,
-            ) | Self::mark_unavailable_shared_playlist_local_origins(
+            );
+            Self::mark_unavailable_shared_playlist_local_origins(
                 projected_state,
                 &binding_outcome.unavailable_row_ids,
             );
-            if let Some(path) =
-                self.selected_playlist_local_origin(projected_state, selected_playlist_index)
-            {
-                self.remember_local_shared_playlist_media_match_signature_path(&path);
+            let selected_media_source_path =
+                self.selected_playlist_local_origin(projected_state, selected_playlist_index);
+            if let Some(path) = selected_media_source_path.as_ref() {
+                self.remember_local_shared_playlist_media_match_signature_path(path);
             }
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
             ));
-            self.flush_session_transport_outbound(handle, projected_state);
-        }
-        let selected_media_source_path = session_playlist_projected
-            .then(|| self.selected_playlist_local_origin(projected_state, selected_playlist_index))
-            .flatten();
-        let selected_media_sync = if session_playlist_projected {
-            self.open_selected_playlist_media_after_shared_playlist_projection(
-                projected_state,
-                selected_playlist_index,
-                selected_media_source_path.clone(),
-            )
+            let delivery_fence = if self.session_transport.is_some() {
+                session_result
+                    .as_ref()
+                    .expect("successful playlist mutation should retain its delivery fence")
+                    .clone()
+            } else {
+                // In-process adapter tests and embedders can own a session
+                // without installing a transport. That seam is synchronous:
+                // no transport means there can be no later write receipt to
+                // satisfy, while production loopback/TCP sessions always
+                // install a handle and retain the exact causal frontier.
+                GuiPlaylistProtocolDeliveryFence::default()
+            };
+            if !delivery_fence.is_reached() {
+                // Retain the continuation before pumping. Immediate and
+                // threaded transports then advance the same exact frame
+                // frontier through their terminal write receipts. Unrelated
+                // coalescible frames can disappear without stranding it.
+                self.pending_shared_playlist_open =
+                    Some(GuiPendingSharedPlaylistOpen::AfterMutation {
+                        dispatch,
+                        opened_entry_count,
+                        selected_playlist_index,
+                        selected_media_source_path,
+                        delivery_fence,
+                    });
+                match self.drain_session_transport_outbound_before_synchronous_player_open(
+                    handle,
+                    projected_state,
+                ) {
+                    GuiSessionOutboundDrainDisposition::Drained
+                    | GuiSessionOutboundDrainDisposition::Pending => {
+                        self.resume_pending_shared_playlist_open_if_ready(handle, projected_state);
+                    }
+                    GuiSessionOutboundDrainDisposition::Failed => {
+                        self.pending_shared_playlist_open = None;
+                    }
+                }
+                return;
+            }
+            selected_media_source_path
         } else {
-            SelectedPlaylistMediaSyncOutcome::NoChange
+            None
         };
+        self.finish_shared_playlist_open_after_delivery(
+            handle,
+            projected_state,
+            GuiSharedPlaylistOpenCompletion {
+                dispatch,
+                opened_entry_count,
+                selected_playlist_index,
+                selected_media_source_path,
+                session_playlist_projected,
+                session_success,
+                session_error: session_result.err(),
+            },
+        );
+    }
+
+    fn finish_shared_playlist_open_after_delivery(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        completion: GuiSharedPlaylistOpenCompletion,
+    ) {
+        let GuiSharedPlaylistOpenCompletion {
+            dispatch,
+            opened_entry_count,
+            selected_playlist_index,
+            selected_media_source_path,
+            session_playlist_projected,
+            session_success,
+            session_error,
+        } = completion;
+        let selected_media_sync =
+            if session_playlist_projected && self.pending_playlist_source_resolution.is_none() {
+                self.open_selected_playlist_media_after_shared_playlist_projection(
+                    projected_state,
+                    selected_playlist_index,
+                    selected_media_source_path.clone(),
+                )
+            } else {
+                SelectedPlaylistMediaSyncOutcome::NoChange
+            };
         if selected_media_sync.selection_started()
             && let Some(session) = self.session.as_mut()
         {
@@ -748,7 +849,7 @@ impl GuiPersistedConfigRuntimeOwner {
             });
             actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
         }
-        if let Err(error) = session_result {
+        if let Some(error) = session_error {
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
                 message: error.clone(),
@@ -756,6 +857,47 @@ impl GuiPersistedConfigRuntimeOwner {
             actions.push(GuiShellAction::AnnounceSystemChatEvent(error));
         }
         handle.push_actions(actions);
+    }
+
+    pub(in crate::app::runtime_owner) fn resume_pending_shared_playlist_open_if_ready(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        if self
+            .pending_shared_playlist_open
+            .as_ref()
+            .is_some_and(|pending| !pending.delivery_fence_reached())
+        {
+            return;
+        }
+        let Some(pending) = self.pending_shared_playlist_open.take() else {
+            return;
+        };
+        match pending {
+            GuiPendingSharedPlaylistOpen::AfterMutation {
+                dispatch,
+                opened_entry_count,
+                selected_playlist_index,
+                selected_media_source_path,
+                ..
+            } => {
+                self.finish_shared_playlist_open_after_delivery(
+                    handle,
+                    projected_state,
+                    GuiSharedPlaylistOpenCompletion {
+                        dispatch,
+                        opened_entry_count,
+                        selected_playlist_index,
+                        selected_media_source_path,
+                        session_playlist_projected: true,
+                        session_success: true,
+                        session_error: None,
+                    },
+                );
+                let _ = self.retry_pending_playlist_source_resolution(handle, projected_state);
+            }
+        }
     }
 
     pub(in crate::app::runtime_owner) fn open_stream_helper_install_location_runtime_impl(

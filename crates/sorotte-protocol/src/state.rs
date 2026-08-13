@@ -69,6 +69,28 @@ impl StatePayload {
     pub fn readiness_v2(&self) -> serde_json::Result<Option<ReadinessStateExtension>> {
         readiness::decode_extension(&self.extra)
     }
+
+    pub fn with_participant_status_v1(
+        mut self,
+        extension: ParticipantStatusStateExtension,
+    ) -> Self {
+        participant_status::insert_extension(&mut self.extra, &extension);
+        self
+    }
+
+    pub fn participant_status_v1(
+        &self,
+    ) -> serde_json::Result<Option<ParticipantStatusStateExtension>> {
+        participant_status::decode_extension(&self.extra)
+    }
+
+    /// Decodes only the client-to-server report field. Server-only scope and
+    /// snapshot fields are outside this receiver's validity boundary.
+    pub fn participant_status_report_v1(
+        &self,
+    ) -> serde_json::Result<Option<ParticipantStatusReport>> {
+        participant_status::decode_report(&self.extra)
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]

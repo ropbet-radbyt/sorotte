@@ -272,7 +272,7 @@ pub fn connected_session_runtime_step_plan_legacy_compatible(
 
 pub fn connected_session_runtime_step_actions_legacy_compatible(
     plan: ConnectedSessionRuntimeStepPlan,
-    outbound_state_sync_enabled: bool,
+    _outbound_state_sync_enabled: bool,
 ) -> Vec<ConnectedSessionRuntimeStepAction> {
     let mut actions = Vec::new();
 
@@ -294,7 +294,7 @@ pub fn connected_session_runtime_step_actions_legacy_compatible(
     if plan.run_reconnect_state_restore_validation {
         actions.push(ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation);
     }
-    if plan.run_state_sync_heartbeat && outbound_state_sync_enabled {
+    if plan.run_state_sync_heartbeat {
         actions.push(ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat);
     }
     if plan.publish_pending_local_file_updates {

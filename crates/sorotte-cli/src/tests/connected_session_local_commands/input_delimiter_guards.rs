@@ -47,10 +47,21 @@ async fn connected_client_session_leading_tab_known_aliases_do_not_emit_outbound
                 !matches!(message, ProtocolMessage::Chat(_)),
                 "leading-tab known alias input should not emit outbound chat"
             );
-            assert!(
-                !matches!(message, ProtocolMessage::State(_)),
-                "leading-tab known alias input should not emit outbound state"
-            );
+            if let ProtocolMessage::State(ref payload) = message {
+                assert!(
+                    payload.state.playstate.is_none()
+                        && payload.state.ping.is_none()
+                        && payload.state.ignoring_on_the_fly.is_none()
+                        && payload.state.extra.len() == 1
+                        && payload
+                            .state
+                            .participant_status_v1()
+                            .expect("advisory heartbeat should decode")
+                            .and_then(|extension| extension.report)
+                            .is_some(),
+                    "leading-tab input may emit only an advisory status heartbeat: {payload:?}"
+                );
+            }
             assert!(
                 !matches!(message, ProtocolMessage::List(_)),
                 "leading-tab known alias input should not emit outbound list requests"

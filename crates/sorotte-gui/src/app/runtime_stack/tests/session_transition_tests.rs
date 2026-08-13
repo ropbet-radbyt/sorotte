@@ -905,6 +905,7 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
     let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     expected_snapshot.can_set_ready = true;
     expected_snapshot.can_set_others_ready = true;
+    expected_snapshot.room_playback_intent.participant_count = 1;
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);

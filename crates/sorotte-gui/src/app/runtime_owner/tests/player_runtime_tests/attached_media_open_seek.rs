@@ -94,6 +94,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         session_transport_reconnect_due_at: None,
         session_transport_reconnect_failures: 0,
         session_transport_disconnect_pending_cleanup: false,
+        pending_shared_playlist_open: None,
         runtime_pump_generation: 0,
         session_default_room: None,
         pending_room_change_request: None,

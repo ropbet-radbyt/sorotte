@@ -47,10 +47,21 @@ async fn connected_client_session_tab_delimited_known_tokens_do_not_emit_outboun
                 !matches!(message, ProtocolMessage::Chat(_)),
                 "tab-delimited known-token input should not emit outbound chat"
             );
-            assert!(
-                !matches!(message, ProtocolMessage::State(_)),
-                "tab-delimited known-token input should not emit outbound state"
-            );
+            if let ProtocolMessage::State(ref payload) = message {
+                assert!(
+                    payload.state.playstate.is_none()
+                        && payload.state.ping.is_none()
+                        && payload.state.ignoring_on_the_fly.is_none()
+                        && payload.state.extra.len() == 1
+                        && payload
+                            .state
+                            .participant_status_v1()
+                            .expect("advisory heartbeat should decode")
+                            .and_then(|extension| extension.report)
+                            .is_some(),
+                    "tab-delimited input may emit only an advisory status heartbeat: {payload:?}"
+                );
+            }
             if let ProtocolMessage::Set(ref payload) = message {
                 assert!(
                     payload.set.room.is_none()
@@ -203,10 +214,21 @@ async fn connected_client_session_non_space_delimited_known_tokens_do_not_emit_o
                 !matches!(message, ProtocolMessage::Chat(_)),
                 "non-space-delimited known-token input should not emit outbound chat"
             );
-            assert!(
-                !matches!(message, ProtocolMessage::State(_)),
-                "non-space-delimited known-token input should not emit outbound state"
-            );
+            if let ProtocolMessage::State(ref payload) = message {
+                assert!(
+                    payload.state.playstate.is_none()
+                        && payload.state.ping.is_none()
+                        && payload.state.ignoring_on_the_fly.is_none()
+                        && payload.state.extra.len() == 1
+                        && payload
+                            .state
+                            .participant_status_v1()
+                            .expect("advisory heartbeat should decode")
+                            .and_then(|extension| extension.report)
+                            .is_some(),
+                    "non-space-delimited input may emit only an advisory status heartbeat: {payload:?}"
+                );
+            }
             if let ProtocolMessage::Set(ref payload) = message {
                 assert!(
                     payload.set.room.is_none()
