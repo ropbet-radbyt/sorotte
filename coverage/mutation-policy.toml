@@ -1,6 +1,21 @@
 schema_version = 3
 cargo_mutants_version = "27.1.0"
 
+[[required_report_set]]
+id = "participant-status"
+shards = [
+    "participant-status-protocol",
+    "client-participant-status",
+    "client-participant-status-runtime",
+    "client-participant-status-outbox",
+    "server-participant-status",
+    "gui-participant-status",
+    "gui-playlist-delivery-fence",
+    "player-mpv-explicit-ipc-retry",
+    "client-app-participant-status-lifecycle",
+    "cli-participant-status-lifecycle",
+]
+
 [[shard]]
 id = "privacy-secret"
 owner = "secrets"
@@ -99,7 +114,7 @@ files = [
     "crates/sorotte-client-core/src/runtime/playback_coordination.rs",
     "crates/sorotte-client-core/src/runtime/queued_control.rs",
 ]
-mutant_filter = "((pending|commit|take)_participant_status_report|emit_participant_status_transition|run_participant_status_heartbeat|reset_sync_state_for_reconnect|begin_(protocol_connection_generation|participant_status_room_switch)|participant_status_room_(membership|scope)|participant_status_(player_availability|telemetry_wait_is_current|legacy_position_fallback)|update_participant_status_evidence_times|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
+mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|observe_transport_with_semantics|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
 test_target = "lib"
 test_filter = "runtime::playback_coordination::tests::participant_status_"
 jobs = 2
@@ -864,6 +879,17 @@ reason = "cargo-mutants requests Default for a status snapshot that requires an 
 review_by = "2026-11-30"
 
 [[accepted_unviable]]
+id = "server-participant-status-split-message-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "split_participant_status_from_reliable_passthrough"
+return_type = "-> Vec<ProtocolMessage>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a protocol message inside the split delivery vector, but every message requires an explicit protocol variant and ProtocolMessage intentionally has no Default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
 id = "server-participant-status-periodic-updates-element-default"
 shard = "server-participant-status"
 file = "crates/sorotte-server/src/runtime_maintenance.rs"
@@ -934,7 +960,7 @@ review_by = "2026-11-30"
 id = "player-mpv-explicit-ipc-retry-instant-duration-multiply"
 shard = "player-mpv-explicit-ipc-retry"
 file = "crates/sorotte-player-mpv/src/adapter/reconnection.rs"
-function = "MpvAdapter::maintain_json_ipc_reconnection_using"
+function = "MpvAdapter::maintain_json_ipc_reconnection_using_clock"
 return_type = ""
 genre = "BinaryOperator"
 replacement = "*"
@@ -1006,4 +1032,48 @@ return_type = "-> Option<ContainedConnectedSessionPlayerFailure>"
 genre = "FnValue"
 replacement = "Some(Default::default())"
 reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-phase-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::participant_status_phase"
+return_type = "-> ParticipantPlaybackPhase"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the explicit participant playback phase enum, which intentionally has no semantically safe default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-observe-actions-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::observe_transport_with_semantics"
+return_type = "-> Vec<PlaybackCoordinatorAction>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a playback coordinator action, but every action requires an explicit causal revision, command, or failure reason and intentionally has no Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-flush-let-chain-or"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/accessors.rs"
+function = "ClientSessionUpdate<'a>::flush_participant_status_transition"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-queued-state-let-chain-or"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/queued_control.rs"
+function = "ClientRuntime<P, QueuedRuntimeControl>::queue_connection_scoped_state_with_participant_status"
+return_type = "-> bool"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
 review_by = "2026-11-30"

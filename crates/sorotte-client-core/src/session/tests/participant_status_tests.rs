@@ -3,6 +3,7 @@ use crate::ClientParticipantStatusFreshness;
 use sorotte_protocol::{
     ParticipantPlaybackPhase, ParticipantPlayerConnection, ParticipantStatusAvailability,
     ParticipantStatusCorrelation, ParticipantStatusSnapshotMode, ParticipantStatusView,
+    ParticipantTimelineKind,
 };
 
 fn status_session() -> ClientSession {
@@ -104,6 +105,7 @@ fn participant_status_server_availability_is_a_floor_and_controls_precision() {
                                         "correlation": "exact",
                                         "playerConnection": "connected",
                                         "phase": "playing",
+                                        "timelineKind": "vod",
                                         "positionSeconds": 42.5,
                                         "sampleAgeMs": 0,
                                         "positionSampleAgeMs": 0,
@@ -173,6 +175,7 @@ fn participant_status_precise_offsets_require_explicit_exact_correlation() {
     exact.correlation = Some(ParticipantStatusCorrelation::Exact);
     exact.player_connection = Some(ParticipantPlayerConnection::Connected);
     exact.phase = Some(ParticipantPlaybackPhase::Playing);
+    exact.timeline_kind = Some(ParticipantTimelineKind::Vod);
     exact.position_seconds = Some(42.5);
     exact.report_age_ms = Some(0);
     exact.sample_age_ms = Some(0);
@@ -193,6 +196,7 @@ fn participant_status_direct_aging_fails_closed_for_invalid_elapsed_time() {
         "correlation": "exact",
         "playerConnection": "connected",
         "phase": "playing",
+        "timelineKind": "vod",
         "positionSeconds": 42.5,
         "sampleAgeMs": 0,
         "reportAgeMs": 0,
@@ -215,6 +219,7 @@ fn participant_status_direct_aging_adds_elapsed_time_to_each_evidence_clock() {
         "correlation": "exact",
         "playerConnection": "connected",
         "phase": "playing",
+        "timelineKind": "vod",
         "positionSeconds": 42.5,
         "sampleAgeMs": 2900,
         "positionSampleAgeMs": 0,

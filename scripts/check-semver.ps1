@@ -5,24 +5,36 @@ param(
     [string]$BaselineRev,
 
     [ValidateSet(
+        'sorotte-secret',
         'sorotte-protocol',
-        'sorotte-client-core',
-        'sorotte-player-api',
-        'sorotte-client-app',
-        'sorotte-player-mpv',
-        'sorotte-cli',
+        'sorotte-core',
         'sorotte-server',
-        'sorotte-gui'
+        'sorotte-media-match',
+        'sorotte-client-core',
+        'sorotte-client-app',
+        'sorotte-player-api',
+        'sorotte-player-mpv',
+        'sorotte-plex',
+        'sorotte-cli',
+        'sorotte-gui',
+        'sorotte-sim',
+        'sorotte-compat'
     )]
     [string[]]$Package = @(
+        'sorotte-secret',
         'sorotte-protocol',
-        'sorotte-client-core',
-        'sorotte-player-api',
-        'sorotte-client-app',
-        'sorotte-player-mpv',
-        'sorotte-cli',
+        'sorotte-core',
         'sorotte-server',
-        'sorotte-gui'
+        'sorotte-media-match',
+        'sorotte-client-core',
+        'sorotte-client-app',
+        'sorotte-player-api',
+        'sorotte-player-mpv',
+        'sorotte-plex',
+        'sorotte-cli',
+        'sorotte-gui',
+        'sorotte-sim',
+        'sorotte-compat'
     ),
 
     [string]$CargoExecutable = 'cargo'

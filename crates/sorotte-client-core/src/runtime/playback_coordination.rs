@@ -968,6 +968,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     last_participant_status_sent_at_seconds: Option<f64>,
     participant_status_room_scope: Option<ParticipantStatusRoomScope>,
     participant_status_applied_room_scope: Option<ParticipantStatusRoomScope>,
+    participant_status_desired_scope_bindings: BTreeMap<(u64, u64), ParticipantStatusRoomScope>,
     pending_participant_status_room_switch_target: Option<String>,
 }
 
@@ -1107,6 +1108,7 @@ impl RuntimePlaybackCoordination {
         self.participant_status_owner_clock_invalidated = false;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
         self.player_command_bindings.clear();
         let classifier_adapter_epoch = self.classifier_adapter_epoch();
         self.player_transition_classifier
@@ -1206,6 +1208,7 @@ impl RuntimePlaybackCoordination {
         self.last_reported_room_buffering = None;
         self.last_participant_status_fingerprint = None;
         self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
         self.pending_barrier_timeout_action = None;
         if let Some(reconciliation) = self.reconnect_reconciliation.as_mut() {
             reconciliation.target_revision = None;
@@ -1245,6 +1248,7 @@ impl RuntimePlaybackCoordination {
         self.coordinator
             .clear_participant_status_transport_metrics();
         self.last_participant_status_fingerprint = None;
+        self.participant_status_desired_scope_bindings.clear();
         true
     }
 
@@ -1373,15 +1377,9 @@ impl RuntimePlaybackCoordination {
         media_generation: u64,
     ) -> Option<u64> {
         session
-            .playback_barrier_status()
-            .filter(|status| status.media_generation == media_generation)
-            .and_then(|status| status.state_revision)
-            .or_else(|| {
-                session
-                    .playback_barrier_active_commit()
-                    .filter(|commit| commit.media_generation == media_generation)
-                    .map(|commit| commit.state_revision)
-            })
+            .playback_barrier_active_commit()
+            .filter(|commit| commit.media_generation == media_generation)
+            .map(|commit| commit.state_revision)
             .or_else(|| {
                 session
                     .playback_barrier_buffering_policy()
@@ -1504,10 +1502,15 @@ impl RuntimePlaybackCoordination {
         let waiting_since = *self
             .transport_telemetry_wait_started_at_seconds
             .get_or_insert(now_seconds);
-        now_seconds.is_finite()
-            && waiting_since.is_finite()
-            && now_seconds >= waiting_since
-            && now_seconds - waiting_since <= PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS
+        if !now_seconds.is_finite() || !waiting_since.is_finite() || now_seconds < waiting_since {
+            // A lifecycle timer is evidence too. Once its owner clock rolls
+            // back, merely catching up to the old timestamp must not revive
+            // Starting without a new lifecycle transition or player sample.
+            self.participant_status_owner_clock_invalidated = true;
+            self.transport_telemetry_wait_started_at_seconds = None;
+            return false;
+        }
+        now_seconds - waiting_since <= PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS
     }
 
     fn participant_status_player_availability(
@@ -1748,6 +1751,7 @@ impl RuntimePlaybackCoordination {
             scope.transport_revision = transport_revision;
             scope
         });
+        report.redact_ineligible_media_evidence();
 
         Some(PendingParticipantStatusReport {
             report,
@@ -1874,7 +1878,12 @@ impl RuntimePlaybackCoordination {
         self.last_participant_status_sent_at_seconds = None;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
-        self.pending_participant_status_room_switch_target = None;
+        self.participant_status_desired_scope_bindings.clear();
+        // Reliable SetRoom intent survives connection replacement. Preserve
+        // its semantic suppression fence until authoritative membership
+        // reaches the target (or a later explicit room intent supersedes it),
+        // otherwise old-room evidence can be emitted behind the retained
+        // SetRoom and authenticated into the destination room.
         self.last_technical_readiness_fingerprint = None;
         self.bind_local_control_authority_context(
             session,
@@ -2140,6 +2149,7 @@ impl RuntimePlaybackCoordination {
         self.accepted_barrier_terminal = false;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
     }
 
     pub(crate) fn begin_participant_status_room_switch(
@@ -2152,6 +2162,7 @@ impl RuntimePlaybackCoordination {
         self.last_participant_status_fingerprint = None;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
     }
 
     pub(crate) fn confirm_participant_status_room_membership(&mut self, session: &ClientSession) {
@@ -2178,6 +2189,7 @@ impl RuntimePlaybackCoordination {
         self.pending_native_play_authority_fence = None;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
         self.pending_participant_status_room_switch_target = None;
         self.last_participant_status_fingerprint = None;
         self.local_control_authority = Some(ConnectionLocalControlAuthority {
@@ -2609,21 +2621,29 @@ impl RuntimePlaybackCoordination {
         mut replace_latest_observation: bool,
         mut replace_position_state: bool,
     ) -> bool {
-        if self
-            .transport_telemetry_lifecycle_fence_at_seconds
-            .is_some_and(|fence| observation.observed_at_seconds < fence)
-            || self.coordinator.current_media_generation() != Some(observation.media_generation)
-            || !self.observation_timestamp_is_accepted(
-                observation.media_generation,
-                observation.observed_at_seconds,
-            )
+        if !external_now_seconds.is_finite()
+            || !delivery_reference_seconds.is_finite()
+            || candidate_offset_seconds.is_some_and(|offset| !offset.is_finite())
         {
             return false;
         }
+        if self
+            .transport_telemetry_lifecycle_fence_at_seconds
+            .is_some_and(|fence| observation.observed_at_seconds < fence)
+        {
+            return false;
+        }
+        if self.coordinator.current_media_generation() != Some(observation.media_generation) {
+            return false;
+        }
+        if !self.observation_timestamp_is_accepted(
+            observation.media_generation,
+            observation.observed_at_seconds,
+        ) {
+            return false;
+        }
         let owner_clock_rolled_back = self.last_external_now_seconds.is_some_and(|last_observed| {
-            external_now_seconds.is_finite()
-                && last_observed.is_finite()
-                && external_now_seconds < last_observed
+            !last_observed.is_finite() || external_now_seconds < last_observed
         });
         let replace_participant_status_clock =
             owner_clock_rolled_back || self.participant_status_owner_clock_invalidated;
@@ -3795,6 +3815,19 @@ impl RuntimePlaybackCoordination {
         self.desired_generation = Some(media_generation);
         self.desired_fingerprint = Some(fingerprint);
         self.refresh_participant_status_room_scope(session);
+        if desired_changed
+            && let Some(scope) = self
+                .participant_status_room_scope
+                .as_ref()
+                .filter(|scope| scope.local_media_generation == media_generation)
+                .cloned()
+        {
+            self.participant_status_desired_scope_bindings
+                .insert((media_generation, self.desired_revision), scope);
+            while self.participant_status_desired_scope_bindings.len() > 32 {
+                self.participant_status_desired_scope_bindings.pop_first();
+            }
+        }
 
         let coordinator_now = self.coordinator_now(external_now_seconds);
         let superseded_dispatched_seek = if barrier_became_authoritative
@@ -3868,10 +3901,14 @@ impl RuntimePlaybackCoordination {
                 } => {
                     self.last_applied_revision = Some(*state_revision);
                     self.participant_status_applied_room_scope = self
-                        .participant_status_room_scope
-                        .as_ref()
-                        .filter(|scope| scope.local_media_generation == *media_generation)
+                        .participant_status_desired_scope_bindings
+                        .get(&(*media_generation, *state_revision))
                         .cloned();
+                    self.participant_status_desired_scope_bindings.retain(
+                        |(generation, revision), _| {
+                            *generation != *media_generation || *revision > *state_revision
+                        },
+                    );
                     if self.pending_forced_seek_revision == Some(*state_revision) {
                         self.pending_forced_seek_revision = None;
                     }
@@ -6397,6 +6434,334 @@ mod tests {
             .collect()
     }
 
+    fn participant_status_accepted_barrier_fixture() -> (RuntimePlaybackCoordination, ClientSession)
+    {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let local_media_generation = coordination
+            .prepare_media(
+                LogicalMediaId::new("participant-status-accepted-media").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        coordination.accepted_barrier = Some(PlaybackBarrierOperation {
+            local_media_generation,
+            load_intent: MediaLoadIntent::NewPlayback,
+            include_start_barrier: true,
+            request_id: "participant-status-request".to_owned(),
+            request_nonce: 7,
+            logical_media_id: "participant-status-accepted-media".to_owned(),
+            room: "room1".to_owned(),
+        });
+        (coordination, barrier_session())
+    }
+
+    fn participant_status_transport_fixture() -> (RuntimePlaybackCoordination, u64) {
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let media_generation = coordination
+            .prepare_media(
+                LogicalMediaId::new("participant-status-transport-fixture").unwrap(),
+                MediaTransportKind::NetworkVod,
+                0.0,
+            )
+            .media_generation;
+        (coordination, media_generation)
+    }
+
+    #[test]
+    fn participant_status_barrier_revision_sources_are_generation_exact() {
+        let mut commit_session = barrier_session();
+        apply_barrier_extension(
+            &mut commit_session,
+            PlaybackBarrierSetExtension::new()
+                .with_prepare(
+                    PrepareMediaPayload::new(
+                        12,
+                        "revision-source-commit",
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_nonce(1),
+                )
+                .with_commit(CommitStartPayload::new(12, 102, 0.0, 0.0, 10.0))
+                .with_status(barrier_status(
+                    12,
+                    Some(102),
+                    PlaybackBarrierPhase::Committed,
+                )),
+        );
+        assert_eq!(
+            RuntimePlaybackCoordination::participant_status_state_revision_for_generation(
+                &commit_session,
+                12,
+            ),
+            Some(102),
+        );
+
+        let mut policy_session = barrier_session();
+        apply_barrier_extension(
+            &mut policy_session,
+            PlaybackBarrierSetExtension::new().with_buffering_policy(
+                RoomBufferingPolicyPayload::new(13, RoomBufferingPolicy::PauseAnyEligible)
+                    .with_state_revision(103),
+            ),
+        );
+        assert_eq!(
+            RuntimePlaybackCoordination::participant_status_state_revision_for_generation(
+                &policy_session,
+                13,
+            ),
+            Some(103),
+        );
+    }
+
+    #[test]
+    fn participant_status_accepted_generation_requires_every_operation_identity_axis() {
+        let evaluate_prepare = |request_id: &str, request_nonce: u64, logical_media_id: &str| {
+            let (coordination, mut session) = participant_status_accepted_barrier_fixture();
+            apply_barrier_extension(
+                &mut session,
+                PlaybackBarrierSetExtension::new().with_prepare(
+                    PrepareMediaPayload::new(
+                        41,
+                        logical_media_id,
+                        0.0,
+                        PlaybackBarrierPolicy::Controller,
+                    )
+                    .with_request_id(request_id)
+                    .with_request_nonce(request_nonce),
+                ),
+            );
+            coordination.accepted_participant_status_media_generation(&session)
+        };
+        assert_eq!(
+            evaluate_prepare(
+                "participant-status-request",
+                7,
+                "participant-status-accepted-media",
+            ),
+            Some(41),
+        );
+        assert_eq!(
+            evaluate_prepare("wrong-request", 7, "participant-status-accepted-media",),
+            None,
+        );
+        assert_eq!(
+            evaluate_prepare(
+                "participant-status-request",
+                8,
+                "participant-status-accepted-media",
+            ),
+            None,
+        );
+        assert_eq!(
+            evaluate_prepare("participant-status-request", 7, "wrong-media"),
+            None,
+        );
+
+        let evaluate_policy = |request_id: &str, request_nonce: u64| {
+            let (coordination, mut session) = participant_status_accepted_barrier_fixture();
+            apply_barrier_extension(
+                &mut session,
+                PlaybackBarrierSetExtension::new().with_buffering_policy(
+                    RoomBufferingPolicyPayload::new(42, RoomBufferingPolicy::PauseAnyEligible)
+                        .with_request_id(request_id)
+                        .with_request_nonce(request_nonce),
+                ),
+            );
+            coordination.accepted_participant_status_media_generation(&session)
+        };
+        assert_eq!(evaluate_policy("participant-status-request", 7), Some(42),);
+        assert_eq!(evaluate_policy("wrong-request", 7), None);
+        assert_eq!(evaluate_policy("participant-status-request", 8), None);
+
+        let (mut wrong_generation, mut valid_session) =
+            participant_status_accepted_barrier_fixture();
+        apply_barrier_extension(
+            &mut valid_session,
+            PlaybackBarrierSetExtension::new().with_prepare(
+                PrepareMediaPayload::new(
+                    41,
+                    "participant-status-accepted-media",
+                    0.0,
+                    PlaybackBarrierPolicy::Controller,
+                )
+                .with_request_id("participant-status-request")
+                .with_request_nonce(7),
+            ),
+        );
+        wrong_generation
+            .accepted_barrier
+            .as_mut()
+            .unwrap()
+            .local_media_generation += 1;
+        assert_eq!(
+            wrong_generation.accepted_participant_status_media_generation(&valid_session),
+            None,
+        );
+        let (mut wrong_room, mut valid_session) = participant_status_accepted_barrier_fixture();
+        apply_barrier_extension(
+            &mut valid_session,
+            PlaybackBarrierSetExtension::new().with_prepare(
+                PrepareMediaPayload::new(
+                    41,
+                    "participant-status-accepted-media",
+                    0.0,
+                    PlaybackBarrierPolicy::Controller,
+                )
+                .with_request_id("participant-status-request")
+                .with_request_nonce(7),
+            ),
+        );
+        wrong_room.accepted_barrier.as_mut().unwrap().room = "other-room".to_owned();
+        assert_eq!(
+            wrong_room.accepted_participant_status_media_generation(&valid_session),
+            None,
+        );
+    }
+
+    #[test]
+    fn participant_status_starting_seek_detection_accepts_each_independent_signal() {
+        let (mut phase_signal, _) = participant_status_transport_fixture();
+        let mut phase_update = transport(1, 1.0, PlayerTransportPhase::Seeking, 5.0);
+        phase_update.seeking = Some(false);
+        phase_signal.observe_transport(phase_update, 1.0);
+        assert_eq!(
+            phase_signal.participant_status_phase(),
+            ParticipantPlaybackPhase::Seeking,
+        );
+
+        let (mut boolean_signal, _) = participant_status_transport_fixture();
+        let mut boolean_update = transport(1, 1.0, PlayerTransportPhase::Playing, 5.0);
+        boolean_update.core_idle = Some(true);
+        boolean_update.seeking = Some(true);
+        boolean_signal.observe_transport(boolean_update, 1.0);
+        assert_eq!(
+            boolean_signal.participant_status_phase(),
+            ParticipantPlaybackPhase::Seeking,
+        );
+    }
+
+    #[test]
+    fn participant_status_lifecycle_wait_clock_rejects_each_invalid_axis() {
+        for (waiting_since, now_seconds) in [(1.0, f64::NAN), (f64::NAN, 1.0), (2.0, 1.0)] {
+            let mut coordination = RuntimePlaybackCoordination {
+                transport_telemetry_wait_started_at_seconds: Some(waiting_since),
+                ..RuntimePlaybackCoordination::default()
+            };
+            assert!(!coordination.participant_status_telemetry_wait_is_current(now_seconds));
+            assert!(coordination.participant_status_owner_clock_invalidated);
+            assert!(
+                coordination
+                    .transport_telemetry_wait_started_at_seconds
+                    .is_none()
+            );
+        }
+        let mut equal_timestamp = RuntimePlaybackCoordination {
+            transport_telemetry_wait_started_at_seconds: Some(1.0),
+            ..RuntimePlaybackCoordination::default()
+        };
+        assert!(equal_timestamp.participant_status_telemetry_wait_is_current(1.0));
+    }
+
+    #[test]
+    fn participant_status_transport_commit_guards_are_independent() {
+        let assert_rejected =
+            |mut coordination: RuntimePlaybackCoordination,
+             observation: PlayerTransportObservation| {
+                let position_update = observation.clone();
+                assert!(!coordination.commit_mapped_transport_observation(
+                    observation,
+                    &position_update,
+                    2.0,
+                    2.0,
+                    None,
+                    false,
+                    false,
+                ));
+            };
+
+        let (mut fenced, generation) = participant_status_transport_fixture();
+        fenced.transport_telemetry_lifecycle_fence_at_seconds = Some(2.0);
+        assert_rejected(fenced, PlayerTransportObservation::new(generation, 1.0));
+
+        let (wrong_generation, generation) = participant_status_transport_fixture();
+        assert_rejected(
+            wrong_generation,
+            PlayerTransportObservation::new(generation + 1, 1.0),
+        );
+
+        let (mut stale, generation) = participant_status_transport_fixture();
+        stale.latest_observation = Some(PlayerTransportObservation::new(generation, 2.0));
+        assert_rejected(stale, PlayerTransportObservation::new(generation, 1.0));
+
+        for (external_now, delivery_reference, offset) in [
+            (f64::NAN, 2.0, None),
+            (2.0, f64::NAN, None),
+            (2.0, 2.0, Some(f64::NAN)),
+        ] {
+            let (mut coordination, generation) = participant_status_transport_fixture();
+            let observation = PlayerTransportObservation::new(generation, 1.0);
+            assert!(!coordination.commit_mapped_transport_observation(
+                observation.clone(),
+                &observation,
+                external_now,
+                delivery_reference,
+                offset,
+                false,
+                false,
+            ));
+        }
+    }
+
+    #[test]
+    fn participant_status_transport_clock_reset_truth_table_is_one_way() {
+        let commit_sparse = |last_external_now: f64,
+                             external_now: f64,
+                             owner_invalidated: bool,
+                             last_received_at: Option<f64>| {
+            let (mut coordination, generation) = participant_status_transport_fixture();
+            coordination.latest_observation = Some(
+                PlayerTransportObservation::new(generation, 1.0)
+                    .with_position(9.0)
+                    .with_logical_pause(false),
+            );
+            coordination.last_external_now_seconds = Some(last_external_now);
+            coordination.participant_status_owner_clock_invalidated = owner_invalidated;
+            coordination.last_transport_telemetry_received_at_seconds = last_received_at;
+            let sparse = PlayerTransportObservation::new(generation, 2.0)
+                .with_phase(PlayerTransportPhase::Playing);
+            assert!(coordination.commit_mapped_transport_observation(
+                sparse.clone(),
+                &sparse,
+                external_now,
+                external_now,
+                None,
+                false,
+                false,
+            ));
+            coordination
+                .latest_observation
+                .as_ref()
+                .and_then(|observation| observation.position_seconds)
+        };
+
+        assert_eq!(commit_sparse(10.0, 10.0, false, None), Some(9.0));
+        assert_eq!(commit_sparse(10.0, 9.0, false, None), None);
+        assert_eq!(commit_sparse(10.0, 11.0, true, None), None);
+        assert_eq!(commit_sparse(f64::NAN, 11.0, false, None), None);
+        assert_eq!(
+            commit_sparse(
+                0.0,
+                PARTICIPANT_STATUS_TRANSPORT_TELEMETRY_STALE_SECONDS,
+                false,
+                Some(0.0),
+            ),
+            Some(9.0),
+            "the exact stale threshold is still current; only a larger gap starts a new epoch",
+        );
+    }
+
     #[test]
     fn participant_status_room_scope_is_invalidated_by_each_local_context_axis() {
         let session = participant_status_session();
@@ -6979,6 +7344,33 @@ mod tests {
     }
 
     #[test]
+    fn participant_status_report_sanitizes_seeking_precision_before_encoding() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("participant-status-seeking-sanitizer").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        let mut seeking = transport(1, 1.0, PlayerTransportPhase::Seeking, 42.0);
+        seeking.playback_rate = Some(1.25);
+        coordination.observe_transport(seeking, 1.0);
+
+        let report = coordination
+            .take_participant_status_report(&session, true, 1.0)
+            .expect("the coarse seeking transition should remain reportable");
+        assert_eq!(
+            report.player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert_eq!(report.phase, ParticipantPlaybackPhase::Seeking);
+        assert_eq!(report.position_seconds, None);
+        assert_eq!(report.logical_paused, None);
+        assert_eq!(report.playback_rate, None);
+        assert_eq!(report.position_sample_age_ms, None);
+    }
+
+    #[test]
     fn public_external_epoch_observation_emits_participant_status_transition_immediately() {
         let mut runtime = ClientRuntime::new(
             participant_status_session(),
@@ -7482,6 +7874,38 @@ mod tests {
     }
 
     #[test]
+    fn participant_status_connecting_clock_rollback_cannot_rejuvenate_starting() {
+        let session = participant_status_session();
+        let mut coordination = RuntimePlaybackCoordination::default();
+        assert!(
+            coordination
+                .set_external_player_availability(ExternalPlayerAvailability::Connecting, 100.0,)
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 100.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Starting,
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 50.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Unavailable,
+        );
+        assert_eq!(
+            coordination
+                .take_participant_status_report(&session, true, 100.0)
+                .unwrap()
+                .player_connection,
+            ParticipantPlayerConnection::Unavailable,
+            "wall-clock catch-up without a new lifecycle/sample must not revive Starting",
+        );
+    }
+
+    #[test]
     fn participant_status_connecting_and_telemetry_unavailable_fence_pre_transition_transport() {
         let session = participant_status_session();
         let mut coordination = RuntimePlaybackCoordination::default();
@@ -7659,6 +8083,55 @@ mod tests {
     }
 
     #[test]
+    fn participant_status_reconnect_preserves_a_durable_room_switch_fence() {
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        assert!(runtime.run_set_room("room2").unwrap());
+        runtime.begin_protocol_connection_generation();
+        runtime.session_mut().reset_sync_state_for_reconnect();
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+                1.0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_room_switch_target
+                .as_deref(),
+            Some("room2"),
+        );
+        assert!(
+            reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+            "replacement Hello in the old room must not publish behind the retained SetRoom",
+        );
+        assert!(
+            runtime
+                .playback_coordination
+                .pending_participant_status_report(&runtime.session, true, 1.1)
+                .is_none(),
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room2"}}}}}"#,
+                2.0,
+            )
+            .unwrap();
+        assert_eq!(
+            reports_in(runtime.flush_queued_protocol_messages()).len(),
+            1
+        );
+    }
+
+    #[test]
     fn participant_status_inactive_phases_cancel_unleased_and_leased_reports() {
         let mut runtime = ClientRuntime::new(
             participant_status_session(),
@@ -7788,7 +8261,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_withdrawal_cancels_an_unsent_participant_status_report() {
+    fn participant_status_capability_withdrawal_cancels_an_unsent_report() {
         let mut runtime = ClientRuntime::new(
             participant_status_session(),
             DisconnectedPlayer,
@@ -8012,6 +8485,68 @@ mod tests {
         assert_eq!(
             unrelated.playback_scope, None,
             "retained barrier history must not be paired with unrelated current telemetry"
+        );
+    }
+
+    #[test]
+    fn participant_status_revision_applies_its_captured_room_scope() {
+        let captured_scope = ParticipantStatusRoomScope {
+            room: "room1".to_owned(),
+            local_media_generation: 7,
+            media_generation: 41,
+            state_revision: Some(11),
+            transport_revision: Some(3),
+        };
+        let newer_scope = ParticipantStatusRoomScope {
+            room: "room1".to_owned(),
+            local_media_generation: 7,
+            media_generation: 41,
+            state_revision: Some(12),
+            transport_revision: Some(4),
+        };
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination
+            .participant_status_desired_scope_bindings
+            .insert((7, 9), captured_scope.clone());
+        coordination
+            .participant_status_desired_scope_bindings
+            .insert((7, 8), captured_scope.clone());
+        coordination
+            .participant_status_desired_scope_bindings
+            .insert((7, 10), newer_scope.clone());
+        coordination
+            .participant_status_desired_scope_bindings
+            .insert((8, 1), newer_scope.clone());
+        coordination.participant_status_room_scope = Some(newer_scope.clone());
+        coordination.pending_forced_seek_revision = Some(9);
+
+        coordination.record_observation_outcomes(&[PlaybackCoordinatorAction::RevisionApplied {
+            media_generation: 7,
+            state_revision: 9,
+        }]);
+
+        assert_eq!(
+            coordination.participant_status_applied_room_scope,
+            Some(captured_scope),
+            "an old desired revision must adopt the scope captured with that revision",
+        );
+        assert_ne!(
+            coordination.participant_status_applied_room_scope,
+            Some(newer_scope),
+            "a refreshed authoritative scope cannot relabel old transport evidence as exact",
+        );
+        assert_eq!(
+            coordination
+                .participant_status_desired_scope_bindings
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(7, 10), (8, 1)],
+            "only applied-or-older bindings in the same local generation are retired",
+        );
+        assert_eq!(
+            coordination.pending_forced_seek_revision, None,
+            "the matching forced revision is retired at the same application boundary",
         );
     }
 

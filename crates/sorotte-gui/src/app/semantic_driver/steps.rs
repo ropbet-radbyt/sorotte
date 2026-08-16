@@ -325,6 +325,15 @@ impl GuiSemanticStep {
         }
     }
 
+    fn parse_participant_timeline_kind(token: &str) -> Result<ParticipantTimelineKind, String> {
+        match token {
+            "unknown" => Ok(ParticipantTimelineKind::Unknown),
+            "vod" => Ok(ParticipantTimelineKind::Vod),
+            "live" => Ok(ParticipantTimelineKind::Live),
+            _ => Err(format!("unsupported participant timeline kind {token:?}")),
+        }
+    }
+
     fn parse_seek_preparation_phase(token: &str) -> Result<GuiSeekPreparationPhase, String> {
         match token {
             "seeking" => Ok(GuiSeekPreparationPhase::Seeking),
@@ -900,6 +909,10 @@ impl GuiSemanticStep {
                                 "participant status report requires start barrier or 'none'"
                                     .to_owned()
                             })?);
+                        let timeline_kind =
+                            Self::parse_participant_timeline_kind(fields.next().ok_or_else(
+                                || "participant status report requires timeline kind".to_owned(),
+                            )?)?;
                         let freshness = match report_age_seconds {
                             None => MainWindowParticipantStatusFreshness::Unknown,
                             Some(age) if age <= 3.0 => MainWindowParticipantStatusFreshness::Fresh,
@@ -932,7 +945,7 @@ impl GuiSemanticStep {
                         });
                         status.player_connection = Some(player);
                         status.phase = Some(phase);
-                        status.timeline_kind = Some(ParticipantTimelineKind::Unknown);
+                        status.timeline_kind = Some(timeline_kind);
                         status.position_seconds = position_seconds;
                         status.logical_paused = logical_paused;
                         status.playback_rate = playback_rate;

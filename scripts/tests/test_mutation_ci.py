@@ -493,6 +493,11 @@ class MutationPolicyTests(unittest.TestCase):
         )
         if not accepted:
             prefix += "accepted_unviable = []\n"
+        prefix += (
+            '[[required_report_set]]\n'
+            'id = "demo"\n'
+            'shards = ["demo"]\n'
+        )
         body = """
 
 [[shard]]
@@ -988,6 +993,7 @@ class MutationRunnerTests(unittest.TestCase):
                     "schema_version": 1,
                     "kind": "sorotte-mutation-report-set",
                     "policy": "coverage/mutation-policy.toml",
+                    "report_set": "demo",
                     "reports": {
                         "demo": "target/verification/mutation-demo.json",
                     },
@@ -1016,6 +1022,66 @@ class MutationRunnerTests(unittest.TestCase):
         self.assertEqual(call.shard, "demo")
         self.assertEqual(call.report, "target/verification/mutation-demo.json")
         self.assertIn("1 uniquely selected shard report", stdout.getvalue())
+
+    def test_report_set_manifest_rejects_an_omitted_required_shard(self) -> None:
+        second_source = self.repo / "crates" / "demo" / "src" / "second.rs"
+        second_source.write_text("pub fn second() {}\n", encoding="utf-8")
+        second_shard = """
+
+[[shard]]
+id = "second"
+owner = "demo-owner"
+package = "demo"
+files = ["crates/demo/src/second.rs"]
+mutant_filter = ""
+test_target = "package"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+"""
+        policy = MutationPolicyTests.policy_text(self, accepted=False).replace(
+            'shards = ["demo"]',
+            'shards = ["demo", "second"]',
+        )
+        (self.repo / "coverage" / "mutation-policy.toml").write_text(
+            policy + second_shard,
+            encoding="utf-8",
+        )
+        manifest = self.repo / "coverage" / "mutation-report-set.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "sorotte-mutation-report-set",
+                    "policy": "coverage/mutation-policy.toml",
+                    "report_set": "demo",
+                    "reports": {"demo": "target/verification/mutation-demo.json"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = mutation_ci.main(
+                [
+                    "verify-report-set",
+                    "--repo-root",
+                    str(self.repo),
+                    "--policy",
+                    "coverage/mutation-policy.toml",
+                    "--manifest",
+                    "coverage/mutation-report-set.json",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("missing ['second']", stderr.getvalue())
 
     def test_run_writes_passed_report_after_pre_inventory_reconciliation(self) -> None:
         calls: list[list[str]] = []

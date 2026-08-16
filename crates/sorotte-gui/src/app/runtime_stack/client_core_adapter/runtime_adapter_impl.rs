@@ -997,6 +997,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .and_then(|index| usize::try_from(index).ok())
     }
 
+    fn current_room_selected_playlist_entry(&self) -> Option<String> {
+        let playlist = self.projected_current_room_playlist()?;
+        let index = playlist
+            .index
+            .and_then(|index| usize::try_from(index).ok())?;
+        playlist.files.get(index).cloned()
+    }
+
     fn server_media_match_supported(&self) -> bool {
         self.runtime.session().server_media_match_supported()
     }

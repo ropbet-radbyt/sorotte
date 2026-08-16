@@ -453,7 +453,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 (status.freshness == MainWindowParticipantStatusFreshness::Fresh
                     && !status.timeline_mismatch
                     && status.status.correlation
-                        == Some(sorotte_protocol::ParticipantStatusCorrelation::Exact))
+                        == Some(sorotte_protocol::ParticipantStatusCorrelation::Exact)
+                    && status.status.timeline_kind
+                        == Some(sorotte_protocol::ParticipantTimelineKind::Vod))
                 .then_some(status.status.room_offset_seconds)
                 .flatten()
                 .map(f64::abs)

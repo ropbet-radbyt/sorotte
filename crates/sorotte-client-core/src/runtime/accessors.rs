@@ -145,9 +145,12 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 
     fn flush_participant_status_transition(&mut self, now_seconds: f64) {
-        let status_reporting_enabled = self.session.is_active()
-            && self.session.server_participant_status_v1_supported()
-            && self.session.room().is_some();
+        // An active session is established only by Hello, which always owns a
+        // room. The pending-report boundary still checks that invariant
+        // defensively; this gate only decides whether queued advisory reports
+        // must be cancelled on capability/lifecycle withdrawal.
+        let status_reporting_enabled =
+            self.session.is_active() && self.session.server_participant_status_v1_supported();
         let pending = self
             .playback_coordination
             .as_deref_mut()

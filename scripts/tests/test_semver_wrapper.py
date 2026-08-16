@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -15,6 +17,30 @@ BASELINE = "a" * 40
 
 
 class SemverWrapperPolicyTests(unittest.TestCase):
+    def test_default_inventory_matches_every_publishable_workspace_library(self) -> None:
+        workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        public_libraries = set()
+        for member in workspace["workspace"]["members"]:
+            manifest = tomllib.loads(
+                (REPO_ROOT / member / "Cargo.toml").read_text(encoding="utf-8")
+            )
+            package = manifest["package"]
+            if package.get("publish") is False:
+                continue
+            has_library = "lib" in manifest or (REPO_ROOT / member / "src" / "lib.rs").is_file()
+            if has_library:
+                public_libraries.add(package["name"])
+
+        wrapper = WRAPPER.read_text(encoding="utf-8")
+        match = re.search(
+            r"\[string\[\]\]\$Package\s*=\s*@\((?P<body>.*?)\n\s*\),",
+            wrapper,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "wrapper must expose one explicit default package inventory")
+        defaults = set(re.findall(r"'([^']+)'", match.group("body")))
+        self.assertEqual(defaults, public_libraries)
+
     def test_development_uses_the_repository_wrapper(self) -> None:
         documentation = DEVELOPMENT.read_text(encoding="utf-8")
         self.assertIn(

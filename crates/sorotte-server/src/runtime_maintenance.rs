@@ -119,6 +119,45 @@ pub(crate) fn protocol_line_exceeds_maximum(encoded_len: usize) -> bool {
     encoded_len > DEFAULT_MAX_PROTOCOL_LINE_BYTES
 }
 
+fn split_participant_status_from_reliable_passthrough(
+    message: ProtocolMessage,
+) -> Vec<ProtocolMessage> {
+    let mut periodic = match message {
+        ProtocolMessage::State(message) => message,
+        message => return vec![message],
+    };
+    let has_reliable_client_passthrough = periodic
+        .state
+        .ignoring_on_the_fly
+        .as_ref()
+        .and_then(|ignoring| ignoring.client)
+        .is_some();
+    let has_participant_status = periodic
+        .state
+        .participant_status_v1()
+        .ok()
+        .flatten()
+        .is_some();
+    if !has_reliable_client_passthrough || !has_participant_status {
+        return vec![ProtocolMessage::State(periodic)];
+    }
+
+    // Participant snapshots are population-sized, self-healing advisory
+    // state. Never let one hitch a ride on the reliable passthrough frame:
+    // retain the one-shot client metadata there and emit a separate pure
+    // coalescible State for the snapshot.
+    let mut reliable = periodic.clone();
+    reliable.state.extra.remove(SOROTTE_PARTICIPANT_STATUS_V1);
+    periodic.state.ignoring_on_the_fly = None;
+    if let Some(ping) = periodic.state.ping.as_mut() {
+        ping.client_latency_calculation = None;
+    }
+    vec![
+        ProtocolMessage::State(reliable),
+        ProtocolMessage::State(periodic),
+    ]
+}
+
 impl ServerRuntime {
     fn observe_tls_certificate_bundle(
         &self,
@@ -271,6 +310,13 @@ impl ServerRuntime {
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let mut outbound = self.collect_due_playback_barrier_updates_at(now)?;
         if now.is_finite() {
+            // Advance every retained report's monotonic age whenever the
+            // scheduler observes time, even if its recipient is fenced and no
+            // snapshot is projected on this tick. Otherwise a later wall-clock
+            // rollback can make the unprojected interval disappear.
+            for retained in self.client_participant_status.values() {
+                let _ = participant_status_report_age_ms(retained, now);
+            }
             if self
                 .last_periodic_schedule_observed_at_seconds
                 .is_some_and(|last_observed| now < last_observed)
@@ -359,7 +405,11 @@ impl ServerRuntime {
             room_state.set_by.as_deref(),
             message_now_seconds,
         ) {
-            outbound.push(DirectedProtocolMessage::new(client_id, state_message));
+            outbound.extend(
+                split_participant_status_from_reliable_passthrough(state_message)
+                    .into_iter()
+                    .map(|message| DirectedProtocolMessage::new(client_id, message)),
+            );
         }
 
         if self.client_timed_out(client_id, ticked_at) {

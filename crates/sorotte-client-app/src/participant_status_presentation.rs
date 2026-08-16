@@ -2,7 +2,7 @@ pub use sorotte_client_core::ClientParticipantStatusFreshness as ParticipantStat
 use sorotte_client_core::ClientParticipantStatusView;
 use sorotte_protocol::{
     ParticipantPlaybackPhase, ParticipantPlayerConnection, ParticipantStatusCorrelation,
-    ParticipantStatusView, participant_status_buffer_evidence_is_eligible,
+    ParticipantStatusView, ParticipantTimelineKind, participant_status_buffer_evidence_is_eligible,
     participant_status_position_evidence_is_eligible,
 };
 
@@ -161,6 +161,9 @@ impl ParticipantStatusReportPresentation {
             return "Offset unavailable".to_owned();
         }
         if self.status.correlation != Some(ParticipantStatusCorrelation::Exact) {
+            return "Offset unavailable".to_owned();
+        }
+        if self.status.timeline_kind != Some(ParticipantTimelineKind::Vod) {
             return "Offset unavailable".to_owned();
         }
         if !self.position_evidence_is_eligible() {
@@ -616,6 +619,23 @@ mod tests {
         assert_eq!(presentation.status.room_offset_seconds, Some(-3.83));
         assert_eq!(presentation.sync_label(), "3.8 s behind");
         assert!(presentation.headline_label().contains("3.8 s behind"));
+    }
+
+    #[test]
+    fn exact_live_timeline_never_presents_a_vod_style_offset() {
+        let mut status = report_presentation().status;
+        status.timeline_kind = Some(ParticipantTimelineKind::Live);
+        status.sample_age_ms = Some(0);
+        status.position_sample_age_ms = Some(0);
+        let presentation = ParticipantStatusReportPresentation::from_client_view(
+            ClientParticipantStatusView::from_wire(status),
+            false,
+        );
+
+        assert_eq!(presentation.position_label(), "12:31.2");
+        assert_eq!(presentation.status.room_offset_seconds, None);
+        assert_eq!(presentation.sync_label(), "Offset unavailable");
+        assert!(!presentation.headline_label().contains("behind"));
     }
 
     #[test]

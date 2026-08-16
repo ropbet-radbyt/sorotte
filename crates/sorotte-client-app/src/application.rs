@@ -338,6 +338,7 @@ where
     streaming_playback_config: StreamingPlaybackConfig,
     player_connection_observed: Option<bool>,
     player_was_connected: bool,
+    pending_unknown_attachment_recovery: bool,
 }
 
 impl<P> ClientApplication<P>
@@ -387,6 +388,7 @@ where
             streaming_playback_config: StreamingPlaybackConfig::default(),
             player_connection_observed: None,
             player_was_connected,
+            pending_unknown_attachment_recovery: false,
         }
     }
 
@@ -398,8 +400,19 @@ where
         now_seconds: f64,
     ) -> Result<bool, PlayerError> {
         let Some(connected) = self.runtime.player().transport_is_connected() else {
-            return Ok(false);
+            if !self.pending_unknown_attachment_recovery {
+                return Ok(false);
+            }
+            let result = self.runtime.set_external_player_availability(
+                ExternalPlayerAvailability::Connecting,
+                now_seconds,
+            );
+            if result.is_ok() {
+                self.pending_unknown_attachment_recovery = false;
+            }
+            return result;
         };
+        self.pending_unknown_attachment_recovery = false;
         if self.player_connection_observed == Some(connected) {
             return Ok(false);
         }
@@ -1742,9 +1755,11 @@ where
             availability == ExternalPlayerAvailability::Disconnected
                 || availability == ExternalPlayerAvailability::Failed
         );
+        let attachment_signal_unknown = self.runtime.player().transport_is_connected().is_none();
         let result = self
             .runtime
             .set_external_player_availability(availability, now_seconds);
+        self.pending_unknown_attachment_recovery = attachment_signal_unknown;
         self.player_connection_observed =
             if availability == ExternalPlayerAvailability::Disconnected {
                 // NotConnected is itself an authoritative detached observation.
@@ -2142,6 +2157,18 @@ mod tests {
         }
     }
 
+    struct UnknownAttachmentPlayer;
+
+    impl PlayerAdapter for UnknownAttachmentPlayer {
+        fn name(&self) -> &'static str {
+            "unknown-attachment-test"
+        }
+
+        fn transport_is_connected(&self) -> Option<bool> {
+            None
+        }
+    }
+
     #[test]
     fn initially_connected_player_uses_the_first_owner_timestamp_for_starting() {
         let mut session = ClientSession::default();
@@ -2395,6 +2422,59 @@ mod tests {
                 .expect("the empty outbox should remain encodable")
                 .is_none(),
             "a detached cadence must not overwrite Disconnected with Unavailable"
+        );
+    }
+
+    #[test]
+    fn contained_unknown_attachment_failure_reopens_through_connecting() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(session, UnknownAttachmentPlayer);
+        while let Some(pending) = application.pending_protocol_line().unwrap() {
+            let _ = application.acknowledge_protocol_line(pending.lease());
+        }
+
+        assert!(
+            application
+                .record_contained_external_player_failure(
+                    ExternalPlayerAvailability::Disconnected,
+                    30.0,
+                )
+                .unwrap(),
+        );
+        let terminal = application
+            .pending_protocol_line()
+            .unwrap()
+            .expect("terminal lifecycle should queue");
+        let _ = application.acknowledge_protocol_line(terminal.lease());
+
+        assert!(
+            application.synchronize_player_availability(31.0).unwrap(),
+            "an adapter without an attachment signal still needs an explicit recovery lifecycle",
+        );
+        let reconnecting = application
+            .pending_protocol_line()
+            .unwrap()
+            .expect("unknown attachment recovery should queue Starting");
+        let ProtocolMessage::State(reconnecting) = application
+            .acknowledge_protocol_line(reconnecting.lease())
+            .unwrap()
+        else {
+            panic!("expected participant status State");
+        };
+        assert_eq!(
+            reconnecting
+                .state
+                .participant_status_v1()
+                .unwrap()
+                .and_then(|extension| extension.report)
+                .unwrap()
+                .player_connection,
+            sorotte_protocol::ParticipantPlayerConnection::Starting,
         );
     }
 

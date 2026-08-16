@@ -2742,6 +2742,61 @@ fn periodic_scheduler_rebases_deadlines_after_wall_clock_rollback() {
 }
 
 #[test]
+fn fenced_periodic_ticks_still_advance_retained_report_age_monotonically() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice", &hello("alice", "room", true, false))
+        .unwrap();
+    acknowledge_current_server_counter(&mut runtime, "alice");
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new()
+            .with_report(status_report(1, ParticipantPlaybackPhase::Playing)),
+    );
+    runtime
+        .client_next_periodic_state_at
+        .insert("alice".to_owned(), 105.0);
+    runtime
+        .client_last_state_update_at
+        .insert("alice".to_owned(), 105.0);
+    runtime.next_server_ignoring_counter("alice");
+
+    let fenced_forward = runtime.collect_dispatch_at(105.0).unwrap();
+    assert!(fenced_forward.outbound_lines.is_empty());
+    let rollback = runtime.collect_dispatch_at(102.0).unwrap();
+    assert!(rollback.outbound_lines.is_empty());
+
+    acknowledge_current_server_counter(&mut runtime, "alice");
+    runtime
+        .client_last_state_update_at
+        .insert("alice".to_owned(), 103.0);
+    let resumed = runtime.collect_dispatch_at(103.0).unwrap();
+    let snapshot = decode_directed_lines(&resumed.outbound_lines)
+        .into_iter()
+        .filter(|(client_id, _)| client_id == "alice")
+        .find_map(|(_, message)| {
+            let ProtocolMessage::State(message) = message else {
+                return None;
+            };
+            message
+                .state
+                .participant_status_v1()
+                .ok()
+                .flatten()
+                .and_then(|extension| extension.snapshot)
+        })
+        .expect("the unfenced due tick should publish a complete snapshot");
+    let alice = &snapshot.participants["alice"];
+    assert_eq!(alice.availability, ParticipantStatusAvailability::Delayed);
+    assert!(
+        alice.report_age_ms.is_some_and(|age| age >= 5_000),
+        "time observed while projection was fenced must remain in the report age",
+    );
+}
+
+#[test]
 fn periodic_state_preserves_ping_metadata_and_honors_the_ignore_fence() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(100.0));
@@ -2789,6 +2844,78 @@ fn periodic_state_preserves_ping_metadata_and_honors_the_ignore_fence() {
             .periodic_state_sync_message_for_client_at("alice", 6.0, false, None, 101.0)
             .is_none(),
         "unacknowledged reliable State must fence periodic coalescible State"
+    );
+}
+
+#[test]
+fn periodic_status_is_split_from_reliable_client_passthrough() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice", &hello("alice", "room", true, false))
+        .unwrap();
+    acknowledge_current_server_counter(&mut runtime, "alice");
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new()
+            .with_report(status_report(1, ParticipantPlaybackPhase::Playing)),
+    );
+    runtime.queue_client_ignoring_counter("alice", 7);
+    runtime
+        .client_last_state_update_at
+        .insert("alice".to_owned(), 101.0);
+    runtime
+        .client_next_periodic_state_at
+        .insert("alice".to_owned(), 101.0);
+
+    let dispatch = runtime.collect_dispatch_at(101.0).unwrap();
+    let reliable = dispatch
+        .outbound_lines
+        .iter()
+        .find(|line| line.client_id == "alice" && line.delivery == ServerOutboundDelivery::Reliable)
+        .expect("client passthrough metadata should retain its reliable delivery");
+    let ProtocolMessage::State(reliable_state) = decode_message_line(&reliable.line).unwrap()
+    else {
+        panic!("reliable passthrough should be a State message");
+    };
+    assert_eq!(
+        reliable_state
+            .state
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|value| value.client),
+        Some(7),
+    );
+    assert!(
+        reliable_state
+            .state
+            .participant_status_v1()
+            .unwrap()
+            .is_none(),
+        "population-sized advisory snapshots must never ride a reliable frame",
+    );
+
+    let periodic = dispatch
+        .outbound_lines
+        .iter()
+        .find(|line| {
+            line.client_id == "alice"
+                && line.delivery == ServerOutboundDelivery::CoalesciblePeriodicState
+        })
+        .expect("status should be emitted separately on the coalescible lane");
+    let ProtocolMessage::State(periodic_state) = decode_message_line(&periodic.line).unwrap()
+    else {
+        panic!("coalescible participant status should be a State message");
+    };
+    assert!(periodic_state.state.ignoring_on_the_fly.is_none());
+    assert!(
+        periodic_state
+            .state
+            .participant_status_v1()
+            .unwrap()
+            .and_then(|extension| extension.snapshot)
+            .is_some(),
     );
 }
 

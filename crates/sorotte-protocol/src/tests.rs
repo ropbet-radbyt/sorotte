@@ -643,6 +643,15 @@ fn participant_status_view_redaction_distinguishes_legacy_from_superseded_eviden
     exact.redact_ineligible_media_evidence();
     assert_eq!(exact.position_seconds, Some(42.0));
     assert_eq!(exact.room_offset_seconds, Some(0.25));
+
+    let mut live = view(Some(ParticipantStatusCorrelation::Exact));
+    live.timeline_kind = Some(ParticipantTimelineKind::Live);
+    live.redact_ineligible_media_evidence();
+    assert_eq!(live.position_seconds, Some(42.0));
+    assert_eq!(
+        live.room_offset_seconds, None,
+        "an exact live timeline still cannot support VOD-style ahead/behind precision",
+    );
 }
 
 #[test]

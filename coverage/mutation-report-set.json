@@ -2,6 +2,7 @@
   "schema_version": 1,
   "kind": "sorotte-mutation-report-set",
   "policy": "coverage/mutation-policy.toml",
+  "report_set": "participant-status",
   "reports": {
     "participant-status-protocol": "target/verification/mutation-participant-status-protocol.json",
     "client-participant-status": "target/verification/mutation-client-participant-status.json",

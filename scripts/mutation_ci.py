@@ -115,9 +115,16 @@ class ShardPolicy:
 
 
 @dataclasses.dataclass(frozen=True)
+class RequiredReportSet:
+    identifier: str
+    shards: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class MutationPolicy:
     cargo_mutants_version: str
     shards: tuple[ShardPolicy, ...]
+    required_report_sets: tuple[RequiredReportSet, ...]
     accepted_unviable: tuple[AcceptedUnviable, ...]
 
     def shard(self, identifier: str) -> ShardPolicy:
@@ -132,6 +139,14 @@ class MutationPolicy:
         return tuple(
             entry for entry in self.accepted_unviable if entry.shard == identifier
         )
+
+    def required_report_set(self, identifier: str) -> RequiredReportSet:
+        matches = [value for value in self.required_report_sets if value.identifier == identifier]
+        if len(matches) != 1:
+            raise MutationCiError(
+                f"required mutation report set {identifier!r} must exist exactly once"
+            )
+        return matches[0]
 
 
 def require_exact_keys(
@@ -383,6 +398,7 @@ def load_policy(
             "schema_version",
             "cargo_mutants_version",
             "shard",
+            "required_report_set",
             "accepted_unviable",
         },
         label="mutation policy",
@@ -548,6 +564,49 @@ def load_policy(
             )
         )
 
+    required_report_set_values = require_list(
+        root["required_report_set"],
+        label="required_report_set",
+    )
+    if not required_report_set_values:
+        raise MutationCiError("mutation policy must declare at least one required report set")
+    required_report_sets: list[RequiredReportSet] = []
+    required_report_set_ids: set[str] = set()
+    for index, item in enumerate(required_report_set_values):
+        table = require_mapping(item, label=f"required_report_set[{index}]")
+        require_exact_keys(
+            table,
+            {"id", "shards"},
+            label=f"required_report_set[{index}]",
+        )
+        identifier = require_identifier(
+            table["id"],
+            label=f"required_report_set[{index}].id",
+        )
+        if identifier in required_report_set_ids:
+            raise MutationCiError(f"duplicate required report set id {identifier!r}")
+        required_report_set_ids.add(identifier)
+        raw_required_shards = require_list(
+            table["shards"],
+            label=f"required_report_set[{index}].shards",
+        )
+        required_shards = tuple(
+            require_identifier(value, label=f"{identifier}.shards[{offset}]")
+            for offset, value in enumerate(raw_required_shards)
+        )
+        if not required_shards:
+            raise MutationCiError(f"{identifier}.shards must not be empty")
+        if len(set(required_shards)) != len(required_shards):
+            raise MutationCiError(f"{identifier}.shards contains duplicates")
+        unknown_shards = sorted(set(required_shards) - shard_ids)
+        if unknown_shards:
+            raise MutationCiError(
+                f"{identifier}.shards names unknown mutation shards {unknown_shards!r}"
+            )
+        required_report_sets.append(
+            RequiredReportSet(identifier=identifier, shards=required_shards)
+        )
+
     accepted_values = require_list(
         root["accepted_unviable"],
         label="accepted_unviable",
@@ -652,6 +711,7 @@ def load_policy(
     return MutationPolicy(
         cargo_mutants_version=version,
         shards=tuple(shards),
+        required_report_sets=tuple(required_report_sets),
         accepted_unviable=tuple(accepted),
     )
 
@@ -1906,7 +1966,7 @@ def verify_report_set(args: argparse.Namespace) -> int:
         manifest_path = resolve_policy_path(repo_root, args.manifest)
         manifest_value, _ = load_json(manifest_path, label="mutation report-set manifest")
         manifest = require_mapping(manifest_value, label="mutation report-set manifest")
-        expected_keys = {"schema_version", "kind", "policy", "reports"}
+        expected_keys = {"schema_version", "kind", "policy", "report_set", "reports"}
         if set(manifest) != expected_keys:
             raise MutationCiError(
                 "mutation report-set manifest fields do not match schema: "
@@ -1926,12 +1986,24 @@ def verify_report_set(args: argparse.Namespace) -> int:
             raise MutationCiError("mutation report-set manifest names a different policy")
         policy_path = resolve_policy_path(repo_root, args.policy)
         policy = load_policy(repo_root, policy_path)
+        report_set_id = require_identifier(
+            manifest.get("report_set"),
+            label="mutation report-set manifest.report_set",
+        )
+        required_shards = set(policy.required_report_set(report_set_id).shards)
         reports = require_mapping(
             manifest.get("reports"),
             label="mutation report-set manifest.reports",
         )
         if not reports:
             raise MutationCiError("mutation report-set manifest must select at least one report")
+        actual_shards = set(reports)
+        if actual_shards != required_shards:
+            raise MutationCiError(
+                f"mutation report set {report_set_id!r} must select exactly "
+                f"{sorted(required_shards)!r}; missing {sorted(required_shards - actual_shards)!r}, "
+                f"unexpected {sorted(actual_shards - required_shards)!r}"
+            )
 
         verified = 0
         for shard_id, report_value in sorted(reports.items()):

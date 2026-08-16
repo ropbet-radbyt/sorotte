@@ -408,6 +408,10 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     outbound_state_sync_enabled: bool,
     plan: ConnectedSessionRuntimeStepPlan,
 ) -> Option<ContainedConnectedSessionPlayerFailure> {
+    // Reconnection/lease maintenance can change the attachment state and
+    // produce the first sample for a replacement player. Observe that
+    // transition before opening the lifecycle fence for telemetry.
+    runtime.with_player_io(|player| player.maintain_runtime_integrations());
     if let Err(error) = synchronize_connected_session_player_availability(runtime, now_seconds) {
         return Some(contain_connected_session_player_failure(
             runtime,
@@ -569,8 +573,10 @@ where
     }
     if player_failure.is_some() {
         // A player fault is not a Sorotte transport fault. Always give the
-        // freshly queued advisory status a write opportunity even on plans
+        // freshly queued advisory status and its steady heartbeat a write
+        // opportunity even on plans
         // whose ordinary protocol flush happened before runtime work.
+        let _ = runtime.run_participant_status_heartbeat(now_seconds);
         flush_runtime_protocol_lines(runtime, writer).await?;
     }
     flush_connected_session_branch_outputs_legacy_compatible(
@@ -708,7 +714,8 @@ mod tests {
     use tokio::io::AsyncBufReadExt;
 
     use sorotte_client_core::{
-        ClientSession, LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig,
+        ClientSession, ExternalPlayerAvailability, LogicalMediaId, MediaTransportKind,
+        PlaybackBarrierStartConfig,
     };
     use sorotte_player_api::{
         DisconnectedPlayer, PlayerAdapter, PlayerMediaGeneration, PlayerObservationTimestamp,
@@ -1060,6 +1067,17 @@ mod tests {
             .expect("room playstate should apply");
         let mut application = ClientApplication::new(session, MpvAdapter::default());
         let _ = take_participant_status_reports(&mut application);
+        assert!(
+            application
+                .record_contained_external_player_failure(
+                    ExternalPlayerAvailability::Disconnected,
+                    0.0,
+                )
+                .expect("the baseline disconnected status should publish")
+        );
+        let baseline = take_participant_status_reports(&mut application);
+        assert_eq!(baseline.len(), 1);
+        assert_eq!(baseline[0].report_sequence, 1);
 
         let (transport, peer) = tokio::io::duplex(16 * 1024);
         let transport: Box<dyn ConnectedSessionAsyncStream> = Box::new(transport);
@@ -1146,6 +1164,10 @@ mod tests {
         assert_eq!(
             report.player_connection,
             ParticipantPlayerConnection::Disconnected
+        );
+        assert_eq!(
+            report.report_sequence, 2,
+            "an unchanged contained failure must still flush the due advisory heartbeat",
         );
         assert!(application.session().is_active());
         assert_eq!(application.session().room(), Some("room"));

@@ -368,6 +368,12 @@ impl ParticipantStatusView {
             // an offset.
             self.room_offset_seconds = None;
         }
+        if self.timeline_kind != Some(ParticipantTimelineKind::Vod) {
+            // A server-derived ahead/behind value is meaningful only on a
+            // stable ordinary VOD timeline. Live/unknown timelines may retain
+            // their local timestamp, but never room-relative precision.
+            self.room_offset_seconds = None;
+        }
         let position_eligible =
             self.player_connection
                 .zip(self.phase)

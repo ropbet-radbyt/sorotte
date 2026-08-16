@@ -9550,17 +9550,26 @@ mod version_policy_tests {
         let first_attempt_at = adapter
             .ipc_reconnect_not_before
             .expect("the constructor should make the first retry immediately due");
+        let first_attempt_completed_at = first_attempt_at + Duration::from_secs(2);
         let mut failed_attempts = 0;
-        adapter.maintain_json_ipc_reconnection_using(first_attempt_at, |observed_endpoint| {
-            failed_attempts += 1;
-            assert_eq!(observed_endpoint, endpoint);
-            Err("endpoint absent".to_owned())
-        });
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            first_attempt_at,
+            |observed_endpoint| {
+                failed_attempts += 1;
+                assert_eq!(observed_endpoint, endpoint);
+                Err("endpoint absent".to_owned())
+            },
+            || first_attempt_completed_at,
+        );
         assert_eq!(failed_attempts, 1);
         assert_eq!(adapter.ipc_endpoint.as_deref(), Some(endpoint.as_path()));
         assert!(adapter.ipc_client.is_none());
-        let retry_at = first_attempt_at + IPC_RECONNECT_INTERVAL;
+        let retry_at = first_attempt_completed_at + IPC_RECONNECT_INTERVAL;
         assert_eq!(adapter.ipc_reconnect_not_before, Some(retry_at));
+        assert!(
+            retry_at > first_attempt_at + IPC_RECONNECT_INTERVAL,
+            "a slow failed connect must not consume its retry backoff while blocked",
+        );
 
         let mut premature_attempts = 0;
         adapter.maintain_json_ipc_reconnection_using(retry_at - Duration::from_millis(1), |_| {
@@ -9574,13 +9583,17 @@ mod version_policy_tests {
             crate::MINIMUM_SUPPORTED_MPV_VERSION
         );
         let mut successful_attempts = 0;
-        adapter.maintain_json_ipc_reconnection_using(retry_at, |observed_endpoint| {
-            successful_attempts += 1;
-            assert_eq!(observed_endpoint, endpoint);
-            Ok(MpvJsonIpcClient::new(Box::new(
-                VersionResponseTransport::new(&response),
-            )))
-        });
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            retry_at,
+            |observed_endpoint| {
+                successful_attempts += 1;
+                assert_eq!(observed_endpoint, endpoint);
+                Ok(MpvJsonIpcClient::new(Box::new(
+                    VersionResponseTransport::new(&response),
+                )))
+            },
+            || retry_at,
+        );
 
         assert_eq!(successful_attempts, 1);
         assert!(adapter.ipc_client.is_some());
@@ -9624,16 +9637,21 @@ mod version_policy_tests {
         let attempt_at = adapter
             .ipc_reconnect_not_before
             .expect("the constructor should make the first retry immediately due");
+        let completed_at = attempt_at + Duration::from_secs(2);
         let unsupported = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new(
             r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
         )));
 
-        adapter.maintain_json_ipc_reconnection_using(attempt_at, |_| Ok(unsupported));
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            attempt_at,
+            |_| Ok(unsupported),
+            || completed_at,
+        );
 
         assert!(adapter.ipc_client.is_none());
         assert_eq!(
             adapter.ipc_reconnect_not_before,
-            Some(attempt_at + IPC_RECONNECT_INTERVAL)
+            Some(completed_at + IPC_RECONNECT_INTERVAL)
         );
     }
 

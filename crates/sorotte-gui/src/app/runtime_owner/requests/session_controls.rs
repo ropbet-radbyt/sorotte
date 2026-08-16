@@ -78,13 +78,15 @@ impl GuiPersistedConfigRuntimeOwner {
         entry: String,
         select_after_queue: bool,
     ) -> bool {
-        let selected_media_can_change = select_after_queue;
         if let Some(session) = self.session.as_mut() {
+            let selected_before = session.current_room_selected_playlist_entry();
             match session.queue_playlist_entry_with_delivery_fence(entry, select_after_queue) {
-                Ok(delivery_fence) if selected_media_can_change => {
-                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                Ok(delivery_fence) => {
+                    let selected_after = session.current_room_selected_playlist_entry();
+                    if select_after_queue || selected_before != selected_after {
+                        self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
                     handle.push_action(GuiShellAction::PushTransientNotification {
                         level: GuiTransientNotificationLevel::Error,
@@ -257,13 +259,15 @@ impl GuiPersistedConfigRuntimeOwner {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> bool {
-        let selected_media_can_change = selected_index.is_some();
         if let Some(session) = self.session.as_mut() {
+            let selected_before = session.current_room_selected_playlist_entry();
             match session.replace_playlist_with_delivery_fence(files, selected_index) {
-                Ok(delivery_fence) if selected_media_can_change => {
-                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                Ok(delivery_fence) => {
+                    let selected_after = session.current_room_selected_playlist_entry();
+                    if selected_index.is_some() || selected_before != selected_after {
+                        self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
                     handle.push_action(GuiShellAction::PushTransientNotification {
                         level: GuiTransientNotificationLevel::Error,

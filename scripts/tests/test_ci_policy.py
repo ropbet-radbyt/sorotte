@@ -786,14 +786,20 @@ class CiPolicyTests(unittest.TestCase):
             "Enforce public Rust API compatibility",
             """set -euo pipefail
 for package in \\
+  sorotte-secret \\
   sorotte-protocol \\
-  sorotte-client-core \\
-  sorotte-player-api \\
-  sorotte-client-app \\
-  sorotte-player-mpv \\
-  sorotte-cli \\
+  sorotte-core \\
   sorotte-server \\
-  sorotte-gui
+  sorotte-media-match \\
+  sorotte-client-core \\
+  sorotte-client-app \\
+  sorotte-player-api \\
+  sorotte-player-mpv \\
+  sorotte-plex \\
+  sorotte-cli \\
+  sorotte-gui \\
+  sorotte-sim \\
+  sorotte-compat
 do
   cargo semver-checks \\
     --package "$package" \\
@@ -2420,6 +2426,23 @@ done""",
             {
                 "schema_version": 3,
                 "cargo_mutants_version": "27.1.0",
+                "required_report_set": [
+                    {
+                        "id": "participant-status",
+                        "shards": [
+                            "participant-status-protocol",
+                            "client-participant-status",
+                            "client-participant-status-runtime",
+                            "client-participant-status-outbox",
+                            "server-participant-status",
+                            "gui-participant-status",
+                            "gui-playlist-delivery-fence",
+                            "player-mpv-explicit-ipc-retry",
+                            "client-app-participant-status-lifecycle",
+                            "cli-participant-status-lifecycle",
+                        ],
+                    }
+                ],
                 "shard": [
                     {
                         "id": "privacy-secret",
@@ -2531,18 +2554,11 @@ done""",
                             "queued_control.rs",
                         ],
                         "mutant_filter": (
-                            "((pending|commit|take)_"
-                            "participant_status_report|"
-                            "emit_participant_status_transition|"
-                            "run_participant_status_heartbeat|"
+                            "(participant_status|ParticipantStatus|"
+                            "record_observation_outcomes|"
+                            "commit_mapped_transport_observation|"
+                            "observe_transport_with_semantics|"
                             "reset_sync_state_for_reconnect|"
-                            "begin_(protocol_connection_generation|"
-                            "participant_status_room_switch)|"
-                            "participant_status_room_(membership|scope)|"
-                            "participant_status_(player_availability|"
-                            "telemetry_wait_is_current|"
-                            "legacy_position_fallback)|"
-                            "update_participant_status_evidence_times|"
                             "delete field logical_pause from struct "
                             "PlayerTransportDelta expression in "
                             "ClientRuntime<P, C>::apply_ordered_event)"
@@ -3704,6 +3720,33 @@ done""",
                             ),
                             (
                                 (
+                                    "server-participant-status-"
+                                    "split-message-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_maintenance.rs"
+                                ),
+                                (
+                                    "split_participant_status_from_"
+                                    "reliable_passthrough"
+                                ),
+                                "-> Vec<ProtocolMessage>",
+                                "FnValue",
+                                "vec![Default::default()]",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "protocol message inside the split "
+                                    "delivery vector, but every message "
+                                    "requires an explicit protocol variant "
+                                    "and ProtocolMessage intentionally has "
+                                    "no Default, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
                                     "server-participant-status-periodic-"
                                     "updates-element-default"
                                 ),
@@ -3864,7 +3907,7 @@ done""",
                                 ),
                                 (
                                     "MpvAdapter::"
-                                    "maintain_json_ipc_reconnection_using"
+                                    "maintain_json_ipc_reconnection_using_clock"
                                 ),
                                 "",
                                 "BinaryOperator",
@@ -3995,6 +4038,97 @@ done""",
                                     "the generated Some payload requires "
                                     "Default for the contained failure type, "
                                     "which intentionally has no valid Default"
+                                ),
+                            ),
+                            (
+                                "client-participant-status-runtime-phase-default",
+                                "client-participant-status-runtime",
+                                (
+                                    "crates/sorotte-client-core/src/runtime/"
+                                    "playback_coordination.rs"
+                                ),
+                                (
+                                    "RuntimePlaybackCoordination::"
+                                    "participant_status_phase"
+                                ),
+                                "-> ParticipantPlaybackPhase",
+                                "FnValue",
+                                "Default::default()",
+                                (
+                                    "cargo-mutants requests Default for the explicit "
+                                    "participant playback phase enum, which intentionally "
+                                    "has no semantically safe default, so the generated "
+                                    "replacement cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-runtime-"
+                                    "observe-actions-default"
+                                ),
+                                "client-participant-status-runtime",
+                                (
+                                    "crates/sorotte-client-core/src/runtime/"
+                                    "playback_coordination.rs"
+                                ),
+                                (
+                                    "RuntimePlaybackCoordination::"
+                                    "observe_transport_with_semantics"
+                                ),
+                                "-> Vec<PlaybackCoordinatorAction>",
+                                "FnValue",
+                                "vec![Default::default()]",
+                                (
+                                    "cargo-mutants requests Default for a playback "
+                                    "coordinator action, but every action requires an "
+                                    "explicit causal revision, command, or failure reason "
+                                    "and intentionally has no Default"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-runtime-"
+                                    "flush-let-chain-or"
+                                ),
+                                "client-participant-status-runtime",
+                                (
+                                    "crates/sorotte-client-core/src/runtime/"
+                                    "accessors.rs"
+                                ),
+                                (
+                                    "ClientSessionUpdate<'a>::"
+                                    "flush_participant_status_transition"
+                                ),
+                                "",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the && connector before a Rust "
+                                    "let-chain to ||, which rustc rejects because let-chain "
+                                    "conditions support only &&"
+                                ),
+                            ),
+                            (
+                                (
+                                    "client-participant-status-runtime-"
+                                    "queued-state-let-chain-or"
+                                ),
+                                "client-participant-status-runtime",
+                                (
+                                    "crates/sorotte-client-core/src/runtime/"
+                                    "queued_control.rs"
+                                ),
+                                (
+                                    "ClientRuntime<P, QueuedRuntimeControl>::"
+                                    "queue_connection_scoped_state_with_participant_status"
+                                ),
+                                "-> bool",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the && connector before a Rust "
+                                    "let-chain to ||, which rustc rejects because let-chain "
+                                    "conditions support only &&"
                                 ),
                             ),
                         ]

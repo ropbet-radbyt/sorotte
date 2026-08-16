@@ -467,6 +467,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn current_room_selected_playlist_entry(&self) -> Option<String> {
+        None
+    }
+
     fn note_local_playlist_index_reset_intent(&mut self, _pause_before_sync: bool) {}
 
     fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {

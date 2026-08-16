@@ -140,11 +140,13 @@ impl GuiPendingSharedPlaylistOpen {
     }
 
     fn replace_delivery_fence(&mut self, replacement: GuiPlaylistProtocolDeliveryFence) {
-        let delivery_fence = match self {
-            Self::AwaitingMutationDelivery { delivery_fence }
-            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        // A newer player-affecting playlist mutation supersedes both the old
+        // causal frontier and any continuation paired with it. Retaining an
+        // AfterMutation payload while swapping only its fence can execute an
+        // obsolete media open after the newer frame is acknowledged.
+        *self = Self::AwaitingMutationDelivery {
+            delivery_fence: replacement,
         };
-        *delivery_fence = replacement;
     }
 }
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};

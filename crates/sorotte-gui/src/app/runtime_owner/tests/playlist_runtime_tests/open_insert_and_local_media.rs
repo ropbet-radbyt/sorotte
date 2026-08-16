@@ -142,6 +142,90 @@ fn playlist_delivery_fence_replacement_discards_the_superseded_frontier() {
 }
 
 #[test]
+fn playlist_delivery_fence_replacement_discards_an_obsolete_open_continuation() {
+    let mut pending = GuiPendingSharedPlaylistOpen::AfterMutation {
+        dispatch: GuiSharedPlaylistOpenDispatch {
+            items: vec![GuiSharedPlaylistOpenItem {
+                published_entry: "episode1.mkv".to_owned(),
+                local_origin: Some("C:/Media/episode1.mkv".to_owned()),
+            }],
+            imported_from_file: false,
+        },
+        opened_entry_count: 1,
+        selected_playlist_index: Some(0),
+        selected_media_source_path: Some("C:/Media/episode1.mkv".to_owned()),
+        delivery_fence: GuiPlaylistProtocolDeliveryFence::new(["old-set".to_owned()]),
+    };
+
+    pending.replace_delivery_fence(GuiPlaylistProtocolDeliveryFence::new([
+        "replacement-set".to_owned()
+    ]));
+
+    assert!(matches!(
+        pending,
+        GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. }
+    ));
+    pending.note_frame_written("replacement-set");
+    assert!(pending.delivery_fence_reached());
+}
+
+#[test]
+fn implicit_selected_media_changes_arm_exact_delivery_fences() {
+    let release_one = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut empty_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    let empty_handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut empty_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut empty_owner, &empty_handle, &mut empty_state);
+    empty_owner =
+        empty_owner.with_session_transport_driver(Box::new(DelayedPlaylistReceiptDriver {
+            release_one: release_one.clone(),
+            writes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_token: None,
+            pending_line: None,
+        }));
+    empty_handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+        entry: "episode1.mkv".to_owned(),
+        select_after_queue: false,
+    });
+    pump_and_apply_runtime_owner_actions(&mut empty_owner, &empty_handle, &mut empty_state);
+    assert!(matches!(
+        empty_owner.pending_shared_playlist_open,
+        Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. })
+    ));
+
+    let (mut replacement_owner, replacement_handle, mut replacement_state) =
+        seeded_loopback_shared_playlist_owner(0);
+    replacement_owner =
+        replacement_owner.with_session_transport_driver(Box::new(DelayedPlaylistReceiptDriver {
+            release_one,
+            writes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_token: None,
+            pending_line: None,
+        }));
+    replacement_handle.push_request(GuiRuntimeRequest::ReplacePlaylist {
+        files: vec!["replacement.mkv".to_owned()],
+        selected_index: None,
+    });
+    pump_and_apply_runtime_owner_actions(
+        &mut replacement_owner,
+        &replacement_handle,
+        &mut replacement_state,
+    );
+    assert!(matches!(
+        replacement_owner.pending_shared_playlist_open,
+        Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { .. })
+    ));
+}
+
+#[test]
 fn session_causal_player_effect_cleanup_cancels_a_pending_playlist_fence() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.pending_shared_playlist_open =
