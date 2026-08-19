@@ -60,14 +60,14 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest@0.9.137
           fallback: none
 
       - name: Install pinned cargo-semver-checks
         if: github.event_name == 'pull_request'
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-semver-checks@0.50.0
           fallback: none
@@ -369,7 +369,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest@0.9.137
           fallback: none
@@ -494,7 +494,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install pinned cargo-llvm-cov for Windows process coverage
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 
@@ -631,7 +631,7 @@ jobs:
           -r requirements/legacy-python-interop.txt
 
       - name: Install pinned cargo-llvm-cov
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 

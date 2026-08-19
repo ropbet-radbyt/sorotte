@@ -201,6 +201,7 @@ EXPECTED_TESTS = {
         "running_installed_updater_recovers_interrupted_replacement_and_restarts",
     ),
     "mpv-named-pipe": (
+        "tests::ipc_named_pipe_fault_tests::windows_named_pipe_disconnected_adapter_retries_an_explicit_endpoint_when_it_appears",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_fragmentation_and_coalescing_preserve_event_response_order",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_replacement_client_recovers_on_the_same_pipe_name",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_request_ids_wrap_without_losing_response_correlation",
@@ -229,9 +230,9 @@ EXPECTED_TESTS = {
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": 419,
-    "mpv-external-process": 424,
-    "media-tool-process": 1125,
+    "mpv-named-pipe": 422,
+    "mpv-external-process": 428,
+    "media-tool-process": 1145,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {

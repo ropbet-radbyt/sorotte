@@ -773,7 +773,7 @@ fn windows_named_pipe_replacement_client_recovers_on_the_same_pipe_name() {
 }
 
 #[test]
-fn disconnected_adapter_retries_an_explicit_endpoint_when_it_appears() {
+fn windows_named_pipe_disconnected_adapter_retries_an_explicit_endpoint_when_it_appears() {
     let absent_server = NamedPipeServer::unique("late-explicit-endpoint");
     let pipe_name = absent_server.pipe_name().to_owned();
     drop(absent_server);

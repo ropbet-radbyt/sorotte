@@ -64,8 +64,8 @@ ACTION_PINS = {
         "v8.0.1",
     ),
     "taiki-e/install-action": (
-        "41049aa56687c35e0afa74eed4f09cec4f9afabf",
-        "v2.85.2",
+        "67729d5c413db75907f0ad1e39bb04b9c868ff60",
+        "v2.85.7",
     ),
 }
 PINNED_USES = {
