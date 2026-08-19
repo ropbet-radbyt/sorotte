@@ -14,11 +14,12 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) {
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active_session_settings = None;
         self.active_session_configured_settings = None;
         self.session = Some(session);
+        self.report_current_external_player_availability();
     }
 
     pub(in crate::app) fn install_active_session_runtime(
@@ -34,7 +35,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn remove_session_runtime(&mut self) {
         if self.session.take().is_some() {
-            self.clear_session_attached_player_sync_state();
+            self.clear_session_causal_player_effect_state();
             self.session_generation = self.session_generation.wrapping_add(1);
         }
         self.active_session_settings = None;
@@ -209,7 +210,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
         self.apply_session_transport_disconnect_pause(handle, projected_state);
         self.pending_room_change_request = None;
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
 
         if let Some(delay_seconds) = reconnect_delay
             && !stop_reconnect_requested
@@ -301,6 +302,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return;
         }
+        self.report_current_external_player_availability();
 
         let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
             self.handle_session_transport_failure(
@@ -338,7 +340,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_media_match_signature = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
-        self.clear_session_attached_player_sync_state();
+        self.clear_session_causal_player_effect_state();
         self.reset_session_transport_reconnect_state();
 
         let mut actions = self.sessionless_projection_actions(projected_state);
@@ -453,6 +455,66 @@ impl GuiPersistedConfigRuntimeOwner {
         )))
     }
 
+    pub(super) fn drain_session_transport_outbound_before_synchronous_player_open(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> GuiSessionOutboundDrainDisposition {
+        let Some(session_transport) = self.session_transport.as_ref().cloned() else {
+            return GuiSessionOutboundDrainDisposition::Drained;
+        };
+
+        loop {
+            // Consume a receipt before trying to stage another frame. Calling
+            // the regular flush while the transport still owns a lease would
+            // fail and restore that same session delivery.
+            self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+            if self
+                .pending_shared_playlist_open
+                .as_ref()
+                .is_some_and(GuiPendingSharedPlaylistOpen::delivery_fence_reached)
+            {
+                return GuiSessionOutboundDrainDisposition::Drained;
+            }
+            if !session_transport.has_pending_outbound_protocol_delivery() {
+                self.flush_session_transport_outbound(handle, projected_state);
+            }
+            if !session_transport.has_pending_outbound_protocol_delivery() {
+                return GuiSessionOutboundDrainDisposition::Drained;
+            }
+
+            let liveness_enabled = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.server_handshake_completed());
+            let pump_result = {
+                let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
+                    Self::push_runtime_unavailable(
+                        handle,
+                        "Shared playlist media was not opened because the session transport cannot drain its pending update. Try again after reconnecting."
+                            .to_owned(),
+                    );
+                    return GuiSessionOutboundDrainDisposition::Failed;
+                };
+                session_transport_driver.set_protocol_liveness_enabled(liveness_enabled);
+                session_transport_driver.pump(&session_transport)
+            };
+            let frame_written =
+                self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+            if let Err(error) = pump_result {
+                session_transport.fail_pending_outbound_protocol_delivery(0, error.clone());
+                self.apply_session_transport_outbound_delivery_results(handle, projected_state);
+                if !self.drain_session_transport_inbound(handle, projected_state) {
+                    self.handle_session_transport_failure(handle, projected_state, error);
+                }
+                return GuiSessionOutboundDrainDisposition::Failed;
+            }
+            if !frame_written {
+                return GuiSessionOutboundDrainDisposition::Pending;
+            }
+        }
+    }
+
     pub(super) fn pump_session_transport_driver(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -462,6 +524,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         if self.apply_session_transport_outbound_delivery_results(handle, projected_state) {
             self.flush_session_transport_outbound(handle, projected_state);
+            self.resume_pending_shared_playlist_open_if_ready(handle, projected_state);
         }
         let Some(session_transport) = self.session_transport.as_ref().cloned() else {
             return;
@@ -498,6 +561,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
             self.flush_session_transport_outbound(handle, projected_state);
+            self.resume_pending_shared_playlist_open_if_ready(handle, projected_state);
         }
     }
 
@@ -544,15 +608,26 @@ impl GuiPersistedConfigRuntimeOwner {
             match result {
                 GuiOutboundProtocolDeliveryResult::FrameWritten { token } => {
                     frame_written = true;
-                    if let Some(session) = self.session.as_mut()
-                        && let Err(error) = session.acknowledge_outbound_protocol_delivery(token)
+                    let acknowledged_line = if let Some(session) = self.session.as_mut() {
+                        match session.acknowledge_outbound_protocol_delivery(token) {
+                            Ok(line) => line,
+                            Err(error) => {
+                                actions.push(GuiShellAction::PushTransientNotification {
+                                    level: GuiTransientNotificationLevel::Error,
+                                    message: format!(
+                                        "Outbound protocol delivery acknowledgement failed: {error}"
+                                    ),
+                                });
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(line) = acknowledged_line
+                        && let Some(pending) = self.pending_shared_playlist_open.as_mut()
                     {
-                        actions.push(GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Error,
-                            message: format!(
-                                "Outbound protocol delivery acknowledgement failed: {error}"
-                            ),
-                        });
+                        pending.note_frame_written(&line);
                     }
                 }
                 GuiOutboundProtocolDeliveryResult::FrameFailed {

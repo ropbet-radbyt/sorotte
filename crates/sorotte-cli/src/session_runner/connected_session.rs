@@ -9,9 +9,11 @@ use std::{
 
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
-    run_connected_session_event_plan_legacy_compatible,
+    report_contained_connected_session_player_failure,
+    run_connected_session_event_plan_legacy_compatible, run_contained_planned_local_runtime_action,
 };
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use sorotte_client_app::app_boundary::commands::PlannedLocalRuntimeAction;
 use sorotte_player_mpv::SorotteBridgeHealth;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
@@ -919,12 +921,18 @@ where
                             match dispatch {
                                 PlannedLocalInputDispatch::Suppressed => false,
                                 PlannedLocalInputDispatch::Run(action) => {
-                                    run_planned_local_runtime_action_legacy_compatible(
+                                    let (emitted, failure) =
+                                        run_contained_planned_local_runtime_action(
                                         runtime,
                                         &mut local_user_offset_seconds,
                                         client_runtime_now_seconds(),
                                         action,
-                                    )?
+                                    )?;
+                                    if let Some(failure) = failure {
+                                        report_contained_connected_session_player_failure(&failure);
+                                        flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                                    }
+                                    emitted
                                 }
                                 _ => false,
                             }

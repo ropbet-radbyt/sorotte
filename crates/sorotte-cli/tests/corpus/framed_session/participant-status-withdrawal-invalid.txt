@@ -1,0 +1,3 @@
+3001{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}
+{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":1,"participants":{"alice":{"availability":"fresh","playerConnection":"connected","phase":"futurePhase","reportAgeMs":0}}}}}}
+{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}

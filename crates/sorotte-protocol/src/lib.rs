@@ -10,6 +10,7 @@ mod envelope;
 mod hello;
 mod list;
 mod message;
+mod participant_status;
 mod playback_barrier;
 mod readiness;
 mod redacted_debug;
@@ -29,6 +30,16 @@ pub use envelope::{
 pub use hello::HelloPayload;
 pub use list::{ListPayload, ListUserEntry};
 pub use message::ProtocolMessage;
+pub use participant_status::{
+    PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS, PARTICIPANT_STATUS_MAX_PLAYBACK_RATE,
+    PARTICIPANT_STATUS_MAX_POSITION_SECONDS, PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS,
+    PARTICIPANT_STATUS_MIN_PLAYBACK_RATE, ParticipantPlaybackPhase, ParticipantPlaybackScope,
+    ParticipantPlayerConnection, ParticipantStatusAvailability, ParticipantStatusCorrelation,
+    ParticipantStatusReport, ParticipantStatusSnapshot, ParticipantStatusSnapshotMode,
+    ParticipantStatusStateExtension, ParticipantStatusView, ParticipantTimelineKind,
+    SOROTTE_PARTICIPANT_STATUS_V1, participant_status_buffer_evidence_is_eligible,
+    participant_status_position_evidence_is_eligible,
+};
 pub use playback_barrier::{
     CommitStartPayload, MediaLoadIntent, MediaReadyPayload, PlaybackBarrierDegradedReason,
     PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,

@@ -258,32 +258,40 @@ impl GuiWidgetEguiRenderer {
     }
 
     pub(super) fn render_playback_state_icon(ui: &mut egui::Ui, node: &GuiWidgetNode, size: f32) {
-        let paused = matches!(node.value.as_deref(), Some("yes" | "true"));
+        let value = node.value.as_deref();
+        let paused =
+            value.is_some_and(|value| matches!(value, "yes" | "true") || value.contains("PAUSED"));
+        let playing =
+            value.is_some_and(|value| matches!(value, "no" | "false") || value.contains("PLAYING"));
         let palette = Self::palette_for_ui(ui);
-        let label = if paused {
-            "Room state: paused"
+        let label = value.unwrap_or(if paused {
+            "Room intent: paused"
+        } else if playing {
+            "Room intent: playing"
         } else {
-            "Room state: playing"
-        };
+            "Room intent unavailable"
+        });
         let (fill, stroke, icon_color) = if paused {
             (
                 palette.warning_bg,
                 palette.warning_border,
                 palette.warning_text,
             )
-        } else {
+        } else if playing {
             (
                 palette.success_bg,
                 palette.success_border,
                 palette.success_text,
             )
+        } else {
+            (palette.surface_muted, palette.border, palette.muted_text)
         };
         let size = size.max(24.0);
         let (_, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Label, response.enabled(), label)
         });
-        let response = Self::attach_hover_text(response, label);
+        let response = Self::attach_node_tooltip(response, node);
         let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
         ui.painter().rect(
             rect,
@@ -304,7 +312,7 @@ impl GuiWidgetEguiRenderer {
             let second_bar = first_bar.translate(egui::vec2(bar_width + gap, 0.0));
             ui.painter().rect_filled(first_bar, 1.5, icon_color);
             ui.painter().rect_filled(second_bar, 1.5, icon_color);
-        } else {
+        } else if playing {
             ui.painter().add(egui::Shape::convex_polygon(
                 vec![
                     egui::pos2(icon_rect.left(), icon_rect.top()),
@@ -314,6 +322,14 @@ impl GuiWidgetEguiRenderer {
                 icon_color,
                 egui::Stroke::NONE,
             ));
+        } else {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(icon_rect.left(), icon_rect.center().y),
+                    egui::pos2(icon_rect.right(), icon_rect.center().y),
+                ],
+                egui::Stroke::new(2.0, icon_color),
+            );
         }
     }
 

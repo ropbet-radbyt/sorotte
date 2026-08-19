@@ -13,6 +13,24 @@ pub struct ClientSession {
     playback_barrier: playback_barrier::ClientPlaybackBarrierState,
 }
 
+const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
+
+impl ClientSession {
+    pub(crate) fn retain_compatibility_fallbacks(
+        &mut self,
+        fallbacks: impl IntoIterator<Item = ClientCompatibilityFallback>,
+    ) {
+        let remaining = MAX_PENDING_COMPATIBILITY_FALLBACKS
+            .saturating_sub(self.pending_compatibility_fallbacks.len());
+        self.pending_compatibility_fallbacks.extend(
+            fallbacks
+                .into_iter()
+                .take(remaining)
+                .map(ClientCompatibilityFallback::bounded),
+        );
+    }
+}
+
 /// Opaque rollback state for a playback-rate command emitted by desync correction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DesyncCorrectionDispatchSnapshot {
@@ -51,6 +69,7 @@ mod apply;
 mod file_metadata;
 mod helpers;
 mod lifecycle;
+mod participant_status;
 mod playback;
 mod playback_barrier;
 mod playlist;

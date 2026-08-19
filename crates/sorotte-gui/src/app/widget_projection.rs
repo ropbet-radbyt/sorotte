@@ -83,9 +83,16 @@ impl SorotteGuiShellAppState {
                     filename_differs: user.filename_differs,
                     filesize_differs: user.filesize_differs,
                     fileduration_differs: user.fileduration_differs,
+                    participant_status: user.participant_status.clone(),
+                    start_barrier_status: user.start_barrier_status.clone(),
                     is_selected: false,
                 })
                 .collect();
+        }
+        if preserve_connected_room_surface
+            || current_snapshot.room_playback_intent != previous_baseline.room_playback_intent
+        {
+            self.main_window.room_playback_intent = current_snapshot.room_playback_intent.clone();
         }
         let preserve_runtime_playlist = current_snapshot.playlist != previous_baseline.playlist
             || configured_playlist == previous_baseline.playlist;

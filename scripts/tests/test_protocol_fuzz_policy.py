@@ -42,7 +42,7 @@ FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
 CORPUS_PATH = "crates/sorotte-protocol/tests/corpus/protocol_parser"
 CORPUS_FILE_COUNT = 16
 FRAMED_SESSION_CORPUS_PATH = "crates/sorotte-cli/tests/corpus/framed_session"
-FRAMED_SESSION_CORPUS_FILE_COUNT = 14
+FRAMED_SESSION_CORPUS_FILE_COUNT = 17
 FRAMED_SESSION_CORPUS_DIRECTORY = REPO_ROOT / FRAMED_SESSION_CORPUS_PATH
 MPV_FRAMED_TRANSCRIPT_CORPUS_PATH = (
     "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript"
@@ -675,6 +675,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             original.replace("--sanitizer address", "--sanitizer none"),
             original.replace('--source-sha "${{ github.sha }}"', "--source-sha bad"),
             original.replace("--expected-seed-count 16", "--expected-seed-count 1"),
+            original.replace("--expected-seed-count 17", "--expected-seed-count 1"),
             original.replace("--target framed_session", "--target protocol_line"),
             original.replace(
                 "target/fuzz-ci/framed-session",
@@ -807,6 +808,11 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertIn("ScheduledReader", target)
         self.assertIn("reference_outcome", target)
         self.assertIn("assert_session_invariants", target)
+        self.assertIn("session.user_participant_status_at", target)
+        self.assertIn("ParticipantStatusFreshness::Stale", target)
+        self.assertIn("ParticipantStatusAvailability::Unsupported", target)
+        self.assertIn("ParticipantStatusCorrelation::Exact", target)
+        self.assertIn("position_sample_age_ms.is_some()", target)
         self.assertIn("input-derived frame bound", target)
         self.assertIn("framing schedules must preserve real session", target)
         self.assertNotIn("TcpStream", target)
@@ -888,6 +894,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             all(entry.is_file() and not entry.is_symlink() for entry in entries)
         )
         payloads = [entry.read_bytes() for entry in entries]
+        self.assertTrue(
+            any(entry.name == "participant-status-uncorrelated-offset.txt" for entry in entries)
+        )
         ordinary = [
             payload
             for payload in payloads
@@ -903,6 +912,24 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertEqual(
             {payload[:6] for payload in seam},
             {b"!SEAM0", b"!SEAM1", b"!SEAM2", b"!SEAM3"},
+        )
+        self.assertTrue(
+            any(b'"sorotteParticipantStatusV1"' in payload for payload in ordinary)
+        )
+        self.assertTrue(
+            any(
+                b'"positionSampleAgeMs"' in payload
+                and b'"snapshot"' in payload
+                and b'"report"' in payload
+                for payload in ordinary
+            )
+        )
+        self.assertTrue(
+            any(
+                b'"sorotteParticipantStatusV1":false' in payload
+                and b'"futurePhase"' in payload
+                for payload in ordinary
+            )
         )
 
     def test_runner_enforces_limits_and_failure_minimization(self) -> None:

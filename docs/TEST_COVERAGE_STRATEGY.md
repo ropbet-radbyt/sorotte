@@ -1943,8 +1943,8 @@ Targets:
 
 Reference: [cargo-mutants](https://mutants.rs/getting-started.html).
 
-Implementation status (updated 2026-07-30): the scheduled matrix covers nine critical
-boundaries with pinned cargo-mutants 27.1.0. The original `sorotte-secret`
+Implementation status (updated 2026-07-30): the scheduled matrix covered nine
+critical boundaries with pinned cargo-mutants 27.1.0. The original `sorotte-secret`
 privacy shard moved from 22/43 to 43/43 viable mutations caught against an
 identical 44-mutant inventory. Credential-classifier expansion later caused a
 clean required-shard replay to fail with 29 missed and five timed-out mutants;
@@ -1960,10 +1960,10 @@ seams now catch 80/80 with zero misses or timeouts; eight generated
 default-value replacements are compiler-infeasible and matched by exact,
 expiring identities. The combined-file shard also exposed and regression
 covered cargo-mutants' `function: null` metadata for top-level constants in
-the attesting wrapper. Policy schema 2 and the strict wrapper bind
-package/library target and test namespace as well as source hashes,
-inventories, structured outcomes, status files, command phases, artifacts,
-and producer exit. See
+the attesting wrapper. Policy schema 3 and the strict wrapper now bind
+package/library target, test selector prefix, and optional source-bound
+mutant-name expression as well as source hashes, inventories, structured
+outcomes, status files, command phases, artifacts, and producer exit. See
 [`targeted-mutation-20260729.md`](evidence/test-coverage/targeted-mutation-20260729.md)
 ,
 [`targeted-mutation-privacy-expansion-20260729.md`](evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),
@@ -1990,7 +1990,7 @@ viable mutants, missed 12, and timed out on two non-progress loop changes.
 Deterministic snapshot, target-index, seed-framing, PRNG, golden-permutation,
 and 512-seed invariant oracles plus a narrow completion guard now catch 26/26
 with no miss or timeout; one exact expiring identity covers two same-function
-compiler-unviable let-chain sites. All ten current shards therefore catch
+compiler-unviable let-chain sites. All ten established shards therefore catch
 484/484 viable mutations with zero misses and zero timeouts; 17 exact
 accepted-unviable policy identities fail closed on drift or expiry. See
 [`targeted-mutation-client-reconnect-20260730.md`](evidence/test-coverage/targeted-mutation-client-reconnect-20260730.md),
@@ -2003,6 +2003,13 @@ and
 [`targeted-mutation-cli-framing-20260730.md`](evidence/test-coverage/targeted-mutation-cli-framing-20260730.md),
 and
 [`targeted-mutation-client-playlist-shuffle-20260730.md`](evidence/test-coverage/targeted-mutation-client-playlist-shuffle-20260730.md).
+The 2026-08-09 participant-status apparatus adds a separately attested
+protocol shard plus bounded client acceptance, client reporting lifecycle,
+independently coalesced client outbox delivery, server, GUI presentation,
+client-app lifecycle, CLI lifecycle, and causal delivery-fence behavior shards.
+Those behavior shards are scheduled as zero-survivor gates; the established
+484-mutant claim remains limited to its recorded ten-shard evidence until
+fresh reports attest the added inventories.
 This is bounded critical-module assurance, not workspace-wide mutation proof.
 
 ### 9.6 Genuine vertical player system harness

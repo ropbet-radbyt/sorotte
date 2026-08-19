@@ -1,11 +1,27 @@
-schema_version = 2
+schema_version = 3
 cargo_mutants_version = "27.1.0"
+
+[[required_report_set]]
+id = "participant-status"
+shards = [
+    "participant-status-protocol",
+    "client-participant-status",
+    "client-participant-status-runtime",
+    "client-participant-status-outbox",
+    "server-participant-status",
+    "gui-participant-status",
+    "gui-playlist-delivery-fence",
+    "player-mpv-explicit-ipc-retry",
+    "client-app-participant-status-lifecycle",
+    "cli-participant-status-lifecycle",
+]
 
 [[shard]]
 id = "privacy-secret"
 owner = "secrets"
 package = "sorotte-secret"
 files = ["crates/sorotte-secret/src/lib.rs"]
+mutant_filter = ""
 test_target = "package"
 test_filter = ""
 jobs = 2
@@ -21,6 +37,7 @@ id = "server-auth"
 owner = "server-security"
 package = "sorotte-server"
 files = ["crates/sorotte-server/src/auth.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "auth::tests::"
 jobs = 2
@@ -39,6 +56,7 @@ files = [
     "crates/sorotte-protocol/src/codec.rs",
     "crates/sorotte-protocol/src/redacted_debug.rs",
 ]
+mutant_filter = ""
 test_target = "lib"
 test_filter = ""
 jobs = 2
@@ -50,10 +68,202 @@ max_timeouts = 0
 require_baseline = true
 
 [[shard]]
+id = "participant-status-protocol"
+owner = "participant-status"
+package = "sorotte-protocol"
+files = ["crates/sorotte-protocol/src/participant_status.rs"]
+mutant_filter = ""
+test_target = "lib"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-participant-status"
+owner = "participant-status"
+package = "sorotte-client-core"
+files = [
+    "crates/sorotte-client-core/src/inbound.rs",
+    "crates/sorotte-client-core/src/session/apply.rs",
+    "crates/sorotte-client-core/src/session/helpers.rs",
+    "crates/sorotte-client-core/src/session/participant_status.rs",
+    "crates/sorotte-client-core/src/views.rs",
+]
+mutant_filter = "(participant_status|ParticipantStatus|ClientParticipantStatus)"
+test_target = "lib"
+test_filter = "session::tests::participant_status_tests::"
+jobs = 2
+timeout_seconds = 90
+build_timeout_seconds = 180
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-participant-status-runtime"
+owner = "participant-status"
+package = "sorotte-client-core"
+files = [
+    "crates/sorotte-client-core/src/runtime/accessors.rs",
+    "crates/sorotte-client-core/src/runtime/playback_coordination.rs",
+    "crates/sorotte-client-core/src/runtime/queued_control.rs",
+]
+mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|observe_transport_with_semantics|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
+test_target = "lib"
+test_filter = "runtime::playback_coordination::tests::participant_status_"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-participant-status-outbox"
+owner = "participant-status"
+package = "sorotte-client-core"
+files = ["crates/sorotte-client-core/src/outbox.rs"]
+mutant_filter = "(cancel_pending_participant_status_reports|strip_participant_status_at|push_connection_scoped_state)"
+test_target = "lib"
+test_filter = "outbox::tests::participant_status_"
+jobs = 2
+timeout_seconds = 90
+build_timeout_seconds = 180
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-participant-status"
+owner = "participant-status"
+package = "sorotte-server"
+files = [
+    "crates/sorotte-server/src/inbound.rs",
+    "crates/sorotte-server/src/runtime_handlers.rs",
+    "crates/sorotte-server/src/runtime_maintenance.rs",
+    "crates/sorotte-server/src/runtime_playback_barrier.rs",
+]
+mutant_filter = "(participant_status|ParticipantStatus|collect_due_periodic_updates_at|delete field (set_by|client_latency_calculation|client_ignoring_counter|server_rtt_seconds|latency_calculation_seconds) from struct StateSyncOptions expression in ServerRuntime::periodic_state_sync_message_for_client_at)"
+test_target = "lib"
+test_filter = "tests::participant_status_tests::"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "gui-participant-status"
+owner = "participant-status"
+package = "sorotte-gui"
+files = ["crates/sorotte-gui/src/app/widget_views/main_window/summary.rs"]
+mutant_filter = "(participant_status|member_report_evidence_is_unavailable|member_player_availability_label|member_logical_pause_label|member_playback_rate_label|member_generation_label|member_revision_label)"
+test_target = "lib"
+test_filter = "app::widget_views::tests::main_window_controls::"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "gui-playlist-delivery-fence"
+owner = "gui-transport"
+package = "sorotte-gui"
+files = [
+    "crates/sorotte-gui/src/app/runtime_owner.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/media_open.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/media_search.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/player/playlist_sync.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/requests/session_controls.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/session_transport.rs",
+    "crates/sorotte-gui/src/app/runtime_owner/startup_player.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/playlist_delivery_fence.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/delivery_fence.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/runtime_adapter_impl.rs",
+]
+mutant_filter = "(Gui(PendingSharedPlaylistOpen|PlaylistProtocolDeliveryFence)|playlist.*delivery_fence|clear_session_causal_player_effect_state|finish_shared_playlist_open_after_delivery|resume_pending_shared_playlist_open_if_ready|delete field (username|room).*StoredClientSettingsMvp|delete field direct_target.*GuiLocalMediaSearchAliases)"
+test_target = "lib"
+test_filter = "app::runtime_owner::tests::playlist_runtime_tests::open_insert_and_local_media::"
+jobs = 2
+timeout_seconds = 180
+build_timeout_seconds = 300
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "player-mpv-explicit-ipc-retry"
+owner = "participant-status"
+package = "sorotte-player-mpv"
+files = [
+    "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+]
+mutant_filter = "(disconnected_with_json_ipc_retry|maintain_json_ipc_reconnection)"
+test_target = "lib"
+test_filter = "adapter::version_policy_tests::explicit_json_ipc_retry_"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "client-app-participant-status-lifecycle"
+owner = "participant-status"
+package = "sorotte-client-app"
+files = [
+    "crates/sorotte-client-app/src/application.rs",
+    "crates/sorotte-client-app/src/participant_status_presentation.rs",
+]
+mutant_filter = "(synchronize_player_availability|record_contained_external_player_failure|run_participant_status_heartbeat|ParticipantStatusReportPresentation::(from_client_view|position_evidence_is_eligible|buffer_evidence_is_eligible|headline_label)|delete field (policy|quorum_percent|maximum_pause_seconds) from struct PlaybackBarrierRoomBufferingConfig expression in ClientApplication<P>::apply_settings)"
+test_target = "lib"
+test_filter = ""
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "cli-participant-status-lifecycle"
+owner = "participant-status"
+package = "sorotte-cli"
+files = ["crates/sorotte-cli/src/session_runner/connected_session/execution.rs"]
+mutant_filter = "(synchronize_connected_session_player_availability|contain_connected_session_player_failure|planned_local_runtime_action_is_player_bound|contain_planned_local_runtime_action_result|run_contained_planned_local_runtime_action|run_connected_session_branch_runtime_steps_legacy_compatible)"
+test_target = "lib"
+test_filter = "session_runner::connected_session::execution::tests::"
+jobs = 2
+timeout_seconds = 120
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
 id = "client-reconnect-state"
 owner = "client-lifecycle"
 package = "sorotte-client-core"
 files = ["crates/sorotte-client-core/src/session/reconnect.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "session::tests::"
 jobs = 2
@@ -69,6 +279,7 @@ id = "client-runtime-config"
 owner = "client-configuration"
 package = "sorotte-client-app"
 files = ["crates/sorotte-client-app/src/legacy_runtime_config.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "legacy_runtime_config::tests::"
 jobs = 2
@@ -84,6 +295,7 @@ id = "client-ping"
 owner = "client-networking"
 package = "sorotte-client-core"
 files = ["crates/sorotte-client-core/src/ping.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "session::tests::ping_tests::"
 jobs = 2
@@ -99,6 +311,7 @@ id = "server-persistence-arbitration"
 owner = "server-persistence"
 package = "sorotte-server"
 files = ["crates/sorotte-server/src/persistence_actor/persistence_arbitration.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "persistence_actor::persistence_arbitration_tests::"
 jobs = 2
@@ -114,6 +327,7 @@ id = "client-inbound-order"
 owner = "client-protocol"
 package = "sorotte-client-core"
 files = ["crates/sorotte-client-core/src/inbound_order.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "session::tests::protocol_tests::"
 jobs = 2
@@ -129,6 +343,7 @@ id = "client-playlist-shuffle"
 owner = "client-playlist"
 package = "sorotte-client-core"
 files = ["crates/sorotte-client-core/src/session/playlist/shuffle_helpers.rs"]
+mutant_filter = ""
 test_target = "lib"
 test_filter = "session::tests::playlist_tests::shuffle_undo_tests::"
 jobs = 2
@@ -144,6 +359,7 @@ id = "cli-framing"
 owner = "cli-transport"
 package = "sorotte-cli"
 files = ["crates/sorotte-cli/src/protocol_io.rs"]
+mutant_filter = ""
 test_target = "package"
 test_filter = ""
 jobs = 2
@@ -340,3 +556,524 @@ genre = "BinaryOperator"
 replacement = "||"
 reason = "cargo-mutants replaces each of the forward- and backward-search Rust let-chain && sites with ||, but let expressions are only valid in && chains so both generated mutants cannot parse"
 review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "participant-status-scope-state-revision-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantPlaybackScope::with_state_revision"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-scope-transport-revision-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantPlaybackScope::with_transport_revision"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-playback-scope-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_playback_scope"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-timeline-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_timeline_kind"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-position-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_position_seconds"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-logical-pause-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_logical_paused"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-playback-rate-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_playback_rate"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-cache-pause-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_paused_for_cache"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-cache-percent-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_cache_percent"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-buffered-ahead-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_buffered_ahead_seconds"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-sample-age-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_sample_age_ms"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-report-position-age-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusReport::with_position_sample_age_ms"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-snapshot-mode-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "ParticipantStatusSnapshot::with_mode"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The extensible protocol builder return type intentionally has no Default because a default would invent required status identity, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "participant-status-directional-report-default"
+shard = "participant-status-protocol"
+file = "crates/sorotte-protocol/src/participant_status.rs"
+function = "decode_report"
+return_type = "-> serde_json::Result<Option<ParticipantStatusReport>>"
+genre = "FnValue"
+replacement = "Ok(Some(Default::default()))"
+reason = "The directional decoder's generated success value requires Default for ParticipantStatusReport, but a report requires explicit sequence and lifecycle evidence and intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-player-availability-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::participant_status_player_availability"
+return_type = "-> ParticipantPlayerConnection"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the explicit player-availability enum, which intentionally has no semantically safe default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-pending-report-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::pending_participant_status_report"
+return_type = "-> Option<PendingParticipantStatusReport>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "cargo-mutants requests Default for a pending report whose report, fingerprint, and send timestamp are all required, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-outbox-cancel-let-chain-or"
+shard = "client-participant-status-outbox"
+file = "crates/sorotte-client-core/src/outbox.rs"
+function = "ProtocolOutbox::cancel_pending_participant_status_reports"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-view-from-wire-default"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/views.rs"
+function = "ClientParticipantStatusView::from_wire"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a client status view that requires an explicit server projection and derived freshness state, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-view-aged-by-default"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/views.rs"
+function = "ClientParticipantStatusView::aged_by"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a client status view that requires an explicit server projection and derived freshness state, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-view-fail-closed-default"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/views.rs"
+function = "ClientParticipantStatusView::fail_closed_stale"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a client status view that requires an explicit server projection and derived freshness state, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-user-view-default"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/session/participant_status.rs"
+function = "ClientSession::user_participant_status_at"
+return_type = "-> Option<ClientParticipantStatusView>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "cargo-mutants requests Default for a client status view inside Some, but the view requires an explicit server projection and derived freshness state, so the replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-user-view-let-chain-or"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/session/participant_status.rs"
+function = "ClientSession::user_participant_status_at"
+return_type = "-> Option<ClientParticipantStatusView>"
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 3
+reason = "cargo-mutants changes each of three observed && connectors in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-authoritative-scope-default"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/session/participant_status.rs"
+function = "ClientSession::participant_status_authoritative_scope"
+return_type = "-> Option<ParticipantPlaybackScope>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "cargo-mutants requests Default for a playback scope inside Some, but the scope requires an explicit media generation and intentionally has no Default, so the replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-apply-update-let-chain-or"
+shard = "client-participant-status"
+file = "crates/sorotte-client-core/src/session/participant_status.rs"
+function = "ClientSession::apply_participant_status_update"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 6
+reason = "cargo-mutants changes each of six observed && connectors in Rust let-chain conditions to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-normalize-report-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_handlers.rs"
+function = "normalize_participant_status_report"
+return_type = "-> Option<ParticipantStatusReport>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "cargo-mutants requests Default for a participant report inside Some, but a report requires an explicit sequence, player connection, and playback phase, so the replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-availability-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "participant_status_availability"
+return_type = "-> ParticipantStatusAvailability"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the explicit freshness and capability availability enum, which intentionally has no semantically safe default, so the replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-correlation-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "participant_status_correlation"
+return_type = "-> ParticipantStatusCorrelation"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the three-way correlation enum, which intentionally has no semantically safe default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-compact-snapshot-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "compact_participant_status_snapshot"
+return_type = "-> ParticipantStatusSnapshot"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a status snapshot that requires an explicit revision, projection mode, and participant map, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-unavailable-snapshot-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "unavailable_participant_status_snapshot"
+return_type = "-> ParticipantStatusSnapshot"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a status snapshot that requires an explicit revision, projection mode, and participant map, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-split-message-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "split_participant_status_from_reliable_passthrough"
+return_type = "-> Vec<ProtocolMessage>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a protocol message inside the split delivery vector, but every message requires an explicit protocol variant and ProtocolMessage intentionally has no Default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-periodic-updates-element-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::collect_due_periodic_updates_at"
+return_type = "-> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError>"
+genre = "FnValue"
+replacement = "Ok(vec![Default::default()])"
+reason = "cargo-mutants requests Default for a directed protocol message inside Ok, but every message requires an explicit authenticated recipient and protocol payload, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-clear-client-let-chain-or"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::clear_participant_status_for_client"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the observed && connector in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-scope-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::participant_status_scope_for_room"
+return_type = "-> ParticipantPlaybackScope"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for a playback scope that requires an explicit media generation and intentionally has no Default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-participant-status-snapshot-let-chain-or"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::participant_status_snapshot_for_client_at"
+return_type = "-> Option<ParticipantStatusStateExtension>"
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 5
+reason = "cargo-mutants changes five observed && connectors in Rust let-chain conditions to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "gui-playlist-delivery-fence-finish-let-chain-or"
+shard = "gui-playlist-delivery-fence"
+file = "crates/sorotte-gui/src/app/runtime_owner/player/media_open.rs"
+function = "GuiPersistedConfigRuntimeOwner::finish_shared_playlist_open_after_delivery"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the observed && connector in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-app-participant-status-presentation-default"
+shard = "client-app-participant-status-lifecycle"
+file = "crates/sorotte-client-app/src/participant_status_presentation.rs"
+function = "ParticipantStatusReportPresentation::from_client_view"
+return_type = "-> Self"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "The generated replacement requires Default for a presentation derived from an explicit participant-status view and freshness state, so it cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "player-mpv-explicit-ipc-retry-instant-duration-multiply"
+shard = "player-mpv-explicit-ipc-retry"
+file = "crates/sorotte-player-mpv/src/adapter/reconnection.rs"
+function = "MpvAdapter::maintain_json_ipc_reconnection_using_clock"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "*"
+expected_count = 2
+reason = "cargo-mutants replaces Instant plus Duration with multiplication at both retry deadlines, but Rust deliberately defines no Instant multiplication operator"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-contained-player-failure-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "contain_connected_session_player_failure"
+return_type = "-> ContainedConnectedSessionPlayerFailure"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "the contained failure intentionally retains an anyhow error and has no valid Default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-run-contained-player-action-true-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "run_contained_planned_local_runtime_action"
+return_type = "-> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)>"
+genre = "FnValue"
+replacement = "Ok((true, Some(Default::default())))"
+reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-run-contained-player-action-false-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "run_contained_planned_local_runtime_action"
+return_type = "-> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)>"
+genre = "FnValue"
+replacement = "Ok((false, Some(Default::default())))"
+reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-contain-player-action-result-true-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "contain_planned_local_runtime_action_result"
+return_type = "-> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)>"
+genre = "FnValue"
+replacement = "Ok((true, Some(Default::default())))"
+reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-contain-player-action-result-false-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "contain_planned_local_runtime_action_result"
+return_type = "-> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)>"
+genre = "FnValue"
+replacement = "Ok((false, Some(Default::default())))"
+reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "cli-branch-runtime-player-failure-default"
+shard = "cli-participant-status-lifecycle"
+file = "crates/sorotte-cli/src/session_runner/connected_session/execution.rs"
+function = "run_connected_session_branch_runtime_steps_legacy_compatible"
+return_type = "-> Option<ContainedConnectedSessionPlayerFailure>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "the generated Some payload requires Default for the contained failure type, which intentionally has no valid Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-phase-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::participant_status_phase"
+return_type = "-> ParticipantPlaybackPhase"
+genre = "FnValue"
+replacement = "Default::default()"
+reason = "cargo-mutants requests Default for the explicit participant playback phase enum, which intentionally has no semantically safe default, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-observe-actions-default"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::observe_transport_with_semantics"
+return_type = "-> Vec<PlaybackCoordinatorAction>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a playback coordinator action, but every action requires an explicit causal revision, command, or failure reason and intentionally has no Default"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-flush-let-chain-or"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/accessors.rs"
+function = "ClientSessionUpdate<'a>::flush_participant_status_transition"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-queued-state-let-chain-or"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/queued_control.rs"
+function = "ClientRuntime<P, QueuedRuntimeControl>::queue_connection_scoped_state_with_participant_status"
+return_type = "-> bool"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"

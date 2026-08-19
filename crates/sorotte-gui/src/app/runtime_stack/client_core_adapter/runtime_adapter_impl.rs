@@ -76,8 +76,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         GuiClientCoreChatSessionRuntimeAdapter::begin_outbound_protocol_delivery(self)
     }
 
-    fn acknowledge_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
+    fn acknowledge_outbound_protocol_delivery(
+        &mut self,
+        token: u64,
+    ) -> Result<Option<String>, String> {
         GuiClientCoreChatSessionRuntimeAdapter::acknowledge_outbound_protocol_delivery(self, token)
+            .map(Some)
     }
 
     fn fail_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
@@ -188,6 +192,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime chat dispatch failed: {error}"
             )),
         }
+    }
+
+    fn request_user_list(&mut self) -> Result<bool, String> {
+        self.dispatch_application_command(ClientCommand::RequestUserList)
+            .map_err(|error| {
+                format!("Client-core session runtime user-list dispatch failed: {error}")
+            })
     }
 
     fn attached_player_chat_input_ready(&self) -> bool {
@@ -353,6 +364,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn queue_playlist_entry_with_delivery_fence(
+        &mut self,
+        entry: String,
+        select_after_queue: bool,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.queue_playlist_entry(entry, select_after_queue)?;
+        self.pending_playlist_protocol_delivery_fence()
+    }
+
     fn set_playlist_index(&mut self, index: usize) -> Result<(), String> {
         let Ok(index) = i64::try_from(index) else {
             return Err("Requested shared playlist index exceeds the supported range.".to_owned());
@@ -378,6 +398,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn set_playlist_index_with_delivery_fence(
+        &mut self,
+        index: usize,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.set_playlist_index(index)?;
+        self.pending_playlist_protocol_delivery_fence()
+    }
+
     fn advance_playlist_index(&mut self) -> Result<(), String> {
         match self.runtime.run_advance_playlist_index() {
             Ok(true) => Ok(()),
@@ -398,6 +426,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime playlist advancement dispatch failed: {error}"
             )),
         }
+    }
+
+    fn advance_playlist_index_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.advance_playlist_index()?;
+        self.pending_playlist_protocol_delivery_fence()
     }
 
     fn advance_playlist_index_attached_player_actions(
@@ -458,6 +493,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn delete_playlist_index_with_delivery_fence(
+        &mut self,
+        index: usize,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.delete_playlist_index(index)?;
+        self.pending_playlist_protocol_delivery_fence()
+    }
+
     fn replace_playlist(
         &mut self,
         files: Vec<String>,
@@ -504,6 +547,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn replace_playlist_with_delivery_fence(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.replace_playlist(files, selected_index)?;
+        self.pending_playlist_protocol_delivery_fence()
+    }
+
     fn undo_playlist_change(&mut self) -> Result<(), String> {
         match self.runtime.run_undo_playlist_change() {
             Ok(true) => Ok(()),
@@ -524,6 +576,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime shared playlist undo dispatch failed: {error}"
             )),
         }
+    }
+
+    fn undo_playlist_change_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.undo_playlist_change()?;
+        self.pending_playlist_protocol_delivery_fence()
     }
 
     fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
@@ -548,6 +607,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn shuffle_remaining_playlist_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.shuffle_remaining_playlist()?;
+        self.pending_playlist_protocol_delivery_fence()
+    }
+
     fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
         match self.runtime.run_shuffle_entire_playlist() {
             Ok(true) => Ok(()),
@@ -568,6 +634,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime shared playlist shuffle dispatch failed: {error}"
             )),
         }
+    }
+
+    fn shuffle_entire_playlist_with_delivery_fence(
+        &mut self,
+    ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
+        self.shuffle_entire_playlist()?;
+        self.pending_playlist_protocol_delivery_fence()
     }
 
     fn sync_local_playback_telemetry(
@@ -602,6 +675,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             },
         ))
         .map(|_| ())
+    }
+
+    fn set_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+        now_seconds: f64,
+    ) -> Result<bool, String> {
+        self.runtime
+            .set_external_player_availability(availability, now_seconds)
+            .map_err(|error| {
+                format!("Client-core external-player availability update failed: {error}")
+            })
     }
 
     fn prepare_attached_playback_media(
@@ -910,6 +995,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.projected_current_room_playlist()
             .and_then(|playlist| playlist.index)
             .and_then(|index| usize::try_from(index).ok())
+    }
+
+    fn current_room_selected_playlist_entry(&self) -> Option<String> {
+        let playlist = self.projected_current_room_playlist()?;
+        let index = playlist
+            .index
+            .and_then(|index| usize::try_from(index).ok())?;
+        playlist.files.get(index).cloned()
     }
 
     fn server_media_match_supported(&self) -> bool {

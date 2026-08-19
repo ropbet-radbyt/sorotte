@@ -1,4 +1,46 @@
 use super::*;
+use crate::app::runtime_owner::GuiPendingSharedPlaylistOpen;
+use crate::app::runtime_stack::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
+
+struct ExternallyDrivenDetachedTransport;
+
+impl GuiSessionTransportDriver for ExternallyDrivenDetachedTransport {
+    fn pump(&mut self, _transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn deliver_detached_session_protocol_lines(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
+    session_transport: &GuiQueuedSessionTransportHandle,
+) -> (Vec<String>, Vec<GuiShellAction>) {
+    let mut protocol_lines = Vec::new();
+    let mut actions = Vec::new();
+    for _ in 0..16 {
+        let delivered = session_transport.drain_outbound_protocol_lines();
+        if delivered.is_empty() {
+            break;
+        }
+        protocol_lines.extend(delivered);
+        actions.extend(pump_and_apply_runtime_owner_actions(owner, handle, state));
+    }
+    assert!(
+        owner.pending_shared_playlist_open.is_none(),
+        "detached transport should satisfy the shared-playlist delivery fence; delivered={protocol_lines:?}, pending_frames={:?}",
+        owner
+            .pending_shared_playlist_open
+            .as_ref()
+            .map(|pending| match pending {
+                GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { delivery_fence }
+                | GuiPendingSharedPlaylistOpen::AfterMutation { delivery_fence, .. } => {
+                    delivery_fence.pending_frame_count()
+                }
+            }),
+    );
+    (protocol_lines, actions)
+}
 
 #[test]
 fn gui_persisted_config_runtime_owner_startup_saved_connect_uses_hostname_transport() {
@@ -105,6 +147,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenDetachedTransport));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -152,10 +195,12 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let open_actions = handle.drain_actions();
-    for action in open_actions.iter().cloned() {
-        assert!(state.apply(action));
-    }
+    let (mut outbound_protocol_lines, open_actions) = deliver_detached_session_protocol_lines(
+        &mut owner,
+        &handle,
+        &mut state,
+        &session_transport,
+    );
 
     assert!(
         open_actions.iter().any(|action| matches!(
@@ -174,7 +219,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         Some("episode1.mkv")
     );
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
     assert!(
         outbound_protocol_lines
             .iter()
@@ -348,6 +393,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenDetachedTransport));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OpenOnlyPlayer)));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -379,6 +425,12 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
         playlist_insert_slot: None,
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let (mut outbound_protocol_lines, _) = deliver_detached_session_protocol_lines(
+        &mut owner,
+        &handle,
+        &mut state,
+        &session_transport,
+    );
 
     assert!(
         owner.player_local_file_placeholder,
@@ -392,7 +444,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
         Some(crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading),
         "publishing the known local path must not promote the resolution attempt to Active",
     );
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
     assert!(
         outbound_protocol_lines.iter().all(|line| {
             serde_json::from_str::<serde_json::Value>(line)
@@ -477,6 +529,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenDetachedTransport));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         ObservedThenRejectedPlayer {
             state: player_state.clone(),
@@ -509,7 +562,12 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
         playlist_insert_slot: None,
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = deliver_detached_session_protocol_lines(
+        &mut owner,
+        &handle,
+        &mut state,
+        &session_transport,
+    );
     assert!(owner.player_local_file_placeholder);
     assert_eq!(
         owner
@@ -630,6 +688,7 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
+    owner.session_transport_driver = Some(Box::new(ExternallyDrivenDetachedTransport));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         AcceptedThenRejectedPlayer {
             state: player_state.clone(),
@@ -679,7 +738,13 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let accepted_lines = session_transport.drain_outbound_protocol_lines();
+    let (mut accepted_lines, _) = deliver_detached_session_protocol_lines(
+        &mut owner,
+        &handle,
+        &mut state,
+        &session_transport,
+    );
+    accepted_lines.extend(session_transport.drain_outbound_protocol_lines());
     assert!(
         accepted_lines
             .iter()
@@ -1145,6 +1210,7 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
     let (room_lines_tx, room_lines_rx) = mpsc::channel();
+    let (room_echo_observed_tx, room_echo_observed_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -1189,6 +1255,9 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         stream
             .flush()
             .expect("test session transport server should flush the inbound room line");
+        room_echo_observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test client should observe the room echo before server teardown");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -1250,6 +1319,9 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         "room change over TCP transport",
     );
     assert_eq!(state.main_window.room_name, "room2");
+    room_echo_observed_tx
+        .send(())
+        .expect("test client should release the room-change server");
 
     server_thread
         .join()

@@ -1,6 +1,7 @@
 use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::testing::support::browser_runtime_user;
+use crate::app::widget_tree::GuiStatusTone;
 use crate::app::{
     GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiMediaIndexRuntimeSnapshot, GuiMediaMatchRemediationRuntimeSnapshot,
@@ -11,7 +12,9 @@ use crate::app::{
     GuiSeekPreparationState, GuiShellAction, GuiShellModal, GuiShellView, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode,
-    MainWindowRuntimeSnapshot, SettingId, SorotteGuiShellAppState,
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
+    MainWindowParticipantStatusReport, MainWindowRuntimeSnapshot, SettingId,
+    SorotteGuiShellAppState,
 };
 
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;

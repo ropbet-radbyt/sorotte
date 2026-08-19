@@ -122,12 +122,12 @@ fn run_connected_session_inbound_post_apply_legacy_compatible<P>(
     pending_chat_message_on_connect: &mut Option<String>,
     now_seconds: f64,
     plan: ConnectedSessionInboundPostApplyPlan,
-) -> anyhow::Result<()>
+) -> Option<ContainedConnectedSessionPlayerFailure>
 where
     P: sorotte_player_api::PlayerAdapter,
 {
     for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
-        match action {
+        let (operation, outcome) = match action {
             ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
                 if let Some(pending) = *pending_ready_at_start_on_server_hello {
                     match ready_at_start_disposition(runtime.session(), pending) {
@@ -137,41 +137,87 @@ where
                         }
                         ReadyAtStartDisposition::Apply(ready_at_start) => {
                             *pending_ready_at_start_on_server_hello = None;
-                            let _ = runtime.run_initial_readiness_intent(ready_at_start)?;
+                            if let Err(error) = runtime.run_initial_readiness_intent(ready_at_start)
+                            {
+                                return Some(contain_connected_session_player_failure(
+                                    runtime,
+                                    now_seconds,
+                                    "apply initial readiness intent",
+                                    error.into(),
+                                ));
+                            }
                         }
                     }
                 }
+                ("apply initial readiness intent", Ok(()))
             }
             ConnectedSessionInboundPostApplyAction::ConsumePendingChatMessageOnConnect => {
-                if let Some(message) = pending_chat_message_on_connect.take() {
-                    let _ = runtime.run_send_chat_message(message)?;
+                if let Some(message) = pending_chat_message_on_connect.take()
+                    && let Err(error) = runtime.run_send_chat_message(message)
+                {
+                    return Some(contain_connected_session_player_failure(
+                        runtime,
+                        now_seconds,
+                        "send initial chat message",
+                        error.into(),
+                    ));
                 }
+                ("send initial chat message", Ok(()))
             }
-            ConnectedSessionInboundPostApplyAction::RunReconnectTransition => {
-                runtime.run_reconnect_transition_if_needed()?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunControllerReidentify => {
-                runtime.run_controller_reidentify_if_needed()?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunControllerAuthNotifications => {
-                runtime.run_controller_auth_notifications_if_needed_at(now_seconds)?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunChatNotifications => {
-                runtime.run_chat_notifications_if_needed()?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunUserChangeNotifications => {
-                runtime.run_user_change_notifications_if_needed()?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunReconnectStateRestore => {
-                runtime.run_reconnect_state_restore_if_needed()?;
-            }
-            ConnectedSessionInboundPostApplyAction::RunReconnectPlaylistRestore => {
-                runtime.run_reconnect_playlist_restore_if_needed()?;
-            }
+            ConnectedSessionInboundPostApplyAction::RunReconnectTransition => (
+                "apply reconnect transition",
+                runtime
+                    .run_reconnect_transition_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunControllerReidentify => (
+                "reidentify room controller",
+                runtime
+                    .run_controller_reidentify_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunControllerAuthNotifications => (
+                "publish controller authentication notification",
+                runtime
+                    .run_controller_auth_notifications_if_needed_at(now_seconds)
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunChatNotifications => (
+                "publish chat notification",
+                runtime
+                    .run_chat_notifications_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunUserChangeNotifications => (
+                "publish user-change notification",
+                runtime
+                    .run_user_change_notifications_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunReconnectStateRestore => (
+                "restore player state after reconnect",
+                runtime
+                    .run_reconnect_state_restore_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionInboundPostApplyAction::RunReconnectPlaylistRestore => (
+                "restore player playlist after reconnect",
+                runtime
+                    .run_reconnect_playlist_restore_if_needed()
+                    .map_err(anyhow::Error::from),
+            ),
+        };
+        if let Err(error) = outcome {
+            return Some(contain_connected_session_player_failure(
+                runtime,
+                now_seconds,
+                operation,
+                error,
+            ));
         }
     }
 
-    Ok(())
+    None
 }
 
 fn apply_connected_session_inbound_message_legacy_compatible<P>(
@@ -239,6 +285,120 @@ async fn apply_connected_session_protocol_plan_legacy_compatible(
     Ok(())
 }
 
+fn synchronize_connected_session_player_availability<P>(
+    runtime: &mut ClientApplication<P>,
+    now_seconds: f64,
+) -> Result<bool, sorotte_player_api::PlayerError>
+where
+    P: sorotte_player_api::PlayerAdapter,
+{
+    runtime.synchronize_player_availability(now_seconds)
+}
+
+pub(super) struct ContainedConnectedSessionPlayerFailure {
+    operation: &'static str,
+    error: anyhow::Error,
+    status_publish_error: Option<sorotte_player_api::PlayerError>,
+}
+
+pub(super) fn contain_connected_session_player_failure<P>(
+    runtime: &mut ClientApplication<P>,
+    now_seconds: f64,
+    operation: &'static str,
+    error: anyhow::Error,
+) -> ContainedConnectedSessionPlayerFailure
+where
+    P: sorotte_player_api::PlayerAdapter,
+{
+    let transport_disconnected = runtime.player().transport_is_connected() == Some(false);
+    let reported_not_connected = error
+        .downcast_ref::<sorotte_player_api::PlayerError>()
+        .is_some_and(|error| matches!(error, sorotte_player_api::PlayerError::NotConnected));
+    let availability = if transport_disconnected || reported_not_connected {
+        sorotte_client_core::ExternalPlayerAvailability::Disconnected
+    } else {
+        sorotte_client_core::ExternalPlayerAvailability::Failed
+    };
+    let status_publish_error = runtime
+        .record_contained_external_player_failure(availability, now_seconds)
+        .err();
+    ContainedConnectedSessionPlayerFailure {
+        operation,
+        error,
+        status_publish_error,
+    }
+}
+
+pub(super) fn run_contained_planned_local_runtime_action(
+    runtime: &mut ClientApplication<MpvAdapter>,
+    user_offset_seconds: &mut f64,
+    now_seconds: f64,
+    action: PlannedLocalRuntimeAction,
+) -> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)> {
+    let player_bound = planned_local_runtime_action_is_player_bound(&action);
+    let result = run_planned_local_runtime_action_legacy_compatible(
+        runtime,
+        user_offset_seconds,
+        now_seconds,
+        action,
+    );
+    contain_planned_local_runtime_action_result(runtime, now_seconds, player_bound, result)
+}
+
+fn planned_local_runtime_action_is_player_bound(action: &PlannedLocalRuntimeAction) -> bool {
+    matches!(
+        action,
+        PlannedLocalRuntimeAction::UndoSeek
+            | PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation
+            | PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation
+            | PlannedLocalRuntimeAction::CancelSeekPreparation
+            | PlannedLocalRuntimeAction::SeekToPosition(_)
+            | PlannedLocalRuntimeAction::SeekByOffset(_)
+            | PlannedLocalRuntimeAction::Play
+            | PlannedLocalRuntimeAction::Pause
+            | PlannedLocalRuntimeAction::TogglePause
+    )
+}
+
+fn contain_planned_local_runtime_action_result<P>(
+    runtime: &mut ClientApplication<P>,
+    now_seconds: f64,
+    player_bound: bool,
+    result: anyhow::Result<bool>,
+) -> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)>
+where
+    P: sorotte_player_api::PlayerAdapter,
+{
+    match result {
+        Ok(emitted) => Ok((emitted, None)),
+        Err(error) if player_bound => Ok((
+            false,
+            Some(contain_connected_session_player_failure(
+                runtime,
+                now_seconds,
+                "apply local player command",
+                error,
+            )),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn report_contained_connected_session_player_failure(
+    failure: &ContainedConnectedSessionPlayerFailure,
+) {
+    let operation = failure.operation;
+    let error = &failure.error;
+    eprintln!(
+        "warning: external player step '{operation}' failed while the Sorotte session remains connected: {error}"
+    );
+    if let Some(error) = failure.status_publish_error.as_ref() {
+        eprintln!(
+            "warning: could not immediately publish the external-player failure status: {error}"
+        );
+    }
+}
+
 fn run_connected_session_branch_runtime_steps_legacy_compatible(
     runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
@@ -247,24 +407,42 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     dont_slow_down_with_me: bool,
     outbound_state_sync_enabled: bool,
     plan: ConnectedSessionRuntimeStepPlan,
-) -> anyhow::Result<()> {
+) -> Option<ContainedConnectedSessionPlayerFailure> {
+    // Reconnection/lease maintenance can change the attachment state and
+    // produce the first sample for a replacement player. Observe that
+    // transition before opening the lifecycle fence for telemetry.
+    runtime.with_player_io(|player| player.maintain_runtime_integrations());
+    if let Err(error) = synchronize_connected_session_player_availability(runtime, now_seconds) {
+        return Some(contain_connected_session_player_failure(
+            runtime,
+            now_seconds,
+            "synchronize player availability",
+            error.into(),
+        ));
+    }
     let actions =
         connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
 
     for action in actions {
-        match action {
-            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
-                runtime.run_room_pause_sync_if_needed_at(now_seconds)?;
-            }
-            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => {
-                runtime.run_readiness_unpause_attempt(
-                    now_seconds,
-                    inputs.readiness_supported,
-                    inputs.local_can_control,
-                    inputs.is_playing_music,
-                )?;
-            }
+        let (operation, outcome) = match action {
+            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => (
+                "synchronize room pause state",
+                runtime
+                    .run_room_pause_sync_if_needed_at(now_seconds)
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => (
+                "apply readiness unpause",
+                runtime
+                    .run_readiness_unpause_attempt(
+                        now_seconds,
+                        inputs.readiness_supported,
+                        inputs.local_can_control,
+                        inputs.is_playing_music,
+                    )
+                    .map_err(anyhow::Error::from),
+            ),
             ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck => {
                 runtime.update_autoplay_check(
                     inputs.readiness_supported,
@@ -272,45 +450,70 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                     inputs.is_playing_music,
                     inputs.recently_advanced,
                 );
+                ("update autoplay", Ok(()))
             }
-            ConnectedSessionRuntimeStepAction::RunTickAutoplay => {
-                runtime.tick_autoplay(
-                    inputs.readiness_supported,
-                    inputs.local_can_control,
-                    inputs.is_playing_music,
-                    inputs.recently_advanced,
-                )?;
-            }
-            ConnectedSessionRuntimeStepAction::RunDesyncCorrection => {
-                runtime.run_desync_correction_if_needed(
-                    now_seconds,
-                    inputs.local_can_control,
-                    dont_slow_down_with_me,
-                    true,
-                )?;
-            }
-            ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation => {
-                runtime.run_reconnect_state_restore_validation_if_needed_at(now_seconds)?;
-            }
-            ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
-                let _ = runtime
-                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
-                        StatePayload::new(),
-                        dont_slow_down_with_me,
+            ConnectedSessionRuntimeStepAction::RunTickAutoplay => (
+                "advance autoplay",
+                runtime
+                    .tick_autoplay(
+                        inputs.readiness_supported,
+                        inputs.local_can_control,
+                        inputs.is_playing_music,
+                        inputs.recently_advanced,
+                    )
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionRuntimeStepAction::RunDesyncCorrection => (
+                "apply desync correction",
+                runtime
+                    .run_desync_correction_if_needed(
                         now_seconds,
-                    );
+                        inputs.local_can_control,
+                        dont_slow_down_with_me,
+                        true,
+                    )
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation => (
+                "validate player state after reconnect",
+                runtime
+                    .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
+                if outbound_state_sync_enabled {
+                    let _ = runtime
+                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+                            StatePayload::new(),
+                            dont_slow_down_with_me,
+                            now_seconds,
+                        );
+                    ("publish state heartbeat", Ok(()))
+                } else {
+                    let _ = runtime.run_participant_status_heartbeat(now_seconds);
+                    ("publish participant status heartbeat", Ok(()))
+                }
             }
-            ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => {
+            ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => (
+                "publish local file update",
                 publish_pending_local_file_updates(
                     runtime,
                     config,
                     network_options_health_reporter,
-                )?;
-            }
+                ),
+            ),
+        };
+        if let Err(error) = outcome {
+            return Some(contain_connected_session_player_failure(
+                runtime,
+                now_seconds,
+                operation,
+                error,
+            ));
         }
     }
 
-    Ok(())
+    None
 }
 
 async fn run_connected_session_branch_plan_legacy_compatible<F, G>(
@@ -319,6 +522,7 @@ async fn run_connected_session_branch_plan_legacy_compatible<F, G>(
     dont_slow_down_with_me: bool,
     outbound_state_sync_enabled: bool,
     plan: ConnectedSessionBranchPlan,
+    prior_player_failure: Option<ContainedConnectedSessionPlayerFailure>,
     context: ConnectedSessionBranchExecutionContext<'_, F, G>,
 ) -> anyhow::Result<()>
 where
@@ -347,15 +551,17 @@ where
         )
         .await?;
     }
-    run_connected_session_branch_runtime_steps_legacy_compatible(
-        runtime,
-        config,
-        network_options_health_reporter,
-        now_seconds,
-        dont_slow_down_with_me,
-        outbound_state_sync_enabled,
-        plan.runtime_steps,
-    )?;
+    let player_failure = prior_player_failure.or_else(|| {
+        run_connected_session_branch_runtime_steps_legacy_compatible(
+            runtime,
+            config,
+            network_options_health_reporter,
+            now_seconds,
+            dont_slow_down_with_me,
+            outbound_state_sync_enabled,
+            plan.runtime_steps,
+        )
+    });
     if !plan.run_protocol_before_runtime_steps {
         apply_connected_session_protocol_plan_legacy_compatible(
             runtime,
@@ -364,6 +570,14 @@ where
             plan.protocol,
         )
         .await?;
+    }
+    if player_failure.is_some() {
+        // A player fault is not a Sorotte transport fault. Always give the
+        // freshly queued advisory status and its steady heartbeat a write
+        // opportunity even on plans
+        // whose ordinary protocol flush happened before runtime work.
+        let _ = runtime.run_participant_status_heartbeat(now_seconds);
+        flush_runtime_protocol_lines(runtime, writer).await?;
     }
     flush_connected_session_branch_outputs_legacy_compatible(
         runtime,
@@ -378,6 +592,10 @@ where
         notification_sink,
         file_difference_sink,
     )?;
+
+    if let Some(failure) = player_failure.as_ref() {
+        report_contained_connected_session_player_failure(failure);
+    }
 
     Ok(())
 }
@@ -452,21 +670,26 @@ where
             (_, error) => trailing_decode_error = error,
         }
     }
-    if let Some(inbound_post_apply) = event_execution_plan.event.inbound_post_apply {
-        run_connected_session_inbound_post_apply_legacy_compatible(
-            runtime,
-            pending_ready_at_start_on_server_hello,
-            pending_chat_message_on_connect,
-            now_seconds,
-            inbound_post_apply,
-        )?;
-    }
+    let player_failure =
+        event_execution_plan
+            .event
+            .inbound_post_apply
+            .and_then(|inbound_post_apply| {
+                run_connected_session_inbound_post_apply_legacy_compatible(
+                    runtime,
+                    pending_ready_at_start_on_server_hello,
+                    pending_chat_message_on_connect,
+                    now_seconds,
+                    inbound_post_apply,
+                )
+            });
     run_connected_session_branch_plan_legacy_compatible(
         runtime,
         now_seconds,
         dont_slow_down_with_me,
         *outbound_state_sync_enabled,
         event_execution_plan.event.branch,
+        player_failure,
         branch,
     )
     .await?;
@@ -482,18 +705,473 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+
+    use tokio::io::AsyncBufReadExt;
 
     use sorotte_client_core::{
-        ClientSession, LogicalMediaId, MediaTransportKind, PlaybackBarrierStartConfig,
+        ClientSession, ExternalPlayerAvailability, LogicalMediaId, MediaTransportKind,
+        PlaybackBarrierStartConfig,
     };
-    use sorotte_player_api::DisconnectedPlayer;
+    use sorotte_player_api::{
+        DisconnectedPlayer, PlayerAdapter, PlayerMediaGeneration, PlayerObservationTimestamp,
+        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    };
     use sorotte_protocol::{
-        DirectReadinessSurface, ParticipantReadinessUpdate, PlaybackBarrierPolicy,
-        PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension, ReadinessMutationSource,
-        ReadinessSetExtension, RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase,
-        SetPayload, StartParticipationRole, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
+        DirectReadinessSurface, ParticipantPlayerConnection, ParticipantReadinessUpdate,
+        ParticipantStatusReport, PlaybackBarrierPolicy, PlaybackBarrierRequestResultPayload,
+        PlaybackBarrierSetExtension, ReadinessMutationSource, ReadinessSetExtension,
+        RoomPauseOwner, RoomReadinessSnapshot, RoomStartGatePhase, SetPayload,
+        StartParticipationRole, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
         UserReadinessIntent,
     };
+
+    struct LifecyclePlayer {
+        connected: Arc<AtomicBool>,
+    }
+
+    impl PlayerAdapter for LifecyclePlayer {
+        fn name(&self) -> &'static str {
+            "cli-lifecycle-test"
+        }
+
+        fn transport_is_connected(&self) -> Option<bool> {
+            Some(self.connected.load(Ordering::SeqCst))
+        }
+    }
+
+    fn take_participant_status_reports<P>(
+        application: &mut ClientApplication<P>,
+    ) -> Vec<ParticipantStatusReport>
+    where
+        P: PlayerAdapter,
+    {
+        let mut reports = Vec::new();
+        while let Some(pending) = application
+            .pending_protocol_line()
+            .expect("participant status should encode")
+        {
+            let message = application
+                .acknowledge_protocol_line(pending.lease())
+                .expect("acknowledging a pending line should return its message");
+            if let ProtocolMessage::State(state) = message
+                && let Some(report) = state
+                    .state
+                    .participant_status_v1()
+                    .expect("participant-status extension should decode")
+                    .and_then(|extension| extension.report)
+            {
+                reports.push(report);
+            }
+        }
+        reports
+    }
+
+    #[test]
+    fn local_player_command_failure_is_contained_without_leaving_the_room() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("room playstate should make the pause action player-bound");
+        let mut application = ClientApplication::new(session, MpvAdapter::default());
+        let _ = take_participant_status_reports(&mut application);
+        assert!(planned_local_runtime_action_is_player_bound(
+            &PlannedLocalRuntimeAction::Pause
+        ));
+        assert!(!planned_local_runtime_action_is_player_bound(
+            &PlannedLocalRuntimeAction::SendChat("still connected".to_owned())
+        ));
+        let mut user_offset_seconds = 0.0;
+        let (emitted, failure) = run_contained_planned_local_runtime_action(
+            &mut application,
+            &mut user_offset_seconds,
+            2.0,
+            PlannedLocalRuntimeAction::Pause,
+        )
+        .expect("a player-bound local failure should be contained");
+
+        assert!(!emitted);
+        let failure = failure.expect("the disconnected adapter should produce a contained fault");
+        assert_eq!(failure.operation, "apply local player command");
+        assert!(failure.status_publish_error.is_none());
+        assert!(application.session().is_active());
+        assert_eq!(application.session().username(), Some("alice"));
+        assert_eq!(application.session().room(), Some("room"));
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Disconnected
+        );
+    }
+
+    #[test]
+    fn non_player_local_runtime_failures_remain_fatal() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), MpvAdapter::default());
+        let result = contain_planned_local_runtime_action_result(
+            &mut application,
+            2.0,
+            false,
+            Err(anyhow::anyhow!("non-player test failure")),
+        );
+        let Err(error) = result else {
+            panic!("non-player failures must not be contained as player lifecycle faults");
+        };
+
+        assert_eq!(error.to_string(), "non-player test failure");
+        assert!(take_participant_status_reports(&mut application).is_empty());
+    }
+
+    #[test]
+    fn cli_connected_session_publishes_player_disconnect_and_reattach_lifecycle() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(
+            session,
+            LifecyclePlayer {
+                connected: Arc::clone(&connected),
+            },
+        );
+
+        assert!(
+            take_participant_status_reports(&mut application).is_empty(),
+            "construction must wait for the owner clock before publishing lifecycle state"
+        );
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 0.0)
+                .expect("the first owner observation should publish")
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Unavailable
+        );
+
+        connected.store(true, Ordering::SeqCst);
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 1.0)
+                .expect("attach transition should publish")
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 2);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+        assert!(
+            !synchronize_connected_session_player_availability(&mut application, 1.1)
+                .expect("unchanged attachment should be a no-op")
+        );
+
+        application.prepare_playback_media(
+            LogicalMediaId::new("cli-player-lifecycle").expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            1.1,
+        );
+        application.observe_external_player_transport(
+            PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.2)),
+            )
+            .with_phase(PlayerTransportPhase::Playing)
+            .with_position_seconds(12.5)
+            .with_logical_pause(false),
+            1.2,
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 3);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+
+        connected.store(false, Ordering::SeqCst);
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 2.0)
+                .expect("disconnect transition should publish")
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 4);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Disconnected
+        );
+        assert!(application.session().is_active());
+        assert_eq!(application.session().username(), Some("alice"));
+        assert_eq!(application.session().room(), Some("room"));
+
+        connected.store(true, Ordering::SeqCst);
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 3.0)
+                .expect("reattach transition should publish")
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].report_sequence, 5);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+    }
+
+    #[test]
+    fn contained_player_failure_keeps_membership_and_queues_disconnect_status() {
+        let connected = Arc::new(AtomicBool::new(true));
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(
+            session,
+            LifecyclePlayer {
+                connected: Arc::clone(&connected),
+            },
+        );
+        let _ = take_participant_status_reports(&mut application);
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 1.0)
+                .expect("initial attachment should publish")
+        );
+        let _ = take_participant_status_reports(&mut application);
+
+        let failure = contain_connected_session_player_failure(
+            &mut application,
+            2.0,
+            "test player operation",
+            anyhow::Error::new(sorotte_player_api::PlayerError::NotConnected),
+        );
+
+        assert_eq!(failure.operation, "test player operation");
+        assert!(failure.status_publish_error.is_none());
+        assert!(application.session().is_active());
+        assert_eq!(application.session().username(), Some("alice"));
+        assert_eq!(application.session().room(), Some("room"));
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Disconnected
+        );
+    }
+
+    #[test]
+    fn contained_player_failure_reopens_telemetry_for_an_attached_player() {
+        let connected = Arc::new(AtomicBool::new(true));
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        let mut application = ClientApplication::new(
+            session,
+            LifecyclePlayer {
+                connected: Arc::clone(&connected),
+            },
+        );
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 1.0)
+                .expect("initial attachment should publish")
+        );
+        let _ = take_participant_status_reports(&mut application);
+
+        let failure = contain_connected_session_player_failure(
+            &mut application,
+            2.0,
+            "test transient player operation",
+            anyhow::Error::new(sorotte_player_api::PlayerError::OperationFailed(
+                "transient test failure".to_owned(),
+            )),
+        );
+        assert!(failure.status_publish_error.is_none());
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Failed
+        );
+        assert!(application.session().is_active());
+
+        assert!(
+            synchronize_connected_session_player_availability(&mut application, 3.0)
+                .expect("the still-attached player should begin a fresh lifecycle")
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Starting
+        );
+
+        application.prepare_playback_media(
+            LogicalMediaId::new("cli-contained-failure-recovery")
+                .expect("logical ID should be valid"),
+            MediaTransportKind::NetworkVod,
+            3.0,
+        );
+        application.observe_external_player_transport(
+            PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(3.1)),
+            )
+            .with_phase(PlayerTransportPhase::Playing)
+            .with_position_seconds(12.5)
+            .with_logical_pause(false),
+            3.1,
+        );
+        let reports = take_participant_status_reports(&mut application);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].player_connection,
+            ParticipantPlayerConnection::Connected
+        );
+        assert!(application.session().is_active());
+    }
+
+    #[tokio::test]
+    async fn failed_player_step_is_flushed_as_status_without_failing_the_branch() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":true}}}"#,
+            )
+            .expect("participant-status Hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("room playstate should apply");
+        let mut application = ClientApplication::new(session, MpvAdapter::default());
+        let _ = take_participant_status_reports(&mut application);
+        assert!(
+            application
+                .record_contained_external_player_failure(
+                    ExternalPlayerAvailability::Disconnected,
+                    0.0,
+                )
+                .expect("the baseline disconnected status should publish")
+        );
+        let baseline = take_participant_status_reports(&mut application);
+        assert_eq!(baseline.len(), 1);
+        assert_eq!(baseline[0].report_sequence, 1);
+
+        let (transport, peer) = tokio::io::duplex(16 * 1024);
+        let transport: Box<dyn ConnectedSessionAsyncStream> = Box::new(transport);
+        let (_transport_reader, mut writer) = tokio::io::split(transport);
+        let mut peer = BufReader::new(peer);
+        let config = crate::tests::test_client_loop_config();
+        let diagnostics_config = client_loop_diagnostics_config(None);
+        let mut startup_playlist = None;
+        let mut reconnect_diagnostics = ReconnectCorrectionDiagnosticsState::default();
+        let mut seek_notifications = SeekPreparationNotificationState::default();
+        let mut readiness_notifications = ReadinessNotificationState::default();
+        let mut file_difference_notifications = FileDifferenceNotificationState::default();
+        let mut network_options = CliNetworkOptionsHealthReporter::default();
+        let mut notification_sink = |_notification: &AutoplayCountdownNotification| Ok(());
+        let mut file_difference_sink = |_line: &str| Ok(());
+
+        run_connected_session_branch_plan_legacy_compatible(
+            &mut application,
+            2.0,
+            false,
+            false,
+            ConnectedSessionBranchPlan {
+                run_protocol_before_runtime_steps: true,
+                runtime_steps: ConnectedSessionRuntimeStepPlan {
+                    run_room_pause_sync: true,
+                    run_readiness_unpause_attempt: false,
+                    run_update_autoplay_check: false,
+                    run_tick_autoplay: false,
+                    run_desync_correction: false,
+                    run_reconnect_state_restore_validation: false,
+                    run_state_sync_heartbeat: false,
+                    publish_pending_local_file_updates: false,
+                },
+                protocol: ConnectedSessionProtocolPlan {
+                    flush_runtime_protocol_lines: false,
+                    startup_playlist_disposition:
+                        ConnectedSessionStartupPlaylistDisposition::LeavePending,
+                },
+                drain: ConnectedSessionDrainPlan {
+                    flush_player_playback_diagnostics: false,
+                    reconnect_correction_diagnostics_format: None,
+                    flush_reconnect_notifications: false,
+                    flush_controller_auth_notifications: false,
+                    flush_chat_notifications: false,
+                    flush_user_change_notifications: false,
+                    flush_autoplay_notifications: false,
+                    flush_file_difference_notifications: false,
+                },
+            },
+            None,
+            ConnectedSessionBranchExecutionContext {
+                config: &config,
+                writer: &mut writer,
+                startup_playlist_file_on_connect: &mut startup_playlist,
+                diagnostics_config: &diagnostics_config,
+                reconnect_correction_diagnostics_state: &mut reconnect_diagnostics,
+                seek_preparation_notification_state: &mut seek_notifications,
+                readiness_notification_state: &mut readiness_notifications,
+                file_difference_state: &mut file_difference_notifications,
+                network_options_health_reporter: &mut network_options,
+                notification_sink: &mut notification_sink,
+                file_difference_sink: &mut file_difference_sink,
+            },
+        )
+        .await
+        .expect("a player failure must not fail the connected-session branch");
+
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_line(&mut line))
+            .await
+            .expect("terminal player status should be written promptly")
+            .expect("duplex status read should succeed");
+        let ProtocolMessage::State(state) =
+            decode_message_line(line.trim_end()).expect("status line should decode")
+        else {
+            panic!("expected participant-status State");
+        };
+        let report = state
+            .state
+            .participant_status_v1()
+            .expect("participant-status extension should decode")
+            .and_then(|extension| extension.report)
+            .expect("failed player step should publish a report");
+        assert_eq!(
+            report.player_connection,
+            ParticipantPlayerConnection::Disconnected
+        );
+        assert_eq!(
+            report.report_sequence, 2,
+            "an unchanged contained failure must still flush the due advisory heartbeat",
+        );
+        assert!(application.session().is_active());
+        assert_eq!(application.session().room(), Some("room"));
+    }
 
     fn v2_session_with_canonical_intent(
         intent: UserReadinessIntent,
@@ -691,14 +1369,17 @@ mod tests {
             run_reconnect_playlist_restore: false,
         };
 
-        run_connected_session_inbound_post_apply_legacy_compatible(
-            &mut application,
-            &mut pending_ready,
-            &mut pending_chat,
-            1.0,
-            plan,
-        )
-        .expect("post-Hello startup readiness should defer");
+        assert!(
+            run_connected_session_inbound_post_apply_legacy_compatible(
+                &mut application,
+                &mut pending_ready,
+                &mut pending_chat,
+                1.0,
+                plan,
+            )
+            .is_none(),
+            "deferring startup readiness must not manufacture a contained player failure"
+        );
         assert!(pending_ready.is_some());
         assert_eq!(application.pending_protocol_message_count(), 0);
 
@@ -710,14 +1391,17 @@ mod tests {
         application
             .apply_protocol_line(&snapshot_line, 2.0, false, false, false)
             .expect("snapshot should apply");
-        run_connected_session_inbound_post_apply_legacy_compatible(
-            &mut application,
-            &mut pending_ready,
-            &mut pending_chat,
-            2.0,
-            plan,
-        )
-        .expect("post-snapshot startup readiness should emit");
+        assert!(
+            run_connected_session_inbound_post_apply_legacy_compatible(
+                &mut application,
+                &mut pending_ready,
+                &mut pending_chat,
+                2.0,
+                plan,
+            )
+            .is_none(),
+            "emitting startup readiness must not manufacture a contained player failure"
+        );
         assert!(pending_ready.is_none());
 
         let pending_line = application
@@ -808,24 +1492,27 @@ mod tests {
         .expect("CLI inbound apply should keep retryLater nonfatal");
         let mut pending_ready = None;
         let mut pending_chat = None;
-        run_connected_session_inbound_post_apply_legacy_compatible(
-            &mut application,
-            &mut pending_ready,
-            &mut pending_chat,
-            10.0,
-            ConnectedSessionInboundPostApplyPlan {
-                consume_pending_ready_at_start: false,
-                consume_pending_chat_message_on_connect: false,
-                run_reconnect_transition: false,
-                run_controller_reidentify: false,
-                run_controller_auth_notifications: true,
-                run_chat_notifications: false,
-                run_user_change_notifications: false,
-                run_reconnect_state_restore: false,
-                run_reconnect_playlist_restore: false,
-            },
-        )
-        .expect("CLI post-apply should use the same monotonic timestamp");
+        assert!(
+            run_connected_session_inbound_post_apply_legacy_compatible(
+                &mut application,
+                &mut pending_ready,
+                &mut pending_chat,
+                10.0,
+                ConnectedSessionInboundPostApplyPlan {
+                    consume_pending_ready_at_start: false,
+                    consume_pending_chat_message_on_connect: false,
+                    run_reconnect_transition: false,
+                    run_controller_reidentify: false,
+                    run_controller_auth_notifications: true,
+                    run_chat_notifications: false,
+                    run_user_change_notifications: false,
+                    run_reconnect_state_restore: false,
+                    run_reconnect_playlist_restore: false,
+                },
+            )
+            .is_none(),
+            "CLI post-apply should use the same monotonic timestamp without a contained failure"
+        );
 
         assert_eq!(application.pending_protocol_message_count(), 0);
         assert_eq!(

@@ -25,7 +25,7 @@ Use the configuration window to set:
 - playback, readiness, playlist, chat, OSD, language, and trusted-domain settings
 - storage location for `sorotte.ini` and colocated GUI data
 
-After connecting, the main window supports room/user/file browsing, chat, readiness, shared playlists, media open/import, controlled rooms, public-server browsing, media search, drag/drop ingest, and runtime-backed connect/disconnect flows.
+After connecting, the main window supports room/user/file browsing, chat, readiness, shared playlists, media open/import, controlled rooms, public-server browsing, media search, drag/drop ingest, and runtime-backed connect/disconnect flows. In capable rooms, the room browser also separates authoritative room intent from each participant's advisory player phase, timestamp, strictly correlated server-derived offset, buffer headroom, and report freshness; legacy, unavailable, disconnected, waiting-for-first-report, delayed, and stale states remain visibly distinct.
 
 Readiness-capable Sorotte rooms keep the user's Ready/Not Ready intent separate from loading, buffering, seeking, and recovery. Player Play/Pause gestures count as deliberate readiness changes, while automatic player corrections do not. See [Readiness and automatic start](READINESS.md) for the full behavior and CLI commands.
 

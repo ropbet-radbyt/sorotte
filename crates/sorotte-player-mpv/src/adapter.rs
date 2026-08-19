@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod command_ack_tests;
 mod player_adapter;
+mod reconnection;
 mod state;
 #[cfg(feature = "test-support")]
 mod verification;
@@ -60,6 +61,7 @@ use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const IPC_EVENT_FENCE_ACTIVE_INTERVAL: Duration = Duration::from_millis(100);
 const IPC_EVENT_FENCE_IDLE_INTERVAL: Duration = Duration::from_millis(500);
+const IPC_RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_PENDING_TRANSPORT_TELEMETRY_UPDATES: usize = 64;
 const MAX_PENDING_COMMAND_PROGRESS_UPDATES: usize = 128;
 const MAX_PENDING_ORDERED_PLAYER_EVENTS: usize = 256;
@@ -831,6 +833,7 @@ pub struct MpvAdapter {
     sorotte_bridge_health: SorotteBridgeHealth,
     pending_sorotte_bridge_health_transitions: VecDeque<SorotteBridgeHealth>,
     ipc_endpoint: Option<PathBuf>,
+    ipc_reconnect_not_before: Option<Instant>,
     simulation_mode: bool,
     ipc_client: Option<MpvJsonIpcClient>,
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
@@ -934,6 +937,7 @@ impl MpvAdapter {
         self.simulation_mode = false;
         self.ipc_client = Some(client);
         self.ipc_endpoint = Some(endpoint);
+        self.ipc_reconnect_not_before = None;
         self.reset_legacy_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
@@ -1707,6 +1711,7 @@ impl MpvAdapter {
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
         self.drain_ipc_events_if_attached();
+        self.maintain_json_ipc_reconnection_using(Instant::now(), MpvJsonIpcClient::connect);
         // Every delivery mode shares this pump. Let already-buffered observations complete
         // commands before applying their semantic deadline, then expire anything still pending.
         self.expire_tracked_commands();
@@ -9536,6 +9541,118 @@ mod version_policy_tests {
             assert!(adapter.ipc_client.is_some());
             assert_eq!(adapter.ipc_endpoint, Some(PathBuf::from("test-mpv-ipc")));
         }
+    }
+
+    #[test]
+    fn explicit_json_ipc_retry_retains_endpoint_backs_off_and_reattaches() {
+        let endpoint = PathBuf::from("late-mpv-ipc");
+        let mut adapter = MpvAdapter::disconnected_with_json_ipc_retry(&endpoint);
+        let first_attempt_at = adapter
+            .ipc_reconnect_not_before
+            .expect("the constructor should make the first retry immediately due");
+        let first_attempt_completed_at = first_attempt_at + Duration::from_secs(2);
+        let mut failed_attempts = 0;
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            first_attempt_at,
+            |observed_endpoint| {
+                failed_attempts += 1;
+                assert_eq!(observed_endpoint, endpoint);
+                Err("endpoint absent".to_owned())
+            },
+            || first_attempt_completed_at,
+        );
+        assert_eq!(failed_attempts, 1);
+        assert_eq!(adapter.ipc_endpoint.as_deref(), Some(endpoint.as_path()));
+        assert!(adapter.ipc_client.is_none());
+        let retry_at = first_attempt_completed_at + IPC_RECONNECT_INTERVAL;
+        assert_eq!(adapter.ipc_reconnect_not_before, Some(retry_at));
+        assert!(
+            retry_at > first_attempt_at + IPC_RECONNECT_INTERVAL,
+            "a slow failed connect must not consume its retry backoff while blocked",
+        );
+
+        let mut premature_attempts = 0;
+        adapter.maintain_json_ipc_reconnection_using(retry_at - Duration::from_millis(1), |_| {
+            premature_attempts += 1;
+            Err("retry should still be backed off".to_owned())
+        });
+        assert_eq!(premature_attempts, 0);
+
+        let response = format!(
+            r#"{{"request_id":1,"error":"success","data":"{}"}}"#,
+            crate::MINIMUM_SUPPORTED_MPV_VERSION
+        );
+        let mut successful_attempts = 0;
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            retry_at,
+            |observed_endpoint| {
+                successful_attempts += 1;
+                assert_eq!(observed_endpoint, endpoint);
+                Ok(MpvJsonIpcClient::new(Box::new(
+                    VersionResponseTransport::new(&response),
+                )))
+            },
+            || retry_at,
+        );
+
+        assert_eq!(successful_attempts, 1);
+        assert!(adapter.ipc_client.is_some());
+        assert_eq!(adapter.ipc_endpoint.as_deref(), Some(endpoint.as_path()));
+        assert_eq!(adapter.ipc_reconnect_not_before, None);
+    }
+
+    #[test]
+    fn explicit_json_ipc_retry_is_disabled_for_simulation_and_live_connections() {
+        let endpoint = PathBuf::from("late-mpv-ipc");
+        let now = Instant::now();
+        let mut simulated = MpvAdapter::disconnected_with_json_ipc_retry(&endpoint);
+        simulated.simulation_mode = true;
+        simulated.ipc_reconnect_not_before = None;
+        let mut simulated_attempts = 0;
+        simulated.maintain_json_ipc_reconnection_using(now, |_| {
+            simulated_attempts += 1;
+            Err("simulation must not connect".to_owned())
+        });
+        assert_eq!(simulated_attempts, 0);
+        assert_eq!(simulated.ipc_reconnect_not_before, None);
+
+        let (mut connected, result) = initialize_with_version_response(
+            r#"{"request_id":1,"error":"success","data":"0.41.0"}"#,
+        );
+        result.expect("the supported attachment should connect");
+        connected.ipc_reconnect_not_before = Some(now);
+        let mut connected_attempts = 0;
+        connected.maintain_json_ipc_reconnection_using(now, |_| {
+            connected_attempts += 1;
+            Err("an attached adapter must not reconnect".to_owned())
+        });
+        assert_eq!(connected_attempts, 0);
+        assert_eq!(connected.ipc_reconnect_not_before, None);
+    }
+
+    #[test]
+    fn explicit_json_ipc_retry_backs_off_after_attachment_initialization_failure() {
+        let endpoint = PathBuf::from("late-unsupported-mpv-ipc");
+        let mut adapter = MpvAdapter::disconnected_with_json_ipc_retry(&endpoint);
+        let attempt_at = adapter
+            .ipc_reconnect_not_before
+            .expect("the constructor should make the first retry immediately due");
+        let completed_at = attempt_at + Duration::from_secs(2);
+        let unsupported = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new(
+            r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
+        )));
+
+        adapter.maintain_json_ipc_reconnection_using_clock(
+            attempt_at,
+            |_| Ok(unsupported),
+            || completed_at,
+        );
+
+        assert!(adapter.ipc_client.is_none());
+        assert_eq!(
+            adapter.ipc_reconnect_not_before,
+            Some(completed_at + IPC_RECONNECT_INTERVAL)
+        );
     }
 
     #[test]

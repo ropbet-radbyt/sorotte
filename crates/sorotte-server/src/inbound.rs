@@ -13,6 +13,56 @@ pub enum ServerCompatibilityFallback {
     IgnoredUnexpectedMessage { command: &'static str },
 }
 
+const MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES: usize = 512;
+
+fn bounded_fallback_text(mut value: String) -> String {
+    if value.len() <= MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES {
+        return value;
+    }
+    let mut end = MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value
+}
+
+impl ServerCompatibilityFallback {
+    pub(crate) fn bounded(self) -> Self {
+        match self {
+            Self::IgnoredSetCommand { command } => Self::IgnoredSetCommand {
+                command: bounded_fallback_text(command),
+            },
+            Self::UsedLegacyFeatureDefaults { context } => Self::UsedLegacyFeatureDefaults {
+                context: bounded_fallback_text(context),
+            },
+            Self::IgnoredInvalidFileSize { context } => Self::IgnoredInvalidFileSize {
+                context: bounded_fallback_text(context),
+            },
+            Self::IgnoredInvalidMediaMatch { context, reason } => Self::IgnoredInvalidMediaMatch {
+                context: bounded_fallback_text(context),
+                reason: bounded_fallback_text(reason),
+            },
+            Self::IgnoredInvalidFeatures { context } => Self::IgnoredInvalidFeatures {
+                context: bounded_fallback_text(context),
+            },
+            Self::IgnoredInvalidPlaybackBarrier { context, reason } => {
+                Self::IgnoredInvalidPlaybackBarrier {
+                    context: bounded_fallback_text(context),
+                    reason: bounded_fallback_text(reason),
+                }
+            }
+            Self::IgnoredInvalidReadiness { context, reason } => Self::IgnoredInvalidReadiness {
+                context: bounded_fallback_text(context),
+                reason: bounded_fallback_text(reason),
+            },
+            Self::IgnoredUnexpectedMessage { command } => {
+                Self::IgnoredUnexpectedMessage { command }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ServerFileSize {
     Number(serde_json::Number),
@@ -96,6 +146,7 @@ pub struct ServerClientCapabilities {
     pub remote_readiness: bool,
     pub playback_barrier_v1: bool,
     pub readiness_v2: bool,
+    pub participant_status_v1: bool,
     pub ui_mode: Option<String>,
     pub ui_mode_advertised: bool,
     pub(crate) advertised_fields: BTreeSet<&'static str>,
@@ -116,6 +167,7 @@ impl ServerClientCapabilities {
             ("setOthersReadiness", self.remote_readiness),
             (SOROTTE_PLAYBACK_BARRIER_V1, self.playback_barrier_v1),
             (SOROTTE_READINESS_V2, self.readiness_v2),
+            (SOROTTE_PARTICIPANT_STATUS_V1, self.participant_status_v1),
         ] {
             if self.advertised_fields.contains(name) {
                 features.insert(name.to_owned(), Value::Bool(enabled));
@@ -235,6 +287,7 @@ pub(crate) struct ServerStateCommand {
     pub(crate) client_ignoring: Option<u32>,
     pub(crate) playback_barrier: Option<PlaybackBarrierStateExtension>,
     pub(crate) readiness: Option<ReadinessStateExtension>,
+    pub(crate) participant_status: Option<ParticipantStatusStateExtension>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -242,7 +295,7 @@ pub(crate) enum ServerInboundCommand {
     Hello(ServerHelloCommand),
     Set(Vec<ServerSetCommand>),
     ListRequest,
-    State(ServerStateCommand),
+    State(Box<ServerStateCommand>),
     Tls(String),
     Chat(String),
     Ignore,
@@ -288,6 +341,7 @@ fn legacy_capabilities(version: &str) -> ServerClientCapabilities {
         remote_readiness: false,
         playback_barrier_v1: false,
         readiness_v2: false,
+        participant_status_v1: false,
         ui_mode: Some(LEGACY_UI_MODE_UNKNOWN.to_owned()),
         ui_mode_advertised: true,
         advertised_fields: BTreeSet::from([
@@ -336,6 +390,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         "setOthersReadiness",
         SOROTTE_PLAYBACK_BARRIER_V1,
         SOROTTE_READINESS_V2,
+        SOROTTE_PARTICIPANT_STATUS_V1,
     ]
     .into_iter()
     .filter(|name| features.contains_key(*name))
@@ -352,6 +407,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         remote_readiness: bool_feature(&features, "setOthersReadiness"),
         playback_barrier_v1: bool_feature(&features, SOROTTE_PLAYBACK_BARRIER_V1),
         readiness_v2: bool_feature(&features, SOROTTE_READINESS_V2),
+        participant_status_v1: bool_feature(&features, SOROTTE_PARTICIPANT_STATUS_V1),
         ui_mode: features
             .get("uiMode")
             .and_then(Value::as_str)
@@ -572,8 +628,22 @@ pub(crate) fn normalize_server_protocol_message(
                     None
                 }
             };
+            let participant_status = match state.participant_status_report_v1() {
+                Ok(report) => {
+                    report.map(|report| ParticipantStatusStateExtension::new().with_report(report))
+                }
+                Err(_) => {
+                    // Reuse the existing categorical public fallback instead
+                    // of extending an exhaustive public enum. Never retain
+                    // Serde's diagnostic because it can embed attacker data.
+                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidFeatures {
+                        context: "State.sorotteParticipantStatusV1".to_owned(),
+                    });
+                    None
+                }
+            };
             let ignoring = state.ignoring_on_the_fly.unwrap_or_default();
-            ServerInboundCommand::State(ServerStateCommand {
+            ServerInboundCommand::State(Box::new(ServerStateCommand {
                 playstate: state.playstate.map(|playstate| ServerPlaystateCommand {
                     position: playstate.position,
                     paused: playstate.paused,
@@ -589,7 +659,8 @@ pub(crate) fn normalize_server_protocol_message(
                 client_ignoring: ignoring.client,
                 playback_barrier,
                 readiness,
-            })
+                participant_status,
+            }))
         }
         ProtocolMessage::Tls(message) => ServerInboundCommand::Tls(message.tls.start_tls),
         ProtocolMessage::Chat(message) => ServerInboundCommand::Chat(match message.chat {

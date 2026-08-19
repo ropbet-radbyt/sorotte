@@ -18,6 +18,7 @@ impl GuiPersistedConfigRuntimeOwner {
             session_transport_reconnect_due_at: None,
             session_transport_reconnect_failures: 0,
             session_transport_disconnect_pending_cleanup: false,
+            pending_shared_playlist_open: None,
             runtime_pump_generation: 0,
             session_default_room: None,
             pending_room_change_request: None,
@@ -290,6 +291,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_transport_telemetry_authority = Default::default();
     }
 
+    pub(in crate::app) fn clear_session_causal_player_effect_state(&mut self) {
+        self.pending_shared_playlist_open = None;
+        self.clear_session_attached_player_sync_state();
+    }
+
     pub(in crate::app) fn clear_media_match_remote_lookup_state(&mut self) {
         self.media_match_remote_lookup_rx = None;
         self.media_match_remote_lookup_trigger_key = None;
@@ -301,6 +307,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
+        self.report_external_player_availability(if attachment_ended {
+            ExternalPlayerAvailability::Disconnected
+        } else {
+            ExternalPlayerAvailability::Unavailable
+        });
         if attachment_ended {
             self.player_attachment_epoch = self.player_attachment_epoch.wrapping_add(1);
         }
@@ -310,6 +321,30 @@ impl GuiPersistedConfigRuntimeOwner {
         self.core_player_configuration_health = GuiCorePlayerConfigurationHealth::Ready;
         self.player_integration_health = GuiPlayerIntegrationHealth::Ready;
         self.clear_player_runtime_cache();
+    }
+
+    pub(in crate::app::runtime_owner) fn report_external_player_availability(
+        &mut self,
+        availability: ExternalPlayerAvailability,
+    ) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if let Err(error) =
+            session.set_external_player_availability(availability, system_time_seconds())
+        {
+            eprintln!(
+                "warning: failed to report attached-player availability to the session runtime: {error}"
+            );
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn report_current_external_player_availability(&mut self) {
+        let availability = self.player.as_ref().map_or(
+            ExternalPlayerAvailability::Unavailable,
+            GuiOwnedPlayer::external_availability,
+        );
+        self.report_external_player_availability(availability);
     }
 
     pub(in crate::app::runtime_owner) fn release_attached_sorotte_bridge_best_effort(&mut self) {
@@ -638,6 +673,11 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
+        let configured_player_attachment_expected = matches!(
+            &launch_state,
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { .. }
+                | GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+        );
         self.detach_player();
         self.player_apply_state.clear_integration_baselines();
         if let Some(session) = self.session.as_mut() {
@@ -713,6 +753,13 @@ impl GuiPersistedConfigRuntimeOwner {
         if matches!(self.player_launch_state, GuiPlayerLaunchRuntimeState::None) {
             self.player_apply_state
                 .record_core_apply(&self.player_launch_state);
+        }
+        if self.player.is_some() {
+            self.report_current_external_player_availability();
+        } else if configured_player_attachment_expected
+            && self.player_unavailability_reason.is_some()
+        {
+            self.report_external_player_availability(ExternalPlayerAvailability::Failed);
         }
     }
 

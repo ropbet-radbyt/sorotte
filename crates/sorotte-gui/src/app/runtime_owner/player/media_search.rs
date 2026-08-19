@@ -1131,6 +1131,13 @@ impl GuiPersistedConfigRuntimeOwner {
         candidate: GuiMediaResolutionCandidate,
         user_initiated: bool,
     ) -> SelectedPlaylistMediaSyncOutcome {
+        // All source providers converge here before touching the player. A
+        // shared-playlist continuation owns that side effect until its causal
+        // Set receipt arrives; explicit requests are retained by the request
+        // handler below and replayed after the fence is satisfied.
+        if self.shared_playlist_open_delivery_fence_pending() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
         let plex_operation_context =
             matches!(candidate.target(), GuiMediaResolutionTarget::PlexStream(_))
                 .then(|| self.plex_operation_context(&self.runtime_operation_settings(state)));
@@ -1301,10 +1308,24 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn shared_playlist_open_delivery_fence_pending(&self) -> bool {
+        self.pending_shared_playlist_open.is_some()
+    }
+
     pub(in crate::app::runtime_owner) fn sync_selected_shared_playlist_media_to_attached_player_impl(
         &mut self,
         state: &SorotteGuiShellAppState,
     ) -> SelectedPlaylistMediaSyncOutcome {
+        // A shared-playlist open owns the selected-media side effect until its
+        // transport receipt arrives. Background reconciliation runs on every
+        // pump, so letting it inspect either the pre-mutation projection or the
+        // optimistically projected playlist would bypass the delivery fence.
+        // The continuation takes this pending value before performing the one
+        // intended open, so this guard does not block the receipt path itself.
+        if self.shared_playlist_open_delivery_fence_pending() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+
         let Some((playlist_index, target)) = self.current_shared_playlist_index_and_target(state)
         else {
             self.refresh_stream_helper_runtime_snapshot_for_target(None);
@@ -1852,6 +1873,22 @@ impl GuiPersistedConfigRuntimeOwner {
         else {
             return false;
         };
+        if self.shared_playlist_open_delivery_fence_pending() {
+            self.publish_playlist_source_state(
+                handle,
+                projected_state,
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target: &target,
+                    provider_id,
+                    status: GuiPlaylistSourceStatus::Pending,
+                    detail: "Waiting for the shared-playlist session update to be delivered before resolving this source."
+                        .to_owned(),
+                    resolution_steps: vec![],
+                },
+            );
+            return true;
+        }
         if source_status == GuiPlaylistSourceStatus::Resolving
             && self
                 .playlist_resolution_attempt

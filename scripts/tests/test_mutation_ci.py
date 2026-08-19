@@ -185,6 +185,7 @@ class MutationEvaluationTests(unittest.TestCase):
             owner="demo-owner",
             package="demo",
             files=(self.fixture.source,),
+            mutant_filter="",
             test_target="package",
             test_filter="",
             jobs=2,
@@ -487,11 +488,16 @@ class MutationPolicyTests(unittest.TestCase):
 
     def policy_text(self, *, accepted: bool = True) -> str:
         prefix = (
-            'schema_version = 2\n'
+            'schema_version = 3\n'
             'cargo_mutants_version = "27.1.0"\n'
         )
         if not accepted:
             prefix += "accepted_unviable = []\n"
+        prefix += (
+            '[[required_report_set]]\n'
+            'id = "demo"\n'
+            'shards = ["demo"]\n'
+        )
         body = """
 
 [[shard]]
@@ -499,6 +505,7 @@ id = "demo"
 owner = "demo-owner"
 package = "demo"
 files = ["crates/demo/src/lib.rs"]
+mutant_filter = ""
 test_target = "package"
 test_filter = ""
 jobs = 2
@@ -542,9 +549,23 @@ review_by = "2099-01-01"
 
         self.assertEqual(policy.cargo_mutants_version, "27.1.0")
         self.assertEqual(policy.shard("demo").files, ("crates/demo/src/lib.rs",))
+        self.assertEqual(policy.shard("demo").mutant_filter, "")
         self.assertEqual(policy.shard("demo").test_target, "package")
         self.assertEqual(policy.shard("demo").test_filter, "")
         self.assertEqual(len(policy.accepted_for("demo")), 1)
+
+    def test_accepted_unviable_allows_implicit_unit_return_identity(self) -> None:
+        self.write_policy(
+            self.policy_text().replace(
+                'return_type = "-> bool"',
+                'return_type = ""',
+            )
+        )
+
+        accepted = self.load().accepted_for("demo")
+
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0].return_type, "")
 
     def test_unknown_policy_field_is_rejected(self) -> None:
         self.write_policy(self.policy_text() + "\nunknown = true\n")
@@ -653,9 +674,72 @@ review_by = "2099-01-01"
 
         with self.assertRaisesRegex(
             mutation_ci.MutationCiError,
-            "Rust test module namespace",
+            "Rust test selector prefix",
         ):
             self.load()
+
+    def test_mutant_filter_rejects_invalid_regular_expression(self) -> None:
+        self.write_policy(
+            self.policy_text().replace(
+                'mutant_filter = ""',
+                'mutant_filter = "("',
+            )
+        )
+
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "not a valid regular expression",
+        ):
+            self.load()
+
+    def test_mutant_filter_is_required_single_line_and_bounded(self) -> None:
+        missing = self.policy_text().replace('mutant_filter = ""\n', "")
+        self.write_policy(missing)
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "fields do not match schema",
+        ):
+            self.load()
+
+        for value, message in (
+            ("x" * (mutation_ci.MAX_MUTANT_FILTER_BYTES + 1), "exceeds"),
+            ("demo\nother", "must remain on one line"),
+        ):
+            with self.subTest(message=message):
+                self.write_policy(
+                    self.policy_text().replace(
+                        'mutant_filter = ""',
+                        f"mutant_filter = {json.dumps(value)}",
+                    )
+                )
+                with self.assertRaisesRegex(
+                    mutation_ci.MutationCiError,
+                    message,
+                ):
+                    self.load()
+
+    def test_mutant_filter_is_owned_and_inventory_is_fail_closed(self) -> None:
+        self.write_policy(
+            self.policy_text().replace(
+                'mutant_filter = ""',
+                'mutant_filter = "replace demo"',
+            )
+        )
+        shard = self.load().shard("demo")
+        command = mutation_ci.cargo_mutants_base_command(shard)
+        self.assertEqual(command[command.index("--re") + 1], "replace demo")
+
+        mutant = copy.deepcopy(MutationFixture(self.repo).mutant)
+        mutant["name"] = mutant["name"].replace("replace demo", "replace other")
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "outside shard mutant_filter",
+        ):
+            mutation_ci.parse_inventory(
+                [mutant],
+                shard=shard,
+                label="filtered inventory",
+            )
 
     def test_accepted_unviable_must_belong_to_declared_shard_file(self) -> None:
         (self.repo / "crates" / "demo" / "src" / "other.rs").write_text(
@@ -736,6 +820,37 @@ review_by = "2099-01-01"
             ],
         )
 
+    def test_function_prefix_test_scope_is_owned_and_fenced(self) -> None:
+        self.write_policy(
+            self.policy_text()
+            .replace('test_target = "package"', 'test_target = "lib"')
+            .replace(
+                'test_filter = ""',
+                'test_filter = "auth::tests::participant_status_"',
+            )
+        )
+        shard = self.load().shard("demo")
+
+        self.assertIn(
+            "--cargo-test-arg=auth::tests::participant_status_",
+            mutation_ci.cargo_mutants_base_command(shard),
+        )
+        self.assertEqual(
+            mutation_ci.parse_test_inventory(
+                "auth::tests::participant_status_epoch: test\n",
+                shard=shard,
+            ),
+            ["auth::tests::participant_status_epoch"],
+        )
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "escaped the configured test selector prefix",
+        ):
+            mutation_ci.parse_test_inventory(
+                "auth::tests::other_status: test\n",
+                shard=shard,
+            )
+
     def test_test_inventory_rejects_empty_selection(self) -> None:
         shard = self.load().shard("demo")
 
@@ -755,7 +870,7 @@ review_by = "2099-01-01"
 
         with self.assertRaisesRegex(
             mutation_ci.MutationCiError,
-            "escaped the configured test namespace",
+            "escaped the configured test selector prefix",
         ):
             mutation_ci.parse_test_inventory(
                 "other::auth::tests::collision: test\n",
@@ -818,6 +933,155 @@ class MutationRunnerTests(unittest.TestCase):
             encoding="utf-8",
         )
         return process.stdout.strip()
+
+    def test_generated_output_paths_must_remain_below_target(self) -> None:
+        accepted = mutation_ci.resolve_output_path(
+            self.repo,
+            "target/verification/mutation.json",
+            label="report output",
+        )
+        self.assertEqual(
+            accepted,
+            (self.repo / "target" / "verification" / "mutation.json").resolve(),
+        )
+
+        outside_target = [
+            "mutants.out",
+            "review-output",
+            "target/../mutation-report.json",
+            str(self.repo / "mutation-report.json"),
+        ]
+        for candidate in outside_target:
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(
+                    mutation_ci.MutationCiError,
+                    "must remain below the repository target directory",
+                ):
+                    mutation_ci.resolve_output_path(
+                        self.repo,
+                        candidate,
+                        label="mutation output",
+                    )
+
+        outside = self.repo / "outside-target"
+        outside.mkdir()
+        target = self.repo / "target"
+        target.mkdir()
+        link = target / "escape-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            # Windows installations without Developer Mode cannot create
+            # unprivileged symlinks; resolve-based confinement is still
+            # exercised by the lexical and absolute escape cases above.
+            return
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            "must remain below the repository target directory",
+        ):
+            mutation_ci.resolve_output_path(
+                self.repo,
+                "target/escape-link/mutants.out",
+                label="mutation results root",
+            )
+
+    def test_report_set_manifest_selects_each_shard_exactly_once(self) -> None:
+        manifest = self.repo / "coverage" / "mutation-report-set.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "sorotte-mutation-report-set",
+                    "policy": "coverage/mutation-policy.toml",
+                    "report_set": "demo",
+                    "reports": {
+                        "demo": "target/verification/mutation-demo.json",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(mutation_ci, "verify_report", return_value=0) as verify:
+            with contextlib.redirect_stdout(stdout):
+                result = mutation_ci.main(
+                    [
+                        "verify-report-set",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--manifest",
+                        "coverage/mutation-report-set.json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        verify.assert_called_once()
+        call = verify.call_args.args[0]
+        self.assertEqual(call.shard, "demo")
+        self.assertEqual(call.report, "target/verification/mutation-demo.json")
+        self.assertIn("1 uniquely selected shard report", stdout.getvalue())
+
+    def test_report_set_manifest_rejects_an_omitted_required_shard(self) -> None:
+        second_source = self.repo / "crates" / "demo" / "src" / "second.rs"
+        second_source.write_text("pub fn second() {}\n", encoding="utf-8")
+        second_shard = """
+
+[[shard]]
+id = "second"
+owner = "demo-owner"
+package = "demo"
+files = ["crates/demo/src/second.rs"]
+mutant_filter = ""
+test_target = "package"
+test_filter = ""
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 120
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+"""
+        policy = MutationPolicyTests.policy_text(self, accepted=False).replace(
+            'shards = ["demo"]',
+            'shards = ["demo", "second"]',
+        )
+        (self.repo / "coverage" / "mutation-policy.toml").write_text(
+            policy + second_shard,
+            encoding="utf-8",
+        )
+        manifest = self.repo / "coverage" / "mutation-report-set.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "sorotte-mutation-report-set",
+                    "policy": "coverage/mutation-policy.toml",
+                    "report_set": "demo",
+                    "reports": {"demo": "target/verification/mutation-demo.json"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = mutation_ci.main(
+                [
+                    "verify-report-set",
+                    "--repo-root",
+                    str(self.repo),
+                    "--policy",
+                    "coverage/mutation-policy.toml",
+                    "--manifest",
+                    "coverage/mutation-report-set.json",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("missing ['second']", stderr.getvalue())
 
     def test_run_writes_passed_report_after_pre_inventory_reconciliation(self) -> None:
         calls: list[list[str]] = []
@@ -901,6 +1165,11 @@ class MutationRunnerTests(unittest.TestCase):
             report["source_bindings"]["before"],
             report["source_bindings"]["after"],
         )
+        self.assertEqual(
+            report["verification_input_bindings"]["before"],
+            report["verification_input_bindings"]["after"],
+        )
+        self.assertGreaterEqual(len(report["verification_input_bindings"]["before"]), 4)
         self.assertIn("--cargo-arg=--locked", report["command"])
         self.assertIn("--no-config", report["command"])
         self.assertIn("--no-shuffle", report["command"])
@@ -920,6 +1189,109 @@ class MutationRunnerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(calls), 4)
+
+        verification_stdout = io.StringIO()
+        with mock.patch.object(mutation_ci, "run_process", side_effect=fake_run):
+            with contextlib.redirect_stdout(verification_stdout):
+                verified = mutation_ci.main(
+                    [
+                        "verify-report",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--report",
+                        "target/verification/mutation.json",
+                    ]
+                )
+        self.assertEqual(verified, 0)
+        self.assertIn("mutation evidence current: demo", verification_stdout.getvalue())
+
+        def changed_inventory_run(
+            argv: list[str],
+            *,
+            cwd: pathlib.Path,
+        ) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(cwd, self.repo)
+            self.assertEqual(argv[:2], ["cargo", "test"])
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="demo_test: test\nnew_regression: test\n",
+                stderr="",
+            )
+
+        inventory_stderr = io.StringIO()
+        with mock.patch.object(
+            mutation_ci,
+            "run_process",
+            side_effect=changed_inventory_run,
+        ):
+            with contextlib.redirect_stderr(inventory_stderr):
+                stale_inventory = mutation_ci.main(
+                    [
+                        "verify-report",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--report",
+                        "target/verification/mutation.json",
+                    ]
+                )
+        self.assertEqual(stale_inventory, 2)
+        self.assertIn("test inventory is stale", inventory_stderr.getvalue())
+
+        added_test = self.repo / "crates" / "demo" / "tests" / "status.rs"
+        added_test.parent.mkdir()
+        added_test.write_text("#[test]\nfn added_status_test() {}\n", encoding="utf-8")
+        verification_input_stderr = io.StringIO()
+        with contextlib.redirect_stderr(verification_input_stderr):
+            stale_verification_input = mutation_ci.main(
+                [
+                    "verify-report",
+                    "--repo-root",
+                    str(self.repo),
+                    "--policy",
+                    "coverage/mutation-policy.toml",
+                    "--shard",
+                    "demo",
+                    "--report",
+                    "target/verification/mutation.json",
+                ]
+            )
+        self.assertEqual(stale_verification_input, 2)
+        self.assertIn(
+            "verification inputs are stale",
+            verification_input_stderr.getvalue(),
+        )
+        added_test.unlink()
+        added_test.parent.rmdir()
+
+        (self.repo / MutationFixture.source).write_bytes(
+            b"pub fn demo() -> bool {\n    false\n}\n"
+        )
+        verification_stderr = io.StringIO()
+        with contextlib.redirect_stderr(verification_stderr):
+            stale = mutation_ci.main(
+                [
+                    "verify-report",
+                    "--repo-root",
+                    str(self.repo),
+                    "--policy",
+                    "coverage/mutation-policy.toml",
+                    "--shard",
+                    "demo",
+                    "--report",
+                    "target/verification/mutation.json",
+                ]
+            )
+        self.assertEqual(stale, 2)
+        self.assertIn("source bindings are stale", verification_stderr.getvalue())
 
     def test_run_rejects_zero_selected_tests_before_mutant_inventory(self) -> None:
         calls: list[list[str]] = []

@@ -211,6 +211,8 @@ impl SorotteGuiShellAppState {
             filename_differs: false,
             filesize_differs: false,
             fileduration_differs: false,
+            participant_status: Default::default(),
+            start_barrier_status: None,
             is_selected: false,
         });
         if let Some(room) = self

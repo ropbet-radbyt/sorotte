@@ -110,6 +110,9 @@ fn offset_test_owner(
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OffsetTimelinePlayer {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("offset-episode.mkv")
             .with_path("C:/Media/offset-episode.mkv".to_owned()),
@@ -409,6 +412,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         session_transport_reconnect_due_at: None,
         session_transport_reconnect_failures: 0,
         session_transport_disconnect_pending_cleanup: false,
+        pending_shared_playlist_open: None,
         runtime_pump_generation: 0,
         session_default_room: None,
         pending_room_change_request: None,

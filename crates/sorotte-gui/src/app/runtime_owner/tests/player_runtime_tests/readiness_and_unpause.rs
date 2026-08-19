@@ -1218,6 +1218,9 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(V2GatePlayer {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -1306,6 +1309,9 @@ fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(V2GatePlayer {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -1454,6 +1460,9 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
 
@@ -1705,6 +1714,9 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(DirectTogglePlayer {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("placeholder.mkv")
             .with_path("C:/Media/placeholder.mkv".to_owned()),
@@ -1854,6 +1866,9 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     controlled_owner.player = Some(GuiOwnedPlayer::Custom(Box::new(DirectTogglePlayer {
         state: controlled_player_state.clone(),
     })));
+    controlled_owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     controlled_owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("controlled.mkv")
             .with_path("C:/Media/controlled.mkv".to_owned()),
@@ -2018,6 +2033,9 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(AutoplayPlayer {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
             .with_path("C:/Media/episode1.mkv".to_owned()),

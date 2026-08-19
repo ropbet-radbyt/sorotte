@@ -33,6 +33,13 @@ pub(crate) fn user_file_update_message(
     ProtocolMessage::set(SetPayload::new().with_user(users))
 }
 
+pub(crate) fn user_features_update_message(username: &str, features: Value) -> ProtocolMessage {
+    ProtocolMessage::set(SetPayload::new().with_features(json!({
+        "username": username,
+        "features": features,
+    })))
+}
+
 pub(crate) fn user_event_message(username: &str, room_name: &str, event: Value) -> ProtocolMessage {
     user_setting_message(username, room_name, Some(event))
 }
@@ -96,6 +103,7 @@ pub(crate) struct StateSyncOptions<'a> {
     pub(crate) client_ignoring_counter: Option<u32>,
     pub(crate) server_rtt_seconds: f64,
     pub(crate) latency_calculation_seconds: Option<f64>,
+    pub(crate) participant_status: Option<ParticipantStatusStateExtension>,
 }
 
 pub(crate) fn state_sync_message(
@@ -138,6 +146,9 @@ pub(crate) fn state_sync_message(
             ignoring = ignoring.with_client(client_ignoring_counter);
         }
         state = state.with_ignoring_on_the_fly(ignoring);
+    }
+    if let Some(participant_status) = options.participant_status {
+        state = state.with_participant_status_v1(participant_status);
     }
     ProtocolMessage::state(state)
 }
@@ -225,6 +236,7 @@ pub(crate) fn server_feature_list(
         "setOthersReadiness": readiness_enabled,
         SOROTTE_PLAYBACK_BARRIER_V1: true,
         SOROTTE_READINESS_V2: readiness_enabled,
+        SOROTTE_PARTICIPANT_STATUS_V1: true,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
 }

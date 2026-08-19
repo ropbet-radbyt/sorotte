@@ -1,6 +1,8 @@
 use std::{cell::Cell, collections::VecDeque};
 
-use sorotte_protocol::{ProtocolMessage, SOROTTE_PLAYBACK_BARRIER_V1, StatePayload};
+use sorotte_protocol::{
+    ProtocolMessage, SOROTTE_PARTICIPANT_STATUS_V1, SOROTTE_PLAYBACK_BARRIER_V1, StatePayload,
+};
 
 fn merge_playback_barrier_observations(previous: &StatePayload, latest: &mut StatePayload) {
     let Ok(Some(previous_extension)) = previous.playback_barrier_v1() else {
@@ -178,7 +180,41 @@ enum ProtocolDelivery {
     },
     ConnectionScopedState {
         generation: u64,
+        participant_status_cancelled: bool,
     },
+}
+
+impl ProtocolDelivery {
+    fn connection_scoped_state(generation: u64) -> Self {
+        Self::ConnectionScopedState {
+            generation,
+            participant_status_cancelled: false,
+        }
+    }
+
+    fn set_participant_status_cancelled(&mut self, cancelled: bool) {
+        use ProtocolDelivery::ConnectionScopedState;
+        if let ConnectionScopedState {
+            participant_status_cancelled,
+            ..
+        } = self
+        {
+            *participant_status_cancelled = cancelled;
+        }
+    }
+
+    fn participant_status_is_cancelled(&self) -> bool {
+        use ProtocolDelivery::ConnectionScopedState;
+        if let ConnectionScopedState {
+            participant_status_cancelled,
+            ..
+        } = self
+        {
+            *participant_status_cancelled
+        } else {
+            false
+        }
+    }
 }
 
 /// Opaque identity for one staged outbox front.
@@ -361,6 +397,44 @@ impl ProtocolOutbox {
         });
     }
 
+    pub(crate) fn cancel_pending_participant_status_reports(&mut self) {
+        let front_is_leased = self.leased_front.get().is_some();
+        if front_is_leased && let Some(delivery) = self.delivery.front_mut() {
+            delivery.set_participant_status_cancelled(true);
+        }
+        for index in (0..self.pending.len()).rev() {
+            if front_is_leased && index == 0 {
+                // The transport already owns the serialized front bytes. Do
+                // not mutate the message beneath that lease. The cancellation
+                // bit strips it before any failed write can be retried.
+                continue;
+            }
+            if !matches!(
+                self.delivery.get(index),
+                Some(ProtocolDelivery::ConnectionScopedState { .. })
+            ) {
+                continue;
+            }
+            self.strip_participant_status_at(index);
+        }
+    }
+
+    fn strip_participant_status_at(&mut self, index: usize) {
+        let remove_message = match self.pending.get_mut(index) {
+            Some(ProtocolMessage::State(state)) => {
+                state.state.extra.remove(SOROTTE_PARTICIPANT_STATUS_V1);
+                state.state == StatePayload::default()
+            }
+            _ => false,
+        };
+        if remove_message {
+            self.pending.remove(index);
+            self.delivery.remove(index);
+        } else if let Some(delivery) = self.delivery.get_mut(index) {
+            delivery.set_participant_status_cancelled(false);
+        }
+    }
+
     fn invalidate_connection_scoped_reliable(
         &mut self,
         should_cancel: impl Fn(&ProtocolDelivery) -> bool,
@@ -403,6 +477,19 @@ impl ProtocolOutbox {
             return false;
         }
 
+        if matches!(
+            &message,
+            ProtocolMessage::State(state)
+                if state.state.extra.contains_key(SOROTTE_PARTICIPANT_STATUS_V1)
+        ) {
+            // Participant status is advisory and has no causal ordering with
+            // reliable chat/control traffic. Supersede it independently in
+            // every older unleased State so reliable barriers cannot turn a
+            // one-second heartbeat into an unbounded queue. A leased front is
+            // left byte-stable and marked for stripping if its write fails.
+            self.cancel_pending_participant_status_reports();
+        }
+
         // Only a tail State remains coalescible. Any reliable command after a
         // State seals that snapshot in FIFO order, so a later State must be a
         // new queue entry behind the command.
@@ -410,7 +497,7 @@ impl ProtocolOutbox {
             let index = self.delivery.len().saturating_sub(1);
             matches!(
                 delivery,
-                ProtocolDelivery::ConnectionScopedState { generation }
+                ProtocolDelivery::ConnectionScopedState { generation, .. }
                     if *generation == self.connection_generation
                         && !(index == 0 && self.leased_front.get().is_some())
             )
@@ -426,9 +513,9 @@ impl ProtocolOutbox {
         } else {
             self.pending.push_back(message);
             self.delivery
-                .push_back(ProtocolDelivery::ConnectionScopedState {
-                    generation: self.connection_generation,
-                });
+                .push_back(ProtocolDelivery::connection_scoped_state(
+                    self.connection_generation,
+                ));
         }
         true
     }
@@ -476,10 +563,16 @@ impl ProtocolOutbox {
                 ..
             })
         );
+        let strip_cancelled_participant_status = self
+            .delivery
+            .front()
+            .is_some_and(ProtocolDelivery::participant_status_is_cancelled);
         self.leased_front.set(None);
         if discard_cancelled {
             self.pending.pop_front();
             self.delivery.pop_front();
+        } else if strip_cancelled_participant_status {
+            self.strip_participant_status_at(0);
         }
         true
     }
@@ -500,12 +593,14 @@ impl ProtocolOutbox {
 #[cfg(test)]
 mod tests {
     use sorotte_protocol::{
-        DirectReadinessSurface, IgnoringOnTheFlyPayload, MediaReadyPayload, PingPayload,
-        PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaylistIndexPayload,
-        PlaystatePayload, ProtocolMessage, ReadinessIntentRequest, ReadinessSetExtension,
-        RoomBufferingPolicy, RoomBufferingPolicyPayload, SetPayload, StartedAckPayload,
-        StatePayload, TransportBufferingReportPayload, UserReadinessIntent,
-        UserReadinessMutationSource, playlist_change_with_plex_sidecar,
+        DirectReadinessSurface, IgnoringOnTheFlyPayload, MediaReadyPayload,
+        ParticipantPlaybackPhase, ParticipantPlayerConnection, ParticipantStatusReport,
+        ParticipantStatusStateExtension, PingPayload, PlaybackBarrierSetExtension,
+        PlaybackBarrierStateExtension, PlaylistIndexPayload, PlaystatePayload, ProtocolMessage,
+        ReadinessIntentRequest, ReadinessSetExtension, RoomBufferingPolicy,
+        RoomBufferingPolicyPayload, SetPayload, StartedAckPayload, StatePayload,
+        TransportBufferingReportPayload, UserReadinessIntent, UserReadinessMutationSource,
+        playlist_change_with_plex_sidecar,
     };
 
     use super::{EffectOutbox, ProtocolOutbox};
@@ -788,6 +883,270 @@ mod tests {
                 .as_ref()
                 .and_then(|playstate| playstate.position),
             Some(30.0)
+        );
+    }
+
+    #[test]
+    fn coalesced_state_keeps_newest_member_report_and_unrelated_obligations() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+
+        let first_report = ParticipantStatusReport::new(
+            1,
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Loading,
+        );
+        let first = StatePayload::new()
+            .with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(first_report),
+            )
+            .with_playback_barrier_v1(
+                PlaybackBarrierStateExtension::new()
+                    .with_ready(MediaReadyPayload::new(17, true, false)),
+            );
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(first)));
+
+        let heartbeat = StatePayload::new().with_ping(
+            PingPayload::new()
+                .with_client_latency_calculation(3.0)
+                .with_client_rtt(0.3),
+        );
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(heartbeat)));
+        let ProtocolMessage::State(preserved) = &outbox.pending()[0] else {
+            panic!("coalesced heartbeat should remain State");
+        };
+        assert_eq!(
+            preserved
+                .state
+                .participant_status_v1()
+                .unwrap()
+                .and_then(|extension| extension.report)
+                .map(|report| report.report_sequence),
+            Some(1),
+            "a later State without the extension must preserve the pending report"
+        );
+
+        let newest_report = ParticipantStatusReport::new(
+            2,
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Playing,
+        )
+        .with_position_seconds(12.5);
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(newest_report),
+            ),
+        )));
+
+        let ProtocolMessage::State(coalesced) = &outbox.pending()[0] else {
+            panic!("coalesced participant status should remain State");
+        };
+        let report = coalesced
+            .state
+            .participant_status_v1()
+            .unwrap()
+            .and_then(|extension| extension.report)
+            .expect("newest report should remain pending");
+        assert_eq!(report.report_sequence, 2);
+        assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
+        assert_eq!(report.position_seconds, Some(12.5));
+        assert!(coalesced.state.ping.is_some());
+        assert!(
+            coalesced
+                .state
+                .playback_barrier_v1()
+                .unwrap()
+                .and_then(|extension| extension.ready)
+                .is_some(),
+            "participant status replacement must preserve playback-barrier obligations"
+        );
+    }
+
+    #[test]
+    fn participant_status_remains_bounded_across_reliable_interleaving() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+
+        for sequence in 1..=128 {
+            assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new().with_participant_status_v1(
+                    ParticipantStatusStateExtension::new().with_report(
+                        ParticipantStatusReport::new(
+                            sequence,
+                            ParticipantPlayerConnection::Connected,
+                            ParticipantPlaybackPhase::Playing,
+                        ),
+                    ),
+                ),
+            )));
+            outbox.push_back(ProtocolMessage::chat_text(format!("chat-{sequence}")));
+        }
+
+        assert_eq!(
+            outbox
+                .pending()
+                .iter()
+                .filter(|message| matches!(message, ProtocolMessage::Chat(_)))
+                .count(),
+            128,
+            "reliable chat must remain FIFO and lossless"
+        );
+        let reports = outbox
+            .pending()
+            .iter()
+            .filter_map(|message| match message {
+                ProtocolMessage::State(state) => state
+                    .state
+                    .participant_status_v1()
+                    .expect("queued status should decode")
+                    .and_then(|extension| extension.report),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reports.len(), 1, "only the newest advisory report may wait");
+        assert_eq!(reports[0].report_sequence, 128);
+    }
+
+    #[test]
+    fn participant_status_leased_front_is_stable_and_stripped_after_failed_write() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(
+            outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ping(PingPayload::new().with_client_rtt(0.2))
+                    .with_participant_status_v1(
+                        ParticipantStatusStateExtension::new().with_report(
+                            ParticipantStatusReport::new(
+                                1,
+                                ParticipantPlayerConnection::Connected,
+                                ParticipantPlaybackPhase::Loading,
+                            ),
+                        ),
+                    ),
+            ))
+        );
+        let (lease, staged) = outbox
+            .front_for_delivery()
+            .expect("the first status should stage");
+        let staged = staged.clone();
+
+        outbox.push_back(ProtocolMessage::chat_text("reliable"));
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(
+                    2,
+                    ParticipantPlayerConnection::Connected,
+                    ParticipantPlaybackPhase::Playing,
+                ),),
+            ),
+        )));
+
+        let (same_lease, same_staged) = outbox
+            .front_for_delivery()
+            .expect("the leased bytes must remain staged");
+        assert_eq!(same_lease, lease);
+        assert_eq!(same_staged, &staged, "a lease owns immutable wire bytes");
+        assert_eq!(
+            outbox
+                .pending()
+                .iter()
+                .filter(|message| matches!(message, ProtocolMessage::State(state)
+                    if state.state.participant_status_v1().ok().flatten().is_some()))
+                .count(),
+            2,
+            "the bound permits the leased report plus the newest pending report"
+        );
+
+        assert!(outbox.release_front(lease));
+        let ProtocolMessage::State(retry) = outbox
+            .pending()
+            .front()
+            .expect("the unrelated ping obligation should remain")
+        else {
+            panic!("the released front should remain a State");
+        };
+        assert!(retry.state.ping.is_some());
+        assert!(retry.state.participant_status_v1().unwrap().is_none());
+        assert_eq!(
+            outbox
+                .pending()
+                .iter()
+                .filter(|message| matches!(message, ProtocolMessage::State(state)
+                    if state.state.participant_status_v1().ok().flatten().is_some()))
+                .count(),
+            1,
+            "a failed write must retry only the newest advisory report"
+        );
+    }
+
+    #[test]
+    fn participant_status_cancellation_removes_only_the_advisory_extension() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        let report = ParticipantStatusReport::new(
+            1,
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Playing,
+        );
+        assert!(
+            outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ping(PingPayload::new().with_client_rtt(0.2))
+                    .with_participant_status_v1(
+                        ParticipantStatusStateExtension::new().with_report(report),
+                    ),
+            ))
+        );
+
+        outbox.cancel_pending_participant_status_reports();
+        assert_eq!(outbox.pending().len(), 1);
+        let ProtocolMessage::State(state) = &outbox.pending()[0] else {
+            panic!("the unrelated heartbeat should remain State");
+        };
+        assert!(state.state.ping.is_some());
+        assert!(state.state.participant_status_v1().unwrap().is_none());
+
+        outbox.clear();
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(
+                    2,
+                    ParticipantPlayerConnection::Connected,
+                    ParticipantPlaybackPhase::Playing,
+                ),),
+            ),
+        )));
+        outbox.cancel_pending_participant_status_reports();
+        assert!(
+            outbox.pending().is_empty(),
+            "a pure advisory State should disappear rather than become an empty frame"
+        );
+    }
+
+    #[test]
+    fn released_leased_status_is_stripped_before_transport_retry() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
+            StatePayload::new().with_participant_status_v1(
+                ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(
+                    1,
+                    ParticipantPlayerConnection::Connected,
+                    ParticipantPlaybackPhase::Playing,
+                ),),
+            ),
+        )));
+        let (lease, _) = outbox
+            .front_for_delivery()
+            .expect("status should be leased to the transport");
+
+        outbox.cancel_pending_participant_status_reports();
+        assert_eq!(outbox.pending().len(), 1, "leased bytes must remain stable");
+        assert!(outbox.release_front(lease));
+        assert!(
+            outbox.pending().is_empty(),
+            "a failed leased write must not retry withdrawn participant status"
         );
     }
 

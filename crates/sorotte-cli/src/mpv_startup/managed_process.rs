@@ -262,7 +262,7 @@ fn create_mpv_adapter_from_path_or_disconnected(ipc_path: &str) -> MpvAdapter {
         Ok(adapter) => adapter,
         Err(err) => {
             eprintln!("{}", explicit_mpv_ipc_connection_warning(ipc_path, &err));
-            MpvAdapter::default()
+            MpvAdapter::disconnected_with_json_ipc_retry(ipc_path)
         }
     }
 }

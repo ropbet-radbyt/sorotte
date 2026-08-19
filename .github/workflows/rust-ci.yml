@@ -42,6 +42,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Checkout pinned legacy reference for Linux tests
@@ -59,9 +60,16 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest@0.9.137
+          fallback: none
+
+      - name: Install pinned cargo-semver-checks
+        if: github.event_name == 'pull_request'
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-semver-checks@0.50.0
           fallback: none
 
       - name: Setup Python
@@ -95,6 +103,32 @@ jobs:
           python scripts/known_defect_policy.py validate
           --registry coverage/known-defects.toml
           --catalog coverage/behaviors.toml
+
+      - name: Enforce public Rust API compatibility
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in \
+            sorotte-secret \
+            sorotte-protocol \
+            sorotte-core \
+            sorotte-server \
+            sorotte-media-match \
+            sorotte-client-core \
+            sorotte-client-app \
+            sorotte-player-api \
+            sorotte-player-mpv \
+            sorotte-plex \
+            sorotte-cli \
+            sorotte-gui \
+            sorotte-sim \
+            sorotte-compat
+          do
+            cargo semver-checks \
+              --package "$package" \
+              --baseline-rev "${{ github.event.pull_request.base.sha }}"
+          done
 
       - name: Cargo fmt
         run: cargo fmt --all --check
@@ -335,7 +369,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest@0.9.137
           fallback: none
@@ -344,6 +378,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+
+      - name: Validate Windows semver wrapper
+        shell: pwsh
+        run: python -m unittest scripts.tests.test_semver_wrapper -v
 
       - name: Install live compatibility prerequisites
         shell: pwsh
@@ -456,7 +494,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install pinned cargo-llvm-cov for Windows process coverage
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 
@@ -593,7 +631,7 @@ jobs:
           -r requirements/legacy-python-interop.txt
 
       - name: Install pinned cargo-llvm-cov
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 

@@ -697,7 +697,53 @@ ratchets cover room-persistence arbitration in `sorotte-server` and inbound
 the CLI inbound framing accumulator and its package-level transport/session
 oracles. A tenth shard binds client playlist snapshot, target-index, shuffle
 seed/PRNG, permutation, and undo decisions. It deliberately does not mutate
-the whole workspace.
+the whole workspace. Ten participant-status prevention shards extend that
+matrix across the additive protocol DTO, client acceptance and freshness,
+client reporting lifecycle, independently coalesced client outbox delivery,
+server validation/projection, GUI presentation, the client-app and CLI
+lifecycle owners, explicit mpv IPC retry, and the causal playlist delivery
+fence. The nine behavior
+shards use policy-owned mutant-name regular
+expressions so their scheduled scope stays bounded to those invariants.
+
+Cargo-mutants selects the `PlayerTransportDelta.logical_pause` field-deletion
+entry from the enclosing ordered-event context alongside the client runtime
+status transition. That shard admits only this exact field, struct, and
+function identity; its policy self-test rejects neighboring fields, structs,
+and functions instead of widening the shard to every ordered-event mutation.
+
+The server selector similarly admits only the five `StateSyncOptions` fields
+that cargo-mutants selects from the enclosing periodic status-projection
+function: `set_by`, `client_latency_calculation`, `client_ignoring_counter`,
+`server_rtt_seconds`, and `latency_calculation_seconds`. These are viable
+mutations, not exceptions, so the scheduled server tests must kill them; the
+policy self-test rejects neighboring fields, structs, and functions.
+
+The recorded client projection diagnostic classified 14 compiler-unviable
+outcomes as seven structured identities: five missing-`Default` view/scope
+replacements and two identity groups covering Rust let-chain `&&` to `||`
+rewrites. A fresh current-source campaign exercised 135 mutants, caught all
+121 viable mutants, and matched all 14 unviable outcomes to those exact
+expiring identities with zero misses or timeouts.
+
+The recorded server diagnostic classified 13 compiler-unviable outcomes as
+nine structured identities: seven missing-`Default` report, availability,
+correlation, snapshot, scope, and directed-message replacements plus two let-chain rewrite
+identities. The scope-transition, cache, per-field evidence-clock, and
+rollback-safe scheduling work expanded the current inventory to 161 mutants.
+A fresh full-shard campaign caught all 148 viable mutants and matched all 13
+unviable outcomes to the exact expiring identities with zero misses or
+timeouts. None of the earlier viable misses became exceptions.
+
+The first GUI playlist-fence diagnostic reported 22 mutants, eight viable
+misses, and three nominally unviable outcomes. Two of those outcomes were
+Windows rustc/metadata failures rather than source-invalid mutations; fresh
+serial replays caught both, so they are not exceptions. Removing four
+equivalent discarded bitwise expressions and isolating the production fence
+types from unrelated adapter defaults made the live inventory 42. The frozen
+full replay caught all 41 viable mutants with zero misses or
+timeouts; its sole accepted identity is the `&&` to `||` rewrite in the
+delivery-completion let-chain, which rustc rejects syntactically.
 
 Room-persistence arbitration's newest-version rule is an eventual service
 guarantee while the worker remains alive, not synchronous acknowledgement
@@ -709,14 +755,16 @@ proof prevents stale queued work from overtaking newer live work; it does not
 turn asynchronous enqueue into a durable commit acknowledgement.
 
 `coverage/mutation-policy.toml` pins cargo-mutants 27.1.0, each package and
-literal source file, the package/library test target and optional test module
-namespace, all-feature locked Cargo execution, two workers, per-command
-timeouts, a 100% viable kill requirement, zero missed mutants, and zero
-timeouts. The privacy shard's one compiler-infeasible const mutation is
-matched by stable structured identity and has an expiring review date; both a
-new exception and a stale exception fail. Server authorization requires no
-exception. The protocol shard has eight exact, expiring compiler-infeasible
-default-value substitutions; its 80 viable mutations must all be caught.
+literal source file, the package/library test target, optional test selector
+prefix, and optional source-bound mutant-name expression, all-feature
+locked Cargo execution, two workers, per-command timeouts, a 100% viable kill
+requirement, zero missed mutants, and zero timeouts. Inventory outside a
+declared expression is rejected. The privacy shard's one compiler-infeasible
+const mutation is matched by stable structured identity and has an expiring
+review date; both a new exception and a stale exception fail. Server
+authorization requires no exception. The protocol shard has eight exact,
+expiring compiler-infeasible default-value substitutions; its 80 viable
+mutations must all be caught.
 
 Run it locally with:
 
@@ -732,15 +780,28 @@ python scripts/mutation_ci.py run \
   --shard protocol-codec \
   --results-root target/mutation-ci/protocol-codec \
   --output target/verification/mutation-protocol-codec.json
+python scripts/mutation_ci.py verify-report \
+  --repo-root . \
+  --policy coverage/mutation-policy.toml \
+  --shard protocol-codec \
+  --report target/verification/mutation-protocol-codec.json
 ```
 
 The wrapper disables repository-local cargo-mutants configuration, lists the
-inventory before execution, hashes configured sources before and after, and
+inventory before execution, hashes configured sources plus workspace test,
+fixture, Cargo, toolchain, policy, and wrapper inputs before and after, and
 reconciles every structured outcome with the inventory, status files,
 build/test phases, logs, diffs, policy, and producer exit. The weekly workflow
-uploads both the compact attestation and raw producer evidence for each matrix
-shard even on failure. Test scope is not trusted from configuration alone:
-every producer phase must exactly retain the configured target and namespace.
+re-verifies the compact attestation against the final source bytes before it
+uploads both the attestation and raw producer evidence for each matrix shard,
+even on failure. A previously passing report is therefore not release evidence
+after any bound source or test-input change. Test scope is not trusted from
+configuration alone: every producer phase must exactly retain the configured
+target and namespace, and report verification reruns the exact test-list command
+and compares its canonical inventory digest. The participant-status aggregate
+job then verifies the unique report paths in
+`coverage/mutation-report-set.json`; unselected historical reports are not part
+of the release evidence set.
 
 The original privacy experiment moved from 22/43 to 43/43 viable mutants
 caught while preserving its 44-mutant inventory. After credential-classifier
@@ -785,9 +846,24 @@ seed-framing, PRNG, golden-permutation, and 512-seed invariant oracles plus a
 narrow test-only completion guard now catch 26/26 viable mutants with no miss
 or timeout. Two let-chain rewrites are represented by one exact expiring
 compiler-unviable identity.
-Across the ten scheduled shards, all 484 current viable mutations are caught
-with zero misses and zero timeouts. The policy contains 17 exact accepted
-compiler-unviable identities.
+Across the ten established shards, all 484 attested viable mutations are
+caught with zero misses and zero timeouts. Their 17 exact accepted
+compiler-unviable identities remain policy-bound. The participant-status
+protocol campaign separately caught all 32 viable mutations and bound 14 exact
+compiler-unviable substitutions. Fresh current-source campaigns for the nine
+behavior shards caught 481/481 viable mutants: client acceptance and freshness
+121, client reporting lifecycle 85, independently coalesced client outbox 10,
+server normalization/projection 148, client-app lifecycle and presentation 35,
+CLI lifecycle 13, GUI presentation 18, causal playlist delivery fencing 41,
+and explicit mpv IPC retry 10. Together with the protocol shard, the ten
+participant-status campaigns caught 513/513 viable mutants across 567 total
+outcomes; all 54
+compiler-unviable outcomes matched exact expiring policy
+identities, with zero misses and zero timeouts. Raw reports remain below the
+ignored `target/` tree; the wrapper rejects relative, absolute, traversal, and
+symlink-resolved output escapes. Pull-request path selection includes every
+participant-status production boundary, and the pull-request/weekly workflows
+reproduce the policy-owned shards.
 Commands, timings, hashes, classifications, and limitations are retained in
 [`targeted-mutation-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-20260729.md),
 [`targeted-mutation-privacy-expansion-20260729.md`](../docs/evidence/test-coverage/targeted-mutation-privacy-expansion-20260729.md),

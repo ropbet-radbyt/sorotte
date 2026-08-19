@@ -354,6 +354,8 @@ impl SorotteGuiShellAppState {
                 filename_differs: user.filename_differs,
                 filesize_differs: user.filesize_differs,
                 fileduration_differs: user.fileduration_differs,
+                participant_status: user.participant_status,
+                start_barrier_status: user.start_barrier_status,
                 is_selected: false,
             });
         }
@@ -508,6 +510,7 @@ impl SorotteGuiShellAppState {
             rooms: normalized_rooms,
             users: normalized_users,
             readiness: normalized_readiness,
+            room_playback_intent: snapshot.room_playback_intent,
             playlist: normalized_playlist,
             playlist_default_source: self.refreshed_playlist_source_default_state(
                 self.main_window.playlist_default_source.clone(),

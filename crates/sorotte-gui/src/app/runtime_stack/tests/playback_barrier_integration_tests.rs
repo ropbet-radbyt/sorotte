@@ -504,6 +504,19 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
             ),
         ),
     );
+    let shell_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let room_summary = adapter
+        .main_window_runtime_snapshot(&shell_state)
+        .expect("authoritative buffering state should change the room summary");
+    assert_eq!(
+        room_summary.room_playback_intent.buffering_participants,
+        ["alice"],
+        "the room summary must incorporate existing server-owned buffering status"
+    );
     assert!(matches!(
         adapter.runtime.session().current_room_playstate_authority(),
         Some(RoomPlaystateAuthority::ServerBufferingPolicy {
@@ -614,5 +627,61 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
     assert!(
         local_pause_observation.is_empty(),
         "a stale pre-echo desired state must not undo the observed local pause"
+    );
+}
+
+#[test]
+fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core GUI adapter should bootstrap");
+    let _ = adapter.flush_outbound_protocol_lines().unwrap();
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,
+        )
+        .unwrap();
+    adapter
+        .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room1"}}}}}"#)
+        .unwrap();
+    let policy = RoomBufferingPolicyPayload::new(
+        ROOM_MEDIA_GENERATION,
+        RoomBufferingPolicy::PauseAnyEligible,
+    );
+    apply_protocol_message(
+        &mut adapter,
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_buffering_policy(policy.clone())
+                    .with_buffering_status(RoomBufferingStatusPayload {
+                        config: policy,
+                        phase: RoomBufferingPhase::Paused,
+                        eligible_clients: 1,
+                        required_buffering_clients: 1,
+                        buffering_clients: BTreeSet::from(["bob".to_owned()]),
+                        pause_deadline: Some(40.0),
+                    }),
+            ),
+        ),
+    );
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let before = adapter
+        .main_window_runtime_snapshot(&state)
+        .expect("buffering member should project");
+    assert_eq!(before.room_playback_intent.buffering_participants, ["bob"]);
+
+    adapter
+        .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room2"}}}}}"#)
+        .unwrap();
+    let after = adapter
+        .main_window_runtime_snapshot(&state)
+        .expect("room leave should update the summary");
+    assert!(
+        after.room_playback_intent.buffering_participants.is_empty(),
+        "retained server buffering telemetry must be intersected with current membership"
     );
 }

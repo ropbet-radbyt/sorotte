@@ -10,7 +10,10 @@ use std::{
     thread,
 };
 
-use super::super::runtime_stack::{GuiAttachedPlayerRuntimeAction, GuiSessionRoomPlaystate};
+use super::super::runtime_stack::{
+    GuiAttachedPlayerRuntimeAction, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
+    GuiSessionTransportDriver,
+};
 use super::{
     GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner,
     GuiPlayerIntegrationHealth,
@@ -50,6 +53,14 @@ use sorotte_client_app::app_boundary::storage::{
 use sorotte_player_api::PlayerAdapter;
 
 static CONFIG_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct ExternallyDrivenTestSessionTransport;
+
+impl GuiSessionTransportDriver for ExternallyDrivenTestSessionTransport {
+    fn pump(&mut self, _transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        Ok(())
+    }
+}
 
 struct TestEnvGuard<'a> {
     _guard: MutexGuard<'a, ()>,

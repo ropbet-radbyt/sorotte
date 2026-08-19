@@ -8,7 +8,11 @@ use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, DirectReadinessSurface, ErrorPayload,
     FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
     MediaLoadIntent, MediaReadyPayload, MixedReadinessPolicy, NewControlledRoomPayload,
-    ParticipantReadiness, ParticipantReadinessUpdate, PingPayload, PlaybackBarrierPolicy,
+    ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantPlayerConnection,
+    ParticipantReadiness, ParticipantReadinessUpdate, ParticipantStatusAvailability,
+    ParticipantStatusCorrelation, ParticipantStatusReport, ParticipantStatusSnapshot,
+    ParticipantStatusSnapshotMode, ParticipantStatusStateExtension, ParticipantStatusView,
+    ParticipantTimelineKind, PingPayload, PlaybackBarrierPolicy,
     PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierRequestResultStatus,
     PlaybackBarrierSetExtension, PlaybackBarrierStateExtension, PlaybackBarrierTimeoutAction,
@@ -18,14 +22,15 @@ use super::{
     ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
     RecoveryStage, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
     RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
-    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SOROTTE_READINESS_V2, SetPayload,
-    StartParticipationRole, StartedAckPayload, StatePayload, TechnicalBlockCause,
-    TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalPlayabilitySummary,
-    TechnicalReadinessBlock, TechnicalReadinessReport, TlsPayload, TransportBufferingReportPayload,
-    UserReadinessIntent, UserReadinessMutationSource, UserSetPayload,
-    canonical_playlist_files_from_change, decode_line, decode_message_line,
+    SOROTTE_PARTICIPANT_STATUS_V1, SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_KEY,
+    SOROTTE_READINESS_V2, SetPayload, StartParticipationRole, StartedAckPayload, StatePayload,
+    TechnicalBlockCause, TechnicalPlayability, TechnicalPlayabilityPhase,
+    TechnicalPlayabilitySummary, TechnicalReadinessBlock, TechnicalReadinessReport, TlsPayload,
+    TransportBufferingReportPayload, UserReadinessIntent, UserReadinessMutationSource,
+    UserSetPayload, canonical_playlist_files_from_change, decode_line, decode_message_line,
     decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message, playlist_change_with_plex_sidecar,
+    extract_hello, extract_hello_from_message, participant_status_buffer_evidence_is_eligible,
+    participant_status_position_evidence_is_eligible, playlist_change_with_plex_sidecar,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -224,6 +229,443 @@ fn playback_barrier_builders_remain_additive_and_roundtrip() {
             message
         );
     }
+}
+
+#[test]
+fn participant_status_v1_models_use_stable_camel_case_state_shapes() {
+    let report = ParticipantStatusReport::new(
+        42,
+        ParticipantPlayerConnection::Connected,
+        ParticipantPlaybackPhase::Rebuffering,
+    )
+    .with_playback_scope(
+        ParticipantPlaybackScope::new(7)
+            .with_state_revision(19)
+            .with_transport_revision(3),
+    )
+    .with_timeline_kind(ParticipantTimelineKind::Vod)
+    .with_position_seconds(754.82)
+    .with_logical_paused(false)
+    .with_playback_rate(1.05)
+    .with_paused_for_cache(true)
+    .with_buffered_ahead_seconds(14.3)
+    .with_cache_percent(75.0)
+    .with_sample_age_ms(110)
+    .with_position_sample_age_ms(80);
+    let mut view = ParticipantStatusView::new(ParticipantStatusAvailability::Fresh);
+    view.correlation = Some(ParticipantStatusCorrelation::Exact);
+    view.playback_scope = Some(
+        ParticipantPlaybackScope::new(7)
+            .with_state_revision(19)
+            .with_transport_revision(3),
+    );
+    view.player_connection = Some(ParticipantPlayerConnection::Connected);
+    view.phase = Some(ParticipantPlaybackPhase::Rebuffering);
+    view.timeline_kind = Some(ParticipantTimelineKind::Vod);
+    view.position_seconds = Some(754.82);
+    view.paused_for_cache = Some(true);
+    view.cache_percent = Some(75.0);
+    view.buffered_ahead_seconds = Some(14.3);
+    view.position_sample_age_ms = Some(80);
+    view.report_age_ms = Some(180);
+    view.room_offset_seconds = Some(-0.21);
+    let snapshot =
+        ParticipantStatusSnapshot::new(900, BTreeMap::from([("alice".to_owned(), view)]))
+            .with_mode(ParticipantStatusSnapshotMode::Compact);
+    let authoritative_scope = ParticipantPlaybackScope::new(7)
+        .with_state_revision(19)
+        .with_transport_revision(3);
+    let message = ProtocolMessage::state(
+        StatePayload::new().with_participant_status_v1(
+            ParticipantStatusStateExtension::new()
+                .with_report(report)
+                .with_scope(authoritative_scope)
+                .with_snapshot(snapshot),
+        ),
+    );
+
+    let encoded = encode_message_line(&message).expect("participant status should encode");
+    let value = decode_line(&encoded).expect("participant status JSON should decode");
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/playerConnection"
+        )),
+        Some(&json!("connected"))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/phase"
+        )),
+        Some(&json!("rebuffering"))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/playbackScope/mediaGeneration"
+        )),
+        Some(&json!(7))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/playbackScope/transportRevision"
+        )),
+        Some(&json!(3))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/bufferedAheadSeconds"
+        )),
+        Some(&json!(14.3))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/positionSampleAgeMs"
+        )),
+        Some(&json!(80))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/snapshot/participants/alice/reportAgeMs"
+        )),
+        Some(&json!(180))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/snapshot/participants/alice/roomOffsetSeconds"
+        )),
+        Some(&json!(-0.21))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/snapshot/participants/alice/positionSampleAgeMs"
+        )),
+        Some(&json!(80))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/scope/transportRevision"
+        )),
+        Some(&json!(3))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/snapshot/mode"
+        )),
+        Some(&json!("compact"))
+    );
+    assert_eq!(
+        value.pointer(&format!(
+            "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/snapshot/participants/alice/correlation"
+        )),
+        Some(&json!("exact"))
+    );
+    assert!(
+        value
+            .pointer(&format!(
+                "/State/{SOROTTE_PARTICIPANT_STATUS_V1}/report/username"
+            ))
+            .is_none(),
+        "the report shape must not permit client-supplied identity"
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("participant status should roundtrip"),
+        message
+    );
+}
+
+#[test]
+fn participant_status_v1_legacy_additive_shape_keeps_safe_defaults() {
+    let decoded = decode_message_line(
+        r#"{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":1,"participants":{"alice":{"availability":"fresh","playerConnection":"connected","phase":"playing"}}}}}}"#,
+    )
+    .expect("the original additive status shape should remain decodable");
+    let ProtocolMessage::State(state) = decoded else {
+        panic!("participant status should decode as State");
+    };
+    let extension = state
+        .state
+        .participant_status_v1()
+        .unwrap()
+        .expect("participant-status extension should exist");
+    assert_eq!(extension.scope, None);
+    let snapshot = extension.snapshot.expect("snapshot should exist");
+    assert_eq!(snapshot.mode, ParticipantStatusSnapshotMode::Full);
+    assert_eq!(snapshot.participants["alice"].correlation, None);
+    assert_eq!(snapshot.participants["alice"].playback_scope, None);
+    assert_eq!(snapshot.participants["alice"].position_sample_age_ms, None);
+}
+
+#[test]
+fn participant_status_server_direction_ignores_malformed_snapshot_and_keeps_valid_report() {
+    let decoded = decode_message_line(
+        r#"{"State":{"sorotteParticipantStatusV1":{"report":{"reportSequence":7,"playerConnection":"connected","phase":"playing","timelineKind":"unknown"},"snapshot":{"revision":8,"participants":{"mallory":{"availability":"futureValue"}}}}}}"#,
+    )
+    .expect("the additive State envelope should decode");
+    let ProtocolMessage::State(state) = decoded else {
+        panic!("participant status should decode as State");
+    };
+    assert!(
+        state.state.participant_status_v1().is_err(),
+        "the generic whole-extension decoder should expose the malformed snapshot"
+    );
+    let report = state
+        .state
+        .participant_status_report_v1()
+        .expect("the server direction must ignore malformed snapshot data")
+        .expect("the valid client report must remain available");
+    assert_eq!(report.report_sequence, 7);
+    assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
+}
+
+#[test]
+fn participant_status_media_evidence_eligibility_is_lifecycle_and_phase_specific() {
+    for phase in [
+        ParticipantPlaybackPhase::ReadyPaused,
+        ParticipantPlaybackPhase::Playing,
+        ParticipantPlaybackPhase::Rebuffering,
+        ParticipantPlaybackPhase::Ended,
+    ] {
+        assert!(participant_status_position_evidence_is_eligible(
+            ParticipantPlayerConnection::Connected,
+            phase,
+        ));
+    }
+    for phase in [
+        ParticipantPlaybackPhase::Empty,
+        ParticipantPlaybackPhase::Loading,
+        ParticipantPlaybackPhase::Prebuffering,
+        ParticipantPlaybackPhase::Seeking,
+        ParticipantPlaybackPhase::Failed,
+        ParticipantPlaybackPhase::Unknown,
+    ] {
+        assert!(!participant_status_position_evidence_is_eligible(
+            ParticipantPlayerConnection::Connected,
+            phase,
+        ));
+    }
+    for connection in [
+        ParticipantPlayerConnection::Unavailable,
+        ParticipantPlayerConnection::Starting,
+        ParticipantPlayerConnection::Disconnected,
+        ParticipantPlayerConnection::Failed,
+    ] {
+        assert!(!participant_status_position_evidence_is_eligible(
+            connection,
+            ParticipantPlaybackPhase::Playing,
+        ));
+        assert!(!participant_status_buffer_evidence_is_eligible(
+            connection,
+            ParticipantPlaybackPhase::Rebuffering,
+        ));
+    }
+    assert!(participant_status_buffer_evidence_is_eligible(
+        ParticipantPlayerConnection::Connected,
+        ParticipantPlaybackPhase::Prebuffering,
+    ));
+    assert!(!participant_status_buffer_evidence_is_eligible(
+        ParticipantPlayerConnection::Connected,
+        ParticipantPlaybackPhase::Loading,
+    ));
+}
+
+#[test]
+fn participant_status_media_redaction_enforces_the_full_eligibility_truth_table() {
+    fn assert_report(
+        connection: ParticipantPlayerConnection,
+        phase: ParticipantPlaybackPhase,
+        position_eligible: bool,
+        buffer_eligible: bool,
+    ) {
+        let mut report = ParticipantStatusReport::new(1, connection, phase)
+            .with_timeline_kind(ParticipantTimelineKind::Vod)
+            .with_position_seconds(42.0)
+            .with_logical_paused(false)
+            .with_playback_rate(1.0)
+            .with_paused_for_cache(true)
+            .with_cache_percent(75.0)
+            .with_buffered_ahead_seconds(8.0)
+            .with_sample_age_ms(120)
+            .with_position_sample_age_ms(80);
+
+        report.redact_ineligible_media_evidence();
+
+        assert_eq!(
+            report.timeline_kind,
+            if position_eligible {
+                ParticipantTimelineKind::Vod
+            } else {
+                ParticipantTimelineKind::Unknown
+            }
+        );
+        assert_eq!(report.position_seconds, position_eligible.then_some(42.0));
+        assert_eq!(report.logical_paused, position_eligible.then_some(false));
+        assert_eq!(report.playback_rate, position_eligible.then_some(1.0));
+        assert_eq!(
+            report.position_sample_age_ms,
+            position_eligible.then_some(80)
+        );
+        assert_eq!(report.paused_for_cache, buffer_eligible.then_some(true));
+        assert_eq!(report.cache_percent, buffer_eligible.then_some(75.0));
+        assert_eq!(
+            report.buffered_ahead_seconds,
+            buffer_eligible.then_some(8.0)
+        );
+        assert_eq!(
+            report.sample_age_ms,
+            (position_eligible || buffer_eligible).then_some(120)
+        );
+    }
+
+    fn assert_view(
+        connection: ParticipantPlayerConnection,
+        phase: ParticipantPlaybackPhase,
+        position_eligible: bool,
+        buffer_eligible: bool,
+    ) {
+        let mut view = ParticipantStatusView::new(ParticipantStatusAvailability::Fresh);
+        view.player_connection = Some(connection);
+        view.phase = Some(phase);
+        view.correlation = Some(ParticipantStatusCorrelation::Exact);
+        view.timeline_kind = Some(ParticipantTimelineKind::Vod);
+        view.position_seconds = Some(42.0);
+        view.logical_paused = Some(false);
+        view.playback_rate = Some(1.0);
+        view.paused_for_cache = Some(true);
+        view.cache_percent = Some(75.0);
+        view.buffered_ahead_seconds = Some(8.0);
+        view.sample_age_ms = Some(120);
+        view.position_sample_age_ms = Some(80);
+        view.report_age_ms = Some(40);
+        view.room_offset_seconds = Some(0.25);
+
+        view.redact_ineligible_media_evidence();
+
+        assert_eq!(
+            view.timeline_kind,
+            position_eligible.then_some(ParticipantTimelineKind::Vod)
+        );
+        assert_eq!(view.position_seconds, position_eligible.then_some(42.0));
+        assert_eq!(view.logical_paused, position_eligible.then_some(false));
+        assert_eq!(view.playback_rate, position_eligible.then_some(1.0));
+        assert_eq!(view.position_sample_age_ms, position_eligible.then_some(80));
+        assert_eq!(view.room_offset_seconds, position_eligible.then_some(0.25));
+        assert_eq!(view.paused_for_cache, buffer_eligible.then_some(true));
+        assert_eq!(view.cache_percent, buffer_eligible.then_some(75.0));
+        assert_eq!(view.buffered_ahead_seconds, buffer_eligible.then_some(8.0));
+        assert_eq!(
+            view.sample_age_ms,
+            (position_eligible || buffer_eligible).then_some(120)
+        );
+        assert_eq!(view.report_age_ms, Some(40));
+    }
+
+    for (connection, phase, position_eligible, buffer_eligible) in [
+        (
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Playing,
+            true,
+            true,
+        ),
+        (
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Prebuffering,
+            false,
+            true,
+        ),
+        (
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Ended,
+            true,
+            false,
+        ),
+        (
+            ParticipantPlayerConnection::Connected,
+            ParticipantPlaybackPhase::Loading,
+            false,
+            false,
+        ),
+        (
+            ParticipantPlayerConnection::Disconnected,
+            ParticipantPlaybackPhase::Playing,
+            false,
+            false,
+        ),
+    ] {
+        assert_report(connection, phase, position_eligible, buffer_eligible);
+        assert_view(connection, phase, position_eligible, buffer_eligible);
+    }
+}
+
+#[test]
+fn participant_status_view_redaction_distinguishes_legacy_from_superseded_evidence() {
+    fn view(correlation: Option<ParticipantStatusCorrelation>) -> ParticipantStatusView {
+        let mut view = ParticipantStatusView::new(ParticipantStatusAvailability::Fresh);
+        view.correlation = correlation;
+        view.playback_scope = Some(ParticipantPlaybackScope::new(7).with_state_revision(19));
+        view.player_connection = Some(ParticipantPlayerConnection::Connected);
+        view.phase = Some(ParticipantPlaybackPhase::Playing);
+        view.timeline_kind = Some(ParticipantTimelineKind::Vod);
+        view.position_seconds = Some(42.0);
+        view.logical_paused = Some(false);
+        view.playback_rate = Some(1.0);
+        view.paused_for_cache = Some(false);
+        view.cache_percent = Some(75.0);
+        view.buffered_ahead_seconds = Some(8.0);
+        view.sample_age_ms = Some(120);
+        view.position_sample_age_ms = Some(80);
+        view.report_age_ms = Some(40);
+        view.room_offset_seconds = Some(0.25);
+        view
+    }
+
+    for correlation in [None, Some(ParticipantStatusCorrelation::Uncorrelated)] {
+        let mut legacy = view(correlation);
+        legacy.redact_ineligible_media_evidence();
+        assert_eq!(legacy.position_seconds, Some(42.0));
+        assert_eq!(legacy.buffered_ahead_seconds, Some(8.0));
+        assert_eq!(legacy.room_offset_seconds, None);
+    }
+
+    let mut superseded = view(Some(ParticipantStatusCorrelation::Superseded));
+    superseded.redact_ineligible_media_evidence();
+    assert_eq!(
+        superseded.player_connection,
+        Some(ParticipantPlayerConnection::Connected)
+    );
+    assert_eq!(superseded.phase, Some(ParticipantPlaybackPhase::Playing));
+    assert_eq!(superseded.playback_scope, None);
+    assert_eq!(superseded.position_seconds, None);
+    assert_eq!(superseded.buffered_ahead_seconds, None);
+    assert_eq!(superseded.sample_age_ms, None);
+    assert_eq!(superseded.position_sample_age_ms, None);
+    assert_eq!(superseded.room_offset_seconds, None);
+
+    let mut exact = view(Some(ParticipantStatusCorrelation::Exact));
+    exact.redact_ineligible_media_evidence();
+    assert_eq!(exact.position_seconds, Some(42.0));
+    assert_eq!(exact.room_offset_seconds, Some(0.25));
+
+    let mut live = view(Some(ParticipantStatusCorrelation::Exact));
+    live.timeline_kind = Some(ParticipantTimelineKind::Live);
+    live.redact_ineligible_media_evidence();
+    assert_eq!(live.position_seconds, Some(42.0));
+    assert_eq!(
+        live.room_offset_seconds, None,
+        "an exact live timeline still cannot support VOD-style ahead/behind precision",
+    );
+}
+
+#[test]
+fn participant_status_full_snapshot_omits_only_the_default_mode() {
+    let full = ParticipantStatusSnapshot::new(1, BTreeMap::new());
+    let full_json = serde_json::to_value(&full).expect("full snapshot should serialize");
+    assert!(
+        full_json.get("mode").is_none(),
+        "the default full mode should remain additive on the wire"
+    );
+
+    let compact = full.with_mode(ParticipantStatusSnapshotMode::Compact);
+    let compact_json = serde_json::to_value(compact).expect("compact snapshot should serialize");
+    assert_eq!(compact_json.get("mode"), Some(&json!("compact")));
 }
 
 #[test]

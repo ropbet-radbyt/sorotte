@@ -100,6 +100,13 @@ pub mod persistence {
     };
 }
 
+pub mod participant_status {
+    pub use crate::participant_status_presentation::{
+        ParticipantStatusFreshness, ParticipantStatusPresentation,
+        ParticipantStatusReportPresentation, format_participant_status_timestamp,
+    };
+}
+
 pub mod readiness {
     pub use crate::readiness_presentation::{
         ParticipantReadinessPresentation, PendingReadinessIntentPresentation,

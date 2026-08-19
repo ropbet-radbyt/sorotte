@@ -39,6 +39,9 @@ fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands()
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
+    owner.report_external_player_availability(
+        sorotte_client_core::ExternalPlayerAvailability::Connecting,
+    );
     owner.player_paused = Some(false);
     owner.player_position_seconds = Some(10.0);
     owner.player_local_file = Some(

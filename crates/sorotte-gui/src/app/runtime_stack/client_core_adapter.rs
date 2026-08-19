@@ -1,6 +1,7 @@
 use super::*;
 use sorotte_secret::SecretValue;
 
+mod delivery_fence;
 mod event_drain;
 mod runtime_adapter_impl;
 
@@ -234,6 +235,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         features.insert("sorottePlexPlaylistUris".to_owned(), Value::Bool(true));
         ClientSession::advertise_readiness_v2(&mut features);
         ClientSession::advertise_playback_barrier_v1(&mut features);
+        ClientSession::advertise_participant_status_v1(&mut features);
         Value::Object(features)
     }
 
@@ -749,7 +751,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(in crate::app) fn acknowledge_outbound_protocol_delivery(
         &mut self,
         token: u64,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() else {
             return Err(format!(
                 "Outbound protocol delivery receipt {token} had no staged session line."
@@ -792,7 +794,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             }
         }
         self.staged_outbound_protocol_delivery = None;
-        Ok(())
+        Ok(staged_line)
     }
 
     pub(in crate::app) fn fail_outbound_protocol_delivery(

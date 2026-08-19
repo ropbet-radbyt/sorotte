@@ -734,6 +734,7 @@ impl PlaybackCoordinator {
     pub fn reset_transport_adapter_epoch(&mut self, now_seconds: f64) {
         self.observed = None;
         self.cached_seekable_ranges = None;
+        self.metrics.steady_state_skew_seconds = None;
         self.metrics.last_buffered_ahead_seconds = None;
         self.metrics.last_input_rate_bytes_per_second = None;
         self.pending_commands.clear();
@@ -895,6 +896,7 @@ impl PlaybackCoordinator {
             };
             self.observed = None;
             self.cached_seekable_ranges = None;
+            self.metrics.steady_state_skew_seconds = None;
             self.metrics.last_buffered_ahead_seconds = None;
             self.metrics.last_input_rate_bytes_per_second = None;
             self.pending_commands.clear();
@@ -997,6 +999,7 @@ impl PlaybackCoordinator {
         self.desired = None;
         self.observed = None;
         self.cached_seekable_ranges = None;
+        self.metrics.steady_state_skew_seconds = None;
         self.metrics.last_buffered_ahead_seconds = None;
         self.metrics.last_input_rate_bytes_per_second = None;
         self.pending_commands.clear();
@@ -1104,6 +1107,12 @@ impl PlaybackCoordinator {
                         && matches!(command.kind, PendingCommandKind::Seek { .. })
                 }));
         if revision_changed {
+            // A room-position skew is meaningful only for the desired
+            // revision against which it was measured. Cached observations may
+            // be replayed while adopting a newer revision, so discard the old
+            // value before any replay and require a fresh transport sample to
+            // establish the replacement measurement.
+            self.metrics.steady_state_skew_seconds = None;
             let guards_superseded_dispatch = update_kind
                 == DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch
                 || replacement_supersedes_dispatched_seek;
@@ -1685,6 +1694,23 @@ impl PlaybackCoordinator {
 
     pub fn metrics(&self) -> &PlaybackCoordinatorMetrics {
         &self.metrics
+    }
+
+    pub(crate) fn clear_participant_status_transport_metrics(&mut self) {
+        self.metrics.steady_state_skew_seconds = None;
+        self.metrics.last_buffered_ahead_seconds = None;
+        self.metrics.last_input_rate_bytes_per_second = None;
+    }
+
+    pub(crate) fn expire_transport_observation(&mut self) {
+        self.observed = None;
+        self.cached_seekable_ranges = None;
+        self.clear_participant_status_transport_metrics();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_steady_state_skew_seconds_for_test(&mut self, skew_seconds: f64) {
+        self.metrics.steady_state_skew_seconds = Some(skew_seconds);
     }
 
     pub fn recovery_episode(&self) -> Option<RecoveryEpisodeSnapshot> {
@@ -2692,7 +2718,13 @@ impl PlaybackCoordinator {
             return;
         }
 
-        self.coordinate_recovery(desired, observed, advancing, actions);
+        self.coordinate_recovery(
+            desired,
+            observed,
+            seek_preparation_evidence_is_fresh,
+            advancing,
+            actions,
+        );
         let play_command_pending = self.pending_commands.iter().any(|command| {
             command.revision == desired.state_revision
                 && matches!(command.kind, PendingCommandKind::Play { .. })
@@ -2892,6 +2924,7 @@ impl PlaybackCoordinator {
         &mut self,
         desired: DesiredRoomPlayback,
         observed: ObservedState,
+        skew_evidence_is_fresh: bool,
         advancing: bool,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
@@ -2911,7 +2944,9 @@ impl PlaybackCoordinator {
         let room_position = desired.position_at(observed.observed_at_seconds);
         let local_position = observed.position_seconds.unwrap_or(room_position);
         let lag = (room_position - local_position).max(0.0);
-        self.metrics.steady_state_skew_seconds = Some(local_position - room_position);
+        if skew_evidence_is_fresh {
+            self.metrics.steady_state_skew_seconds = Some(local_position - room_position);
+        }
 
         if !episode_snapshot.decision_made {
             let mut decision_made = true;

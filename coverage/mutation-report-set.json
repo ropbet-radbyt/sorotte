@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "sorotte-mutation-report-set",
+  "policy": "coverage/mutation-policy.toml",
+  "report_set": "participant-status",
+  "reports": {
+    "participant-status-protocol": "target/verification/mutation-participant-status-protocol.json",
+    "client-participant-status": "target/verification/mutation-client-participant-status.json",
+    "client-participant-status-runtime": "target/verification/mutation-client-participant-status-runtime.json",
+    "client-participant-status-outbox": "target/verification/mutation-client-participant-status-outbox.json",
+    "server-participant-status": "target/verification/mutation-server-participant-status.json",
+    "gui-participant-status": "target/verification/mutation-gui-participant-status.json",
+    "gui-playlist-delivery-fence": "target/verification/mutation-gui-playlist-delivery-fence.json",
+    "player-mpv-explicit-ipc-retry": "target/verification/mutation-player-mpv-explicit-ipc-retry.json",
+    "client-app-participant-status-lifecycle": "target/verification/mutation-client-app-participant-status-lifecycle.json",
+    "cli-participant-status-lifecycle": "target/verification/mutation-cli-participant-status-lifecycle.json"
+  }
+}

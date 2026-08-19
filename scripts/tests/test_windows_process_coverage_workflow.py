@@ -12,7 +12,7 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 RUST = "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
 PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
-INSTALL = "taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf"
+INSTALL = "taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 
 

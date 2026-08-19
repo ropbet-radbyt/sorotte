@@ -6,6 +6,7 @@ use super::{
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
     GuiInteractionRuntimeSnapshot, GuiShellAction, GuiTransientNotificationLevel,
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
     MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionId,
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
@@ -33,6 +34,7 @@ fn sync_adapter_to_saved_session_settings(
 
 mod chat_projection_tests;
 mod controller_autoplay_tests;
+mod participant_status_projection_tests;
 mod playback_barrier_integration_tests;
 mod playlist_tests;
 mod public_server_tests;

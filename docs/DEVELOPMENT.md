@@ -37,6 +37,25 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
+For public Rust API changes, install the pinned compatibility checker and
+compare every affected public crate with the exact pull-request base commit:
+
+```powershell
+cargo install cargo-semver-checks --version 0.50.0 --locked
+./scripts/check-semver.ps1 -BaselineRev <full-base-sha>
+```
+
+The wrapper checks all public workspace crates and uses a validated short
+temporary `CARGO_TARGET_DIR` outside the checkout. This avoids the nested
+baseline build paths exceeding the Windows linker path limit, restores any
+existing target override, and removes its temporary directory when complete.
+
+The required Linux pull-request check fetches full Git history and runs that
+comparison against `github.event.pull_request.base.sha`. Keep public structs
+and enums extensible through constructors, builders, accessors, and
+`#[non_exhaustive]` where appropriate; additive wire compatibility alone does
+not establish Rust source compatibility.
+
 Pull-request CI keeps the public `Rust all-feature behavior (Windows)` and
 `coverage-diff` checks stable, but their expensive work is deliberately
 parallel. Windows nextest/doctests, the release/package checks, and exact-head
@@ -244,6 +263,18 @@ Useful Python reference files:
 - GUI workflows and rendering state: `sorotte-gui` semantic scenarios and app tests
 - Real player behavior: `sorotte-player-mpv` plus ignored/manual real-`mpv` smoke tests when local `mpv` and media fixtures are available
 
+Participant-status and adjacent transport changes must also satisfy
+[`PARTICIPANT_STATUS_INVARIANTS.md`](PARTICIPANT_STATUS_INVARIANTS.md). Its
+matrix is intentionally cross-layer: a unit test for the edited function does
+not replace the A -> server -> B acceptance path, causal write-receipt test, or
+advisory non-interference assertion.
+
+The shared vocabulary and decision history live in [`../CONTEXT.md`](../CONTEXT.md),
+[`ADR 0001`](adr/0001-advisory-participant-status.md), and
+[`ADR 0002`](adr/0002-delivery-fenced-player-effects.md). Update those documents
+when a change alters status authority, clock meaning, or the definition of a
+causally delivered player effect.
+
 ## Coding Rules
 
 - Use Rust `1.97.1` and edition `2024`.
@@ -308,8 +339,13 @@ Windows coverage or the currently red complete legacy fanout matrix.
 ## Targeted Mutation Testing
 
 Mutation testing is intentionally shard-based. Install the pinned producer
-and run a scheduled shard (`privacy-secret`, `server-auth`, or
-`protocol-codec`) with a fresh results root. For example:
+and run a scheduled shard (for example `privacy-secret`, `server-auth`,
+`protocol-codec`, `participant-status-protocol`, `client-participant-status`,
+`client-participant-status-runtime`, `client-participant-status-outbox`,
+`server-participant-status`, `gui-participant-status`,
+`gui-playlist-delivery-fence`, `player-mpv-explicit-ipc-retry`,
+`client-app-participant-status-lifecycle`, or
+`cli-participant-status-lifecycle`) with a fresh results root. For example:
 
 ```powershell
 cargo install cargo-mutants --version 27.1.0 --locked
@@ -323,12 +359,35 @@ python scripts/mutation_ci.py run `
   --shard protocol-codec `
   --results-root target/mutation-ci/protocol-codec `
   --output target/verification/mutation-protocol-codec.json
+python scripts/mutation_ci.py verify-report `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --shard protocol-codec `
+  --report target/verification/mutation-protocol-codec.json
 ```
 
 Use a fresh results root for every local run. The wrapper rejects an existing
 `mutants.out` directory so stale artifacts cannot be mistaken for new
-evidence. Policy schema 2 binds package-wide versus library testing and any
-focused Rust test namespace; the wrapper reconciles that scope against every
-producer phase. A survivor or product defect discovered by a coverage-only
-branch should be characterized and recorded; do not change production
-behavior just to make the mutation shard green.
+evidence. Before handoff, verify every retained report against the final source
+tree; mutated-source and workspace test-input hashes are checked both when the
+campaign runs and when the report is consumed. `verify-report` also reruns the
+exact `cargo test --list --format terse` command and rejects a changed test
+inventory. For participant-status handoff, keep only the reports selected by
+`coverage/mutation-report-set.json` and run:
+
+```powershell
+python scripts/mutation_ci.py verify-report-set `
+  --repo-root . `
+  --policy coverage/mutation-policy.toml `
+  --manifest coverage/mutation-report-set.json
+```
+
+The aggregate verifier requires exactly one manifest-selected current passing
+report for every listed shard, so historical failed or stale attempts cannot be
+mistaken for release evidence. Policy schema 3 binds package-wide versus library testing, any
+focused Rust test selector prefix, and an optional source-bound mutant-name
+regular expression; the wrapper reconciles that scope against every producer
+phase and rejects inventory outside the declared expression. A survivor or
+product defect discovered by a coverage-only branch should be characterized
+and recorded; do not change production behavior just to make the mutation
+shard green.

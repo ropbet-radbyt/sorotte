@@ -43,6 +43,7 @@ impl<'a> ClientSessionUpdate<'a> {
             if let Some(control) = self.control.as_deref_mut() {
                 control.cancel_protocol_playback_barrier_requests();
                 control.cancel_protocol_readiness_intents();
+                control.cancel_protocol_participant_status_reports();
             }
             if let Some(playback_coordination) = self.playback_coordination.as_deref_mut() {
                 playback_coordination.handle_authoritative_playback_barrier_room_change();
@@ -143,6 +144,55 @@ impl<'a> ClientSessionUpdate<'a> {
         }
     }
 
+    fn flush_participant_status_transition(&mut self, now_seconds: f64) {
+        // An active session is established only by Hello, which always owns a
+        // room. The pending-report boundary still checks that invariant
+        // defensively; this gate only decides whether queued advisory reports
+        // must be cancelled on capability/lifecycle withdrawal.
+        let status_reporting_enabled =
+            self.session.is_active() && self.session.server_participant_status_v1_supported();
+        let pending = self
+            .playback_coordination
+            .as_deref_mut()
+            .and_then(|coordination| {
+                coordination.pending_participant_status_report(self.session, false, now_seconds)
+            });
+        if !status_reporting_enabled {
+            if let Some(control) = self.control.as_deref_mut() {
+                control.cancel_protocol_participant_status_reports();
+            }
+            return;
+        }
+        let Some(pending) = pending else {
+            return;
+        };
+        let Some(control) = self.control.as_deref_mut() else {
+            return;
+        };
+        control.activate_protocol_connection_generation();
+        if control
+            .emit(ClientEffect::SendState(
+                StatePayload::new().with_participant_status_v1(
+                    ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+                ),
+            ))
+            .is_ok()
+            && let Some(coordination) = self.playback_coordination.as_deref_mut()
+        {
+            coordination.commit_participant_status_report(&pending);
+        }
+    }
+
+    fn cancel_participant_status_for_inactive_phase(&mut self) {
+        if let Some(control) = self.control.as_deref_mut() {
+            // A status report belongs to the active authenticated connection.
+            // Strip unleased reports immediately and mark a leased front so a
+            // failed transport write cannot retry it after the lifecycle
+            // boundary.
+            control.cancel_protocol_participant_status_reports();
+        }
+    }
+
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
@@ -162,6 +212,10 @@ impl<'a> ClientSessionUpdate<'a> {
     ) -> Result<(), ProtocolError> {
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         let is_hello = matches!(&message, ProtocolMessage::Hello(_));
+        let confirms_room_membership = matches!(
+            &message,
+            ProtocolMessage::List(message) if matches!(&message.list, ListPayload::Rooms(_))
+        );
         let extension = Self::playback_barrier_extension(&message);
         let authority_evidence =
             Self::local_control_authority_evidence(&message, self.session.username());
@@ -174,7 +228,13 @@ impl<'a> ClientSessionUpdate<'a> {
             }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
+            if confirms_room_membership
+                && let Some(coordination) = self.playback_coordination.as_deref_mut()
+            {
+                coordination.confirm_participant_status_room_membership(self.session);
+            }
             self.flush_pending_readiness_reconciliation();
+            self.flush_participant_status_transition(now_seconds);
         }
         result
     }
@@ -185,6 +245,10 @@ impl<'a> ClientSessionUpdate<'a> {
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
         let is_hello = matches!(&message, ProtocolMessage::Hello(_));
+        let confirms_room_membership = matches!(
+            &message,
+            ProtocolMessage::List(message) if matches!(&message.list, ListPayload::Rooms(_))
+        );
         let extension = Self::playback_barrier_extension(&message);
         let authority_evidence =
             Self::local_control_authority_evidence(&message, self.session.username());
@@ -197,7 +261,13 @@ impl<'a> ClientSessionUpdate<'a> {
             }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
+            if confirms_room_membership
+                && let Some(coordination) = self.playback_coordination.as_deref_mut()
+            {
+                coordination.confirm_participant_status_room_membership(self.session);
+            }
             self.flush_pending_readiness_reconciliation();
+            self.flush_participant_status_transition(now_seconds);
         }
         result
     }
@@ -221,26 +291,32 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 
     pub fn mark_connecting(&mut self) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.mark_connecting();
     }
 
     pub fn mark_awaiting_hello(&mut self) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.mark_awaiting_hello();
     }
 
     pub fn mark_reconnecting(&mut self, attempt: u32) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.mark_reconnecting(attempt);
     }
 
     pub fn mark_closing(&mut self) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.mark_closing();
     }
 
     pub fn mark_disconnected(&mut self) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.mark_disconnected();
     }
 
     pub fn reset_sync_state_for_reconnect(&mut self) {
+        self.cancel_participant_status_for_inactive_phase();
         self.session.reset_sync_state_for_reconnect();
     }
 
@@ -436,6 +512,24 @@ where
             self.playback_coordination
                 .confirm_playback_barrier_request_queued(&request);
         }
+        if let Some(pending) = self
+            .playback_coordination
+            .pending_participant_status_report(self.session, false, now_seconds)
+        {
+            self.control.activate_protocol_connection_generation();
+            if self
+                .control
+                .emit(ClientEffect::SendState(
+                    StatePayload::new().with_participant_status_v1(
+                        ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+                    ),
+                ))
+                .is_ok()
+            {
+                self.playback_coordination
+                    .commit_participant_status_report(&pending);
+            }
+        }
         Ok(plan)
     }
 
@@ -505,6 +599,13 @@ where
     C: ClientEffectSink,
 {
     pub fn new(session: ClientSession, player: P, control: C) -> Self {
+        let mut playback_coordination = RuntimePlaybackCoordination::default();
+        if player
+            .capabilities()
+            .contains(sorotte_player_api::PlayerCapability::Telemetry)
+        {
+            playback_coordination.mark_transport_telemetry_available();
+        }
         Self {
             session,
             player,
@@ -514,7 +615,7 @@ where
             pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
             pending_reconnect_rate_reset: false,
-            playback_coordination: RuntimePlaybackCoordination::default(),
+            playback_coordination,
             ordered_player_events: OrderedPlayerEventConsumer::default(),
         }
     }
@@ -593,6 +694,10 @@ where
                     &mut self.player,
                     &mut self.control,
                 )?;
+                if let ClientRuntimeAction::SetRoom { room } = action {
+                    self.playback_coordination
+                        .begin_participant_status_room_switch(room, self.session.room());
+                }
             }
         }
         Ok(())
@@ -616,6 +721,10 @@ where
                     &mut self.player,
                     &mut self.control,
                 )?;
+                if let ClientRuntimeAction::SetRoom { room } = action {
+                    self.playback_coordination
+                        .begin_participant_status_room_switch(room, self.session.room());
+                }
             }
         }
         Ok(())
@@ -697,10 +806,20 @@ where
             ClientEffect::SetPlayerPlaybackRate(rate) => {
                 self.player.execute(PlayerCommand::SetPlaybackRate(rate))
             }
-            control_effect => self
-                .control
-                .emit(control_effect)
-                .map_err(client_effect_player_error),
+            control_effect => {
+                let room_switch_target = match &control_effect {
+                    ClientEffect::SetRoom(room) => Some(room.clone()),
+                    _ => None,
+                };
+                self.control
+                    .emit(control_effect)
+                    .map_err(client_effect_player_error)?;
+                if let Some(room) = room_switch_target {
+                    self.playback_coordination
+                        .begin_participant_status_room_switch(&room, self.session.room());
+                }
+                Ok(())
+            }
         }
     }
 
@@ -739,7 +858,18 @@ where
     }
 
     pub fn emit_effect(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
-        self.control.emit(effect)
+        let room_switch_target = match &effect {
+            ClientEffect::SetRoom(room) => Some(room.clone()),
+            _ => None,
+        };
+        let result = self.control.emit(effect);
+        if result.is_ok()
+            && let Some(room) = room_switch_target
+        {
+            self.playback_coordination
+                .begin_participant_status_room_switch(&room, self.session.room());
+        }
+        result
     }
 
     pub fn player(&self) -> &P {

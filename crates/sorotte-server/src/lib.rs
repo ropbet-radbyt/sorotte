@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -26,10 +26,16 @@ use sorotte_protocol::{
     ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
     DirectReadinessSurface, FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
     ListUserEntry, MediaLoadIntent, MediaReadyPayload, MixedReadinessPolicy,
-    NewControlledRoomPayload, ParticipantReadiness, ParticipantReadinessUpdate, PingPayload,
-    PlaybackBarrierDegradedReason, PlaybackBarrierParticipantPhase,
-    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
-    PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
+    NewControlledRoomPayload, PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS,
+    PARTICIPANT_STATUS_MAX_PLAYBACK_RATE, PARTICIPANT_STATUS_MAX_POSITION_SECONDS,
+    PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS, PARTICIPANT_STATUS_MIN_PLAYBACK_RATE,
+    ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantPlayerConnection,
+    ParticipantReadiness, ParticipantReadinessUpdate, ParticipantStatusAvailability,
+    ParticipantStatusCorrelation, ParticipantStatusReport, ParticipantStatusSnapshot,
+    ParticipantStatusSnapshotMode, ParticipantStatusStateExtension, ParticipantStatusView,
+    ParticipantTimelineKind, PingPayload, PlaybackBarrierDegradedReason,
+    PlaybackBarrierParticipantPhase, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
+    PlaybackBarrierPolicy, PlaybackBarrierRecoveryDisposition, PlaybackBarrierRecoveryPayload,
     PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
     PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction,
     PlayerReadinessAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
@@ -38,7 +44,7 @@ use sorotte_protocol::{
     ReadinessSetExtension, ReadinessStateExtension, ReadyPayload, RecoveryStage,
     RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
     RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
-    SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
+    SOROTTE_PARTICIPANT_STATUS_V1, SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
     SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2, SetPayload, StartGateDegradedReason,
     StartParticipationRole, StartedAckPayload, StatePayload, TechnicalBlockCause,
     TechnicalPlayability, TechnicalPlayabilityPhase, TechnicalReadinessBlock,
@@ -122,6 +128,9 @@ const READINESS_MAX_OPERATION_ID_BYTES: usize = 128;
 const READINESS_MAX_RETAINED_OPERATIONS_PER_MEMBERSHIP: usize = 256;
 const READINESS_RECONNECT_TTL_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS * 2.0;
 const READINESS_USER_TRANSPORT_GRACE_SECONDS: f64 = 5.0;
+const PARTICIPANT_STATUS_MAX_ABSOLUTE_ROOM_OFFSET_SECONDS: f64 = 86_400.0;
+const PARTICIPANT_STATUS_FRESH_MILLIS: u64 = 3_000;
+const PARTICIPANT_STATUS_DELAYED_MILLIS: u64 = 10_000;
 // Superseded transports are forcibly closed and ordinary live connections
 // time out after PROTOCOL_TIMEOUT_SECONDS. Retain displaced request identities
 // across that lifetime plus two IO deadlines and shutdown scheduling margin.
@@ -407,11 +416,20 @@ pub struct ServerRuntime {
     next_playback_barrier_generation: u64,
     next_playback_barrier_revision: u64,
     client_playback_states: BTreeMap<String, ClientPlaybackState>,
+    client_participant_status: BTreeMap<String, RetainedParticipantStatus>,
+    client_participant_status_last_sequence: BTreeMap<String, u64>,
+    room_participant_status_scopes: BTreeMap<String, RoomParticipantStatusScope>,
+    room_participant_status_snapshot_revisions: BTreeMap<String, u64>,
+    participant_status_snapshot_cache: BTreeMap<String, CachedParticipantStatusSnapshot>,
     client_room_join_sequence: BTreeMap<String, u64>,
     next_room_join_sequence: u64,
     client_state_counters: BTreeMap<String, ClientStateCounters>,
     client_last_state_update_at: BTreeMap<String, f64>,
     client_next_periodic_state_at: BTreeMap<String, f64>,
+    /// Last wall-clock value observed by the periodic scheduler. Network
+    /// cadence is driven by a monotonic timer, but protocol timestamps are
+    /// wall-clock seconds, so a rollback must rebase every pending deadline.
+    last_periodic_schedule_observed_at_seconds: Option<f64>,
     client_peer_ips: BTreeMap<String, String>,
     time_now_override_seconds: Option<f64>,
     room_password_provider: RoomPasswordProvider,
@@ -546,6 +564,79 @@ struct ClientPlaybackState {
     updated_at_seconds: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct RetainedParticipantStatus {
+    report: ParticipantStatusReport,
+    received_at_seconds: f64,
+    max_projected_report_age_ms: MonotonicParticipantStatusAge,
+    forward_delay_ms: Option<u64>,
+    room: String,
+    username: String,
+    room_join_sequence: u64,
+}
+
+#[derive(Debug)]
+struct MonotonicParticipantStatusAge(AtomicU64);
+
+impl MonotonicParticipantStatusAge {
+    fn new(age_ms: u64) -> Self {
+        Self(AtomicU64::new(age_ms))
+    }
+
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, age_ms: u64) {
+        self.0.fetch_max(age_ms, Ordering::Relaxed);
+    }
+}
+
+impl Clone for MonotonicParticipantStatusAge {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
+impl PartialEq for MonotonicParticipantStatusAge {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoomParticipantStatusScope {
+    media_generation: u64,
+    transport_revision: u64,
+}
+
+impl Default for RoomParticipantStatusScope {
+    fn default() -> Self {
+        Self {
+            media_generation: 1,
+            transport_revision: 1,
+        }
+    }
+}
+
+impl RoomParticipantStatusScope {
+    fn to_wire(self, state_revision: Option<u64>) -> ParticipantPlaybackScope {
+        let scope = ParticipantPlaybackScope::new(self.media_generation)
+            .with_transport_revision(self.transport_revision);
+        if let Some(state_revision) = state_revision {
+            scope.with_state_revision(state_revision)
+        } else {
+            scope
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedParticipantStatusSnapshot {
+    generated_at_bits: u64,
+    snapshot: ParticipantStatusSnapshot,
+}
+
 impl ClientPlaybackState {
     fn new(position: Option<f64>, updated_at_seconds: f64) -> Self {
         Self {
@@ -577,6 +668,7 @@ struct ClientStateCounters {
     ping_rtt_seconds: f64,
     ping_average_rtt_seconds: f64,
     ping_forward_delay_seconds: f64,
+    ping_metrics_observed_at_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -2495,7 +2495,16 @@ def lexical_non_coverable_lines(
             if "{" not in stripped or not stripped.split("{", 1)[1].strip():
                 result.add(number)
             continue
+        module_declaration = INLINE_MODULE_DECLARATION.fullmatch(
+            code_stripped.removesuffix("{").removesuffix(";").rstrip()
+        )
+        if module_declaration is not None and code_stripped.endswith(("{", ";")):
+            result.add(number)
+            continue
         if not code_stripped or PUNCTUATION_ONLY.fullmatch(compact_code):
+            result.add(number)
+            continue
+        if re.fullmatch(r"\.\.,?", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(r"(?:}\s*)?else\s*{", code_stripped):
@@ -2511,6 +2520,12 @@ def lexical_non_coverable_lines(
                 continue
         if re.fullmatch(
             r"(?:Self|[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*{",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"if\s+let\s+(?:Self|[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*{",
             code_stripped,
         ):
             result.add(number)

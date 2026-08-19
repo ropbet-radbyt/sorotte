@@ -871,8 +871,7 @@ impl ClientSession {
         now_seconds: Option<f64>,
     ) -> Result<(), ProtocolError> {
         let normalized = normalize_client_protocol_message(message);
-        self.pending_compatibility_fallbacks
-            .extend(normalized.fallbacks);
+        self.retain_compatibility_fallbacks(normalized.fallbacks);
         match normalized.command {
             ClientInboundCommand::Hello(hello) => self.apply_hello(hello),
             ClientInboundCommand::Set(commands) => self.apply_set(commands, now_seconds),

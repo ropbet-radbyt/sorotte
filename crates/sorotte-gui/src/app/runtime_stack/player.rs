@@ -2,10 +2,11 @@ use std::{collections::VecDeque, fs::OpenOptions, io::Write, path::PathBuf};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
+use sorotte_client_core::ExternalPlayerAvailability;
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
-    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
+    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapability, PlayerCommand,
+    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken,
+    PlayerEventBatch, PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
     PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
@@ -249,6 +250,23 @@ impl GuiOwnedPlayer {
             Self::Test(_) | Self::Custom(_) => None,
             #[cfg(not(test))]
             Self::Test(_) => None,
+        }
+    }
+
+    pub(in super::super) fn external_availability(&self) -> ExternalPlayerAvailability {
+        let capabilities = match self {
+            Self::Test(player) => player.capabilities(),
+            Self::Mpv(player) if !player.is_connected() => {
+                return ExternalPlayerAvailability::Disconnected;
+            }
+            Self::Mpv(player) => player.capabilities(),
+            #[cfg(test)]
+            Self::Custom(player) => player.capabilities(),
+        };
+        if capabilities.contains(PlayerCapability::Telemetry) {
+            ExternalPlayerAvailability::Connecting
+        } else {
+            ExternalPlayerAvailability::TelemetryUnavailable
         }
     }
 

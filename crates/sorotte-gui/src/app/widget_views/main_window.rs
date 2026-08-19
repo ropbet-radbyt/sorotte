@@ -1,9 +1,61 @@
 use super::*;
+use crate::app::shell_state::{
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
+};
+use sorotte_protocol::{ParticipantPlaybackPhase, ParticipantPlayerConnection};
 
 mod chat;
 mod editors;
 mod playlist;
 mod summary;
+
+fn participant_status_tone(status: &MainWindowParticipantStatusPresentation) -> GuiStatusTone {
+    let MainWindowParticipantStatusPresentation::Report(report) = status else {
+        return match status {
+            MainWindowParticipantStatusPresentation::Unavailable
+            | MainWindowParticipantStatusPresentation::WaitingForFirstReport => {
+                GuiStatusTone::Warning
+            }
+            MainWindowParticipantStatusPresentation::LegacyClient => GuiStatusTone::Muted,
+            MainWindowParticipantStatusPresentation::Report(_) => unreachable!(),
+            _ => GuiStatusTone::Muted,
+        };
+    };
+
+    if report.freshness == MainWindowParticipantStatusFreshness::Stale
+        || report.status.player_connection == Some(ParticipantPlayerConnection::Failed)
+        || report.status.phase == Some(ParticipantPlaybackPhase::Failed)
+    {
+        return GuiStatusTone::Danger;
+    }
+    let player_connection = report.status.player_connection;
+    let player_needs_attention = player_connection.is_none()
+        || player_connection == Some(ParticipantPlayerConnection::Unavailable)
+        || player_connection == Some(ParticipantPlayerConnection::Starting)
+        || player_connection == Some(ParticipantPlayerConnection::Disconnected);
+    if report.freshness == MainWindowParticipantStatusFreshness::Delayed
+        || report.timeline_mismatch
+        || player_needs_attention
+        || matches!(
+            report.status.phase,
+            Some(
+                ParticipantPlaybackPhase::Loading
+                    | ParticipantPlaybackPhase::Prebuffering
+                    | ParticipantPlaybackPhase::Rebuffering
+                    | ParticipantPlaybackPhase::Seeking
+            )
+        )
+    {
+        return GuiStatusTone::Warning;
+    }
+    if report.freshness == MainWindowParticipantStatusFreshness::Fresh
+        && report.status.player_connection == Some(ParticipantPlayerConnection::Connected)
+        && report.status.phase == Some(ParticipantPlaybackPhase::Playing)
+    {
+        return GuiStatusTone::Success;
+    }
+    GuiStatusTone::Muted
+}
 
 impl SorotteGuiShellAppState {
     pub(crate) fn main_window_widget_tree(&self) -> GuiWidgetNode {
@@ -144,6 +196,20 @@ impl SorotteGuiShellAppState {
                                             true,
                                             false,
                                         ),
+                                        GuiWidgetNode::leaf(
+                                            format!(
+                                                "main-window:user:browser:{user_index}:participant-status"
+                                            ),
+                                            "Observed playback",
+                                            GuiWidgetKind::Status,
+                                            Some(user.participant_status.compact_label()),
+                                            true,
+                                            false,
+                                        )
+                                        .with_status_tone(participant_status_tone(
+                                            &user.participant_status,
+                                        ))
+                                        .with_tooltip(user.participant_status.detail_label()),
                                     ],
                                 );
                                 user_panel.selected = user.is_selected;

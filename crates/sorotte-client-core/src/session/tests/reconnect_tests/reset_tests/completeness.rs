@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sorotte_protocol::{
-    CommitStartPayload, DirectReadinessSurface, ParticipantReadinessUpdate,
-    PlaybackBarrierParticipantStatus, PlaybackBarrierPhase, PlaybackBarrierPolicy,
-    PlaybackBarrierSetExtension, PlaybackBarrierStatusPayload, PrepareMediaPayload,
-    ProtocolMessage, ReadinessMutationSource, RoomBufferingPhase, RoomBufferingPolicy,
-    RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot,
-    RoomStartGatePhase, SetPayload, StartParticipationRole, TechnicalPlayabilityPhase,
-    TechnicalPlayabilitySummary, UserReadinessIntent, UserReadinessMutationSource,
+    CommitStartPayload, DirectReadinessSurface, ParticipantPlaybackScope,
+    ParticipantReadinessUpdate, ParticipantStatusAvailability, ParticipantStatusSnapshotMode,
+    ParticipantStatusView, PlaybackBarrierParticipantStatus, PlaybackBarrierPhase,
+    PlaybackBarrierPolicy, PlaybackBarrierSetExtension, PlaybackBarrierStatusPayload,
+    PrepareMediaPayload, ProtocolMessage, ReadinessMutationSource, RoomBufferingPhase,
+    RoomBufferingPolicy, RoomBufferingPolicyPayload, RoomBufferingStatusPayload, RoomPauseOwner,
+    RoomReadinessSnapshot, RoomStartGatePhase, SetPayload, StartParticipationRole,
+    TechnicalPlayabilityPhase, TechnicalPlayabilitySummary, UserReadinessIntent,
+    UserReadinessMutationSource,
 };
 
 use super::*;
@@ -288,9 +290,17 @@ impl ControllerResetProjection {
 struct SessionResetProjection {
     connection_username: Option<String>,
     connection_phase: ConnectionPhase,
+    connection_participant_status_v1: bool,
     room_name: Option<String>,
     room_domain: String,
     room_users: BTreeMap<String, crate::ClientUserView>,
+    room_participant_status_capabilities: BTreeMap<String, bool>,
+    room_legacy_list_position_snapshots: BTreeMap<String, f64>,
+    room_participant_statuses: BTreeMap<String, crate::ClientParticipantStatusView>,
+    room_participant_status_receipts: BTreeMap<String, (u64, bool)>,
+    room_participant_status_snapshot_revision: Option<u64>,
+    room_participant_status_snapshot_mode: ParticipantStatusSnapshotMode,
+    room_participant_status_authoritative_scope: Option<ParticipantPlaybackScope>,
     room_media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     room_known_rooms: BTreeSet<String>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
@@ -339,9 +349,32 @@ impl SessionResetProjection {
         Self {
             connection_username: connection.username.clone(),
             connection_phase: connection.phase.clone(),
+            connection_participant_status_v1: connection.participant_status_v1,
             room_name: room.name.clone(),
             room_domain: format!("{:#?}", room.domain),
             room_users: room.users.clone(),
+            room_participant_status_capabilities: room.participant_status_capabilities.clone(),
+            room_legacy_list_position_snapshots: room.legacy_list_position_snapshots.clone(),
+            room_participant_statuses: room.participant_statuses.clone(),
+            room_participant_status_receipts: room
+                .participant_status_receipts
+                .iter()
+                .map(|(username, receipt)| {
+                    (
+                        username.clone(),
+                        (
+                            receipt.received_at_seconds.to_bits(),
+                            receipt
+                                .clock_invalidated
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        ),
+                    )
+                })
+                .collect(),
+            room_participant_status_snapshot_revision: room.participant_status_snapshot_revision,
+            room_participant_status_snapshot_mode: room.participant_status_snapshot_mode,
+            room_participant_status_authoritative_scope: room
+                .participant_status_authoritative_scope,
             room_media_match_peer_tiers: room.media_match_peer_tiers.clone(),
             room_known_rooms: room.known_rooms.clone(),
             room_playstates: room.playstates.clone(),
@@ -583,6 +616,30 @@ fn seed_room_state(session: &mut ClientSession, seed: u64) {
             controller: true,
         },
     );
+    session
+        .model
+        .room
+        .participant_status_capabilities
+        .extend([("alice".to_owned(), true), ("bob".to_owned(), true)]);
+    session
+        .model
+        .room
+        .legacy_list_position_snapshots
+        .insert("bob".to_owned(), 17.5 + seed as f64);
+    session.model.room.participant_statuses.insert(
+        "bob".to_owned(),
+        crate::ClientParticipantStatusView::from_wire(ParticipantStatusView::new(
+            ParticipantStatusAvailability::AwaitingReport,
+        )),
+    );
+    session.model.room.participant_status_receipts.insert(
+        "bob".to_owned(),
+        crate::model::ParticipantStatusReceipt::new(18.5 + seed as f64),
+    );
+    session.model.room.participant_status_snapshot_revision = Some(seed.max(1));
+    session.model.room.participant_status_snapshot_mode = ParticipantStatusSnapshotMode::Compact;
+    session.model.room.participant_status_authoritative_scope =
+        Some(ParticipantPlaybackScope::new(seed.max(1)).with_transport_revision(seed.max(1)));
     session.model.room.users.insert(
         "bob".to_owned(),
         crate::ClientUserView {

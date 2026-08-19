@@ -37,7 +37,7 @@ use sorotte_client_app::app_boundary::{
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
-use sorotte_client_core::{CoordinatorCommandId, PlayerCommandCause};
+use sorotte_client_core::{CoordinatorCommandId, ExternalPlayerAvailability, PlayerCommandCause};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerEventSequence, PlayerTransportPhase,
 };
@@ -73,8 +73,9 @@ use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver,
     GuiOutboundProtocolDeliveryResult, GuiOwnedPlayer, GuiPlayerLaunchRuntimeState,
-    GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate, GuiSessionRuntimeAdapter,
-    GuiSessionTransportDriver, GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
+    GuiPlaylistProtocolDeliveryFence, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
+    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTestPlayerAdapter,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiMediaMatchRemediationRuntimeSnapshot,
@@ -90,6 +91,64 @@ use super::startup::{
     gui_startup_public_server_outcome_with_fetcher,
     resolve_sorotte_gui_config_path_legacy_compatible, should_hydrate_startup_public_servers,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuiSessionOutboundDrainDisposition {
+    Drained,
+    Pending,
+    Failed,
+}
+
+enum GuiPendingSharedPlaylistOpen {
+    AwaitingMutationDelivery {
+        delivery_fence: GuiPlaylistProtocolDeliveryFence,
+    },
+    AfterMutation {
+        dispatch: GuiSharedPlaylistOpenDispatch,
+        opened_entry_count: usize,
+        selected_playlist_index: Option<usize>,
+        selected_media_source_path: Option<String>,
+        delivery_fence: GuiPlaylistProtocolDeliveryFence,
+    },
+}
+
+struct GuiSharedPlaylistOpenCompletion {
+    dispatch: GuiSharedPlaylistOpenDispatch,
+    opened_entry_count: usize,
+    selected_playlist_index: Option<usize>,
+    selected_media_source_path: Option<String>,
+    session_playlist_projected: bool,
+    session_success: bool,
+    session_error: Option<String>,
+}
+
+impl GuiPendingSharedPlaylistOpen {
+    fn note_frame_written(&mut self, line: &str) {
+        let delivery_fence = match self {
+            Self::AwaitingMutationDelivery { delivery_fence }
+            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        };
+        delivery_fence.note_frame_written(line);
+    }
+
+    fn delivery_fence_reached(&self) -> bool {
+        let delivery_fence = match self {
+            Self::AwaitingMutationDelivery { delivery_fence }
+            | Self::AfterMutation { delivery_fence, .. } => delivery_fence,
+        };
+        delivery_fence.is_reached()
+    }
+
+    fn replace_delivery_fence(&mut self, replacement: GuiPlaylistProtocolDeliveryFence) {
+        // A newer player-affecting playlist mutation supersedes both the old
+        // causal frontier and any continuation paired with it. Retaining an
+        // AfterMutation payload while swapping only its fence can execute an
+        // obsolete media open after the newer frame is acknowledged.
+        *self = Self::AwaitingMutationDelivery {
+            delivery_fence: replacement,
+        };
+    }
+}
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
 use super::stream_support::{
     StreamHelperAttachMode, managed_stream_helper_downloader_path,
@@ -336,6 +395,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) session_transport_reconnect_due_at: Option<Instant>,
     pub(super) session_transport_reconnect_failures: u32,
     pub(super) session_transport_disconnect_pending_cleanup: bool,
+    pending_shared_playlist_open: Option<GuiPendingSharedPlaylistOpen>,
     pub(super) runtime_pump_generation: u64,
     pub(super) session_default_room: Option<String>,
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,

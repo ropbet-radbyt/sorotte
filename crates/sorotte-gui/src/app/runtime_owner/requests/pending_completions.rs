@@ -120,10 +120,13 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match connect_result {
             Ok(()) => {
+                if !replace_owned_transport {
+                    self.report_current_external_player_availability();
+                }
                 self.reset_session_transport_reconnect_state();
                 self.session_default_room = default_room;
                 self.pending_room_change_request = None;
-                self.clear_session_attached_player_sync_state();
+                self.clear_session_causal_player_effect_state();
                 self.last_published_local_file = None;
                 self.last_published_media_match_signature = None;
                 if let Some(driver) = replacement_transport_driver {

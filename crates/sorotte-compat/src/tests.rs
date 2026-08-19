@@ -140,7 +140,7 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
 
     drop(first);
     acquired_rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(FIXTURE_TIMEOUT)
         .expect("contending startup lease should acquire after release");
     contender.join().expect("contending allocator should exit");
 

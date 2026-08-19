@@ -1,4 +1,10 @@
 use super::super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
+use sorotte_client_app::app_boundary::participant_status::format_participant_status_timestamp;
+pub(in crate::app) use sorotte_client_app::app_boundary::participant_status::{
+    ParticipantStatusFreshness as MainWindowParticipantStatusFreshness,
+    ParticipantStatusPresentation as MainWindowParticipantStatusPresentation,
+    ParticipantStatusReportPresentation as MainWindowParticipantStatusReport,
+};
 use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation;
 use std::collections::BTreeMap;
 
@@ -418,7 +424,97 @@ pub(in crate::app) struct MainWindowRoomRow {
     pub(in crate::app) has_named_users: bool,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(in crate::app) struct MainWindowRoomPlaybackIntent {
+    pub(in crate::app) position_seconds: Option<f64>,
+    pub(in crate::app) paused: Option<bool>,
+    pub(in crate::app) set_by: Option<String>,
+    pub(in crate::app) authority: Option<String>,
+    pub(in crate::app) start_gate: Option<String>,
+    pub(in crate::app) participant_count: usize,
+    pub(in crate::app) maximum_observed_drift_seconds: Option<f64>,
+    pub(in crate::app) buffering_participants: Vec<String>,
+}
+
+impl MainWindowRoomPlaybackIntent {
+    pub(in crate::app) fn status_label(&self) -> String {
+        let mut label = match self.paused {
+            Some(paused) => {
+                format!("Room intent: {}", if paused { "PAUSED" } else { "PLAYING" })
+            }
+            None => "Room intent unavailable".to_owned(),
+        };
+        if self.paused == Some(true)
+            && let Some(set_by) = self.set_by.as_deref()
+        {
+            label.push_str(" by ");
+            label.push_str(set_by);
+        }
+        if let Some(position) = self.position_seconds {
+            label.push_str(" · ");
+            label.push_str(&format_participant_status_timestamp(position));
+        }
+        if self.participant_count > 0 {
+            let participant_count = self.participant_count;
+            let suffix = if participant_count == 1 { "" } else { "s" };
+            label.push_str(&format!(" · {participant_count} participant{suffix}"));
+        }
+        if self.paused == Some(false)
+            && let Some(drift) = self.maximum_observed_drift_seconds
+        {
+            label.push_str(&format!(" · max observed drift {drift:.1} s"));
+        }
+        if !self.buffering_participants.is_empty() {
+            label.push_str(" · Buffering: ");
+            label.push_str(&self.buffering_participants.join(", "));
+        }
+        if let Some(start_gate) = self.start_gate.as_deref() {
+            label.push_str(" · Start gate: ");
+            label.push_str(start_gate);
+        }
+        label
+    }
+
+    pub(in crate::app) fn detail_tooltip(&self) -> String {
+        let mut details = vec![match self.paused {
+            Some(true) => "Authoritative room intent: paused".to_owned(),
+            Some(false) => "Authoritative room intent: playing".to_owned(),
+            None => "Authoritative room intent: unavailable".to_owned(),
+        }];
+        if let Some(position) = self.position_seconds {
+            details.push(format!(
+                "Room position: {}",
+                format_participant_status_timestamp(position)
+            ));
+        }
+        if let Some(set_by) = self.set_by.as_deref() {
+            details.push(format!("Set by: {set_by}"));
+        }
+        if let Some(authority) = self.authority.as_deref() {
+            details.push(format!("Authority: {authority}"));
+        }
+        if let Some(start_gate) = self.start_gate.as_deref() {
+            details.push(format!("Start gate: {start_gate}"));
+        }
+        details.push(format!("Participants in room: {}", self.participant_count));
+        if let Some(drift) = self.maximum_observed_drift_seconds {
+            details.push(format!("Maximum fresh observed drift: {drift:.1} s"));
+        }
+        if !self.buffering_participants.is_empty() {
+            details.push(format!(
+                "Observed buffering: {}",
+                self.buffering_participants.join(", ")
+            ));
+        }
+        details.push(
+            "Room intent is authoritative; member playback rows are observed advisory status."
+                .to_owned(),
+        );
+        details.join("\n")
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub(in crate::app) struct MainWindowUserRow {
     pub(in crate::app) username: String,
     pub(in crate::app) room_name: String,
@@ -435,6 +531,8 @@ pub(in crate::app) struct MainWindowUserRow {
     pub(in crate::app) filename_differs: bool,
     pub(in crate::app) filesize_differs: bool,
     pub(in crate::app) fileduration_differs: bool,
+    pub(in crate::app) participant_status: MainWindowParticipantStatusPresentation,
+    pub(in crate::app) start_barrier_status: Option<String>,
     pub(in crate::app) is_selected: bool,
 }
 
@@ -463,6 +561,8 @@ impl std::fmt::Debug for MainWindowUserRow {
             .field("filename_differs", &self.filename_differs)
             .field("filesize_differs", &self.filesize_differs)
             .field("fileduration_differs", &self.fileduration_differs)
+            .field("participant_status", &self.participant_status)
+            .field("start_barrier_status", &self.start_barrier_status)
             .field("is_selected", &self.is_selected)
             .finish()
     }
@@ -561,6 +661,7 @@ pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) rooms: Vec<MainWindowRoomRow>,
     pub(in crate::app) users: Vec<MainWindowUserRow>,
     pub(in crate::app) readiness: BTreeMap<String, ParticipantReadinessPresentation>,
+    pub(in crate::app) room_playback_intent: MainWindowRoomPlaybackIntent,
     pub(in crate::app) playlist: Vec<MainWindowPlaylistRow>,
     pub(in crate::app) playlist_default_source: GuiPlaylistDefaultSourceState,
     pub(in crate::app) active_playlist_index: Option<usize>,
@@ -587,6 +688,7 @@ impl std::fmt::Debug for MainWindowShellState {
             .field("room_count", &self.rooms.len())
             .field("users", &self.users)
             .field("readiness", &self.readiness)
+            .field("room_playback_intent", &self.room_playback_intent)
             .field("playlist", &self.playlist)
             .field("active_playlist_index", &self.active_playlist_index)
             .field("chat", &self.chat)
@@ -605,7 +707,7 @@ impl std::fmt::Debug for MainWindowShellState {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub(in crate::app) struct MainWindowRuntimeUserSnapshot {
     pub(in crate::app) username: String,
     pub(in crate::app) room_name: String,
@@ -621,6 +723,8 @@ pub(in crate::app) struct MainWindowRuntimeUserSnapshot {
     pub(in crate::app) filename_differs: bool,
     pub(in crate::app) filesize_differs: bool,
     pub(in crate::app) fileduration_differs: bool,
+    pub(in crate::app) participant_status: MainWindowParticipantStatusPresentation,
+    pub(in crate::app) start_barrier_status: Option<String>,
 }
 
 impl std::fmt::Debug for MainWindowRuntimeUserSnapshot {
@@ -647,6 +751,8 @@ impl std::fmt::Debug for MainWindowRuntimeUserSnapshot {
             .field("filename_differs", &self.filename_differs)
             .field("filesize_differs", &self.filesize_differs)
             .field("fileduration_differs", &self.fileduration_differs)
+            .field("participant_status", &self.participant_status)
+            .field("start_barrier_status", &self.start_barrier_status)
             .finish()
     }
 }
@@ -684,6 +790,7 @@ pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) rooms: Vec<MainWindowRuntimeRoomSnapshot>,
     pub(in crate::app) users: Vec<MainWindowRuntimeUserSnapshot>,
     pub(in crate::app) readiness: BTreeMap<String, ParticipantReadinessPresentation>,
+    pub(in crate::app) room_playback_intent: MainWindowRoomPlaybackIntent,
     pub(in crate::app) playlist: Vec<String>,
     pub(in crate::app) playlist_entry_ids: Vec<GuiPlaylistEntryId>,
     pub(in crate::app) playlist_source_states: Vec<GuiPlaylistSourceState>,
@@ -719,6 +826,7 @@ impl std::fmt::Debug for MainWindowRuntimeSnapshot {
             .field("rooms", &self.rooms)
             .field("users", &self.users)
             .field("readiness", &self.readiness)
+            .field("room_playback_intent", &self.room_playback_intent)
             .field("playlist_count", &self.playlist.len())
             .field("playlist_entry_id_count", &self.playlist_entry_ids.len())
             .field("playlist_source_states", &self.playlist_source_states)
@@ -761,6 +869,7 @@ impl Default for MainWindowRuntimeSnapshot {
             rooms: Vec::new(),
             users: Vec::new(),
             readiness: BTreeMap::new(),
+            room_playback_intent: MainWindowRoomPlaybackIntent::default(),
             playlist: Vec::new(),
             playlist_entry_ids: Vec::new(),
             playlist_source_states: Vec::new(),
@@ -835,9 +944,12 @@ impl MainWindowRuntimeSnapshot {
                     filename_differs: user.filename_differs,
                     filesize_differs: user.filesize_differs,
                     fileduration_differs: user.fileduration_differs,
+                    participant_status: user.participant_status.clone(),
+                    start_barrier_status: user.start_barrier_status.clone(),
                 })
                 .collect(),
             readiness: state.readiness.clone(),
+            room_playback_intent: state.room_playback_intent.clone(),
             playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
             playlist_entry_ids: state.playlist.iter().map(|row| row.entry_id).collect(),
             playlist_source_states: state

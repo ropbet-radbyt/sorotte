@@ -1,6 +1,23 @@
 use super::*;
+use crate::app::runtime_owner::GuiPendingSharedPlaylistOpen;
+use crate::app::runtime_stack::GuiPlaylistProtocolDeliveryFence;
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(in crate::app::runtime_owner) fn arm_playlist_player_effect_delivery_fence(
+        &mut self,
+        delivery_fence: GuiPlaylistProtocolDeliveryFence,
+    ) {
+        if delivery_fence.is_reached() {
+            return;
+        }
+        if let Some(pending) = self.pending_shared_playlist_open.as_mut() {
+            pending.replace_delivery_fence(delivery_fence);
+        } else {
+            self.pending_shared_playlist_open =
+                Some(GuiPendingSharedPlaylistOpen::AwaitingMutationDelivery { delivery_fence });
+        }
+    }
+
     pub(super) fn handle_set_local_ready_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -61,13 +78,22 @@ impl GuiPersistedConfigRuntimeOwner {
         entry: String,
         select_after_queue: bool,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.queue_playlist_entry(entry, select_after_queue)
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            let selected_before = session.current_room_selected_playlist_entry();
+            match session.queue_playlist_entry_with_delivery_fence(entry, select_after_queue) {
+                Ok(delivery_fence) => {
+                    let selected_after = session.current_room_selected_playlist_entry();
+                    if select_after_queue || selected_before != selected_after {
+                        self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+                    }
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
@@ -79,8 +105,9 @@ impl GuiPersistedConfigRuntimeOwner {
         index: usize,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
-            match session.set_playlist_index(index) {
-                Ok(()) => {
+            match session.set_playlist_index_with_delivery_fence(index) {
+                Ok(delivery_fence) => {
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence);
                     self.active_shared_playlist_index = Some(index);
                     projected_state.main_window.active_playlist_index = Some(index);
                     handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -125,13 +152,18 @@ impl GuiPersistedConfigRuntimeOwner {
         _projected_state: &mut SorotteGuiShellAppState,
         index: usize,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.delete_playlist_index(index)
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            match session.delete_playlist_index_with_delivery_fence(index) {
+                Ok(delivery_fence) => {
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
@@ -141,13 +173,18 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         _projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.undo_playlist_change()
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            match session.undo_playlist_change_with_delivery_fence() {
+                Ok(delivery_fence) => {
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
@@ -157,13 +194,18 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         _projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.shuffle_remaining_playlist()
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            match session.shuffle_remaining_playlist_with_delivery_fence() {
+                Ok(delivery_fence) => {
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
@@ -173,13 +215,18 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         _projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.shuffle_entire_playlist()
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            match session.shuffle_entire_playlist_with_delivery_fence() {
+                Ok(delivery_fence) => {
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
@@ -212,13 +259,22 @@ impl GuiPersistedConfigRuntimeOwner {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> bool {
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.replace_playlist(files, selected_index)
-        {
-            handle.push_action(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: error,
-            });
+        if let Some(session) = self.session.as_mut() {
+            let selected_before = session.current_room_selected_playlist_entry();
+            match session.replace_playlist_with_delivery_fence(files, selected_index) {
+                Ok(delivery_fence) => {
+                    let selected_after = session.current_room_selected_playlist_entry();
+                    if selected_index.is_some() || selected_before != selected_after {
+                        self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+                    }
+                }
+                Err(error) => {
+                    handle.push_action(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error,
+                    });
+                }
+            }
         }
         true
     }
