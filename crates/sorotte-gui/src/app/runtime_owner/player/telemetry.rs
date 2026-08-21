@@ -3366,6 +3366,116 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 }
 
+#[cfg(test)]
+mod logical_media_projection_tests {
+    use super::*;
+    use crate::app::runtime_owner::GuiPendingLogicalMediaOverride;
+
+    const STREAM_TARGET: &str = "https://plex.example/stream?token=secret";
+    const LOGICAL_TARGET: &str = "plex://machine/metadata/123";
+
+    fn pending_override(
+        player_command_id: Option<PlayerCommandId>,
+        player_media_generation: Option<PlayerMediaGeneration>,
+        playlist_row_id: Option<GuiPlaylistEntryId>,
+        playlist_generation: u64,
+    ) -> GuiPendingLogicalMediaOverride {
+        GuiPendingLogicalMediaOverride {
+            requested_target: "episode.mkv".to_owned(),
+            loaded_target_secret: sorotte_plex::SecretPlexPlaybackUrl::new(STREAM_TARGET),
+            logical_file: LocalFileUpdate::new("episode.mkv").with_path(LOGICAL_TARGET),
+            user_initiated: false,
+            player_command_id,
+            player_media_generation,
+            playlist_row_id,
+            playlist_generation,
+            load_completed: false,
+            logical_file_observed: false,
+        }
+    }
+
+    #[test]
+    fn command_scoped_exact_observation_binds_the_authoritative_media_generation() {
+        let row_id = GuiPlaylistEntryId::next();
+        let command_id = PlayerCommandId::new(22);
+        let media_generation = PlayerMediaGeneration::new(7);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 4;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            4,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner
+            .playlist_resolution_attempt
+            .as_mut()
+            .expect("playlist resolution attempt")
+            .player_command_id = Some(command_id);
+        owner.pending_logical_media_override =
+            Some(pending_override(Some(command_id), None, Some(row_id), 4));
+
+        let projection = owner.logical_media_override_for_loaded_target(
+            &LocalFileUpdate::new(STREAM_TARGET).with_path(STREAM_TARGET),
+            Some(media_generation),
+        );
+
+        assert_eq!(
+            projection,
+            Some((
+                LocalFileUpdate::new("episode.mkv").with_path(LOGICAL_TARGET),
+                false,
+            ))
+        );
+        let pending = owner
+            .pending_logical_media_override
+            .as_ref()
+            .expect("matching projection should remain active");
+        assert_eq!(pending.player_media_generation, Some(media_generation));
+        assert!(pending.logical_file_observed);
+    }
+
+    #[test]
+    fn older_observations_are_ignored_and_unbound_mismatches_clear_the_projection() {
+        let expected_generation = PlayerMediaGeneration::new(7);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.pending_logical_media_override = Some(pending_override(
+            Some(PlayerCommandId::new(22)),
+            Some(expected_generation),
+            None,
+            0,
+        ));
+
+        let delayed_old_projection = owner.logical_media_override_for_loaded_target(
+            &LocalFileUpdate::new(STREAM_TARGET).with_path(STREAM_TARGET),
+            Some(PlayerMediaGeneration::new(expected_generation.get() - 1)),
+        );
+
+        assert_eq!(delayed_old_projection, None);
+        assert!(
+            owner.pending_logical_media_override.is_some(),
+            "an older observation cannot supersede the active Plex projection"
+        );
+
+        owner
+            .pending_logical_media_override
+            .as_mut()
+            .expect("older observation should leave the projection intact")
+            .player_media_generation = None;
+        let mismatched_projection = owner.logical_media_override_for_loaded_target(
+            &LocalFileUpdate::new("https://media.example/new-video.mkv")
+                .with_path("https://media.example/new-video.mkv"),
+            Some(PlayerMediaGeneration::new(expected_generation.get() + 1)),
+        );
+
+        assert_eq!(mismatched_projection, None);
+        assert!(
+            owner.pending_logical_media_override.is_none(),
+            "a different authoritative target must retire an unbound Plex projection"
+        );
+    }
+}
+
 fn transport_update_from_delta(
     delta: PlayerTransportDelta,
     user_offset_seconds: f64,
