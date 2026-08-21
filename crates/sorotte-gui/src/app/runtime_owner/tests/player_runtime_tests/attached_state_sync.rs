@@ -888,7 +888,8 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_consumes_plex_override_and_accepts_external_url_change() {
+fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates_and_accepts_external_url_change()
+ {
     #[derive(Debug, Default)]
     struct PlexStreamTelemetryState {
         local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
@@ -982,12 +983,35 @@ fn gui_persisted_config_runtime_owner_consumes_plex_override_and_accepts_externa
     };
     let player_state =
         std::sync::Arc::new(std::sync::Mutex::new(PlexStreamTelemetryState::default()));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let stored_settings = StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PlexStreamTelemetryAdapter {
             state: player_state.clone(),
         },
     )));
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("initial outbound lines should flush");
 
     owner
         .open_plex_stream_target_through_attached_player_result_impl(
@@ -1006,11 +1030,56 @@ fn gui_persisted_config_runtime_owner_consumes_plex_override_and_accepts_externa
     owner.refresh_player_state_impl();
     assert_eq!(owner.player_local_file, Some(logical_file.clone()));
     assert!(
-        owner.pending_logical_media_override.is_none(),
-        "the matching observed file must consume its completed logical override"
+        owner.pending_logical_media_override.is_some(),
+        "the active Plex generation must retain its logical identity after initial confirmation"
+    );
+    assert!(!owner.player_local_file_placeholder);
+
+    owner
+        .sync_detached_session_preferences_and_player_state(&state)
+        .expect("confirmed Plex identity should publish to the room");
+    let outbound_lines = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("outbound lines should flush");
+    assert!(
+        outbound_lines
+            .iter()
+            .any(|line| line.contains("Episode 1.mkv")),
+        "the room should receive the stable logical Plex identity: {outbound_lines:?}"
+    );
+    assert!(
+        outbound_lines.iter().all(|line| {
+            !line.contains("secret-token")
+                && !line.contains("plex.local")
+                && !line.contains("/library/parts/1/")
+        }),
+        "Plex transport details must not escape into room state: {outbound_lines:?}"
     );
 
     owner.player_position_seconds = Some(42.0);
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .local_file_updates
+        .push_back(
+            sorotte_player_api::LocalFileUpdate::new(loaded_url)
+                .with_path(loaded_url)
+                .with_duration_seconds(90.0)
+                .with_size_bytes(123_456),
+        );
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, Some(logical_file.clone()));
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(42.0),
+        "same-stream metadata enrichment must not reset playback"
+    );
+    assert!(owner.pending_logical_media_override.is_some());
+
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1028,7 +1097,7 @@ fn gui_persisted_config_runtime_owner_consumes_plex_override_and_accepts_externa
     assert_eq!(
         owner.player_position_seconds,
         Some(0.0),
-        "an external URL media change starts a new player generation"
+        "an unscoped external URL media change starts a new player generation"
     );
     assert!(owner.pending_logical_media_override.is_none());
 }

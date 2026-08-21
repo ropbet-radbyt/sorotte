@@ -688,7 +688,6 @@ impl GuiPersistedConfigRuntimeOwner {
             .is_some_and(|logical_file| self.player_local_file.as_ref() == Some(logical_file))
         {
             self.player_local_file_placeholder = false;
-            self.pending_logical_media_override = None;
         }
         self.last_attached_media_resolution_trigger = None;
         true
@@ -741,7 +740,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     let confirmed = pending
                         .logical_file_observed
                         .then(|| pending.logical_file.clone());
-                    (pending.logical_file_observed, confirmed, None)
+                    (false, confirmed, None)
                 }
                 PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
                     PlayerCommandFailureKind::TimedOut,
@@ -2264,11 +2263,13 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_same_file_replay_confirms_completed_plex_placeholder() {
+    fn authoritative_same_generation_plex_updates_keep_logical_identity_until_newer_media() {
         let generation = PlayerMediaGeneration::new(7);
         let command_id = PlayerCommandId::new(22);
         let stream_target = "https://plex.example/stream?token=secret";
-        let logical_file = LocalFileUpdate::new("episode.mkv");
+        let redirected_target = "https://redirected.plex.direct/stream?token=secret";
+        let logical_file =
+            LocalFileUpdate::new("episode.mkv").with_path("plex://machine/metadata/123");
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.pending_logical_media_override = Some(GuiPendingLogicalMediaOverride {
             requested_target: "episode.mkv".to_owned(),
@@ -2297,8 +2298,46 @@ mod tests {
         );
 
         assert_eq!(boundary, None);
-        assert_eq!(owner.player_local_file, Some(logical_file));
+        assert_eq!(owner.player_local_file, Some(logical_file.clone()));
         assert!(!owner.player_local_file_placeholder);
+        assert!(owner.pending_logical_media_override.is_some());
+
+        owner.player_position_seconds = Some(42.0);
+        let redirected_boundary = owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                LocalFileUpdate::new(redirected_target)
+                    .with_path(redirected_target)
+                    .with_duration_seconds(90.0),
+                Some(generation),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(11)),
+            false,
+        );
+
+        assert_eq!(redirected_boundary, None);
+        assert_eq!(owner.player_local_file, Some(logical_file));
+        assert_eq!(owner.player_position_seconds, Some(42.0));
+        assert!(owner.pending_logical_media_override.is_some());
+
+        let external_target = "https://media.example/new-video.mkv";
+        let newer_generation = PlayerMediaGeneration::new(generation.get() + 1);
+        let external_boundary = owner.process_attached_local_file_observation(
+            sorotte_player_api::PlayerLocalFileObservation::new(
+                LocalFileUpdate::new(external_target).with_path(external_target),
+                Some(newer_generation),
+                None,
+            ),
+            Some(sorotte_player_api::PlayerEventSequence::new(12)),
+            false,
+        );
+
+        assert!(external_boundary.is_some());
+        assert_eq!(
+            owner.player_local_file,
+            Some(LocalFileUpdate::new(external_target).with_path(external_target))
+        );
+        assert_eq!(owner.player_position_seconds, Some(0.0));
         assert!(owner.pending_logical_media_override.is_none());
     }
 
@@ -2575,7 +2614,10 @@ mod tests {
         assert!(owner.failed_playlist_resolution_candidates().is_empty());
         assert_eq!(owner.player_local_file, Some(logical_file));
         assert!(!owner.player_local_file_placeholder);
-        assert!(owner.pending_logical_media_override.is_none());
+        assert!(
+            owner.pending_logical_media_override.is_some(),
+            "the recovered active Plex generation must retain its logical projection"
+        );
         assert!(owner.last_attached_media_resolution_trigger.is_none());
     }
 
@@ -2728,7 +2770,10 @@ mod tests {
             None,
             PlayerCommandResult::Completed,
         ));
-        assert!(owner.pending_logical_media_override.is_none());
+        assert!(
+            owner.pending_logical_media_override.is_some(),
+            "completion must retain the active generation's logical projection"
+        );
     }
 
     #[test]
