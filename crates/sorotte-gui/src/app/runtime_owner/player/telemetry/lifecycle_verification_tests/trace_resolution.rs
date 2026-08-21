@@ -327,7 +327,10 @@ fn indeterminate_plex_resolution_recovers_from_late_raw_active_and_matching_file
         Some(LocalFileUpdate::new(LOGICAL_TARGET))
     );
     assert!(!gui.player_local_file_placeholder);
-    assert!(gui.pending_logical_media_override.is_none());
+    assert!(
+        gui.pending_logical_media_override.is_some(),
+        "the active Plex generation must retain its logical projection"
+    );
 }
 
 #[test]

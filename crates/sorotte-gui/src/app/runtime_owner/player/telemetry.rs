@@ -1504,7 +1504,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.accept_attached_media_observation(media_generation, observed_at, sequence)?;
         let mut logical_override_confirmed = None;
         if let Some((override_update, confirmed)) =
-            self.logical_media_override_for_loaded_target(&update)
+            self.logical_media_override_for_loaded_target(&update, media_generation)
         {
             update = override_update;
             logical_override_confirmed = Some(confirmed);
@@ -2985,16 +2985,16 @@ impl GuiPersistedConfigRuntimeOwner {
             self.handle_player_media_load_outcome(outcome);
         }
         for mut update in local_file_updates {
-            self.handle_untracked_playlist_local_file_observation(&update);
-            let tracked_playlist_load_unconfirmed =
-                self.tracked_playlist_resolution_load_matches_local_file(&update);
             let mut logical_override_confirmed = None;
             if let Some((override_update, confirmed)) =
-                self.logical_media_override_for_loaded_target(&update)
+                self.logical_media_override_for_loaded_target(&update, None)
             {
                 update = override_update;
                 logical_override_confirmed = Some(confirmed);
             }
+            self.handle_untracked_playlist_local_file_observation(&update);
+            let tracked_playlist_load_unconfirmed =
+                self.tracked_playlist_resolution_load_matches_local_file(&update);
             let file_changed = Self::local_file_update_replaces_current_file(
                 self.player_local_file.as_ref(),
                 &update,
@@ -3287,6 +3287,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn logical_media_override_for_loaded_target(
         &mut self,
         update: &LocalFileUpdate,
+        observed_media_generation: Option<PlayerMediaGeneration>,
     ) -> Option<(LocalFileUpdate, bool)> {
         let scope_matches = self
             .pending_logical_media_override
@@ -3300,43 +3301,68 @@ impl GuiPersistedConfigRuntimeOwner {
                             .is_some_and(|attempt| {
                                 Some(attempt.row_id) == pending.playlist_row_id
                                     && attempt.playlist_generation == pending.playlist_generation
-                                    && attempt.player_command_id == pending.player_command_id
+                                    && (pending.load_completed
+                                        || attempt.player_command_id == pending.player_command_id)
                             }))
             });
         if !scope_matches {
             self.pending_logical_media_override = None;
             return None;
         }
-        let exact_target_match =
-            self.pending_logical_media_override
-                .as_ref()
-                .is_some_and(|pending| {
-                    let loaded_target = pending.loaded_target_secret.as_str();
+        let (expected_media_generation, exact_target_match) = self
+            .pending_logical_media_override
+            .as_ref()
+            .map(|pending| {
+                let loaded_target = pending.loaded_target_secret.as_str();
+                (
+                    pending.player_media_generation,
                     update
                         .path
                         .as_deref()
                         .is_some_and(|path| path == loaded_target)
-                        || update.name == loaded_target
-                });
-        if !exact_target_match {
-            // Any unmatched file observation is an external/superseding media
-            // generation. It must never inherit an older Plex logical identity.
+                        || update.name == loaded_target,
+                )
+            })
+            .expect("scoped pending logical override should exist");
+        let generation_matches = match (expected_media_generation, observed_media_generation) {
+            (Some(expected), Some(observed)) if observed == expected => true,
+            (Some(expected), Some(observed)) if observed > expected => {
+                // A newer physical media generation is an authoritative
+                // external/superseding load. It must not inherit the Plex
+                // identity from the generation it replaced.
+                self.pending_logical_media_override = None;
+                return None;
+            }
+            (Some(_), Some(_)) => return None,
+            (None, Some(observed)) if exact_target_match => {
+                self.pending_logical_media_override
+                    .as_mut()
+                    .expect("scoped pending logical override should exist")
+                    .player_media_generation = Some(observed);
+                true
+            }
+            (None, Some(_)) => {
+                self.pending_logical_media_override = None;
+                return None;
+            }
+            (_, None) => exact_target_match,
+        };
+        if !generation_matches {
+            // Generation-less adapters can only prove ownership by reporting
+            // the exact target Sorotte asked them to load.
             self.pending_logical_media_override = None;
             return None;
         }
 
-        let (logical_file, consume) = {
+        let (logical_file, confirmed) = {
             let pending = self
                 .pending_logical_media_override
                 .as_mut()
-                .expect("exact pending logical override should exist");
+                .expect("matching pending logical override should exist");
             pending.logical_file_observed = true;
             (pending.logical_file.clone(), pending.load_completed)
         };
-        if consume {
-            self.pending_logical_media_override = None;
-        }
-        Some((logical_file, consume))
+        Some((logical_file, confirmed))
     }
 }
 
