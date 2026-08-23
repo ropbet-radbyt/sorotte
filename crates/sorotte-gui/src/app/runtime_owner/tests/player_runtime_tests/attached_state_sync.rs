@@ -1,6 +1,8 @@
 use super::*;
+use crate::app::GuiMediaSourceProviderId;
 use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
 
 use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
@@ -1100,6 +1102,325 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
         "an unscoped external URL media change starts a new player generation"
     );
     assert!(owner.pending_logical_media_override.is_none());
+}
+
+#[test]
+fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() {
+    #[derive(Debug, Default)]
+    struct TrackedPlexPlayerState {
+        opened_paths: Vec<String>,
+        set_paused_values: Vec<bool>,
+        command_progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
+        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+        media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+    }
+
+    struct TrackedPlexPlayer {
+        state: std::sync::Arc<std::sync::Mutex<TrackedPlexPlayerState>>,
+    }
+
+    impl PlayerAdapter for TrackedPlexPlayer {
+        fn name(&self) -> &'static str {
+            "tracked-plex"
+        }
+
+        fn execute_tracked(
+            &mut self,
+            command: sorotte_player_api::PlayerCommand,
+        ) -> Result<sorotte_player_api::PlayerCommandId, sorotte_player_api::PlayerError> {
+            let sorotte_player_api::PlayerCommand::OpenFile(path) = command else {
+                return Err(sorotte_player_api::PlayerError::Unsupported(
+                    "execute_tracked",
+                ));
+            };
+            let command_id = sorotte_player_api::PlayerCommandId::new(41);
+            let media_generation = sorotte_player_api::PlayerMediaGeneration::new(9);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.opened_paths.push(path.clone());
+            // Legacy typed queues deliberately deliver file-loaded before the
+            // tracked command terminal. This is the sequence that v0.2.6
+            // incorrectly left fenced in Loading after projecting the private
+            // physical URL to its logical Plex identity.
+            state.media_load_outcomes.push_back(
+                sorotte_player_api::PlayerMediaLoadOutcome::success(
+                    path.clone(),
+                    Some(path.clone()),
+                ),
+            );
+            state
+                .local_file_updates
+                .push_back(sorotte_player_api::LocalFileUpdate::new(&path).with_path(path.clone()));
+            state
+                .command_progress
+                .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
+                    command_id,
+                    Some(media_generation),
+                    None,
+                ));
+            state
+                .command_progress
+                .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+                    command_id,
+                    Some(media_generation),
+                    None,
+                    None,
+                    sorotte_player_api::PlayerCommandResult::Completed,
+                ));
+            Ok(command_id)
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+
+        fn set_position(
+            &mut self,
+            _position_seconds: f64,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            Ok(())
+        }
+
+        fn set_playback_rate(&mut self, _rate: f64) -> Result<(), sorotte_player_api::PlayerError> {
+            Ok(())
+        }
+
+        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .command_progress
+                .pop_front()
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .media_load_outcomes
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    let playlist_uri = PlexPlaylistUri {
+        machine_identifier: "machine-1".to_owned(),
+        rating_key: "123".to_owned(),
+        title: Some("Episode 1".to_owned()),
+        file_name: Some("Episode 1.mkv".to_owned()),
+        duration_millis: Some(90_000),
+        size_bytes: Some(123_456),
+        media_type: Some(PlexMediaType::Episode),
+    };
+    let logical_uri = playlist_uri.to_string();
+    let logical_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(logical_uri.clone())
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    let playback_url =
+        "https://87-121-73-171.example.plex.direct/library/parts/1/file.mkv?X-Plex-Token=secret";
+    let stream_target = PlexStreamTarget {
+        playlist_uri,
+        matched_item: PlexMatchedItem {
+            rating_key: "123".to_owned(),
+            title: "Episode 1".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: Some(90_000),
+        },
+        logical_file: logical_file.clone(),
+        playback_url: SecretPlexPlaybackUrl::new(playback_url),
+    };
+    let stored_settings = StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
+    state.apply_shared_playlist_entries(vec![logical_uri.clone()], Some(0), false);
+    let row = state
+        .main_window
+        .playlist
+        .first()
+        .expect("shared Plex playlist row")
+        .clone();
+    let player_state =
+        std::sync::Arc::new(std::sync::Mutex::new(TrackedPlexPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TrackedPlexPlayer {
+        state: player_state.clone(),
+    })));
+    owner.active_shared_playlist_index = Some(0);
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    let _ = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("initial outbound lines should flush");
+
+    owner.playlist_resolution.generation = 1;
+    owner
+        .open_plex_resolution_candidate_for_test(
+            row.entry_id,
+            owner.playlist_resolution.generation,
+            &logical_uri,
+            row.source_state.policy,
+            stream_target,
+        )
+        .expect("Plex stream open should have a player")
+        .expect("Plex stream open should succeed");
+    assert!(owner.player_local_file_placeholder);
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(
+        owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .expect("tracked Plex attempt")
+            .state,
+        PlaylistResolutionAttemptState::Active,
+        "positive physical evidence must retire the private loading fence"
+    );
+    assert_eq!(owner.player_local_file, Some(logical_file.clone()));
+    assert!(!owner.player_local_file_placeholder);
+    assert!(owner.player_local_file_ready_for_attached_sync());
+
+    owner
+        .sync_detached_session_preferences_and_player_state(&state)
+        .expect("confirmed Plex identity should publish");
+    let published = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("Plex publication should encode");
+    assert!(
+        published.iter().any(|line| line.contains("Episode 1.mkv")),
+        "the peer must publish its stable logical file: {published:?}"
+    );
+    assert!(
+        published.iter().all(|line| {
+            !line.contains("X-Plex-Token")
+                && !line.contains("plex.direct")
+                && !line.contains("/library/parts/1/")
+        }),
+        "the physical Plex transport must remain private: {published:?}"
+    );
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+        )
+        .expect("room play should apply");
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("room pause should apply");
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .ends_with(&[false, true]),
+        "the loaded Plex peer must remain coupled to later room play/pause state"
+    );
+
+    let local_path = "C:/Media/Episode 1.mkv";
+    let local_file = sorotte_player_api::LocalFileUpdate::new("Episode 1.mkv")
+        .with_path(local_path)
+        .with_duration_seconds(90.0)
+        .with_size_bytes(123_456);
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .local_file_updates
+        .push_back(local_file.clone());
+    owner.refresh_player_state_impl();
+    assert_eq!(owner.player_local_file, Some(local_file));
+    assert!(
+        owner.playlist_resolution_attempt.is_none(),
+        "a new physical owner must retire the preceding Plex source attempt"
+    );
+    assert!(owner.pending_logical_media_override.is_none());
+
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
+        "the resolver should adopt the matching local file without reopening Plex"
+    );
+    let local_attempt = owner
+        .playlist_resolution_attempt
+        .as_ref()
+        .expect("current local player should own the replacement resolution");
+    assert_eq!(local_attempt.state, PlaylistResolutionAttemptState::Active);
+    assert_eq!(
+        local_attempt.candidate_provider.as_ref(),
+        Some(&GuiMediaSourceProviderId::local()),
+        "a later local file must not inherit the retired Plex source attribution"
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
+        vec![playback_url.to_owned()],
+        "adopting the local file must not reopen the retired Plex transport"
+    );
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+        )
+        .expect("room play after local takeover should apply");
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .last(),
+        Some(&false),
+        "the local owner must remain coupled to room transport after retiring Plex"
+    );
 }
 
 #[test]
