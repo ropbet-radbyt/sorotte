@@ -2196,6 +2196,54 @@ mod tests {
     }
 
     #[test]
+    fn loaded_target_confirmation_binds_missing_media_generation() {
+        let row_id = GuiPlaylistEntryId::next();
+        let command_id = PlayerCommandId::new(14);
+        let media_generation = PlayerMediaGeneration::new(6);
+        let stream_target = "https://plex.example/video?token=secret";
+        let logical_file =
+            LocalFileUpdate::new("episode.mkv").with_path("plex://machine/metadata/123");
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 10;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            10,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner
+            .begin_playlist_resolution_candidate_load(plex_candidate(), &started(command_id.get()));
+        owner.pending_logical_media_override = Some(GuiPendingLogicalMediaOverride {
+            requested_target: "episode.mkv".to_owned(),
+            loaded_target_secret: sorotte_plex::SecretPlexPlaybackUrl::new(stream_target),
+            logical_file,
+            user_initiated: false,
+            player_command_id: Some(command_id),
+            player_media_generation: None,
+            playlist_row_id: Some(row_id),
+            playlist_generation: 10,
+            load_completed: false,
+            logical_file_observed: false,
+        });
+
+        owner.handle_playlist_media_load_outcome_for_generation(
+            &PlayerMediaLoadOutcome::success(
+                "opaque-adapter-request",
+                Some(stream_target.to_owned()),
+            ),
+            Some(media_generation),
+        );
+
+        let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Loading);
+        assert_eq!(attempt.player_media_generation, Some(media_generation));
+        assert!(!attempt.media_confirmation_pending);
+        let pending = owner.pending_logical_media_override.as_ref().unwrap();
+        assert_eq!(pending.player_media_generation, Some(media_generation));
+        assert!(pending.load_completed);
+    }
+
+    #[test]
     fn positive_physical_load_evidence_survives_a_late_command_timeout() {
         for active_lifecycle_event_observed in [false, true] {
             let row_id = GuiPlaylistEntryId::next();
