@@ -1502,19 +1502,24 @@ impl GuiPersistedConfigRuntimeOwner {
         } = observation;
         let accepted =
             self.accept_attached_media_observation(media_generation, observed_at, sequence)?;
-        let mut logical_override_confirmed = None;
-        if let Some((override_update, confirmed)) =
-            self.logical_media_override_for_loaded_target(&update, media_generation)
-        {
-            update = override_update;
-            logical_override_confirmed = Some(confirmed);
-        }
-        let file_changed =
-            Self::local_file_update_replaces_current_file(self.player_local_file.as_ref(), &update);
-        // Identity confirmation is valid during an authoritative replay even when no new media
-        // episode exists. Keep it separate from the file-change side effects below so ordered
-        // adapters can activate an untracked playlist attempt and Plex can retire a confirmed
-        // logical placeholder without preparing the same media a second time.
+        // Playlist resolution owns the physical load candidate, while room
+        // synchronization owns the logical media identity. Preserve that
+        // boundary: advance the candidate state from the unprojected player
+        // observation before replacing the private Plex transport URL with
+        // its stable logical identity.
+        let resolution_attempt_owns_observation = self
+            .playlist_resolution_attempt
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.player_media_generation == media_generation && media_generation.is_some()
+                    || attempt.candidate.as_ref().is_some_and(|candidate| {
+                        update
+                            .path
+                            .as_deref()
+                            .is_some_and(|path| candidate.matches_loaded_target(path))
+                            || candidate.matches_loaded_target(&update.name)
+                    })
+            });
         if authoritative_reacquisition {
             // `apply_ordered_snapshot` only supplies a local-file replay here
             // when the active-load snapshot explicitly proves
@@ -1526,6 +1531,21 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let tracked_playlist_load_unconfirmed =
             self.tracked_playlist_resolution_load_matches_local_file(&update);
+        let mut logical_override_confirmed = None;
+        if let Some((override_update, confirmed)) =
+            self.logical_media_override_for_loaded_target(&update, media_generation)
+        {
+            update = override_update;
+            logical_override_confirmed = Some(confirmed);
+        }
+        let file_changed =
+            Self::local_file_update_replaces_current_file(self.player_local_file.as_ref(), &update);
+        let supersedes_resolution_attempt = (file_changed || accepted.generation_advanced)
+            && !resolution_attempt_owns_observation
+            && logical_override_confirmed.is_none();
+        // Logical identity confirmation remains separate from file-change
+        // side effects so a replay can confirm the same media without
+        // preparing a second coordination generation.
         let identity_remains_placeholder = tracked_playlist_load_unconfirmed
             || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
         if authoritative_reacquisition && !file_changed && !accepted.generation_advanced {
@@ -1535,6 +1555,14 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         if file_changed || accepted.generation_advanced {
             self.reset_attached_media_boundary_state();
+        }
+        if supersedes_resolution_attempt {
+            // A physical media boundary outside both the active candidate and
+            // its scoped logical Plex projection belongs to a new owner. Do
+            // not let the preceding source attribution (especially Plex)
+            // survive and relabel a later local file.
+            self.supersede_playlist_resolution_attempt();
+            self.last_attached_media_resolution_trigger = None;
         }
         if file_changed && media_generation.is_none() {
             let last_ordered_event_sequence = self
@@ -1617,7 +1645,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 if accepted.generation_advanced {
                     self.reset_attached_media_boundary_state();
                 }
-                self.handle_playlist_media_load_outcome(&observation.outcome);
+                self.handle_playlist_media_load_outcome_for_generation(
+                    &observation.outcome,
+                    observation.media_generation,
+                );
                 self.handle_player_media_load_outcome(observation.outcome);
                 accepted.generation_advanced.then_some(GuiMediaBoundary {
                     previous_media_generation: accepted.previous_media_generation,
@@ -2678,6 +2709,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 let attempt_is_owned = self
                     .ordered_player_events
                     .attempt_is_owned(load.attempt_id, load.media_generation);
+                let media_generation = load.media_generation;
                 let legacy_outcome = match load.result {
                     PlayerLoadAttemptResult::Loaded if attempt_is_owned => Some(
                         PlayerMediaLoadOutcome::success(load.requested_target, load.loaded_target),
@@ -2706,7 +2738,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     PlayerLoadAttemptResult::Indeterminate => None,
                 };
                 if let Some(legacy_outcome) = legacy_outcome {
-                    self.handle_playlist_media_load_outcome(&legacy_outcome);
+                    self.handle_playlist_media_load_outcome_for_generation(
+                        &legacy_outcome,
+                        Some(media_generation),
+                    );
                     self.handle_player_media_load_outcome(legacy_outcome);
                 }
             }
@@ -2985,6 +3020,23 @@ impl GuiPersistedConfigRuntimeOwner {
             self.handle_player_media_load_outcome(outcome);
         }
         for mut update in local_file_updates {
+            // Legacy adapters do not provide a generation-aware lifecycle,
+            // but their physical target is still the authority for candidate
+            // correlation. Project only after that evidence is consumed.
+            let physical_candidate_matches = self
+                .playlist_resolution_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.candidate.as_ref())
+                .is_some_and(|candidate| {
+                    update
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| candidate.matches_loaded_target(path))
+                        || candidate.matches_loaded_target(&update.name)
+                });
+            self.handle_untracked_playlist_local_file_observation(&update);
+            let tracked_playlist_load_unconfirmed =
+                self.tracked_playlist_resolution_load_matches_local_file(&update);
             let mut logical_override_confirmed = None;
             if let Some((override_update, confirmed)) =
                 self.logical_media_override_for_loaded_target(&update, None)
@@ -2992,13 +3044,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 update = override_update;
                 logical_override_confirmed = Some(confirmed);
             }
-            self.handle_untracked_playlist_local_file_observation(&update);
-            let tracked_playlist_load_unconfirmed =
-                self.tracked_playlist_resolution_load_matches_local_file(&update);
             let file_changed = Self::local_file_update_replaces_current_file(
                 self.player_local_file.as_ref(),
                 &update,
             );
+            if file_changed && !physical_candidate_matches && logical_override_confirmed.is_none() {
+                self.supersede_playlist_resolution_attempt();
+                self.last_attached_media_resolution_trigger = None;
+            }
             if file_changed {
                 self.pending_local_attached_pause_override = None;
                 let _ = self
@@ -3370,6 +3423,7 @@ impl GuiPersistedConfigRuntimeOwner {
 mod logical_media_projection_tests {
     use super::*;
     use crate::app::runtime_owner::GuiPendingLogicalMediaOverride;
+    use crate::app::runtime_owner::player::media_resolution::GuiMediaResolutionPlan;
 
     const STREAM_TARGET: &str = "https://plex.example/stream?token=secret";
     const LOGICAL_TARGET: &str = "plex://machine/metadata/123";
@@ -3392,6 +3446,80 @@ mod logical_media_projection_tests {
             load_completed: false,
             logical_file_observed: false,
         }
+    }
+
+    fn tracked_plex_owner() -> (
+        GuiPersistedConfigRuntimeOwner,
+        PlayerCommandId,
+        PlayerMediaGeneration,
+    ) {
+        let row_id = GuiPlaylistEntryId::next();
+        let command_id = PlayerCommandId::new(22);
+        let media_generation = PlayerMediaGeneration::new(7);
+        let logical_file = LocalFileUpdate::new("episode.mkv").with_path(LOGICAL_TARGET);
+        let playlist_uri = sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine".to_owned(),
+            rating_key: "123".to_owned(),
+            title: Some("Episode".to_owned()),
+            file_name: Some("episode.mkv".to_owned()),
+            duration_millis: None,
+            size_bytes: None,
+            media_type: Some(sorotte_plex::PlexMediaType::Episode),
+        };
+        let stream_target = sorotte_plex::PlexStreamTarget {
+            playlist_uri,
+            matched_item: sorotte_plex::PlexMatchedItem {
+                rating_key: "123".to_owned(),
+                title: "Episode".to_owned(),
+                media_type: sorotte_plex::PlexMediaType::Episode,
+                duration_millis: None,
+            },
+            logical_file: logical_file.clone(),
+            playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(STREAM_TARGET),
+        };
+        let mut plan = GuiMediaResolutionPlan::new(LOGICAL_TARGET);
+        plan.push_plex_stream_candidate(stream_target);
+        let candidate = plan.best_candidate().cloned().expect("Plex candidate");
+
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.playlist_resolution.generation = 4;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            4,
+            LOGICAL_TARGET,
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(
+            candidate,
+            &StartedMediaLoad {
+                feedback_message: "started".to_owned(),
+                player_command_id: Some(command_id),
+                player_media_generation: Some(media_generation),
+            },
+        );
+        owner.player_local_file = Some(logical_file);
+        owner.player_local_file_placeholder = true;
+        owner.pending_logical_media_override = Some(pending_override(
+            Some(command_id),
+            Some(media_generation),
+            Some(row_id),
+            4,
+        ));
+        (owner, command_id, media_generation)
+    }
+
+    fn complete_tracked_load(
+        owner: &mut GuiPersistedConfigRuntimeOwner,
+        command_id: PlayerCommandId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::finished(
+            command_id,
+            Some(media_generation),
+            None,
+            None,
+            PlayerCommandResult::Completed,
+        ));
     }
 
     #[test]
@@ -3473,6 +3601,79 @@ mod logical_media_projection_tests {
             owner.pending_logical_media_override.is_none(),
             "a different authoritative target must retire an unbound Plex projection"
         );
+    }
+
+    #[test]
+    fn tracked_plex_projection_confirms_for_both_file_and_command_event_orders() {
+        for command_completes_first in [false, true] {
+            let (mut owner, command_id, media_generation) = tracked_plex_owner();
+            let physical_observation = PlayerLocalFileObservation::new(
+                LocalFileUpdate::new(STREAM_TARGET).with_path(STREAM_TARGET),
+                Some(media_generation),
+                None,
+            );
+
+            if command_completes_first {
+                complete_tracked_load(&mut owner, command_id, media_generation);
+                owner.process_attached_local_file_observation(
+                    physical_observation,
+                    Some(PlayerEventSequence::new(1)),
+                    false,
+                );
+                owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
+                    STREAM_TARGET,
+                    Some(STREAM_TARGET.to_owned()),
+                ));
+            } else {
+                owner.process_attached_local_file_observation(
+                    physical_observation,
+                    Some(PlayerEventSequence::new(1)),
+                    false,
+                );
+                owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
+                    STREAM_TARGET,
+                    Some(STREAM_TARGET.to_owned()),
+                ));
+                complete_tracked_load(&mut owner, command_id, media_generation);
+            }
+
+            assert_eq!(
+                owner
+                    .playlist_resolution_attempt
+                    .as_ref()
+                    .expect("tracked Plex attempt")
+                    .state,
+                PlaylistResolutionAttemptState::Active,
+                "the physical Plex confirmation must survive logical projection when command_completes_first={command_completes_first}"
+            );
+            assert_eq!(
+                owner.player_local_file,
+                Some(LocalFileUpdate::new("episode.mkv").with_path(LOGICAL_TARGET))
+            );
+            assert!(!owner.player_local_file_placeholder);
+            assert!(owner.player_local_file_ready_for_attached_sync());
+
+            let local_generation = PlayerMediaGeneration::new(media_generation.get() + 1);
+            let local_path = "C:/media/local-episode.mkv";
+            owner.process_attached_local_file_observation(
+                PlayerLocalFileObservation::new(
+                    LocalFileUpdate::new("local-episode.mkv").with_path(local_path),
+                    Some(local_generation),
+                    None,
+                ),
+                Some(PlayerEventSequence::new(2)),
+                false,
+            );
+
+            assert_eq!(
+                owner.player_local_file,
+                Some(LocalFileUpdate::new("local-episode.mkv").with_path(local_path)),
+                "a newer local generation must not inherit the prior Plex projection"
+            );
+            assert!(owner.pending_logical_media_override.is_none());
+            assert!(!owner.player_local_file_placeholder);
+            assert!(owner.player_local_file_ready_for_attached_sync());
+        }
     }
 }
 
