@@ -288,6 +288,14 @@ impl ClientSession {
                 current_room.clone(),
                 std::mem::take(&mut self.model.playlist.pending_selection_revision),
             );
+            if let Some(epoch) = self.model.playlist.pending_canonical_epoch.take() {
+                self.model
+                    .playlist
+                    .canonical_epochs
+                    .insert(current_room.clone(), epoch);
+            } else {
+                self.model.playlist.canonical_epochs.remove(&current_room);
+            }
             self.model
                 .playlist
                 .rooms
@@ -338,11 +346,19 @@ impl ClientSession {
                 ClientSetCommand::ControllerAuth(value) => controller_auth = Some(value),
                 ClientSetCommand::NewControlledRoom(value) => new_controlled_room = Some(value),
                 ClientSetCommand::Ready(value) => ready = Some(value),
-                ClientSetCommand::PlaylistChange { files, user } => {
-                    playlist_change = Some((files, user));
+                ClientSetCommand::PlaylistChange {
+                    files,
+                    user,
+                    canonical_epoch,
+                } => {
+                    playlist_change = Some((files, user, canonical_epoch));
                 }
-                ClientSetCommand::PlaylistIndex { index, user } => {
-                    playlist_index = Some((index, user));
+                ClientSetCommand::PlaylistIndex {
+                    index,
+                    user,
+                    canonical_epoch,
+                } => {
+                    playlist_index = Some((index, user, canonical_epoch));
                 }
                 ClientSetCommand::Features {
                     username,
@@ -590,7 +606,9 @@ impl ClientSession {
                 }
             }
 
-            if let Some((playlist_change_files, playlist_change_user)) = playlist_change {
+            if let Some((playlist_change_files, playlist_change_user, canonical_epoch)) =
+                playlist_change
+            {
                 let mut skip_playlist_change_apply = false;
                 if playlist_change_user.is_none() && playlist_change_files.is_empty() {
                     if let Some(restore_intent) =
@@ -605,10 +623,23 @@ impl ClientSession {
                     self.model.reconnect.playlist_restore_pending_ack = None;
                 }
 
+                let resolved_room =
+                    self.resolve_room_for_playlist_update(playlist_change_user.as_deref());
+                if let Some(room_name) = resolved_room.as_deref() {
+                    if let Some(epoch) = canonical_epoch {
+                        self.model
+                            .playlist
+                            .canonical_epochs
+                            .insert(room_name.to_owned(), epoch);
+                    } else {
+                        self.model.playlist.canonical_epochs.remove(room_name);
+                    }
+                } else {
+                    self.model.playlist.pending_canonical_epoch = canonical_epoch;
+                }
+
                 if !skip_playlist_change_apply {
-                    if let Some(room_name) =
-                        self.resolve_room_for_playlist_update(playlist_change_user.as_deref())
-                    {
+                    if let Some(room_name) = resolved_room {
                         let echo_disposition = self.classify_local_playlist_echo(
                             &room_name,
                             &playlist_change_files,
@@ -702,9 +733,23 @@ impl ClientSession {
                 }
             }
 
-            if let Some((playlist_index_value, playlist_index_user)) = playlist_index {
+            if let Some((playlist_index_value, playlist_index_user, canonical_epoch)) =
+                playlist_index
+            {
                 let room_name =
                     self.resolve_room_for_playlist_update(playlist_index_user.as_deref());
+                if let Some(room_name) = room_name.as_deref() {
+                    if let Some(epoch) = canonical_epoch {
+                        self.model
+                            .playlist
+                            .canonical_epochs
+                            .insert(room_name.to_owned(), epoch);
+                    } else {
+                        self.model.playlist.canonical_epochs.remove(room_name);
+                    }
+                } else {
+                    self.model.playlist.pending_canonical_epoch = canonical_epoch;
+                }
                 let index_echo_disposition = room_name.as_deref().map_or(
                     LocalPlaylistEchoDisposition::Authoritative,
                     |room_name| {

@@ -779,6 +779,19 @@ impl ClientSession {
                         .emit(ClientEffect::SetPlaylistIndex(*index))
                         .map_err(client_effect_player_error)?;
                 }
+                ClientRuntimeAction::SetPlaylistIndexIfCurrent {
+                    index,
+                    expected_index,
+                    expected_epoch,
+                } => {
+                    control
+                        .emit(ClientEffect::SetPlaylistIndexIfCurrent {
+                            index: *index,
+                            expected_index: *expected_index,
+                            expected_epoch: *expected_epoch,
+                        })
+                        .map_err(client_effect_player_error)?;
+                }
                 ClientRuntimeAction::RequestControllerAuth { room, password } => {
                     let payload = ControllerAuthPayload::new()
                         .with_room(room.clone())

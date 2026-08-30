@@ -82,6 +82,8 @@ impl ClientSession {
         self.model.playlist.pending_remote_revision = 0;
         self.model.playlist.selection_revisions.clear();
         self.model.playlist.pending_selection_revision = 0;
+        self.model.playlist.canonical_epochs.clear();
+        self.model.playlist.pending_canonical_epoch = None;
         self.model.playlist.pending_local_change_echoes.clear();
         self.model.playlist.pending_local_index_echoes.clear();
         self.model.playlist.remote_revisions.clear();

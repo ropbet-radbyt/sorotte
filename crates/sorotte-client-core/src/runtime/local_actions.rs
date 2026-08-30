@@ -381,9 +381,11 @@ where
             return Ok(false);
         };
         let current_selection_revision = self.session.current_room_playlist_selection_revision();
+        let current_canonical_epoch = self.session.current_room_playlist_canonical_epoch();
         let completion_matches_selection_identity =
             completion.playlist_selection_revision.is_some()
                 && completion.playlist_selection_revision == current_selection_revision
+                && completion.canonical_playlist_epoch == current_canonical_epoch
                 && completion.playlist_revision == Some(playlist.revision)
                 && completion.playlist_index == playlist.index;
         if !completion_matches_selection_identity {
@@ -411,9 +413,15 @@ where
             return Ok(false);
         }
 
+        let expected_index = playlist
+            .index
+            .expect("validated playlist selection must have an index");
         let actions = self
             .session
-            .runtime_actions_for_verified_local_playlist_next();
+            .runtime_actions_for_verified_local_playlist_next(
+                expected_index,
+                completion.canonical_playlist_epoch,
+            );
         let result = self.run_local_playlist_action_batch(actions);
         if result.is_ok() {
             // `Ok(false)` is a legitimate terminal playlist boundary (for
@@ -448,7 +456,11 @@ where
             // importing/reordering a playlist around it does not rewind it.
             .or_else(|| self.session.current_user_file_name().map(str::to_owned));
         let dedicated_index_request = actions.len() == 1
-            && matches!(actions[0], ClientRuntimeAction::SetPlaylistIndex { .. });
+            && matches!(
+                actions[0],
+                ClientRuntimeAction::SetPlaylistIndex { .. }
+                    | ClientRuntimeAction::SetPlaylistIndexIfCurrent { .. }
+            );
         let replay_media = dedicated_index_request
             .then(|| self.v2_replay_media_for_playlist_actions(&actions))
             .flatten();
@@ -492,6 +504,7 @@ where
                 matches!(
                     action,
                     ClientRuntimeAction::SetPlaylistIndex { index }
+                        | ClientRuntimeAction::SetPlaylistIndexIfCurrent { index, .. }
                         if *index == current_index
                 )
             })

@@ -53,6 +53,11 @@ pub enum ClientRuntimeAction {
     SetPlaylistIndex {
         index: i64,
     },
+    SetPlaylistIndexIfCurrent {
+        index: i64,
+        expected_index: i64,
+        expected_epoch: u64,
+    },
     RequestControllerAuth {
         room: String,
         password: SecretValue,
@@ -116,6 +121,16 @@ impl std::fmt::Debug for ClientRuntimeAction {
             Self::SetPlaylistIndex { index } => formatter
                 .debug_struct("SetPlaylistIndex")
                 .field("index", index)
+                .finish(),
+            Self::SetPlaylistIndexIfCurrent {
+                index,
+                expected_index,
+                expected_epoch,
+            } => formatter
+                .debug_struct("SetPlaylistIndexIfCurrent")
+                .field("index", index)
+                .field("expected_index", expected_index)
+                .field("expected_epoch", expected_epoch)
                 .finish(),
             Self::RequestControllerAuth { password, .. } => formatter
                 .debug_struct("RequestControllerAuth")
@@ -288,6 +303,11 @@ pub enum ClientEffect {
     SetFile(FilePayload),
     SetPlaylist(Vec<String>),
     SetPlaylistIndex(i64),
+    SetPlaylistIndexIfCurrent {
+        index: i64,
+        expected_index: i64,
+        expected_epoch: u64,
+    },
     /// Connection-scoped reliable Set-envelope control for playback prepare
     /// and ongoing room buffering policy requests. Observation
     /// acknowledgements use SendState.
@@ -360,6 +380,16 @@ impl std::fmt::Debug for ClientEffect {
             Self::SetPlaylistIndex(index) => formatter
                 .debug_tuple("SetPlaylistIndex")
                 .field(index)
+                .finish(),
+            Self::SetPlaylistIndexIfCurrent {
+                index,
+                expected_index,
+                expected_epoch,
+            } => formatter
+                .debug_struct("SetPlaylistIndexIfCurrent")
+                .field("index", index)
+                .field("expected_index", expected_index)
+                .field("expected_epoch", expected_epoch)
                 .finish(),
             Self::SendPlaybackBarrierSet { extension, scope } => formatter
                 .debug_struct("SendPlaybackBarrierSet")
@@ -757,6 +787,17 @@ impl ClientEffectSink for QueuedRuntimeControl {
             ClientEffect::SetPlaylistIndex(index) => {
                 let set_payload =
                     SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(index));
+                self.outbound_messages
+                    .push_back(ProtocolMessage::set(set_payload));
+            }
+            ClientEffect::SetPlaylistIndexIfCurrent {
+                index,
+                expected_index,
+                expected_epoch,
+            } => {
+                let playlist_index = PlaylistIndexPayload::new(index)
+                    .with_expected_playlist_state(expected_index, expected_epoch);
+                let set_payload = SetPayload::new().with_playlist_index(playlist_index);
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
             }

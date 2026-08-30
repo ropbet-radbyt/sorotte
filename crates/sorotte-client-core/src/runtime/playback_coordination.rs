@@ -5030,11 +5030,13 @@ where
                 });
             let playlist_selection_revision =
                 self.session.current_room_playlist_selection_revision();
+            let canonical_playlist_epoch = self.session.current_room_playlist_canonical_epoch();
             self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
                 attempt_id: None,
                 media_generation: None,
                 playlist_revision,
                 playlist_selection_revision,
+                canonical_playlist_epoch,
                 playlist_index,
                 completed_file: self.last_local_file_update.clone(),
             });
@@ -5718,12 +5720,15 @@ where
                             });
                         let playlist_selection_revision =
                             self.session.current_room_playlist_selection_revision();
+                        let canonical_playlist_epoch =
+                            self.session.current_room_playlist_canonical_epoch();
                         self.pending_natural_playback_completion =
                             Some(PendingNaturalPlaybackCompletion {
                                 attempt_id: Some(attempt_id),
                                 media_generation: Some(media_generation),
                                 playlist_revision,
                                 playlist_selection_revision,
+                                canonical_playlist_epoch,
                                 playlist_index,
                                 completed_file: self.last_local_file_update.clone(),
                             });
@@ -9513,12 +9518,12 @@ mod tests {
             .expect("hello should apply");
         session
             .apply_message_json(
-                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice","sorottePlaylistEpoch":1}}}"#,
             )
             .expect("playlist change should apply");
         session
             .apply_message_json(&format!(
-                r#"{{"Set":{{"playlistIndex":{{"index":{selected_index},"user":"alice"}}}}}}"#
+                r#"{{"Set":{{"playlistIndex":{{"index":{selected_index},"user":"alice","sorottePlaylistEpoch":2}}}}}}"#
             ))
             .expect("playlist index should apply");
         session
@@ -9543,11 +9548,13 @@ mod tests {
             .expect("the selected playlist should exist");
         let playlist_selection_revision =
             runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
         runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
             attempt_id: Some(LoadAttemptId::new(4)),
             media_generation: Some(PlayerMediaGeneration::new(7)),
             playlist_revision,
             playlist_selection_revision,
+            canonical_playlist_epoch,
             playlist_index,
             completed_file: Some(
                 LocalFileUpdate::new("episode1.mkv").with_path("C:/library/show/episode1.mkv"),
@@ -9566,6 +9573,17 @@ mod tests {
                 .and_then(|playlist| playlist.index),
             Some(1)
         );
+        let ProtocolMessage::Set(set) = &runtime.control().outbound_messages()[0] else {
+            panic!("natural completion should emit a guarded Set.playlistIndex");
+        };
+        let playlist_index = set
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("natural completion should emit playlistIndex");
+        assert_eq!(playlist_index.index_value(), Some(1));
+        assert_eq!(playlist_index.expected_playlist_index(), Some(0));
+        assert_eq!(playlist_index.expected_playlist_epoch(), Some(2));
         assert!(runtime.pending_natural_playback_completion.is_none());
         assert!(
             !runtime
@@ -9576,17 +9594,67 @@ mod tests {
     }
 
     #[test]
+    fn natural_completion_retains_legacy_unconditional_index_compatibility_without_epoch() {
+        let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("legacy index snapshot should apply");
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the selected playlist should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+        assert_eq!(
+            runtime.session().current_room_playlist_canonical_epoch(),
+            None
+        );
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            canonical_playlist_epoch: None,
+            playlist_index,
+            completed_file: Some(LocalFileUpdate::new("episode1.mkv")),
+        });
+
+        assert!(
+            runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("legacy natural completion should still advance")
+        );
+        let ProtocolMessage::Set(set) = &runtime.control().outbound_messages()[0] else {
+            panic!("legacy natural completion should emit Set.playlistIndex");
+        };
+        let playlist_index = set
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("legacy natural completion should emit playlistIndex");
+        assert_eq!(playlist_index.index_value(), Some(1));
+        assert!(
+            !playlist_index.has_expected_playlist_state(),
+            "a server that never issued an epoch must receive the legacy payload shape"
+        );
+    }
+
+    #[test]
     fn natural_completion_uses_verified_path_when_published_name_is_lossy() {
         let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
         runtime
             .session_mut()
             .apply_message_json(
-                r#"{"Set":{"playlistChange":{"files":["C:/library/show/episode1.mkv","C:/library/show/episode2.mkv"],"user":"alice"}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["C:/library/show/episode1.mkv","C:/library/show/episode2.mkv"],"user":"alice","sorottePlaylistEpoch":3}}}"#,
             )
             .expect("absolute-path playlist should apply");
         runtime
             .session_mut()
-            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .apply_message_json(
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":4}}}"#,
+            )
             .expect("absolute-path selection should apply");
         let (playlist_revision, playlist_index) = runtime
             .session()
@@ -9595,6 +9663,7 @@ mod tests {
             .expect("the absolute-path playlist should exist");
         let playlist_selection_revision =
             runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
 
         assert!(
             runtime
@@ -9608,6 +9677,7 @@ mod tests {
             media_generation: Some(PlayerMediaGeneration::new(7)),
             playlist_revision,
             playlist_selection_revision,
+            canonical_playlist_epoch,
             playlist_index,
             completed_file: Some(
                 LocalFileUpdate::new("episode1.mkv").with_path("C:/library/show/episode1.mkv"),
@@ -9640,6 +9710,7 @@ mod tests {
             .expect("the completed selection should exist");
         let playlist_selection_revision =
             runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
         runtime
             .session_mut()
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
@@ -9649,6 +9720,7 @@ mod tests {
             media_generation: Some(PlayerMediaGeneration::new(7)),
             playlist_revision,
             playlist_selection_revision,
+            canonical_playlist_epoch,
             playlist_index,
             completed_file: Some(LocalFileUpdate::new("episode1.mkv")),
         });
@@ -9680,6 +9752,7 @@ mod tests {
             .expect("the completed selection should exist");
         let playlist_selection_revision =
             runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
 
         runtime
             .session_mut()
@@ -9705,6 +9778,7 @@ mod tests {
             media_generation: Some(PlayerMediaGeneration::new(7)),
             playlist_revision,
             playlist_selection_revision,
+            canonical_playlist_epoch,
             playlist_index,
             completed_file: Some(LocalFileUpdate::new("episode1.mkv")),
         });
@@ -9759,6 +9833,7 @@ mod tests {
             .expect("the completed duplicate selection should exist");
         let playlist_selection_revision =
             runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
         runtime
             .session_mut()
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
@@ -9768,6 +9843,7 @@ mod tests {
             media_generation: Some(PlayerMediaGeneration::new(7)),
             playlist_revision,
             playlist_selection_revision,
+            canonical_playlist_epoch,
             playlist_index,
             completed_file: Some(LocalFileUpdate::new("same.mkv")),
         });

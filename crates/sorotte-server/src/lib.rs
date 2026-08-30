@@ -216,8 +216,8 @@ pub(crate) use auth::{
 pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
 pub(crate) use inbound::{
-    ServerHelloCommand, ServerInboundCommand, ServerSetCommand, ServerSharedFile,
-    ServerStateCommand, normalize_server_protocol_message,
+    ServerHelloCommand, ServerInboundCommand, ServerPlaylistIndexPrecondition, ServerSetCommand,
+    ServerSharedFile, ServerStateCommand, normalize_server_protocol_message,
 };
 pub(crate) use messages::*;
 #[cfg(test)]
@@ -476,6 +476,7 @@ pub struct ServerRuntime {
 struct RoomPlaylistState {
     files: Vec<String>,
     index: Option<i64>,
+    epoch: u64,
 }
 
 impl RoomPlaylistState {
@@ -502,6 +503,14 @@ impl RoomPlaylistState {
             }
         }
     }
+
+    fn advance_epoch(&mut self) -> u64 {
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .expect("canonical playlist epoch exhausted");
+        self.epoch
+    }
 }
 
 impl std::fmt::Debug for RoomPlaylistState {
@@ -510,6 +519,7 @@ impl std::fmt::Debug for RoomPlaylistState {
             .debug_struct("RoomPlaylistState")
             .field("files_count", &self.files.len())
             .field("index", &self.index)
+            .field("epoch", &self.epoch)
             .finish()
     }
 }

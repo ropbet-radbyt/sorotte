@@ -201,6 +201,7 @@ impl RoomPersistenceStore {
                 let mut playlist = RoomPlaylistState {
                     files,
                     index: playlist_index,
+                    epoch: 0,
                 };
                 let needs_index_migration = playlist.normalize_index();
                 Ok((
@@ -278,6 +279,7 @@ impl RoomPersistenceStore {
         let mut playlist = RoomPlaylistState {
             files: state.files.clone(),
             index: state.index,
+            epoch: 0,
         };
         playlist.normalize_index();
         let persistence_version = i64::try_from(state.version)

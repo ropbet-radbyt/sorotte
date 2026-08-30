@@ -40,8 +40,29 @@ impl ClientSession {
     /// and physical-file proof retained by `ClientRuntime` at natural EOF.
     pub(crate) fn runtime_actions_for_verified_local_playlist_next(
         &self,
+        expected_index: i64,
+        expected_epoch: Option<u64>,
     ) -> Vec<ClientRuntimeAction> {
-        self.runtime_actions_for_local_playlist_next_with_selection_proof(true)
+        let actions = self.runtime_actions_for_local_playlist_next_with_selection_proof(true);
+        let Some(expected_epoch) = expected_epoch else {
+            // A legacy server does not publish a canonical epoch and will
+            // ignore Sorotte extension fields, so retain the established
+            // unconditional playlistIndex behavior for that connection.
+            return actions;
+        };
+        actions
+            .into_iter()
+            .map(|action| match action {
+                ClientRuntimeAction::SetPlaylistIndex { index } => {
+                    ClientRuntimeAction::SetPlaylistIndexIfCurrent {
+                        index,
+                        expected_index,
+                        expected_epoch,
+                    }
+                }
+                action => action,
+            })
+            .collect()
     }
 
     fn runtime_actions_for_local_playlist_next_with_selection_proof(

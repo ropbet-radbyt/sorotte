@@ -901,6 +901,7 @@ impl ServerRuntime {
             let mut playlist = RoomPlaylistState {
                 files: persisted_room.files,
                 index: persisted_room.index,
+                epoch: 0,
             };
             playlist.normalize_index();
             self.room_playlists.insert(room_name.clone(), playlist);
@@ -1005,6 +1006,7 @@ impl ServerRuntime {
                     // Preserve that wire-visible join snapshot until a client
                     // explicitly changes the index.
                     index: Some(0),
+                    epoch: 0,
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
             self.room_participant_status_scopes
@@ -1882,11 +1884,13 @@ impl ServerRuntime {
         client_id: &str,
         files: Vec<String>,
         set_by: Option<&str>,
+        epoch: u64,
     ) -> ProtocolMessage {
         let mut playlist_change = playlist_change_with_plex_sidecar(
             files,
             self.client_session_supports_sorotte_plex_playlist_uris(client_id),
-        );
+        )
+        .with_playlist_epoch(epoch);
         playlist_change = if let Some(set_by) = set_by {
             playlist_change.with_user(set_by)
         } else {

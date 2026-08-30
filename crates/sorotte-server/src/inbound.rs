@@ -199,6 +199,19 @@ pub(crate) struct ServerHelloCommand {
     pub(crate) readiness_reconnect_token: Option<SecretValue>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerPlaylistIndexPrecondition {
+    Unconditional,
+    Expected { index: i64, epoch: u64 },
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ServerPlaylistIndexCommand {
+    pub(crate) index: Option<i64>,
+    pub(crate) precondition: ServerPlaylistIndexPrecondition,
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) enum ServerSetCommand {
     Room(String),
@@ -214,7 +227,7 @@ pub(crate) enum ServerSetCommand {
         set_by: Option<String>,
     },
     PlaylistChange(Vec<String>),
-    PlaylistIndex(Option<i64>),
+    PlaylistIndex(ServerPlaylistIndexCommand),
     Features(ServerClientCapabilities),
     PlaybackBarrier(Box<PlaybackBarrierSetExtension>),
     Readiness(Box<ReadinessSetExtension>),
@@ -246,9 +259,10 @@ impl std::fmt::Debug for ServerSetCommand {
                 .debug_struct("PlaylistChange")
                 .field("files_count", &files.len())
                 .finish(),
-            Self::PlaylistIndex(index) => {
-                formatter.debug_tuple("PlaylistIndex").field(index).finish()
-            }
+            Self::PlaylistIndex(command) => formatter
+                .debug_tuple("PlaylistIndex")
+                .field(command)
+                .finish(),
             Self::Features(capabilities) => formatter
                 .debug_tuple("Features")
                 .field(capabilities)
@@ -557,10 +571,22 @@ pub(crate) fn normalize_server_protocol_message(
                             &playlist,
                         ))
                     }),
-                    "playlistIndex" => set
-                        .playlist_index
-                        .take()
-                        .map(|playlist| ServerSetCommand::PlaylistIndex(playlist.index_value())),
+                    "playlistIndex" => set.playlist_index.take().map(|playlist| {
+                        let precondition = if !playlist.has_expected_playlist_state() {
+                            ServerPlaylistIndexPrecondition::Unconditional
+                        } else if let (Some(index), Some(epoch)) = (
+                            playlist.expected_playlist_index(),
+                            playlist.expected_playlist_epoch(),
+                        ) {
+                            ServerPlaylistIndexPrecondition::Expected { index, epoch }
+                        } else {
+                            ServerPlaylistIndexPrecondition::Invalid
+                        };
+                        ServerSetCommand::PlaylistIndex(ServerPlaylistIndexCommand {
+                            index: playlist.index_value(),
+                            precondition,
+                        })
+                    }),
                     "features" => set.features.take().and_then(|features| match features {
                         Value::Object(features) => Some(ServerSetCommand::Features(
                             capabilities_from_object(features),

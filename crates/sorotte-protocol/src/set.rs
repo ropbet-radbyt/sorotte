@@ -508,6 +508,28 @@ impl PlaylistChangePayload {
 
 pub const SOROTTE_PLEX_PLAYLIST_URIS_FEATURE: &str = "sorottePlexPlaylistUris";
 pub const SOROTTE_PLEX_PLAYLIST_URIS_KEY: &str = SOROTTE_PLEX_PLAYLIST_URIS_FEATURE;
+/// Monotonic, server-issued generation for the canonical playlist contents or
+/// selection. It is carried on both playlistChange and playlistIndex fanout.
+pub const SOROTTE_PLAYLIST_EPOCH_KEY: &str = "sorottePlaylistEpoch";
+/// Natural-EOF compare-and-set guard: the selection must still be this index.
+pub const SOROTTE_EXPECTED_PLAYLIST_INDEX_KEY: &str = "sorotteExpectedPlaylistIndex";
+/// Natural-EOF compare-and-set guard: the canonical playlist generation must
+/// still match the generation observed when the player reached EOF.
+pub const SOROTTE_EXPECTED_PLAYLIST_EPOCH_KEY: &str = "sorotteExpectedPlaylistEpoch";
+
+impl PlaylistChangePayload {
+    pub fn playlist_epoch(&self) -> Option<u64> {
+        self.extra
+            .get(SOROTTE_PLAYLIST_EPOCH_KEY)
+            .and_then(Value::as_u64)
+    }
+
+    pub fn with_playlist_epoch(mut self, epoch: u64) -> Self {
+        self.extra
+            .insert(SOROTTE_PLAYLIST_EPOCH_KEY.to_owned(), Value::from(epoch));
+        self
+    }
+}
 
 pub fn is_sorotte_plex_playlist_uri(value: &str) -> bool {
     value
@@ -764,6 +786,47 @@ impl PlaylistIndexPayload {
     pub fn with_null_user(mut self) -> Self {
         self.user = None;
         self.user_is_null = true;
+        self
+    }
+
+    pub fn playlist_epoch(&self) -> Option<u64> {
+        self.extra
+            .get(SOROTTE_PLAYLIST_EPOCH_KEY)
+            .and_then(Value::as_u64)
+    }
+
+    pub fn expected_playlist_index(&self) -> Option<i64> {
+        self.extra
+            .get(SOROTTE_EXPECTED_PLAYLIST_INDEX_KEY)
+            .and_then(Value::as_i64)
+    }
+
+    pub fn expected_playlist_epoch(&self) -> Option<u64> {
+        self.extra
+            .get(SOROTTE_EXPECTED_PLAYLIST_EPOCH_KEY)
+            .and_then(Value::as_u64)
+    }
+
+    pub fn has_expected_playlist_state(&self) -> bool {
+        self.extra.contains_key(SOROTTE_EXPECTED_PLAYLIST_INDEX_KEY)
+            || self.extra.contains_key(SOROTTE_EXPECTED_PLAYLIST_EPOCH_KEY)
+    }
+
+    pub fn with_playlist_epoch(mut self, epoch: u64) -> Self {
+        self.extra
+            .insert(SOROTTE_PLAYLIST_EPOCH_KEY.to_owned(), Value::from(epoch));
+        self
+    }
+
+    pub fn with_expected_playlist_state(mut self, index: i64, epoch: u64) -> Self {
+        self.extra.insert(
+            SOROTTE_EXPECTED_PLAYLIST_INDEX_KEY.to_owned(),
+            Value::from(index),
+        );
+        self.extra.insert(
+            SOROTTE_EXPECTED_PLAYLIST_EPOCH_KEY.to_owned(),
+            Value::from(epoch),
+        );
         self
     }
 }

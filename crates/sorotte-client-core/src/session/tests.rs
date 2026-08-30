@@ -260,6 +260,9 @@ impl ClientEffectSink for RecordingRuntimeControl {
             ClientEffect::SetFile(file) => self.file_updates.push(file),
             ClientEffect::SetPlaylist(files) => self.playlist_updates.push(files),
             ClientEffect::SetPlaylistIndex(index) => self.playlist_index_updates.push(index),
+            ClientEffect::SetPlaylistIndexIfCurrent { index, .. } => {
+                self.playlist_index_updates.push(index);
+            }
             ClientEffect::SendPlaybackBarrierSet { extension, .. } => {
                 self.playback_barrier_sets.push(*extension);
             }

@@ -159,6 +159,7 @@ invariants = [
     "startup player evidence remains generation-scoped across the first owner-clock observation",
     "canonical playlist convergence accepts file evidence only from the current player attachment",
     "natural completion belongs to one playlist content, row, and selection generation",
+    "simultaneous natural-completion contenders carrying one canonical playlist epoch produce one server commit and no stale-loser fanout",
 ]
 
 [[behavior.proof]]
@@ -205,6 +206,42 @@ package = "sorotte-cli"
 target_kind = "lib"
 test = "tests::playback_lifecycle_product_seam::natural_eof_advances_canonical_playlist_and_loads_the_next_item_for_every_player"
 source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.natural-eof-compare-and-set"
+kind = "rust-test"
+oracle = "server-owned-canonical-playlist-compare-and-set"
+package = "sorotte-server"
+target_kind = "lib"
+test = "tests::controller_playlist_tests::simultaneous_natural_eof_compare_and_set_commits_one_selection_generation"
+source = "crates/sorotte-server/src/tests/controller_playlist_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.natural-eof-client-guard"
+kind = "rust-test"
+oracle = "client-natural-completion-canonical-state-guard"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::natural_completion_advances_once_only_while_completed_file_is_canonical"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.natural-eof-legacy-fallback"
+kind = "rust-test"
+oracle = "legacy-server-natural-completion-wire-compatibility"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::natural_completion_retains_legacy_unconditional_index_compatibility_without_epoch"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]

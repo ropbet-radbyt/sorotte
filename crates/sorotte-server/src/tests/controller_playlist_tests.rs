@@ -35,6 +35,228 @@ fn playlist_change_payloads(
         .collect()
 }
 
+fn playlist_index_payloads(
+    directed_lines: &[DirectedOutboundLine],
+) -> Vec<(String, PlaylistIndexPayload)> {
+    directed_lines
+        .iter()
+        .filter_map(|line| {
+            let message = decode_message_line(&line.line).ok()?;
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            Some((line.client_id.clone(), payload.set.playlist_index?))
+        })
+        .collect()
+}
+
+#[test]
+fn simultaneous_natural_eof_compare_and_set_commits_one_selection_generation() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [
+        ("observer", "observer"),
+        ("client-1", "alice"),
+        ("client-2", "bob"),
+        ("client-3", "carol"),
+    ] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
+                ),
+            )
+            .expect("participant hello should establish a session");
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 2);
+
+    let guarded_advance = r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":0,"sorotteExpectedPlaylistEpoch":2}}}"#;
+    let winner = runtime
+        .handle_line_fanout("client-1", guarded_advance)
+        .expect("first EOF transition should be accepted");
+    let loser_one = runtime
+        .handle_line_fanout("client-2", guarded_advance)
+        .expect("second EOF transition should be consumed");
+    let loser_two = runtime
+        .handle_line_fanout("client-3", guarded_advance)
+        .expect("third EOF transition should be consumed");
+
+    let winner_payloads = playlist_index_payloads(&winner);
+    assert_eq!(
+        winner_payloads.len(),
+        4,
+        "one accepted transition must fan out once"
+    );
+    assert!(winner_payloads.iter().all(|(_, payload)| {
+        payload.index_value() == Some(1)
+            && payload.playlist_epoch() == Some(3)
+            && !payload.has_expected_playlist_state()
+    }));
+    assert!(
+        loser_one.is_empty(),
+        "a stale contender must not create a correction echo"
+    );
+    assert!(
+        loser_two.is_empty(),
+        "a stale contender must not create a correction echo"
+    );
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(1));
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 3);
+
+    let replay = runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("ordinary same-row replay should remain accepted");
+    let replay_payloads = playlist_index_payloads(&replay);
+    assert_eq!(replay_payloads.len(), 4);
+    assert!(replay_payloads.iter().all(|(_, payload)| {
+        payload.index_value() == Some(1) && payload.playlist_epoch() == Some(4)
+    }));
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 4);
+}
+
+#[test]
+fn malformed_playlist_precondition_fails_closed_as_a_correction() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should establish a session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+
+    for malformed in [
+        r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":0}}}"#,
+        r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":"zero","sorotteExpectedPlaylistEpoch":2}}}"#,
+    ] {
+        let correction = runtime
+            .handle_line_fanout("client-1", malformed)
+            .expect("malformed guard should receive canonical correction");
+        let payloads = playlist_index_payloads(&correction);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].0, "client-1");
+        assert_eq!(payloads[0].1.index_value(), Some(0));
+        assert_eq!(payloads[0].1.playlist_epoch(), Some(2));
+        assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+        assert_eq!(runtime.room_playlist_state("room1").epoch, 2);
+    }
+}
+
+#[test]
+fn guarded_playlist_advance_rejects_aba_and_playlist_replacement() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
+                ),
+            )
+            .expect("participant hello should establish a session");
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+    let stale_guard = r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":0,"sorotteExpectedPlaylistEpoch":2}}}"#;
+
+    runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("peer should advance selection");
+    runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("peer should return to the original numeric index");
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 4);
+    assert!(
+        runtime
+            .handle_line_fanout("client-1", stale_guard)
+            .expect("ABA-stale request should be consumed")
+            .is_empty()
+    );
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 4);
+
+    runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"Set":{"playlistChange":{"files":["replacement-a.mkv","replacement-b.mkv"]}}}"#,
+        )
+        .expect("replacement playlist should be accepted");
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 5);
+    assert!(
+        runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":0,"sorotteExpectedPlaylistEpoch":4}}}"#,
+            )
+            .expect("playlist-replacement-stale request should be consumed")
+            .is_empty()
+    );
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 5);
+}
+
+#[test]
+fn playlist_join_snapshot_carries_one_coherent_canonical_epoch() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("alice hello should establish a session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+
+    let join = runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("bob hello should receive a snapshot");
+    let changes = playlist_change_payloads(&join);
+    let indices = playlist_index_payloads(&join);
+    assert!(changes.iter().any(|(client_id, payload)| {
+        client_id == "client-2" && payload.playlist_epoch() == Some(2)
+    }));
+    assert!(indices.iter().any(|(client_id, payload)| {
+        client_id == "client-2"
+            && payload.index_value() == Some(0)
+            && payload.playlist_epoch() == Some(2)
+    }));
+}
+
 #[test]
 fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
     let mut runtime = ServerRuntime::default();

@@ -21,6 +21,7 @@ struct PendingNaturalPlaybackCompletion {
     media_generation: Option<sorotte_player_api::PlayerMediaGeneration>,
     playlist_revision: Option<u64>,
     playlist_selection_revision: Option<u64>,
+    canonical_playlist_epoch: Option<u64>,
     playlist_index: Option<i64>,
     completed_file: Option<LocalFileUpdate>,
 }

@@ -1,16 +1,21 @@
 use super::*;
 
 #[test]
-fn playlist_received_before_hello_promotes_its_remote_and_selection_revisions() {
+fn playlist_received_before_hello_promotes_its_remote_selection_and_canonical_revisions() {
     let mut session = ClientSession::default();
     session
-        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode.mkv"],"user":"bob"}}}"#)
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode.mkv"],"user":"bob","sorottePlaylistEpoch":7}}}"#,
+        )
         .expect("pre-Hello playlist should be retained");
     session
-        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .apply_message_json(
+            r#"{"Set":{"playlistIndex":{"index":0,"user":"bob","sorottePlaylistEpoch":8}}}"#,
+        )
         .expect("pre-Hello playlist selection should be retained");
     assert_eq!(session.current_room_playlist_remote_revision(), 0);
     assert_eq!(session.current_room_playlist_selection_revision(), None);
+    assert_eq!(session.current_room_playlist_canonical_epoch(), None);
 
     session
         .apply_hello_json(
@@ -26,6 +31,32 @@ fn playlist_received_before_hello_promotes_its_remote_and_selection_revisions() 
         session.current_room_playlist_selection_revision(),
         Some(1),
         "the promoted index must retain its selection generation"
+    );
+    assert_eq!(
+        session.current_room_playlist_canonical_epoch(),
+        Some(8),
+        "the promoted snapshot must retain the server-issued canonical epoch"
+    );
+
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("a legacy index event should still apply");
+    assert_eq!(
+        session.current_room_playlist_canonical_epoch(),
+        None,
+        "a payload without an epoch must invalidate rather than reuse a stale guard"
+    );
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistIndex":{"index":0,"user":"bob","sorottePlaylistEpoch":9}}}"#,
+        )
+        .expect("a current server index event should restore the canonical epoch");
+    assert_eq!(session.current_room_playlist_canonical_epoch(), Some(9));
+    session.reset_sync_state_for_reconnect();
+    assert_eq!(
+        session.current_room_playlist_canonical_epoch(),
+        None,
+        "a canonical epoch is scoped to one server transport generation"
     );
 }
 

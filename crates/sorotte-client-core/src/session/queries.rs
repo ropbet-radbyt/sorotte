@@ -343,6 +343,15 @@ impl ClientSession {
             .copied()
     }
 
+    pub(crate) fn current_room_playlist_canonical_epoch(&self) -> Option<u64> {
+        self.model
+            .room
+            .name
+            .as_ref()
+            .and_then(|room_name| self.model.playlist.canonical_epochs.get(room_name))
+            .copied()
+    }
+
     pub fn current_room_playlist_remote_revision(&self) -> u64 {
         self.model
             .room
@@ -403,7 +412,8 @@ impl ClientSession {
                         .record(playlist.revision, files);
                     playlist_changed = true;
                 }
-                ClientRuntimeAction::SetPlaylistIndex { index } => {
+                ClientRuntimeAction::SetPlaylistIndex { index }
+                | ClientRuntimeAction::SetPlaylistIndexIfCurrent { index, .. } => {
                     let Ok(index_usize) = usize::try_from(*index) else {
                         continue;
                     };

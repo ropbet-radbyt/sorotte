@@ -1553,6 +1553,67 @@ fn playlist_index_message_with_null_index_decodes_as_null_snapshot() {
 }
 
 #[test]
+fn playlist_epoch_and_expected_state_roundtrip_as_namespaced_extensions() {
+    let playlist_change =
+        PlaylistChangePayload::new(["episode1.mkv", "episode2.mkv"]).with_playlist_epoch(41);
+    assert_eq!(playlist_change.playlist_epoch(), Some(41));
+    let change_line = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_change(playlist_change),
+    ))
+    .expect("playlist epoch should encode");
+    let ProtocolMessage::Set(change) =
+        decode_message_line(&change_line).expect("playlist epoch should decode")
+    else {
+        panic!("expected Set message");
+    };
+    assert_eq!(
+        change
+            .set
+            .playlist_change
+            .expect("playlistChange should remain present")
+            .playlist_epoch(),
+        Some(41)
+    );
+
+    let playlist_index = PlaylistIndexPayload::new(1)
+        .with_playlist_epoch(42)
+        .with_expected_playlist_state(0, 41);
+    assert!(playlist_index.has_expected_playlist_state());
+    assert_eq!(playlist_index.playlist_epoch(), Some(42));
+    assert_eq!(playlist_index.expected_playlist_index(), Some(0));
+    assert_eq!(playlist_index.expected_playlist_epoch(), Some(41));
+    let index_line = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_index(playlist_index),
+    ))
+    .expect("guarded playlist index should encode");
+    assert_eq!(
+        decode_line(&index_line).expect("guarded playlist index should remain JSON"),
+        json!({
+            "Set": {
+                "playlistIndex": {
+                    "index": 1,
+                    "sorotteExpectedPlaylistEpoch": 41,
+                    "sorotteExpectedPlaylistIndex": 0,
+                    "sorottePlaylistEpoch": 42
+                }
+            }
+        })
+    );
+    let ProtocolMessage::Set(index) =
+        decode_message_line(&index_line).expect("guarded playlist index should decode")
+    else {
+        panic!("expected Set message");
+    };
+    let index = index
+        .set
+        .playlist_index
+        .expect("playlistIndex should remain present");
+    assert_eq!(index.playlist_epoch(), Some(42));
+    assert_eq!(index.expected_playlist_index(), Some(0));
+    assert_eq!(index.expected_playlist_epoch(), Some(41));
+}
+
+#[test]
 fn playlist_change_message_with_null_user_roundtrips() {
     let message = decode_message_line(r#"{"Set":{"playlistChange":{"files":[],"user":null}}}"#)
         .expect("legacy nullable playlistChange payload should decode");

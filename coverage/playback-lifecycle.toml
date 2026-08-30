@@ -20,7 +20,7 @@ statement = "Only a validated server transition changes canonical room playstate
 [[invariant]]
 id = "LIFE-EPOCH-001"
 kind = "safety"
-statement = "Evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt cannot mutate successor authority."
+statement = "Evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request whose expected server-issued canonical playlist epoch no longer matches, cannot mutate successor authority."
 
 [[invariant]]
 id = "LIFE-IDENT-001"
@@ -35,12 +35,12 @@ statement = "A dependent player effect cannot precede terminal delivery of its e
 [[invariant]]
 id = "LIFE-ONCE-001"
 kind = "safety"
-statement = "One accepted semantic transition produces at most one canonical commit and at most one terminal client result."
+statement = "One accepted semantic transition, including concurrent equivalent intents, produces at most one canonical commit and at most one terminal client result."
 
 [[invariant]]
 id = "LIFE-EOF-001"
 kind = "safety"
-statement = "Only natural completion correlated to the current playlist contents revision, row, and selection generation can request canonical playlist progression."
+statement = "Only natural completion correlated to the current playlist contents revision, row, and selection generation can request canonical playlist progression; it commits only while its expected row and server-issued canonical playlist epoch still match, and stale concurrent contenders are no-ops."
 
 [[invariant]]
 id = "LIFE-STATUS-001"
@@ -129,7 +129,7 @@ title = "Natural completion through canonical peer playlist progression"
 status = "open"
 risk = "critical"
 owners = ["verification", "gui", "client-core", "server", "player"]
-summary = "An actual-server simulated-player seam proves one natural-EOF commit and peer loads, and the packaged real-mpv walk is authored; loop, last-item, cache-pause, transport-failure, and successful pinned-system evidence remain open."
+summary = "Client/server seams now prove guarded natural-EOF publication, one canonical commit across simultaneous contenders, stale ABA and playlist-replacement rejection, legacy fallback, and peer loads; the packaged real-mpv walk is authored, while loop, last-item, cache-pause, transport-failure, and successful pinned-system evidence remain open."
 closure = "Real players complete generated media under ordinary, loop, last-item, cache-pause, and transport-failure schedules; only valid natural completion commits one canonical transition and all capable peers converge."
 
 [[gap]]
@@ -644,7 +644,7 @@ terminal_states = []
 id = "unknown"
 title = "Unknown"
 kind = "stable"
-description = "No coherent canonical playlist snapshot is installed."
+description = "No coherent canonical playlist snapshot of contents, index, and opaque server epoch is installed."
 
 [[machine.state]]
 id = "empty"
@@ -662,7 +662,7 @@ description = "Canonical contents exist without a valid selected entry."
 id = "selected"
 title = "Selected"
 kind = "stable"
-description = "Canonical contents and selected entry are coherent."
+description = "Canonical contents, selected entry, and opaque server epoch are coherent."
 
 [[machine.state]]
 id = "mutation-pending"
@@ -674,7 +674,7 @@ description = "A playlist-contents intent awaits canonical commit or rejection."
 id = "index-pending"
 title = "Index pending"
 kind = "transient"
-description = "A selected-entry intent awaits canonical commit or rejection."
+description = "An explicit selected-entry intent or a natural-completion compare-and-set intent awaits canonical commit, stale consumption, or rejection."
 
 [[machine.state]]
 id = "exhausted"
@@ -743,7 +743,7 @@ id = "PLAYLIST-SELECT-001"
 title = "Submit selected-entry mutation"
 from = ["populated", "selected"]
 to = "index-pending"
-cause = "An authorized client selects or advances an entry."
+cause = "An authorized client explicitly selects an entry, or advances after natural completion while its expected canonical row and server epoch still match."
 authority = "client-intent"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-DELIVERY-001", "LIFE-ONCE-001", "LIFE-EOF-001"]

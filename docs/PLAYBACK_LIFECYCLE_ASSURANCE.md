@@ -61,6 +61,7 @@ The following identities are distinct and must never be compared or substituted 
 | media generation | one logical room-media selection | canonical logical media changes |
 | playlist revision | one canonical playlist contents revision | the server accepts different playlist contents |
 | playlist selection generation | one canonical selection or replay | the server accepts a selected-entry event, including replay of the same row |
+| canonical playlist epoch | one opaque server-issued compare-and-set version spanning playlist contents and selection | the server accepts any playlist contents or selected-entry mutation, including replay of the same row |
 | load attempt | one physical load effort | a physical load or recovery successor is allocated |
 | player command | one player-side semantic command transaction | a new load, play, pause, or seek command is submitted |
 | protocol mutation receipt | one causally required outbound frame | the frame enters terminal delivered or failed state |
@@ -73,6 +74,8 @@ Authority is similarly separated:
 - A player attachment owns physical player observations and load-attempt identity.
 - Participant status owns no canonical decision; it is advisory evidence only.
 - The verification oracle owns expected lifecycle facts and effects; product projections cannot define their own expected result.
+
+The canonical playlist epoch is an equality-only fencing token. It is not a playlist contents revision or selection generation and must never be ordered or compared numerically with either. A coherent server snapshot publishes the same epoch with contents and index; reconnecting clients replace any retired token with that snapshot. A new server process may restart the token because no old connection can remain authoritative across the process boundary.
 
 ## Lifecycle machines
 
@@ -92,7 +95,7 @@ Transport progresses through disconnected, connecting, awaiting Hello, active, r
 
 ### Canonical playlist selection
 
-Playlist authority progresses through unknown, empty, populated, selected, mutation pending, index pending, and exhausted. Local UI projection, local player playlist, and media resolver output cannot commit canonical contents or index. Every accepted selection event establishes a successor selection generation even when it replays the same row. A natural completion may request progression only while its playlist contents revision, row, and selection generation all remain current; only an accepted server transition advances the canonical selection.
+Playlist authority progresses through unknown, empty, populated, selected, mutation pending, index pending, and exhausted. Local UI projection, local player playlist, and media resolver output cannot commit canonical contents or index. Every accepted contents or selection event advances an opaque server-issued canonical playlist epoch, and every accepted selection establishes a successor selection generation even when it replays the same row. A natural completion may publish a guarded progression only while its local playlist contents revision, row, and selection generation remain current. The request carries its expected canonical row and epoch; the server commits only if both still match. Simultaneous or late contenders that lose that compare-and-set are consumed as no-ops without another canonical fanout. Explicit user selections remain ordinary server-authorized mutations and preserve legacy wire compatibility.
 
 ### Media resolution
 
@@ -125,11 +128,11 @@ The machine-readable model assigns these identifiers to every affected transitio
 ### Safety
 
 - `LIFE-AUTH-001`: only a validated server transition changes canonical room playstate or playlist selection.
-- `LIFE-EPOCH-001`: evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt cannot mutate successor authority.
+- `LIFE-EPOCH-001`: evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request carrying a retired canonical playlist epoch, cannot mutate successor authority.
 - `LIFE-IDENT-001`: identities from different domains are never compared as interchangeable counters.
 - `LIFE-DELIVERY-001`: a dependent player effect cannot precede terminal delivery of its exact causal protocol frame.
-- `LIFE-ONCE-001`: one accepted semantic transition produces at most one canonical commit and at most one terminal client result.
-- `LIFE-EOF-001`: only correlated natural completion can request canonical playlist progression.
+- `LIFE-ONCE-001`: one accepted semantic transition, including concurrent equivalent intents, produces at most one canonical commit and at most one terminal client result.
+- `LIFE-EOF-001`: only correlated natural completion may request canonical playlist progression; the server commits it only while the expected canonical row and playlist epoch still match, and consumes stale contenders without fanout.
 - `LIFE-STATUS-001`: participant status remains advisory, privacy-safe, epoch-bound, and absent when correlation is insufficient.
 - `LIFE-SNAPSHOT-001`: an authoritative snapshot installs one internally coherent generation of room, playlist, playstate, readiness, and status facts.
 
@@ -205,7 +208,7 @@ One run creates two deterministic PCM WAV fixtures and then verifies this ordina
 7. require advancing participant-status snapshots from all three real players;
 8. move to a paused baseline, cut and hold the follower's fragmenting TCP proxy, and require its participant-status withdrawal;
 9. start playback while the follower is absent, release its replacement transport, and require the same production CLI and real mpv to catch up without overwriting canonical state;
-10. resume near the end of the generated first item, observe natural mpv EOF, require exactly one canonical index advance, and require every player to load the second item;
+10. resume near the end of the generated first item, correlate each terminal mpv event to its last known media slot, let every completing client contend with the same canonical row and epoch, require exactly one server index commit with no stale-loser fanout, and require every player to load the second item;
 11. let every client reach its bounded normal exit, require participant-status withdrawal and owned IPC cleanup, then require the server's signal-driven drain to exit cleanly.
 
 The observer records playlist contents only as a count and generated media only as `media-1` or `media-2`. Its causal JSONL schema rejects path, URL, credential, token, and unknown fields. Per-player Lua observers also emit only stable role, media slot, coarse transport properties, and the terminal reason. Candidate paths remain in local generated scripts and process logs, not in the privacy-safe report or causal ledger.
@@ -264,9 +267,9 @@ The machine model records the following current evidence honestly:
 | reconnect and transport | `NET-RECONNECT-001`, `NET-DEADLINE-001`, `NET-CODEC-001`, `NET-GUI-001`, an actual-server production-loop seam, and a packaged fragment/cut/hold/missed-start/reconnect walk | half-close/reset replay, slow-reader schedules, and actual-GUI walks remain open |
 | participant status | `SYNC-PSTATUS-001` plus actual-server late snapshot, heartbeat, withdrawal, and packaged withdrawal/recovery across a controlled cut | controlled report loss/delay/stale classification and second-client UI projection remain open |
 | readiness and seek | `GUI-READY-001`, `GUI-SEEK-001`, plus actual-server delayed-member, late-join, and production seek seams | every start-gate phase under reconnect, sleep/resume, and slow resolution remains open |
-| native GUI and real mpv | strict native/real-mpv inventories and a required packaged server/three-client/real-mpv harness | the current host lacks mpv, and actual-GUI composition plus successful pinned-CI evidence remain open |
+| native GUI and real mpv | strict native/real-mpv inventories, a locally provisioned supported mpv build, and a required packaged server/three-client/real-mpv harness | actual-GUI composition plus successful exact-candidate and pinned-CI evidence remain open |
 | server release | packaged server protocol/persistence smoke plus a reusable exact-SHA release-mode server/CLI/real-mpv gate | successful hosted evidence and exact packaged-GUI consumption remain open |
-| playlist mutation and EOF | extensive component tests, selection-generation fencing for same-row replay, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | loop, last-item, cache-pause, and transport-failure system schedules remain open |
+| playlist mutation and EOF | extensive component tests, selection-generation fencing for same-row replay, client publication of expected canonical state, server-owned compare-and-set proof across simultaneous contenders and stale ABA/replacement schedules, legacy fallback, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | successful exact-candidate evidence plus loop, last-item, cache-pause, and transport-failure system schedules remain open |
 | publication | GUI and server publication depend on the reusable lifecycle gate, safe evidence staging, and `--require-closed` | no successful exact-candidate gate evidence yet; the system walk still uses packaged CLI rather than the GUI artifact |
 
 Open gaps are first-class entries in `coverage/playback-lifecycle.toml`, with owners, risk, affected transitions, and mechanical closure criteria. A gap may be explicit while this branch is under construction; the final release gate must run the validator with `--require-closed`.

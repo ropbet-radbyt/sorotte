@@ -64,8 +64,9 @@ pub use readiness::{
 pub use room::RoomRef;
 pub use set::{
     ControllerAuthPayload, FilePayload, NewControlledRoomPayload, PlaylistChangePayload,
-    PlaylistIndexPayload, ReadyPayload, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
-    SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, UserSetPayload,
+    PlaylistIndexPayload, ReadyPayload, SOROTTE_EXPECTED_PLAYLIST_EPOCH_KEY,
+    SOROTTE_EXPECTED_PLAYLIST_INDEX_KEY, SOROTTE_PLAYLIST_EPOCH_KEY,
+    SOROTTE_PLEX_PLAYLIST_URIS_FEATURE, SOROTTE_PLEX_PLAYLIST_URIS_KEY, SetPayload, UserSetPayload,
     canonical_playlist_files_from_change, is_sorotte_plex_playlist_uri,
     playlist_change_with_plex_sidecar, split_playlist_files_for_syncplay,
     syncplay_playlist_file_name,

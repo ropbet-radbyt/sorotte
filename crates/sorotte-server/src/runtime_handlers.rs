@@ -595,6 +595,7 @@ impl ServerRuntime {
             client_id,
             room_playlist.files.clone(),
             join_room_playback.set_by.as_deref(),
+            room_playlist.epoch,
         );
         outbound.push(DirectedProtocolMessage::new(
             client_id,
@@ -605,6 +606,7 @@ impl ServerRuntime {
             playlist_snapshot_index_message(
                 room_playlist.index,
                 join_room_playback.set_by.as_deref(),
+                room_playlist.epoch,
             ),
         ));
 
@@ -905,6 +907,7 @@ impl ServerRuntime {
                         client_id,
                         room_playlist.files.clone(),
                         room_playback.set_by.as_deref(),
+                        room_playlist.epoch,
                     );
                     outbound_messages.push(DirectedProtocolMessage::new(
                         client_id,
@@ -915,6 +918,7 @@ impl ServerRuntime {
                         playlist_snapshot_index_message(
                             room_playlist.index,
                             room_playback.set_by.as_deref(),
+                            room_playlist.epoch,
                         ),
                     ));
                     outbound_messages.extend(self.refresh_room_buffering_participant(client_id)?);
@@ -1103,7 +1107,11 @@ impl ServerRuntime {
                         // item send playlistIndex separately.
                         let playlist_changed =
                             self.room_playlist_state(&session.room).files != new_files;
-                        self.room_playlist_state_mut(&session.room).files = new_files.clone();
+                        let playlist_epoch = {
+                            let room_playlist = self.room_playlist_state_mut(&session.room);
+                            room_playlist.files = new_files.clone();
+                            room_playlist.advance_epoch()
+                        };
                         if playlist_changed {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
@@ -1123,6 +1131,7 @@ impl ServerRuntime {
                                 &peer_client,
                                 new_files.clone(),
                                 Some(&session.username),
+                                playlist_epoch,
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(peer_client, playlist_message));
@@ -1135,26 +1144,57 @@ impl ServerRuntime {
                                 client_id,
                                 room_state.files.clone(),
                                 Some(&session.room),
+                                room_state.epoch,
                             ),
                         ));
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
-                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                            playlist_snapshot_index_message(
+                                room_state.index,
+                                Some(&session.room),
+                                room_state.epoch,
+                            ),
                         ));
                     }
                 }
                 "playlistIndex" => {
-                    let Some(index) = playlist_index.take() else {
+                    let Some(command) = playlist_index.take() else {
                         continue;
                     };
                     self.ensure_room_state(&session.room);
+                    let room_state = self.room_playlist_state(&session.room);
+                    let precondition_matches = match command.precondition {
+                        ServerPlaylistIndexPrecondition::Unconditional => true,
+                        ServerPlaylistIndexPrecondition::Expected { index, epoch } => {
+                            room_state.index == Some(index) && room_state.epoch == epoch
+                        }
+                        ServerPlaylistIndexPrecondition::Invalid => false,
+                    };
+                    if matches!(
+                        command.precondition,
+                        ServerPlaylistIndexPrecondition::Expected { .. }
+                    ) && !precondition_matches
+                    {
+                        // A peer already committed a transition (or the
+                        // playlist changed) after this player observed EOF.
+                        // The winning fanout is authoritative; silently
+                        // consume the stale compare-and-set so it cannot
+                        // become a duplicate selection generation.
+                        continue;
+                    }
+                    let index = command.index;
                     let index_is_valid =
                         self.room_playlist_state(&session.room).accepts_index(index);
                     if self.user_can_control_playlist(&session.username, &session.room)
                         && index_is_valid
+                        && precondition_matches
                     {
                         let previous_index = self.room_playlist_state(&session.room).index;
-                        self.room_playlist_state_mut(&session.room).index = index;
+                        let playlist_epoch = {
+                            let room_playlist = self.room_playlist_state_mut(&session.room);
+                            room_playlist.index = index;
+                            room_playlist.advance_epoch()
+                        };
                         if previous_index != index {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
@@ -1177,7 +1217,8 @@ impl ServerRuntime {
                             ));
                         }
                         let playlist_index = PlaylistIndexPayload::from_optional(index)
-                            .with_user(session.username.clone());
+                            .with_user(session.username.clone())
+                            .with_playlist_epoch(playlist_epoch);
                         let playlist_message = ProtocolMessage::set(
                             SetPayload::new().with_playlist_index(playlist_index),
                         );
@@ -1191,7 +1232,11 @@ impl ServerRuntime {
                         let room_state = self.room_playlist_state(&session.room);
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
-                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                            playlist_snapshot_index_message(
+                                room_state.index,
+                                Some(&session.room),
+                                room_state.epoch,
+                            ),
                         ));
                     }
                 }

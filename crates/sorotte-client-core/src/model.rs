@@ -522,6 +522,8 @@ pub struct PlaylistState {
     pub(crate) pending_remote_revision: u64,
     pub(crate) selection_revisions: BTreeMap<String, u64>,
     pub(crate) pending_selection_revision: u64,
+    pub(crate) canonical_epochs: BTreeMap<String, u64>,
+    pub(crate) pending_canonical_epoch: Option<u64>,
     pub(crate) pending_local_change_echoes: BTreeMap<String, PendingLocalPlaylistEchoTracker>,
     pub(crate) pending_local_index_echoes: BTreeMap<String, PendingLocalPlaylistIndexEchoTracker>,
     pub(crate) remote_revisions: BTreeMap<String, u64>,
@@ -549,6 +551,11 @@ impl std::fmt::Debug for PlaylistState {
             .field(
                 "pending_selection_revision",
                 &self.pending_selection_revision,
+            )
+            .field("canonical_epoch_room_count", &self.canonical_epochs.len())
+            .field(
+                "has_pending_canonical_epoch",
+                &self.pending_canonical_epoch.is_some(),
             )
             .field(
                 "pending_local_change_echo_count",

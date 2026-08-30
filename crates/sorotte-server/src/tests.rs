@@ -36,8 +36,8 @@ use super::{
     run_server_network_loops_and_shutdown_actor, tls_certificate_bundle_fingerprint,
 };
 use sorotte_protocol::{
-    ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
-    decode_message_line, extract_hello_from_message,
+    ChatPayload, ListPayload, PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage,
+    SetPayload, decode_message_line, extract_hello_from_message,
 };
 
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
@@ -54,6 +54,7 @@ fn tokenized_media_debug_canary_is_redacted_across_server_domain_carriers() {
         RoomPlaylistState {
             files: vec![target.clone()],
             index: Some(0),
+            epoch: 0,
         },
     );
     let shared_file = ServerSharedFile {
