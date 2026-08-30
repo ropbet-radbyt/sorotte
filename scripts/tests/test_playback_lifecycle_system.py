@@ -76,6 +76,13 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertIn('return "media-1"', script)
         self.assertIn('return "media-2"', script)
         self.assertIn('event = event_name', script)
+        self.assertIn("local last_media_slot = nil", script)
+        self.assertIn("last_media_slot = observed_media_slot", script)
+        self.assertIn(
+            'mp.register_event("end-file", function(event) emit("end-file", event.reason, true) end)',
+            script,
+        )
+        self.assertIn("emitted_media_slot = last_media_slot", script)
         self.assertNotIn("path = mp.get_property", script)
         self.assertNotIn("uri =", script)
 

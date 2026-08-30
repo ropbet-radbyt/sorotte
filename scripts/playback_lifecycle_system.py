@@ -344,8 +344,9 @@ local role = {_lua_quote(role)}
 local first_media_name = {_lua_quote(first_media_name)}
 local second_media_name = {_lua_quote(second_media_name)}
 local sequence = 0
+local last_media_slot = nil
 
-local function media_slot()
+local function current_media_slot()
     local value = mp.get_property("path")
     if value == nil then
         return nil
@@ -366,8 +367,16 @@ local function finite_number(value)
     return value
 end
 
-local function emit(event_name, reason)
+local function emit(event_name, reason, retain_terminal_media)
     sequence = sequence + 1
+    local observed_media_slot = current_media_slot()
+    if observed_media_slot ~= nil then
+        last_media_slot = observed_media_slot
+    end
+    local emitted_media_slot = observed_media_slot
+    if retain_terminal_media and emitted_media_slot == nil then
+        emitted_media_slot = last_media_slot
+    end
     local record = {{
         schema_version = {SCHEMA_VERSION},
         kind = {_lua_quote(PLAYER_TRACE_KIND)},
@@ -375,7 +384,7 @@ local function emit(event_name, reason)
         observed_at_ms = math.floor(mp.get_time() * 1000),
         role = role,
         event = event_name,
-        media_slot = media_slot(),
+        media_slot = emitted_media_slot,
         paused = mp.get_property_native("pause"),
         position_seconds = finite_number(mp.get_property_native("time-pos")),
         duration_seconds = finite_number(mp.get_property_native("duration")),
@@ -392,7 +401,7 @@ local function emit(event_name, reason)
 end
 
 mp.register_event("file-loaded", function() emit("file-loaded", nil) end)
-mp.register_event("end-file", function(event) emit("end-file", event.reason) end)
+mp.register_event("end-file", function(event) emit("end-file", event.reason, true) end)
 mp.register_event("shutdown", function() emit("shutdown", nil) end)
 mp.observe_property("pause", "bool", function() emit("pause-changed", nil) end)
 mp.observe_property("time-pos", "number", function() emit("position-changed", nil) end)
