@@ -58,7 +58,37 @@ impl ClientSession {
 
         self.model.playlist.last_seek_position_before_manual_seek = Some(previous_position);
         self.model.playback.local_position = Some(target_position);
-        vec![ClientRuntimeAction::SetPosition(target_position)]
+        let mut actions = vec![ClientRuntimeAction::SetPosition(target_position)];
+        if self.is_active() {
+            let paused = self
+                .model
+                .playback
+                .local_paused
+                .or_else(|| {
+                    self.current_room_playstate()
+                        .and_then(|playstate| playstate.paused)
+                })
+                .unwrap_or(true);
+            self.model.playback.client_ignoring_on_the_fly = self
+                .model
+                .playback
+                .client_ignoring_on_the_fly
+                .saturating_add(1);
+            actions.push(ClientRuntimeAction::SendState(
+                StatePayload::new()
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(target_position)
+                            .with_paused(paused)
+                            .with_do_seek(true),
+                    )
+                    .with_ignoring_on_the_fly(
+                        IgnoringOnTheFlyPayload::new()
+                            .with_client(self.model.playback.client_ignoring_on_the_fly),
+                    ),
+            ));
+        }
+        actions
     }
 
     pub fn runtime_actions_for_local_seek_offset(

@@ -67,6 +67,7 @@ pub enum ClientRuntimeAction {
     NotifyReconnectTransition(ReconnectTransitionNotification),
     NotifyAutoplayCountdown(AutoplayCountdownNotification),
     SetPosition(f64),
+    SendState(StatePayload),
     SetPlaybackRate(f64),
     ScheduleReconnect {
         delay_seconds: f64,
@@ -140,6 +141,7 @@ impl std::fmt::Debug for ClientRuntimeAction {
                 .field(notification)
                 .finish(),
             Self::SetPosition(value) => formatter.debug_tuple("SetPosition").field(value).finish(),
+            Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
             Self::SetPlaybackRate(value) => formatter
                 .debug_tuple("SetPlaybackRate")
                 .field(value)

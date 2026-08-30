@@ -45,6 +45,7 @@ impl ClientSession {
                 .model
                 .playback
                 .cache_recovery_waiting_for_post_cache_position,
+            client_ignoring_on_the_fly: self.model.playback.client_ignoring_on_the_fly,
             last_seek_position_before_manual_seek: self
                 .model
                 .playlist
@@ -77,6 +78,7 @@ impl ClientSession {
             .playback
             .cache_recovery_waiting_for_post_cache_position =
             snapshot.cache_recovery_waiting_for_post_cache_position;
+        self.model.playback.client_ignoring_on_the_fly = snapshot.client_ignoring_on_the_fly;
         self.model.playlist.last_seek_position_before_manual_seek =
             snapshot.last_seek_position_before_manual_seek;
         self.model.playback.last_paused_on_leave_at_seconds =
@@ -828,6 +830,12 @@ impl ClientSession {
                 }
                 ClientRuntimeAction::SetPosition(position) => {
                     player.execute(PlayerCommand::SetPosition(*position))?;
+                }
+                ClientRuntimeAction::SendState(state) => {
+                    control.activate_protocol_connection_generation();
+                    control
+                        .emit(ClientEffect::SendState(state.clone()))
+                        .map_err(client_effect_player_error)?;
                 }
                 ClientRuntimeAction::SetPlaybackRate(rate) => {
                     player.execute(PlayerCommand::SetPlaybackRate(*rate))?;

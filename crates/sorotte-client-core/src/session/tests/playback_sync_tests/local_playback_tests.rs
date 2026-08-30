@@ -837,6 +837,11 @@ fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
 #[test]
 fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails() {
     let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
     session.model.playback.local_position = Some(2.0);
     session.model.playlist.last_seek_position_before_manual_seek = Some(1.0);
 
@@ -861,6 +866,15 @@ fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails
         runtime.session().last_seek_position_before_manual_seek(),
         Some(1.0),
         "failed seek requests should restore the previous seek history too"
+    );
+    assert_eq!(
+        runtime.session().model.playback.client_ignoring_on_the_fly,
+        0,
+        "failed player seeks must not retain an unsent ignore counter"
+    );
+    assert!(
+        runtime.control().outbound_messages().is_empty(),
+        "server authority must not move when the physical player seek fails"
     );
 }
 
@@ -888,9 +902,31 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
         "seek-by should emit a local SetPosition action"
     );
     assert_eq!(runtime.player().position, Some(12.25));
-    assert!(
-        runtime.control().outbound_messages().is_empty(),
-        "local seek should not directly emit protocol lines"
+    assert_eq!(
+        runtime.control().outbound_messages().len(),
+        1,
+        "an active local seek must immediately publish canonical server intent"
+    );
+    let ProtocolMessage::State(state) = &runtime.control().outbound_messages()[0] else {
+        panic!("active local seek should queue a State message");
+    };
+    let playstate = state
+        .state
+        .playstate
+        .as_ref()
+        .expect("active local seek should include playstate");
+    assert_eq!(playstate.position, Some(12.25));
+    assert_eq!(playstate.paused, Some(false));
+    assert_eq!(playstate.do_seek, Some(true));
+    assert_eq!(playstate.set_by, None);
+    assert_eq!(
+        state
+            .state
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|ignore| ignore.client),
+        Some(1),
+        "the explicit seek must use the same client-ignore handshake as inferred seeks"
     );
 }
 
