@@ -27,4 +27,5 @@ webpki-roots.workspace = true
 
 [dev-dependencies]
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
+sorotte-server = { path = "../sorotte-server" }
 tokio = { workspace = true, features = ["test-util"] }

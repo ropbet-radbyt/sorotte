@@ -13,6 +13,8 @@ pub use verification::{
     MpvLifecycleVerificationHarness,
 };
 
+#[cfg(feature = "test-support")]
+use std::sync::{Arc, atomic::AtomicBool};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
@@ -835,6 +837,8 @@ pub struct MpvAdapter {
     ipc_endpoint: Option<PathBuf>,
     ipc_reconnect_not_before: Option<Instant>,
     simulation_mode: bool,
+    #[cfg(feature = "test-support")]
+    test_simulated_natural_eof_trigger: Option<Arc<AtomicBool>>,
     ipc_client: Option<MpvJsonIpcClient>,
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
@@ -1122,6 +1126,35 @@ impl MpvAdapter {
             simulation_mode: true,
             ..Self::default()
         }
+    }
+
+    /// Installs a deterministic external trigger for a natural EOF on the
+    /// simulated adapter. The ordinary maintenance pump consumes the trigger,
+    /// so higher-layer tests exercise the same ordered lifecycle delivery as
+    /// real mpv without adding a test-only command to the client protocol.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn set_test_simulated_natural_eof_trigger(&mut self, trigger: Arc<AtomicBool>) {
+        debug_assert!(self.simulation_mode);
+        self.test_simulated_natural_eof_trigger = Some(trigger);
+    }
+
+    #[cfg(feature = "test-support")]
+    fn maintain_test_simulated_natural_eof_trigger(&mut self) {
+        let triggered = self
+            .test_simulated_natural_eof_trigger
+            .as_ref()
+            .is_some_and(|trigger| trigger.swap(false, Ordering::SeqCst));
+        if !triggered || !self.simulation_mode {
+            return;
+        }
+        let Some(playlist_entry_id) = self.active_playlist_entry_id else {
+            return;
+        };
+        self.handle_end_file_event(&json!({
+            "reason": "eof",
+            "playlist_entry_id": playlist_entry_id,
+        }));
     }
 
     /// Builds a connected adapter whose test transport accepts mpv commands but never emits the
@@ -1710,6 +1743,8 @@ impl MpvAdapter {
     /// consuming playback telemetry. Every adapter observation getter also invokes it so an
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
+        #[cfg(feature = "test-support")]
+        self.maintain_test_simulated_natural_eof_trigger();
         self.drain_ipc_events_if_attached();
         self.maintain_json_ipc_reconnection_using(Instant::now(), MpvJsonIpcClient::connect);
         // Every delivery mode shares this pump. Let already-buffered observations complete
@@ -6384,6 +6419,32 @@ impl MpvAdapter {
             self.observation_media_generation(),
             TrackedCommandObservation::Phase(phase),
         );
+    }
+
+    fn queue_simulated_authoritative_transport_state(&mut self) {
+        if !self.simulation_mode {
+            return;
+        }
+        let Some(generation) = self.observation_media_generation() else {
+            return;
+        };
+        self.observed_state.position_seconds = Some(self.position_seconds);
+        self.observed_state.paused = Some(self.paused);
+        self.observed_state.logical_pause = Some(self.paused);
+        self.observed_state.paused_for_cache = Some(self.paused_for_cache);
+        self.observed_state.seeking = Some(false);
+        self.observed_state.playback_rate = (self.playback_rate.is_finite()
+            && self.playback_rate > 0.0)
+            .then_some(self.playback_rate);
+
+        let mut update = self.transport_update_for(generation);
+        update.phase = Some(self.transport_phase);
+        update.position_seconds = self.observed_state.position_seconds;
+        update.playback_rate = self.observed_state.playback_rate;
+        update.logical_pause = self.observed_state.logical_pause;
+        update.paused_for_cache = self.observed_state.paused_for_cache;
+        update.seeking = self.observed_state.seeking;
+        self.queue_transport_telemetry_update(update);
     }
 
     fn inferred_transport_phase(&self) -> PlayerTransportPhase {

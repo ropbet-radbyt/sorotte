@@ -35,6 +35,7 @@ use sorotte_client_app::app_boundary::{
         connected_session_inbound_message_event_execution_plan_legacy_compatible,
         connected_session_inbound_post_apply_actions_legacy_compatible,
         connected_session_local_input_event_execution_plan_legacy_compatible,
+        connected_session_player_coordination_tick_event_execution_plan_legacy_compatible,
         connected_session_runtime_step_actions_legacy_compatible,
     },
     state::{ClientConfig, StoredClientSettingsMvp, TlsPolicy},
@@ -102,12 +103,17 @@ use self::connected_session::{
 };
 
 #[cfg(test)]
+pub(crate) use self::connected_session::client_runtime_now_seconds;
+#[cfg(test)]
 pub(super) use self::connected_session::{
     run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
+    run_connected_client_session_with_plex_config_for_test,
 };
-#[cfg(test)]
-pub(super) use self::network_loop::run_client_network_loop;
 pub(super) use self::network_loop::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
+#[cfg(test)]
+pub(super) use self::network_loop::{
+    run_client_network_loop, run_client_network_loop_with_prepared_runtime_for_test,
+};
 
 pub(super) async fn await_with_player_integration_maintenance<P, T>(
     runtime: &mut ClientApplication<P>,

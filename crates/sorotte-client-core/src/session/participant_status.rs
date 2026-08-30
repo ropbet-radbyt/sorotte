@@ -77,6 +77,17 @@ impl ClientSession {
         self.model.room.participant_status_authoritative_scope
     }
 
+    /// Latest complete server-owned participant-status snapshot revision.
+    /// This is advisory lifecycle metadata only; callers must not use it as a
+    /// canonical playback or readiness revision.
+    pub fn participant_status_snapshot_revision(&self) -> Option<u64> {
+        self.model.room.participant_status_snapshot_revision
+    }
+
+    pub fn participant_status_snapshot_mode(&self) -> ParticipantStatusSnapshotMode {
+        self.model.room.participant_status_snapshot_mode
+    }
+
     fn participant_status_scope_is_older(
         candidate: ParticipantPlaybackScope,
         current: ParticipantPlaybackScope,

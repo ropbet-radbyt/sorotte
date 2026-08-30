@@ -1,0 +1,478 @@
+schema_version = 1
+schedule_id = "late-join-reconnect-seed"
+title = "Late join, authoritative snapshot, connection replacement, stale evidence fencing, and convergence"
+model = "coverage/playback-lifecycle.toml"
+
+[[step]]
+id = "gate-prepare"
+transition = "GATE-PREPARE-001"
+subject = "room"
+causes = []
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-playable"
+transition = "GATE-PLAYABILITY-001"
+subject = "room"
+causes = ["gate-prepare"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-ready"
+transition = "GATE-READY-001"
+subject = "room"
+causes = ["gate-playable"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-committed"
+transition = "GATE-COMMIT-001"
+subject = "room"
+causes = ["gate-ready"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "playlist-selected"
+transition = "PLAYLIST-SNAPSHOT-SELECTED-001"
+subject = "room"
+causes = ["gate-committed"]
+identities = { playlist_revision = 5, playlist_index_revision = 9 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-app-launch"
+transition = "APP-LAUNCH-001"
+subject = "client-late"
+causes = ["playlist-selected"]
+identities = { process_run = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-app-running"
+transition = "APP-RUN-001"
+subject = "client-late"
+causes = ["late-app-launch"]
+identities = { process_run = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-player-launch"
+transition = "PLAYER-LAUNCH-001"
+subject = "client-late"
+causes = ["late-app-running"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-player-connect"
+transition = "PLAYER-CONNECT-001"
+subject = "client-late"
+causes = ["late-player-launch"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-player-attached"
+transition = "PLAYER-ATTACH-001"
+subject = "client-late"
+causes = ["late-player-connect"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-session-connect-one"
+transition = "SESSION-CONNECT-001"
+subject = "client-late"
+causes = ["late-player-attached"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-session-hello-one"
+transition = "SESSION-HELLO-001"
+subject = "client-late"
+causes = ["late-session-connect-one"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-session-active-one"
+transition = "SESSION-ACTIVE-001"
+subject = "client-late"
+causes = ["late-session-hello-one"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-room-join-one"
+transition = "ROOM-JOIN-001"
+subject = "client-late"
+causes = ["late-session-active-one"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "late-room-active-one"
+transition = "ROOM-ACTIVE-001"
+subject = "client-late"
+causes = ["late-room-join-one"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-media-select-one"
+transition = "MEDIA-SELECT-001"
+subject = "client-late"
+causes = ["late-room-active-one"]
+identities = { playlist_revision = 5, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-media-resolve-one"
+transition = "MEDIA-RESOLVE-001"
+subject = "client-late"
+causes = ["late-media-select-one"]
+identities = { playlist_revision = 5, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "late-media-playable-one"
+transition = "MEDIA-PLAYABLE-001"
+subject = "client-late"
+causes = ["late-media-resolve-one"]
+identities = { playlist_revision = 5, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "late-load-submit-one"
+transition = "LOAD-SUBMIT-001"
+subject = "client-late"
+causes = ["late-media-playable-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-load-accept-one"
+transition = "LOAD-ACCEPT-001"
+subject = "client-late"
+causes = ["late-load-submit-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-load-bind-one"
+transition = "LOAD-BIND-001"
+subject = "client-late"
+causes = ["late-load-accept-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-load-active-one"
+transition = "LOAD-ACTIVE-001"
+subject = "client-late"
+causes = ["late-load-bind-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-transport-load-one"
+transition = "TRANSPORT-LOAD-001"
+subject = "client-late"
+causes = ["late-load-active-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-transport-play-one"
+transition = "TRANSPORT-PLAY-001"
+subject = "client-late"
+causes = ["late-transport-load-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-status-awaiting-one"
+transition = "STATUS-NEGOTIATE-001"
+subject = "client-late"
+causes = ["late-transport-play-one"]
+identities = { membership_epoch = 1 }
+trigger = "status"
+
+[[step]]
+id = "late-status-fresh-one"
+transition = "STATUS-FRESH-001"
+subject = "client-late"
+causes = ["late-status-awaiting-one"]
+identities = { membership_epoch = 1, report_sequence = 1 }
+trigger = "status"
+
+[[step]]
+id = "late-session-loss"
+transition = "SESSION-LOSS-001"
+subject = "client-late"
+causes = ["late-status-fresh-one"]
+identities = { connection_generation = 1 }
+trigger = "network-loss"
+
+[[step]]
+id = "late-session-connect-two"
+transition = "SESSION-CONNECT-001"
+subject = "client-late"
+causes = ["late-session-loss"]
+identities = { connection_generation = 2 }
+trigger = "retry"
+
+[[step]]
+id = "late-session-hello-two"
+transition = "SESSION-HELLO-001"
+subject = "client-late"
+causes = ["late-session-connect-two"]
+identities = { connection_generation = 2 }
+trigger = "retry"
+
+[[step]]
+id = "late-session-active-two"
+transition = "SESSION-ACTIVE-001"
+subject = "client-late"
+causes = ["late-session-hello-two"]
+identities = { connection_generation = 2 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-room-switch-two"
+transition = "ROOM-SWITCH-001"
+subject = "client-late"
+causes = ["late-session-active-two"]
+identities = { connection_generation = 2, membership_epoch = 2 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-room-active-two"
+transition = "ROOM-ACTIVE-001"
+subject = "client-late"
+causes = ["late-room-switch-two"]
+identities = { connection_generation = 2, membership_epoch = 2 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-status-old-ignored"
+transition = "STATUS-FRESH-001"
+subject = "client-late"
+causes = ["late-room-active-two"]
+identities = { membership_epoch = 1, report_sequence = 2 }
+trigger = "status"
+disposition = "ignored-stale"
+
+[[step]]
+id = "late-status-unavailable-two"
+transition = "STATUS-UNAVAILABLE-001"
+subject = "client-late"
+causes = ["late-status-old-ignored"]
+identities = { membership_epoch = 2 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-status-awaiting-two"
+transition = "STATUS-NEGOTIATE-001"
+subject = "client-late"
+causes = ["late-status-unavailable-two"]
+identities = { membership_epoch = 2 }
+trigger = "status"
+
+[[step]]
+id = "late-status-fresh-two"
+transition = "STATUS-FRESH-001"
+subject = "client-late"
+causes = ["late-status-awaiting-two"]
+identities = { membership_epoch = 2, report_sequence = 1 }
+trigger = "status"
+
+[[step]]
+id = "playlist-reinstalled"
+transition = "PLAYLIST-SNAPSHOT-SELECTED-001"
+subject = "room"
+causes = ["late-status-fresh-two"]
+identities = { playlist_revision = 5, playlist_index_revision = 9 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-load-superseded-one"
+transition = "LOAD-SUPERSEDE-001"
+subject = "client-late"
+causes = ["playlist-reinstalled"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-load-terminal-one"
+transition = "LOAD-TERMINAL-001"
+subject = "client-late"
+causes = ["late-load-superseded-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-load-clear-one"
+transition = "LOAD-CLEAR-001"
+subject = "client-late"
+causes = ["late-load-terminal-one"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-media-select-two"
+transition = "MEDIA-SELECT-001"
+subject = "client-late"
+causes = ["late-load-clear-one"]
+identities = { playlist_revision = 5, media_generation = 2 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-media-resolve-two"
+transition = "MEDIA-RESOLVE-001"
+subject = "client-late"
+causes = ["late-media-select-two"]
+identities = { playlist_revision = 5, media_generation = 2 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "late-media-playable-two"
+transition = "MEDIA-PLAYABLE-001"
+subject = "client-late"
+causes = ["late-media-resolve-two"]
+identities = { playlist_revision = 5, media_generation = 2 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "late-load-submit-two"
+transition = "LOAD-SUBMIT-001"
+subject = "client-late"
+causes = ["late-media-playable-two"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-load-accept-two"
+transition = "LOAD-ACCEPT-001"
+subject = "client-late"
+causes = ["late-load-submit-two"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-load-bind-two"
+transition = "LOAD-BIND-001"
+subject = "client-late"
+causes = ["late-load-accept-two"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-load-active-two"
+transition = "LOAD-ACTIVE-001"
+subject = "client-late"
+causes = ["late-load-bind-two"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "late-transport-old-ignored"
+transition = "TRANSPORT-PAUSE-001"
+subject = "client-late"
+causes = ["late-load-active-two"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+disposition = "ignored-stale"
+
+[[step]]
+id = "late-transport-load-two"
+transition = "TRANSPORT-LOAD-001"
+subject = "client-late"
+causes = ["late-transport-old-ignored"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "late-transport-play-two"
+transition = "TRANSPORT-PLAY-001"
+subject = "client-late"
+causes = ["late-transport-load-two"]
+identities = { attachment_epoch = 1, media_generation = 2, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[expect]]
+subject = "client-late"
+machine = "application"
+state = "running"
+
+[[expect]]
+subject = "client-late"
+machine = "player-attachment"
+state = "attached"
+
+[[expect]]
+subject = "client-late"
+machine = "session"
+state = "active"
+
+[[expect]]
+subject = "client-late"
+machine = "room-membership"
+state = "joined"
+
+[[expect]]
+subject = "room"
+machine = "playlist-selection"
+state = "selected"
+
+[[expect]]
+subject = "client-late"
+machine = "media-resolution"
+state = "playable"
+
+[[expect]]
+subject = "client-late"
+machine = "load-attempt"
+state = "active"
+
+[[expect]]
+subject = "client-late"
+machine = "local-transport"
+state = "playing"
+
+[[expect]]
+subject = "room"
+machine = "start-gate"
+state = "committed"
+
+[[expect]]
+subject = "client-late"
+machine = "participant-status"
+state = "fresh"

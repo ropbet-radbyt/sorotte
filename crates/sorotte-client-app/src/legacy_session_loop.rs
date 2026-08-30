@@ -8,6 +8,7 @@ pub use connected_session::{
     connected_session_inbound_message_event_execution_plan_legacy_compatible,
     connected_session_inbound_post_apply_actions_legacy_compatible,
     connected_session_local_input_event_execution_plan_legacy_compatible,
+    connected_session_player_coordination_tick_event_execution_plan_legacy_compatible,
     connected_session_runtime_step_actions_legacy_compatible,
 };
 pub use network_loop::{

@@ -17,9 +17,9 @@ use super::{
     build_client_loop_config_from_env, chat_notification_message, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings_legacy_compatible,
     cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
-    controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
-    controller_auth_transition_notification_message, create_client_runtime,
-    create_client_runtime_with_managed_mpv_support,
+    client_runtime_now_seconds, controlled_room_base_name_legacy_compatible,
+    controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
+    create_client_runtime, create_client_runtime_with_managed_mpv_support,
     create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
     create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
     create_client_runtime_with_prepared_mpv_for_test, create_client_session,
@@ -56,8 +56,9 @@ use super::{
     reconnect_correction_state_snapshot_message, reconnect_correction_state_threshold_alert_lines,
     reconnect_transition_notification_message,
     resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
-    run_client_network_loop, run_connected_client_session,
-    run_connected_client_session_with_legacy_startup_overrides,
+    run_client_network_loop, run_client_network_loop_with_prepared_runtime_for_test,
+    run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
+    run_connected_client_session_with_plex_config_for_test,
     run_planned_local_runtime_action_legacy_compatible, seek_preparation_diagnostic_messages,
     should_run_headless_automatic_update_check_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
@@ -65,7 +66,9 @@ use super::{
     user_change_notification_message, validate_composed_client_endpoint,
 };
 use serde_json::Value;
-use sorotte_client_app::app_boundary::application::{ClientApplication, ClientApplicationSettings};
+use sorotte_client_app::app_boundary::application::{
+    ClientApplication, ClientApplicationSettings, PlexClientConfig,
+};
 use sorotte_client_app::app_boundary::compatibility::{
     LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
     LegacyConfigurationGetterStartupCompatEntry, legacy_configuration_getter_ini_compat_entries,
@@ -630,6 +633,7 @@ mod mpv_smoke;
 mod mpv_startup;
 mod notification_messages;
 mod output_notifications;
+mod playback_lifecycle_product_seam;
 mod plex_watch_sync;
 mod raw_protocol_framing;
 mod reconnect_diagnostics;

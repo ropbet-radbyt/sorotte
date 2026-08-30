@@ -1,7 +1,8 @@
 use super::*;
+use crate::{LogicalMediaId, MediaTransportKind};
 
 #[test]
-fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state_seen() {
+fn first_remote_room_baseline_echoes_authority_without_fabricating_physical_convergence() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -49,8 +50,8 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
             .playstate
             .as_ref()
             .and_then(|p| p.position),
-        Some(12.5),
-        "outbound state should report local position"
+        Some(10.0),
+        "a late joiner must echo the established room position, not its pre-membership sample"
     );
     assert_eq!(
         state_message
@@ -58,8 +59,22 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
             .playstate
             .as_ref()
             .and_then(|p| p.paused),
+        Some(false),
+        "a late joiner must echo the established room pause state"
+    );
+    assert_eq!(
+        runtime.session().local_position_seconds(),
+        Some(12.5),
+        "the local model must retain the sampled player position until correction is applied"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
         Some(true),
-        "outbound state should report local paused state"
+        "echoing canonical authority must not pretend the physical player has already played"
+    );
+    assert_eq!(
+        state_message.state.ignoring_on_the_fly, None,
+        "baseline initialization is not a local transport mutation"
     );
     assert_eq!(
         state_message
@@ -88,6 +103,132 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
         Some(0.25),
         "outbound ping should include client RTT"
     );
+}
+
+#[test]
+fn observed_explicit_pause_intent_can_mutate_the_first_remote_room_baseline() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pre-baseline-explicit-play").expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(false, 0.01);
+
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(true)
+                    .with_set_by("bob"),
+            ),
+            0.0,
+            0.0,
+            false,
+        )
+    );
+
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    let playstate = state_message
+        .state
+        .playstate
+        .as_ref()
+        .expect("explicit transport intent should produce playstate");
+    assert_eq!(playstate.position, Some(12.5));
+    assert_eq!(playstate.paused, Some(false));
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(false),
+        "the intent remains fenced until a canonical acknowledgement"
+    );
+}
+
+#[test]
+fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(true),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    let canonical_playing = || {
+        StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(10.0)
+                .with_paused(false)
+                .with_set_by("bob"),
+        )
+    };
+
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        canonical_playing(),
+        0.0,
+        0.0,
+        false,
+    ));
+    let _ = runtime.flush_queued_protocol_messages();
+
+    // The room baseline has arrived, but the external player has not applied
+    // its correction yet. This physical lag is observation, not user intent.
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(10.0)
+            .with_paused(true),
+    );
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        canonical_playing(),
+        0.0,
+        0.0,
+        false,
+    ));
+
+    let ProtocolMessage::State(response) = &runtime.control().outbound_messages()[0] else {
+        panic!("canonical acknowledgement should remain State");
+    };
+    let playstate = response
+        .state
+        .playstate
+        .as_ref()
+        .expect("available telemetry should retain a playstate sample");
+    assert_eq!(
+        playstate.paused,
+        Some(false),
+        "a lagging player must echo canonical pause until an explicit local intent is staged"
+    );
+    assert_eq!(playstate.do_seek, None);
+    assert_eq!(response.state.ignoring_on_the_fly, None);
 }
 
 #[test]

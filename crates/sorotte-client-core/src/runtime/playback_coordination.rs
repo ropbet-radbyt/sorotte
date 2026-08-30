@@ -903,6 +903,15 @@ struct ParticipantStatusEvidenceTimes {
 }
 
 #[derive(Debug, Clone)]
+struct CurrentTransportEvidence {
+    adapter_generation: u64,
+    observation: PlayerTransportObservation,
+    position_observation: Option<LocalPositionObservation>,
+    participant_status_evidence_times: ParticipantStatusEvidenceTimes,
+    last_received_at_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct PendingParticipantStatusReport {
     pub(super) report: ParticipantStatusReport,
     fingerprint: ParticipantStatusFingerprint,
@@ -917,6 +926,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     highest_bound_adapter_generation: Option<u64>,
     adapter_epoch: u64,
     player_command_bindings: BTreeMap<PlayerCommandId, PlayerCommandBinding>,
+    pending_coordinator_command_completion_replay: bool,
     next_synthetic_player_command_id: u64,
     player_transition_classifier: PlayerTransitionClassifier,
     last_player_transition_classification: Option<PlayerTransitionClassification>,
@@ -942,6 +952,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     transport_telemetry_ever_observed: bool,
     awaiting_ordered_snapshot: bool,
     external_player_availability: Option<ExternalPlayerAvailability>,
+    external_player_lifecycle_observed: bool,
     last_transport_telemetry_received_at_seconds: Option<f64>,
     transport_telemetry_wait_started_at_seconds: Option<f64>,
     transport_telemetry_lifecycle_fence_at_seconds: Option<f64>,
@@ -1036,7 +1047,10 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, None, now_seconds, false)
+        let (plan, actions) =
+            self.prepare_media_internal(logical_id, kind, None, now_seconds, false, false);
+        debug_assert!(actions.is_empty());
+        plan
     }
 
     pub(crate) fn prepare_media_with_intent(
@@ -1046,7 +1060,26 @@ impl RuntimePlaybackCoordination {
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds, false)
+        let (plan, actions) =
+            self.prepare_media_internal(logical_id, kind, Some(intent), now_seconds, false, false);
+        debug_assert!(actions.is_empty());
+        plan
+    }
+
+    pub(crate) fn prepare_media_for_current_file_publication(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> (MediaLoadPlan, Vec<PlaybackCoordinatorAction>) {
+        self.prepare_media_internal(
+            logical_id,
+            kind,
+            Some(MediaLoadIntent::TransportRefresh),
+            now_seconds,
+            false,
+            true,
+        )
     }
 
     pub(crate) fn prepare_media_for_room_participation(
@@ -1055,13 +1088,16 @@ impl RuntimePlaybackCoordination {
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> MediaLoadPlan {
-        self.prepare_media_internal(
+        let (plan, actions) = self.prepare_media_internal(
             logical_id,
             kind,
             Some(MediaLoadIntent::TransportRefresh),
             now_seconds,
             true,
-        )
+            false,
+        );
+        debug_assert!(actions.is_empty());
+        plan
     }
 
     fn prepare_media_internal(
@@ -1071,12 +1107,32 @@ impl RuntimePlaybackCoordination {
         intent: Option<MediaLoadIntent>,
         now_seconds: f64,
         room_participation: bool,
-    ) -> MediaLoadPlan {
+        current_file_publication: bool,
+    ) -> (MediaLoadPlan, Vec<PlaybackCoordinatorAction>) {
         let placeholder_adapter_generation = self
             .coordinator
             .current_logical_media_id()
             .filter(|logical_id| logical_id.as_str().starts_with("adapter-media-generation-"))
             .and(self.highest_bound_adapter_generation);
+        let current_transport_evidence =
+            self.highest_bound_adapter_generation
+                .and_then(|adapter_generation| {
+                    let binding = self.adapter_generation_bindings.get(&adapter_generation)?;
+                    let current_generation = self.coordinator.current_media_generation()?;
+                    let observation = self.latest_observation.clone()?;
+                    (self.transport_telemetry_observed
+                        && binding.logical_generation == current_generation
+                        && observation.media_generation == current_generation)
+                        .then_some(CurrentTransportEvidence {
+                            adapter_generation,
+                            observation,
+                            position_observation: self.latest_position_observation,
+                            participant_status_evidence_times: self
+                                .participant_status_evidence_times,
+                            last_received_at_seconds: self
+                                .last_transport_telemetry_received_at_seconds,
+                        })
+                });
         let plan = if room_participation {
             self.coordinator
                 .prepare_media_for_room_participation(logical_id, kind, now_seconds)
@@ -1093,6 +1149,14 @@ impl RuntimePlaybackCoordination {
                     .prepare_media(logical_id, kind, now_seconds),
             }
         };
+        let carries_current_transport_evidence =
+            current_transport_evidence.as_ref().is_some_and(|evidence| {
+                placeholder_adapter_generation == Some(evidence.adapter_generation)
+                    || (current_file_publication
+                        && plan.load_intent == MediaLoadIntent::TransportRefresh
+                        && !plan.logical_media_changed
+                        && !plan.playback_episode_changed)
+            });
         self.adapter_generation_bindings
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
@@ -1103,13 +1167,22 @@ impl RuntimePlaybackCoordination {
         self.last_transport_telemetry_received_at_seconds = None;
         self.transport_telemetry_wait_started_at_seconds =
             self.transport_telemetry_available.then_some(now_seconds);
+        // Startup media preparation can occur before the GUI/CLI owner has
+        // established its runtime clock. In that phase `now_seconds` may be a
+        // wall clock while ordered player delivery later uses a monotonic
+        // owner clock; comparing them would reject every current-generation
+        // load observation. Adapter/media generation binding is the complete
+        // pre-owner fence. Add the timestamp fence only after lifecycle
+        // ownership has supplied a comparable clock domain.
         self.transport_telemetry_lifecycle_fence_at_seconds =
-            now_seconds.is_finite().then_some(now_seconds);
+            (self.external_player_availability.is_some() && now_seconds.is_finite())
+                .then_some(now_seconds);
         self.participant_status_owner_clock_invalidated = false;
         self.participant_status_room_scope = None;
         self.participant_status_applied_room_scope = None;
         self.participant_status_desired_scope_bindings.clear();
         self.player_command_bindings.clear();
+        self.pending_coordinator_command_completion_replay = false;
         let classifier_adapter_epoch = self.classifier_adapter_epoch();
         self.player_transition_classifier
             .begin_scope(plan.media_generation, classifier_adapter_epoch);
@@ -1158,7 +1231,43 @@ impl RuntimePlaybackCoordination {
             );
             self.pending_media_identity = None;
         }
-        plan
+        let mut carried_actions = Vec::new();
+        if carries_current_transport_evidence && let Some(mut evidence) = current_transport_evidence
+        {
+            // Local-file publication follows the adapter observation that
+            // established the physical load. It can either refine the
+            // temporary adapter-generation identity or repeat the already
+            // prepared logical identity. Neither is a new physical lifecycle:
+            // carry the accepted sample across the new logical load-attempt
+            // token and rebind that exact adapter generation. A caller that is
+            // actually replacing transport uses the ordinary preparation API
+            // and therefore invalidates this evidence.
+            evidence.observation.media_generation = plan.media_generation;
+            if let Some(position) = evidence.position_observation.as_mut() {
+                position.media_generation = plan.media_generation;
+            }
+            self.latest_observation = Some(evidence.observation.clone());
+            self.latest_position_observation = evidence.position_observation;
+            self.participant_status_evidence_times = evidence.participant_status_evidence_times;
+            self.transport_telemetry_observed = true;
+            self.last_transport_telemetry_received_at_seconds = evidence.last_received_at_seconds;
+            self.transport_telemetry_wait_started_at_seconds = None;
+            self.transport_telemetry_lifecycle_fence_at_seconds = None;
+            self.external_player_availability = None;
+            self.adapter_generation_bindings.insert(
+                evidence.adapter_generation,
+                LocalTransportGeneration {
+                    logical_generation: plan.media_generation,
+                    load_attempt: plan.load_attempt,
+                    adapter_generation: evidence.adapter_generation,
+                },
+            );
+            self.pending_media_identity = None;
+            let actions = self.coordinator.rebase_observation(evidence.observation);
+            self.record_observation_outcomes(&actions);
+            carried_actions = actions;
+        }
+        (plan, carried_actions)
     }
 
     pub(crate) fn reset_adapter_epoch(&mut self, now_seconds: f64) -> u64 {
@@ -1180,6 +1289,7 @@ impl RuntimePlaybackCoordination {
             .current_media_generation()
             .zip(self.coordinator.current_load_attempt());
         self.player_command_bindings.clear();
+        self.pending_coordinator_command_completion_replay = false;
         if let Some(media_generation) = self.coordinator.current_media_generation() {
             let classifier_adapter_epoch = self.classifier_adapter_epoch();
             self.player_transition_classifier
@@ -1229,24 +1339,34 @@ impl RuntimePlaybackCoordination {
         if self.external_player_availability == Some(availability) {
             return false;
         }
+        let initial_lifecycle_observation = !self.external_player_lifecycle_observed;
         let lifecycle_fence = self.coordinator_now(now_seconds);
+        self.external_player_lifecycle_observed = true;
         self.external_player_availability = Some(availability);
-        self.transport_telemetry_wait_started_at_seconds =
-            (availability == ExternalPlayerAvailability::Connecting).then_some(now_seconds);
-        self.transport_telemetry_lifecycle_fence_at_seconds =
-            lifecycle_fence.is_finite().then_some(lifecycle_fence);
-        // Every explicit lifecycle transition supersedes transport evidence
-        // from the preceding lifecycle. Connecting can become Connected only
-        // after a later accepted sample; TelemetryUnavailable must take
-        // effect immediately instead of inheriting a five-second cache.
-        self.latest_observation = None;
-        self.latest_position_observation = None;
-        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
-        self.transport_telemetry_observed = false;
-        self.last_transport_telemetry_received_at_seconds = None;
+        self.transport_telemetry_wait_started_at_seconds = (availability
+            == ExternalPlayerAvailability::Connecting
+            && !(initial_lifecycle_observation && self.transport_telemetry_observed))
+            .then_some(now_seconds);
+        self.transport_telemetry_lifecycle_fence_at_seconds = (!initial_lifecycle_observation
+            && lifecycle_fence.is_finite())
+        .then_some(lifecycle_fence);
+        // Every replacement lifecycle supersedes transport evidence from the
+        // preceding lifecycle. Connecting can become Connected only after a
+        // later accepted sample; TelemetryUnavailable must take effect
+        // immediately instead of inheriting a five-second cache. The first
+        // owner-clock observation has no preceding lifecycle to clear or
+        // fence: CLI startup can drain current-epoch load/transport events
+        // while sending Hello, before the connected loop owns its first clock.
+        if !initial_lifecycle_observation {
+            self.latest_observation = None;
+            self.latest_position_observation = None;
+            self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+            self.transport_telemetry_observed = false;
+            self.last_transport_telemetry_received_at_seconds = None;
+            self.coordinator
+                .clear_participant_status_transport_metrics();
+        }
         self.participant_status_owner_clock_invalidated = false;
-        self.coordinator
-            .clear_participant_status_transport_metrics();
         self.last_participant_status_fingerprint = None;
         self.participant_status_desired_scope_bindings.clear();
         true
@@ -2889,6 +3009,7 @@ impl RuntimePlaybackCoordination {
         self.transport_telemetry_observed = false;
         self.last_transport_telemetry_received_at_seconds = None;
         self.external_player_availability = Some(ExternalPlayerAvailability::Connecting);
+        self.external_player_lifecycle_observed = true;
         self.transport_telemetry_wait_started_at_seconds = Some(external_now_seconds);
         self.transport_telemetry_lifecycle_fence_at_seconds =
             lifecycle_fence.is_finite().then_some(lifecycle_fence);
@@ -3410,16 +3531,20 @@ impl RuntimePlaybackCoordination {
     }
 
     fn has_active_local_pause_intent(&self, paused: bool, session: &ClientSession) -> bool {
+        self.active_local_pause_intent(session) == Some(paused)
+    }
+
+    pub(crate) fn active_local_pause_intent(&self, session: &ClientSession) -> Option<bool> {
         self.pending_local_pause_intent
             .as_ref()
-            .is_some_and(|intent| {
-                intent.paused == paused
-                    && intent.connection_generation == self.connection_generation
+            .filter(|intent| {
+                intent.connection_generation == self.connection_generation
                     && intent.authorization == LocalIntentAuthorization::Authorized
                     && session.room() == Some(intent.room.as_str())
                     && self.coordinator.current_media_generation()
                         == Some(intent.local_media_generation)
             })
+            .map(|intent| intent.paused)
     }
 
     pub(crate) fn rollback_local_pause_intent(&mut self, paused: bool) {
@@ -3870,16 +3995,18 @@ impl RuntimePlaybackCoordination {
                 DesiredRoomPlaybackUpdateKind::Ordinary
             },
         );
-        let replay_desired =
+        let replay_desired_change =
             allow_command_replay && (!local_echo || self.reconnect_reconciliation.is_some());
-        if replay_desired
-            && desired_changed
+        let replay_completed_command =
+            allow_command_replay && self.pending_coordinator_command_completion_replay;
+        if (replay_completed_command || (replay_desired_change && desired_changed))
             && let Some(observation) = self.latest_observation.clone()
         {
             // This is a merged cache of previously accepted adapter fields,
             // not a new transport sample. It may drive reconciliation, but it
             // must never manufacture target-scoped refill/headroom evidence.
             actions.extend(self.coordinator.replay_observation(observation));
+            self.pending_coordinator_command_completion_replay = false;
         }
         if allow_command_replay {
             // Timer ownership is independent of whether this room state may
@@ -4016,8 +4143,12 @@ impl RuntimePlaybackCoordination {
             PlayerCommandProgressState::Finished(PlayerCommandResult::Completed) => {
                 // Completion is observation-backed in the adapter, but the
                 // coordinator still owns RevisionApplied/Started based on its
-                // full transport observation stream.
+                // full transport observation stream. Replay the last accepted
+                // projection once because an idempotent command may complete
+                // without producing a distinct property delta (for example,
+                // seeking to the position already reported by mpv).
                 let _ = self.coordinator.command_accepted(coordinator_command_id);
+                self.pending_coordinator_command_completion_replay = true;
                 self.player_command_bindings.remove(&progress.command_id);
             }
             PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
@@ -4885,6 +5016,29 @@ where
     ) -> Result<(), PlayerError> {
         self.playback_coordination
             .observe_external_end_of_file(now_seconds);
+        if self
+            .playback_coordination
+            .coordinator
+            .current_media_generation()
+            .is_some()
+        {
+            let (playlist_revision, playlist_index) = self
+                .session
+                .current_room_playlist()
+                .map_or((None, None), |playlist| {
+                    (Some(playlist.revision), playlist.index)
+                });
+            let playlist_selection_revision =
+                self.session.current_room_playlist_selection_revision();
+            self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+                attempt_id: None,
+                media_generation: None,
+                playlist_revision,
+                playlist_selection_revision,
+                playlist_index,
+                completed_file: self.last_local_file_update.clone(),
+            });
+        }
         self.handle_latest_player_readiness_observation()?;
         let _ = self.emit_participant_status_transition(now_seconds)?;
         Ok(())
@@ -4918,6 +5072,20 @@ where
             now_seconds,
         );
         self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    pub(crate) fn prepare_playback_media_for_current_file_publication(
+        &mut self,
+        logical_id: LogicalMediaId,
+        kind: MediaTransportKind,
+        now_seconds: f64,
+    ) -> Result<MediaLoadPlan, PlayerError> {
+        let (plan, actions) = self
+            .playback_coordination
+            .prepare_media_for_current_file_publication(logical_id, kind, now_seconds);
+        let plan = self.finish_prepared_playback_media(plan, now_seconds);
+        self.execute_playback_coordinator_actions(actions, now_seconds)?;
+        Ok(plan)
     }
 
     pub fn prepare_playback_media_for_room_participation(
@@ -5342,6 +5510,10 @@ where
         now_seconds: f64,
         first_error: &mut Option<PlayerError>,
     ) {
+        // A reacquisition is a replacement proof boundary. A terminal edge
+        // from the discarded prefix cannot safely drive an application side
+        // effect after the snapshot has established a possibly newer owner.
+        self.pending_natural_playback_completion = None;
         let previous_file = self.last_local_file_update.clone();
         let snapshot_file = match (&snapshot.active_load, &snapshot.current_path) {
             (SnapshotField::Known(active), SnapshotField::Known(path))
@@ -5404,6 +5576,7 @@ where
     ) {
         match event.event {
             PlayerEvent::AttachmentReplaced { .. } | PlayerEvent::EventGapDetected => {
+                self.pending_natural_playback_completion = None;
                 self.pending_player_playback_telemetry_updates = EffectOutbox::default();
                 self.session
                     .replace_player_playback_telemetry_from_authoritative_snapshot(
@@ -5417,6 +5590,16 @@ where
                 media_generation,
                 update,
             } => {
+                if self
+                    .pending_natural_playback_completion
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.attempt_id != Some(attempt_id)
+                            || pending.media_generation != Some(media_generation)
+                    })
+                {
+                    self.pending_natural_playback_completion = None;
+                }
                 if !self
                     .ordered_player_events
                     .attempt_owns_transport(attempt_id, media_generation)
@@ -5518,7 +5701,7 @@ where
             PlayerEvent::LogicalPlaybackTerminal {
                 attempt_id,
                 media_generation,
-                ..
+                outcome,
             } => {
                 let terminal_is_owned = self
                     .ordered_player_events
@@ -5526,6 +5709,25 @@ where
                     .get(&attempt_id)
                     .is_some_and(|binding| binding.media_generation == media_generation);
                 if terminal_is_owned {
+                    if outcome == sorotte_player_api::PlayerPhysicalLoadOutcome::Ended {
+                        let (playlist_revision, playlist_index) = self
+                            .session
+                            .current_room_playlist()
+                            .map_or((None, None), |playlist| {
+                                (Some(playlist.revision), playlist.index)
+                            });
+                        let playlist_selection_revision =
+                            self.session.current_room_playlist_selection_revision();
+                        self.pending_natural_playback_completion =
+                            Some(PendingNaturalPlaybackCompletion {
+                                attempt_id: Some(attempt_id),
+                                media_generation: Some(media_generation),
+                                playlist_revision,
+                                playlist_selection_revision,
+                                playlist_index,
+                                completed_file: self.last_local_file_update.clone(),
+                            });
+                    }
                     let mut terminal = self.ordered_player_events.transport.clone();
                     terminal.load_attempt_id = SnapshotField::Known(attempt_id);
                     terminal.media_generation = SnapshotField::Known(media_generation);
@@ -5715,15 +5917,16 @@ where
         if self.player.player_event_delivery_mode()
             == PlayerEventDeliveryMode::OrderedAcknowledgedBatches
         {
-            let drain_error = self.drain_ordered_player_events(now_seconds).err();
-            let status_error = self.emit_participant_status_transition(now_seconds).err();
-            if let Some(error) = drain_error {
-                return Err(error);
+            let mut first_error = self.drain_ordered_player_events(now_seconds).err();
+            if first_error.is_none() {
+                self.reconcile_player_transport_from_session(now_seconds, &mut first_error);
             }
-            if let Some(error) = status_error {
-                return Err(error);
+            if let Err(error) = self.emit_participant_status_transition(now_seconds)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
-            return Ok(());
+            return first_error.map_or(Ok(()), Err);
         }
         let mut first_error = None;
         while let Some(progress) = self.player.take_command_progress() {
@@ -5762,32 +5965,40 @@ where
                 first_error = Some(error);
             }
         }
-        let mut actions = self
-            .playback_coordination
-            .update_desired_from_session(&self.session, now_seconds);
-        if let Err(error) = self.promote_pending_native_play_before_pause_correction(&mut actions)
-            && first_error.is_none()
-        {
-            first_error = Some(error);
-        }
-        if let Err(error) = self.report_playback_barrier_observations(&actions)
-            && first_error.is_none()
-        {
-            first_error = Some(crate::control::client_effect_player_error(error));
-        }
-        if let Err(error) = self.execute_playback_coordinator_actions(actions, now_seconds)
-            && first_error.is_none()
-        {
-            first_error = Some(error);
-        }
-        self.playback_coordination
-            .tick_player_transition_classifier(now_seconds);
+        self.reconcile_player_transport_from_session(now_seconds, &mut first_error);
         if let Err(error) = self.emit_participant_status_transition(now_seconds)
             && first_error.is_none()
         {
             first_error = Some(error);
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn reconcile_player_transport_from_session(
+        &mut self,
+        now_seconds: f64,
+        first_error: &mut Option<PlayerError>,
+    ) {
+        let mut actions = self
+            .playback_coordination
+            .update_desired_from_session(&self.session, now_seconds);
+        if let Err(error) = self.promote_pending_native_play_before_pause_correction(&mut actions)
+            && first_error.is_none()
+        {
+            *first_error = Some(error);
+        }
+        if let Err(error) = self.report_playback_barrier_observations(&actions)
+            && first_error.is_none()
+        {
+            *first_error = Some(crate::control::client_effect_player_error(error));
+        }
+        if let Err(error) = self.execute_playback_coordinator_actions(actions, now_seconds)
+            && first_error.is_none()
+        {
+            *first_error = Some(error);
+        }
+        self.playback_coordination
+            .tick_player_transition_classifier(now_seconds);
     }
 
     fn handle_latest_player_readiness_observation(&mut self) -> Result<(), PlayerError> {
@@ -9056,6 +9267,73 @@ mod tests {
     }
 
     #[test]
+    fn ordered_delivery_reconciles_new_room_authority_without_waiting_for_another_player_batch() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ClientRuntime::new(
+            participant_status_session(),
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("ordered-room-authority-without-player-edge").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial ordered snapshot should drain");
+        runtime.player.commands.clear();
+
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":42.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                1.1,
+            )
+            .expect("remote room authority should apply");
+        assert!(
+            runtime.player.ordered_batches.is_empty(),
+            "the regression requires a room transition without another player edge"
+        );
+
+        runtime
+            .drain_player_transport_coordination(1.1)
+            .expect("an empty ordered drain should still reconcile room authority");
+
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::SetPaused(true))),
+            "ordered delivery must not strand remote Pause until a future player event"
+        );
+    }
+
+    #[test]
     fn ordered_player_batch_reports_status_before_returning_application_error() {
         let epoch = PlayerAttachmentEpoch::new(1);
         let attempt_id = LoadAttemptId::new(1);
@@ -9207,6 +9485,294 @@ mod tests {
         assert_eq!(terminal_reports[0].phase, ParticipantPlaybackPhase::Ended);
         assert_eq!(terminal_reports[0].logical_paused, Some(true));
         assert_eq!(terminal_reports[0].sample_age_ms, Some(0));
+        assert!(
+            runtime.pending_natural_playback_completion.is_some(),
+            "an owned semantic Ended event should retain one application progression intent"
+        );
+    }
+
+    fn natural_completion_playlist_runtime(
+        selected_index: i64,
+        local_file_name: &str,
+    ) -> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl> {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(&format!(
+                r#"{{"Set":{{"playlistIndex":{{"index":{selected_index},"user":"alice"}}}}}}"#
+            ))
+            .expect("playlist index should apply");
+        session
+            .apply_message_json(&format!(
+                r#"{{"Set":{{"user":{{"alice":{{"file":{{"name":"{local_file_name}","duration":240.0}}}}}}}}}}"#
+            ))
+            .expect("local file should apply");
+        ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        )
+    }
+
+    #[test]
+    fn natural_completion_advances_once_only_while_completed_file_is_canonical() {
+        let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the selected playlist should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            playlist_index,
+            completed_file: Some(
+                LocalFileUpdate::new("episode1.mkv").with_path("C:/library/show/episode1.mkv"),
+            ),
+        });
+
+        assert!(
+            runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("matching natural completion should advance")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(1)
+        );
+        assert!(runtime.pending_natural_playback_completion.is_none());
+        assert!(
+            !runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("replaying the cadence must be a no-op"),
+            "one physical EOF must not advance two rows"
+        );
+    }
+
+    #[test]
+    fn late_natural_completion_cannot_skip_a_selection_advanced_by_a_peer() {
+        let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the completed selection should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("the peer playlist advance should apply");
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            playlist_index,
+            completed_file: Some(LocalFileUpdate::new("episode1.mkv")),
+        });
+
+        assert!(
+            !runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("stale completion should be consumed safely")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(1),
+            "a late EOF for row zero must not skip canonical row one"
+        );
+        assert!(runtime.pending_natural_playback_completion.is_none());
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn late_natural_completion_cannot_advance_after_same_row_reselection() {
+        let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the completed selection should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+            .expect("the peer should be able to replay the current row");
+
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .map(|playlist| (Some(playlist.revision), playlist.index)),
+            Some((playlist_revision, playlist_index)),
+            "same-row replay leaves the visible content revision and index unchanged"
+        );
+        assert_ne!(
+            runtime.session().current_room_playlist_selection_revision(),
+            playlist_selection_revision,
+            "same-row replay must establish a new canonical selection generation"
+        );
+
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            playlist_index,
+            completed_file: Some(LocalFileUpdate::new("episode1.mkv")),
+        });
+
+        assert!(
+            !runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("the stale same-row completion should be consumed")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(0),
+            "an EOF from the previous play of row zero must not advance its replay"
+        );
+        assert!(runtime.pending_natural_playback_completion.is_none());
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn late_natural_completion_cannot_skip_a_duplicate_playlist_target() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["same.mkv","same.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("duplicate playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("first duplicate row should be selected");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"same.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file should apply");
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the completed duplicate selection should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("peer should select the second duplicate row");
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            playlist_index,
+            completed_file: Some(LocalFileUpdate::new("same.mkv")),
+        });
+
+        assert!(
+            !runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("the stale duplicate completion should be consumed")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(1),
+            "matching display text must not turn a stale EOF into a second advance"
+        );
+        assert!(runtime.pending_natural_playback_completion.is_none());
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn failed_logical_terminal_never_becomes_playlist_progression_intent() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = ordered_runtime();
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    42.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("active snapshot should drain");
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::LogicalPlaybackTerminal {
+                    attempt_id,
+                    media_generation,
+                    outcome: PlayerPhysicalLoadOutcome::Failed(
+                        sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+                    ),
+                },
+            }],
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(2.0)
+            .expect("failed terminal should drain");
+
+        assert!(runtime.pending_natural_playback_completion.is_none());
     }
 
     #[test]
@@ -13675,6 +14241,19 @@ mod tests {
         let mut session = barrier_session();
         session.model.playback.local_position = Some(10.0);
         session.model.playback.local_paused = Some(false);
+        session
+            .apply_protocol_message_at(
+                ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(5.0)
+                            .with_paused(false)
+                            .with_set_by("bob"),
+                    ),
+                ),
+                99.0,
+            )
+            .expect("the projection test should begin after a canonical room baseline");
         let mut runtime = ClientRuntime::new(
             session,
             CoordinatedTestPlayer::default(),

@@ -11,7 +11,15 @@ permissions:
   contents: read
 
 jobs:
+  playback-lifecycle-release-gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/playback-lifecycle-release-gate.yml
+    with:
+      candidate_sha: ${{ github.sha }}
+
   server-release:
+    needs: playback-lifecycle-release-gate
     strategy:
       fail-fast: false
       matrix:

@@ -520,6 +520,8 @@ pub struct PlaylistState {
     pub(crate) rooms: BTreeMap<String, RoomPlaylistView>,
     pub(crate) pending: Option<RoomPlaylistView>,
     pub(crate) pending_remote_revision: u64,
+    pub(crate) selection_revisions: BTreeMap<String, u64>,
+    pub(crate) pending_selection_revision: u64,
     pub(crate) pending_local_change_echoes: BTreeMap<String, PendingLocalPlaylistEchoTracker>,
     pub(crate) pending_local_index_echoes: BTreeMap<String, PendingLocalPlaylistIndexEchoTracker>,
     pub(crate) remote_revisions: BTreeMap<String, u64>,
@@ -540,6 +542,14 @@ impl std::fmt::Debug for PlaylistState {
             .field("rooms", &self.rooms)
             .field("pending", &self.pending)
             .field("pending_remote_revision", &self.pending_remote_revision)
+            .field(
+                "selection_revision_room_count",
+                &self.selection_revisions.len(),
+            )
+            .field(
+                "pending_selection_revision",
+                &self.pending_selection_revision,
+            )
             .field(
                 "pending_local_change_echo_count",
                 &self

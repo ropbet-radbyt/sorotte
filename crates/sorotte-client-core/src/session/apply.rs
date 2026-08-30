@@ -284,6 +284,10 @@ impl ClientSession {
                 current_room.clone(),
                 std::mem::take(&mut self.model.playlist.pending_remote_revision),
             );
+            self.model.playlist.selection_revisions.insert(
+                current_room.clone(),
+                std::mem::take(&mut self.model.playlist.pending_selection_revision),
+            );
             self.model
                 .playlist
                 .rooms
@@ -771,6 +775,15 @@ impl ClientSession {
                 }
 
                 if let Some(room_name) = room_name.as_deref() {
+                    if !acknowledges_current_local_index {
+                        let selection_revision = self
+                            .model
+                            .playlist
+                            .selection_revisions
+                            .entry(room_name.to_owned())
+                            .or_default();
+                        *selection_revision = selection_revision.wrapping_add(1);
+                    }
                     let playlist = self
                         .model
                         .playlist
@@ -787,6 +800,11 @@ impl ClientSession {
                         self.invalidate_participant_status_evidence();
                     }
                 } else {
+                    self.model.playlist.pending_selection_revision = self
+                        .model
+                        .playlist
+                        .pending_selection_revision
+                        .wrapping_add(1);
                     let pending_playlist = self
                         .model
                         .playlist

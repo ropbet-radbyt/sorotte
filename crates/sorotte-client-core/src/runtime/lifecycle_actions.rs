@@ -9,6 +9,10 @@ where
 {
     pub fn begin_protocol_connection_generation(&mut self) {
         self.control.begin_protocol_connection_generation();
+        // A natural terminal observation belongs to the authority context in
+        // which it was received. Never replay it after reconnecting into a
+        // potentially newer canonical playlist selection.
+        self.pending_natural_playback_completion = None;
         self.playback_coordination
             .begin_protocol_connection_generation(&self.session);
         self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();

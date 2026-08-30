@@ -203,6 +203,10 @@ where
                 client_rtt,
                 crate::session::StateReconcileContext {
                     local_state_change_global_playstate,
+                    allow_local_pause_mutation: self
+                        .playback_coordination
+                        .active_local_pause_intent(&self.session)
+                        .is_some(),
                     received_at_seconds: clocks.received_at_seconds,
                 },
             );
@@ -265,14 +269,20 @@ where
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
             self.session.model.playback.local_paused,
         ) {
-            self.session.reconcile_state_and_build_response_at(
-                StatePayload::new(),
-                local_position,
-                local_paused,
-                client_latency_calculation,
-                client_rtt,
-                now_seconds,
-            )
+            let allow_local_pause_mutation = self
+                .playback_coordination
+                .active_local_pause_intent(&self.session)
+                .is_some();
+            self.session
+                .reconcile_state_and_build_response_at_with_pause_mutation_policy(
+                    StatePayload::new(),
+                    local_position,
+                    local_paused,
+                    client_latency_calculation,
+                    client_rtt,
+                    now_seconds,
+                    allow_local_pause_mutation,
+                )
         } else {
             StatePayload::new().with_ping(
                 PingPayload::new()

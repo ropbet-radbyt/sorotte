@@ -373,6 +373,14 @@ impl ClientSession {
             .is_some()
     }
 
+    /// Returns the reset still owed to the physical player without consuming it.
+    ///
+    /// Player owners use this to wait until a newly-selected playlist item is
+    /// actually available before committing the pause-and-rewind side effect.
+    pub fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
+        self.model.playlist.pending_index_reset_pause_before_sync
+    }
+
     pub(super) fn clear_reconnect_state_restore_validation_state(&mut self) {
         self.model.reconnect.state_restore_validation_pending = false;
         self.model.reconnect.state_restore_validation_retry_attempts = 0;

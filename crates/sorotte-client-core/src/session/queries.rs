@@ -334,6 +334,15 @@ impl ClientSession {
             .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
+    pub(crate) fn current_room_playlist_selection_revision(&self) -> Option<u64> {
+        self.model
+            .room
+            .name
+            .as_ref()
+            .and_then(|room_name| self.model.playlist.selection_revisions.get(room_name))
+            .copied()
+    }
+
     pub fn current_room_playlist_remote_revision(&self) -> u64 {
         self.model
             .room
@@ -403,6 +412,13 @@ impl ClientSession {
                     }
                     playlist.index = Some(*index);
                     playlist.set_by = Some(local_username.clone());
+                    let selection_revision = self
+                        .model
+                        .playlist
+                        .selection_revisions
+                        .entry(room_name.clone())
+                        .or_default();
+                    *selection_revision = selection_revision.wrapping_add(1);
                     self.model
                         .playlist
                         .pending_local_index_echoes

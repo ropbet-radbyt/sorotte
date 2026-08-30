@@ -152,11 +152,13 @@ pub(super) fn publish_pending_local_file_updates(
     application: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
     network_options_health_reporter: &mut CliNetworkOptionsHealthReporter,
+    now_seconds: f64,
 ) -> anyhow::Result<()> {
     loop {
-        let published = application.publish_pending_local_file_update_legacy_compatible(
+        let published = application.publish_pending_local_file_update_legacy_compatible_at(
             config.filename_privacy_mode,
             config.filesize_privacy_mode,
+            now_seconds,
         );
         surface_network_media_options_transition_outcomes(
             application,

@@ -614,6 +614,7 @@ where
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
+            pending_natural_playback_completion: None,
             pending_reconnect_rate_reset: false,
             playback_coordination,
             ordered_player_events: OrderedPlayerEventConsumer::default(),
@@ -794,11 +795,27 @@ where
                 } else {
                     self.system_pause_command_cause(paused)
                 };
-                self.execute_causal_pause_command(
+                let local_user_transport = cause == PlayerCommandCause::LocalUserPlaybackControl;
+                if local_user_transport {
+                    // A local application command has the same command/echo
+                    // race as a native player gesture. Stage it before player
+                    // dispatch so an inbound canonical frame cannot erase the
+                    // observed transport change before its State response is
+                    // built. The intent is already scoped to the active room,
+                    // media, connection generation, and controller authority.
+                    self.playback_coordination
+                        .stage_local_pause_intent(paused, &self.session);
+                }
+                let result = self.execute_causal_pause_command(
                     paused,
                     cause,
                     unix_wall_clock_time_seconds_legacy_compatible(),
-                )
+                );
+                if local_user_transport && result.is_err() {
+                    self.playback_coordination
+                        .rollback_local_pause_intent(paused);
+                }
+                result
             }
             ClientEffect::SetPlayerPosition(position) => {
                 self.player.execute(PlayerCommand::SetPosition(position))

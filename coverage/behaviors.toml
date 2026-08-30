@@ -146,6 +146,142 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior]]
+id = "SYNC-LIFECYCLE-001"
+title = "Actual-server clients converge across the complete playback lifecycle"
+risk = "critical"
+owners = ["server", "cli", "client-app", "client-core", "player"]
+invariants = [
+    "local play, pause, and seek become canonical before peers apply them",
+    "late and reconnecting clients converge from authoritative snapshots without missed deltas",
+    "canonical playlist selection loads every capable player and natural EOF advances exactly once",
+    "readiness waits for every required current member before one start commit",
+    "participant status advances periodically, reaches late clients, and withdraws on disconnect",
+    "startup player evidence remains generation-scoped across the first owner-clock observation",
+    "canonical playlist convergence accepts file evidence only from the current player attachment",
+    "natural completion belongs to one playlist content, row, and selection generation",
+]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.transport-authority"
+kind = "rust-test"
+oracle = "actual-server-multi-client-seam"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::legacy_local_pause_and_play_cross_the_server_authority_boundary_and_converge"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.late-seek"
+kind = "rust-test"
+oracle = "actual-server-authoritative-snapshot"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::local_seek_crosses_server_authority_and_reaches_a_late_joining_player"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.playlist-selection"
+kind = "rust-test"
+oracle = "actual-server-canonical-playlist"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::canonical_playlist_selection_loads_the_same_item_in_existing_and_late_joining_players"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.natural-eof"
+kind = "rust-test"
+oracle = "actual-server-natural-completion"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::natural_eof_advances_canonical_playlist_and_loads_the_next_item_for_every_player"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.readiness"
+kind = "rust-test"
+oracle = "actual-server-dynamic-readiness-membership"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::readiness_gate_holds_for_a_delayed_member_and_includes_a_late_joiner_before_commit"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.reconnect"
+kind = "rust-test"
+oracle = "actual-server-production-reconnect-loop"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::production_reconnect_loop_catches_up_after_missing_pause_seek_and_start"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.participant-status"
+kind = "rust-test"
+oracle = "actual-server-participant-status-lifecycle"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::participant_status_heartbeats_reach_a_late_client_and_withdraw_after_disconnect"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.owner-clock"
+kind = "rust-test"
+oracle = "generation-scoped-startup-evidence"
+package = "sorotte-cli"
+target_kind = "lib"
+test = "tests::playback_lifecycle_product_seam::loaded_simulated_mpv_events_survive_the_first_owner_clock_observation"
+source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.attachment-file-evidence"
+kind = "rust-test"
+oracle = "player-attachment-generation-fence"
+package = "sorotte-client-app"
+target_kind = "lib"
+test = "application::tests::canonical_playlist_selection_requires_current_attachment_file_evidence"
+source = "crates/sorotte-client-app/src/application.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.same-index-eof-fence"
+kind = "rust-test"
+oracle = "playlist-selection-generation-fence"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::late_natural_completion_cannot_advance_after_same_row_reselection"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior]]
 id = "PL-EPOCH-001"
 title = "Attachment replacement cannot let an old terminal handoff mutate a reused playlist entry"
 risk = "critical"

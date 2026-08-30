@@ -969,7 +969,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_remote_readiness_withou
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_reconciles_inbound_state_through_runtime() {
+fn gui_client_core_chat_session_runtime_adapter_echoes_first_remote_authority() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -1000,8 +1000,14 @@ fn gui_client_core_chat_session_runtime_adapter_reconciles_inbound_state_through
         .iter()
         .find(|line| line.contains("\"State\""))
         .expect("state reconciliation should emit an outbound state line");
-    assert!(state_line.contains("\"position\":12.0"));
-    assert!(state_line.contains("\"paused\":false"));
+    assert!(
+        state_line.contains("\"position\":10.0"),
+        "a GUI late joiner must echo the established room position rather than overwrite it with its pre-membership sample: {state_line}"
+    );
+    assert!(
+        state_line.contains("\"paused\":true"),
+        "a GUI late joiner must echo canonical Pause until the physical correction applies: {state_line}"
+    );
     assert!(state_line.contains("\"latencyCalculation\":123.0"));
     assert!(
         outbound_lines.iter().any(|line| line.contains("\"List\"")),

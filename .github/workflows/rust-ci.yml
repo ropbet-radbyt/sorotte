@@ -95,6 +95,48 @@ jobs:
       - name: Validate behavior catalog
         run: python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
 
+      - name: Validate playback lifecycle model
+        run: python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml
+
+      - name: Execute playback lifecycle oracle
+        run: >-
+          python scripts/playback_lifecycle_oracle.py witness-summary
+          --model coverage/playback-lifecycle.toml
+          --compact
+
+      - name: Replay playback lifecycle seeds
+        run: >-
+          python scripts/playback_lifecycle_oracle.py run-suite
+          --schedule-dir fixtures/playback-lifecycle
+
+      - name: Required state-aware playback lifecycle exploration
+        id: lifecycle_explore
+        continue-on-error: true
+        run: >-
+          python scripts/playback_lifecycle_oracle.py explore
+          --model coverage/playback-lifecycle.toml
+          --seed 0x50A077E20260831
+          --cases 64
+          --steps 128
+          --failure-dir target/verification/playback-lifecycle-model-failures
+          --compact
+
+      - name: Upload minimized lifecycle model failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-model-failures
+          path: target/verification/playback-lifecycle-model-failures
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
+      - name: Enforce state-aware playback lifecycle exploration
+        if: always()
+        env:
+          LIFECYCLE_EXPLORE_OUTCOME: ${{ steps.lifecycle_explore.outcome }}
+        run: test "$LIFECYCLE_EXPLORE_OUTCOME" = success
+
       - name: Validate ignored test policy
         run: python scripts/ignored_test_policy.py validate --registry coverage/ignored-tests.toml
 
@@ -1016,6 +1058,42 @@ jobs:
             --minimum-version "$MPV_MINIMUM_VERSION" \
             --binary mpv
 
+      - name: Verify Sorotte candidate revision
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "$GITHUB_SHA"
+
+      - name: Build packaged playback lifecycle candidates
+        run: cargo build --locked -p sorotte-server -p sorotte-cli
+
+      - name: Required packaged multi-client real mpv lifecycle
+        id: playback_lifecycle_system
+        continue-on-error: true
+        run: |
+          python3 scripts/playback_lifecycle_system.py run \
+            --server target/debug/sorotte-server \
+            --client target/debug/sorotte-cli \
+            --mpv target/mpv-supported/build/mpv \
+            --artifact-dir target/verification/playback-lifecycle-system \
+            --candidate-sha "$GITHUB_SHA"
+
+      - name: Validate and stage privacy-safe lifecycle evidence
+        id: playback_lifecycle_evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 scripts/playback_lifecycle_system.py stage-safe-evidence \
+            --artifact-dir target/verification/playback-lifecycle-system \
+            --output-dir target/verification/playback-lifecycle-safe-evidence
+
+      - name: Upload privacy-safe packaged lifecycle evidence
+        if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-system-${{ matrix.mpv_identity }}
+          path: target/verification/playback-lifecycle-safe-evidence
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
       - name: Required real mpv pause, seek, resume, and bounded-fetch semantics
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
@@ -1042,6 +1120,15 @@ jobs:
           cargo test --locked -p sorotte-sim --test mpv_rebuffer_harness \
             real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall \
             -- --ignored --exact --nocapture
+
+      - name: Enforce packaged lifecycle verification and safe evidence
+        if: always()
+        env:
+          PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME: ${{ steps.playback_lifecycle_system.outcome }}
+          PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME: ${{ steps.playback_lifecycle_evidence.outcome }}
+        run: |
+          test "$PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME" = success
+          test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
 
   verification_required:
     name: verification-required
@@ -1171,6 +1258,26 @@ jobs:
         env:
           PROPTEST_CASES: "2048"
         run: cargo test --locked --workspace --all-features
+
+      - name: Nightly state-aware playback lifecycle exploration
+        run: >-
+          python scripts/playback_lifecycle_oracle.py explore
+          --model coverage/playback-lifecycle.toml
+          --seed 0x50A077E20260831
+          --cases 512
+          --steps 256
+          --failure-dir target/verification/playback-lifecycle-model-failures
+          --compact
+
+      - name: Upload nightly minimized lifecycle model failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-model-failures-${{ matrix.runner }}
+          path: target/verification/playback-lifecycle-model-failures
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
 
       - name: Cache-pause acknowledged-stream regression
         run: >-

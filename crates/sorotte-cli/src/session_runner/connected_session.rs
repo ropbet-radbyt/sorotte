@@ -9,6 +9,7 @@ use std::{
 
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
+    planned_local_runtime_action_is_player_bound,
     report_contained_connected_session_player_failure,
     run_connected_session_event_plan_legacy_compatible, run_contained_planned_local_runtime_action,
 };
@@ -36,7 +37,7 @@ struct PendingReadyAtStart {
     had_current_v2_membership: bool,
 }
 
-fn client_runtime_now_seconds() -> f64 {
+pub(crate) fn client_runtime_now_seconds() -> f64 {
     static CLIENT_RUNTIME_CLOCK_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
     CLIENT_RUNTIME_CLOCK_EPOCH
         .get_or_init(std::time::Instant::now)
@@ -520,6 +521,44 @@ where
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_connected_client_session_with_plex_config_for_test<F, G>(
+    stream: TcpStream,
+    runtime: &mut ClientApplication<MpvAdapter>,
+    config: &ClientLoopConfig,
+    chat_message_on_connect: Option<&str>,
+    local_input_rx: Option<&mut UnboundedReceiver<String>>,
+    notification_sink: &mut F,
+    file_difference_sink: &mut G,
+    plex_config: &PlexClientConfig,
+) -> anyhow::Result<ConnectedSessionExit>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    let mut no_playlist = None;
+    let diagnostics_config = client_loop_diagnostics_config(None);
+    let mut network_options_health_reporter = CliNetworkOptionsHealthReporter::default();
+    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+        stream,
+        ConnectedSessionLaunchContext {
+            runtime,
+            config,
+            chat_message_on_connect,
+            startup_playlist_file_on_connect: &mut no_playlist,
+            local_input_rx,
+            notification_sink,
+            file_difference_sink,
+            diagnostics_config,
+            plex_config,
+            network_options_health_reporter: &mut network_options_health_reporter,
+            tls_policy_override: Some(TlsPolicy::Plaintext),
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides<F, G>(
     stream: TcpStream,
     runtime: &mut ClientApplication<MpvAdapter>,
@@ -696,7 +735,12 @@ where
         )
     })??;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
-    publish_pending_local_file_updates(runtime, config, network_options_health_reporter)?;
+    publish_pending_local_file_updates(
+        runtime,
+        config,
+        network_options_health_reporter,
+        client_runtime_now_seconds(),
+    )?;
     if !flush_runtime_protocol_lines_until(runtime, &mut writer, initial_hello_deadline).await? {
         return Err(anyhow!(
             "server initial Hello timed out after {:.1} seconds while sending startup protocol messages",
@@ -711,7 +755,7 @@ where
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
     let mut plex_tick = tokio::time::interval(Duration::from_secs(10));
-    let mut player_chat_input_tick =
+    let mut player_integration_tick =
         tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
@@ -878,14 +922,47 @@ where
             _ = plex_tick.tick(), if runtime.plex_service_enabled() => {
                 emit_application_service_events(runtime.pump_plex_service().await);
             }
-            _ = player_chat_input_tick.tick() => {
+            _ = player_integration_tick.tick() => {
                 report_cli_bridge_runtime_health_transitions(
                     runtime,
                     &mut bridge_health_reporter,
                 );
-                if drain_player_chat_input_legacy_compatible(runtime)? {
-                    flush_runtime_protocol_lines(runtime, &mut writer).await?;
-                }
+                let _ = drain_player_chat_input_legacy_compatible(runtime)?;
+                let now_seconds = client_runtime_now_seconds();
+                let event_execution_plan =
+                    connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(
+                        ConnectedSessionSharedExecutionInputs {
+                            shared_playlists_enabled,
+                            diagnostics: branch_diagnostics_plan,
+                            outbound_state_sync_enabled,
+                        },
+                    );
+                run_connected_session_event_plan_legacy_compatible(
+                    runtime,
+                    None,
+                    now_seconds,
+                    dont_slow_down_with_me,
+                    event_execution_plan,
+                    ConnectedSessionEventExecutionContext {
+                        pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
+                        pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
+                        outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
+                        branch: ConnectedSessionBranchExecutionContext {
+                            config,
+                            writer: &mut writer,
+                            startup_playlist_file_on_connect,
+                            diagnostics_config: &diagnostics_config,
+                            reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                            seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                            readiness_notification_state: &mut readiness_notification_state,
+                            file_difference_state: &mut file_difference_state,
+                            network_options_health_reporter,
+                            notification_sink,
+                            file_difference_sink,
+                        },
+                    },
+                )
+                .await?;
                 emit_application_service_events(runtime.pump_plex_service().await);
             }
             local_line = recv_local_input_line(&mut local_input_rx) => {
@@ -921,6 +998,8 @@ where
                             match dispatch {
                                 PlannedLocalInputDispatch::Suppressed => false,
                                 PlannedLocalInputDispatch::Run(action) => {
+                                    let publish_local_player_state =
+                                        planned_local_runtime_action_is_player_bound(&action);
                                     let (emitted, failure) =
                                         run_contained_planned_local_runtime_action(
                                         runtime,
@@ -931,6 +1010,16 @@ where
                                     if let Some(failure) = failure {
                                         report_contained_connected_session_player_failure(&failure);
                                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                                    }
+                                    if emitted && publish_local_player_state {
+                                        // Publish a player-bound local mutation in the same event
+                                        // turn. If canonical room state has not arrived yet this may
+                                        // be ping-only; the core's generation-scoped local intent
+                                        // then carries Play/Pause into the first canonical response.
+                                        let _ = runtime
+                                            .run_state_sync_heartbeat_legacy_ping_compatible(
+                                                dont_slow_down_with_me,
+                                            );
                                     }
                                     emitted
                                 }

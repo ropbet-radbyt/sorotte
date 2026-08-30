@@ -1,0 +1,1791 @@
+schema_version = 1
+model_id = "sorotte-playback-lifecycle-v1"
+title = "Sorotte whole-playback lifecycle"
+contract = "docs/PLAYBACK_LIFECYCLE_ASSURANCE.md"
+behavior_catalog = "coverage/behaviors.toml"
+
+[policy]
+allowed_risks = ["critical", "high", "medium", "low"]
+required_tiers = ["model", "seam", "system"]
+allowed_state_kinds = ["stable", "transient", "terminal"]
+allowed_machine_modes = ["finite", "cyclic"]
+allowed_gap_statuses = ["open", "closed"]
+allowed_invariant_kinds = ["safety", "liveness", "observability", "privacy"]
+
+[[invariant]]
+id = "LIFE-AUTH-001"
+kind = "safety"
+statement = "Only a validated server transition changes canonical room playstate or playlist selection."
+
+[[invariant]]
+id = "LIFE-EPOCH-001"
+kind = "safety"
+statement = "Evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt cannot mutate successor authority."
+
+[[invariant]]
+id = "LIFE-IDENT-001"
+kind = "safety"
+statement = "Identities from different domains are never compared as interchangeable counters."
+
+[[invariant]]
+id = "LIFE-DELIVERY-001"
+kind = "safety"
+statement = "A dependent player effect cannot precede terminal delivery of its exact causal protocol frame."
+
+[[invariant]]
+id = "LIFE-ONCE-001"
+kind = "safety"
+statement = "One accepted semantic transition produces at most one canonical commit and at most one terminal client result."
+
+[[invariant]]
+id = "LIFE-EOF-001"
+kind = "safety"
+statement = "Only natural completion correlated to the current playlist contents revision, row, and selection generation can request canonical playlist progression."
+
+[[invariant]]
+id = "LIFE-STATUS-001"
+kind = "privacy"
+statement = "Participant status remains advisory, privacy-safe, epoch-bound, and absent when correlation is insufficient."
+
+[[invariant]]
+id = "LIFE-SNAPSHOT-001"
+kind = "safety"
+statement = "An authoritative snapshot installs one internally coherent generation of room, playlist, playstate, readiness, and status facts."
+
+[[invariant]]
+id = "LIFE-EXIT-001"
+kind = "liveness"
+statement = "Every transient state has a bounded transition to progress, retry, explicit failure, or termination."
+
+[[invariant]]
+id = "LIFE-CONVERGE-001"
+kind = "liveness"
+statement = "After accepted canonical authority and bounded faults cease, every capable participant converges or exposes a specific inability."
+
+[[invariant]]
+id = "LIFE-REJOIN-001"
+kind = "liveness"
+statement = "Reconnect and late join obtain a current authoritative snapshot without depending on missed deltas."
+
+[[invariant]]
+id = "LIFE-RECOVERY-001"
+kind = "liveness"
+statement = "A recoverable player or transport failure cannot leave the lifecycle permanently terminal while a bounded successor is available."
+
+[[invariant]]
+id = "LIFE-SHUTDOWN-001"
+kind = "liveness"
+statement = "Shutdown releases every owned process, task, socket, temporary root, and evidence writer."
+
+[[invariant]]
+id = "LIFE-TRACE-001"
+kind = "observability"
+statement = "Every causal transition can be attributed without recording secret or raw media identity."
+
+[[invariant]]
+id = "LIFE-FAILURE-001"
+kind = "observability"
+statement = "A failed requirement preserves the first divergent boundary and does not become success because a retry later passes."
+
+[[gap]]
+id = "GAP-MODEL-001"
+title = "Independent composition model"
+status = "closed"
+risk = "critical"
+owners = ["verification", "player", "client-core", "gui", "server"]
+summary = "The independent explorer executes every transition and source, evaluates every assigned invariant after each event, rejects adversarial histories, and deterministically shrinks and persists first divergences."
+closure = "An independent state-aware generator executes every lifecycle transition, checks all assigned invariants after every step, shrinks failures, and persists minimized replay schedules."
+
+[[gap]]
+id = "GAP-TRACE-001"
+title = "Cross-process causal evidence ledger"
+status = "open"
+risk = "critical"
+owners = ["verification", "client-app", "gui", "server", "player"]
+summary = "The external harness now emits a closed privacy-safe causal projection, but product roles do not yet emit the complete shared identity and causal-edge schema."
+closure = "All product roles and the harness emit and validate the schema-versioned redacted causal ledger defined by the lifecycle contract."
+
+[[gap]]
+id = "GAP-SYSTEM-001"
+title = "Actual-server multi-client real-player lifecycle harness"
+status = "open"
+risk = "critical"
+owners = ["verification", "gui", "server", "player"]
+summary = "A packaged actual-server, three-client, real-mpv harness with deterministic protocol fragmentation and reconnect is required in the pinned mpv CI lane, but successful exact-candidate evidence has not yet been observed and GUI composition remains outside it."
+closure = "A required harness runs the packaged actual server, at least two isolated packaged clients, and their real supported players while an external oracle verifies the complete causal path."
+
+[[gap]]
+id = "GAP-FAULT-001"
+title = "Replayable cross-boundary schedule control"
+status = "open"
+risk = "high"
+owners = ["verification", "client-app", "gui", "server", "player"]
+summary = "The packaged harness now composes deterministic protocol fragmentation, cut-and-hold, a missed start, production reconnect, and real-player catch-up, but the cross-boundary fault schedule is not yet externally replayable/shrinkable and lacks delay, backpressure, half-close, reset, worker-stall, and IPC-fault variants."
+closure = "A deterministic scheduler and protocol proxy record, replay, and shrink realistic delay, fragmentation, backpressure, half-close, reset, worker stall, and cross-channel ordering schedules."
+
+[[gap]]
+id = "GAP-PLAYLIST-001"
+title = "Natural completion through canonical peer playlist progression"
+status = "open"
+risk = "critical"
+owners = ["verification", "gui", "client-core", "server", "player"]
+summary = "An actual-server simulated-player seam proves one natural-EOF commit and peer loads, and the packaged real-mpv walk is authored; loop, last-item, cache-pause, transport-failure, and successful pinned-system evidence remain open."
+closure = "Real players complete generated media under ordinary, loop, last-item, cache-pause, and transport-failure schedules; only valid natural completion commits one canonical transition and all capable peers converge."
+
+[[gap]]
+id = "GAP-START-001"
+title = "Late-join and delayed-participant start convergence"
+status = "open"
+risk = "critical"
+owners = ["verification", "client-core", "gui", "server", "player"]
+summary = "Actual-server seams cover a delayed required member and a late joiner during preparation; the packaged walk now covers a follower missing Play and catching up after production reconnect, but not participants joining or resuming at every start-gate phase."
+closure = "Generated late-join, slow-resolution, partition, reconnect, and sleep-resume walks prove convergence or an explicit bounded inability for every start-gate phase."
+
+[[gap]]
+id = "GAP-STATUS-001"
+title = "Packaged participant-status cadence and self-healing"
+status = "open"
+risk = "high"
+owners = ["verification", "client-core", "client-app", "gui", "server"]
+summary = "Actual-server seams cover late snapshots, cadence, and withdrawal; the packaged real-player harness also proves withdrawal and recovery across a controlled transport cut, while controlled report loss/delay/stale recovery and second-client UI projection remain open."
+closure = "The multi-process harness proves heartbeat cadence, one-loss self-healing, delayed and stale classification, late-join snapshot delivery, withdrawal, and privacy under controlled delay."
+
+[[gap]]
+id = "GAP-RELEASE-001"
+title = "Exact packaged lifecycle release gate"
+status = "open"
+risk = "critical"
+owners = ["verification", "release"]
+summary = "GUI and server publication now depend on a reusable exact-SHA release-mode server/CLI/real-mpv gate that stages only privacy-safe evidence and requires every declared gap closed; successful hosted evidence and exact packaged GUI consumption remain open."
+closure = "The release workflow runs the closed lifecycle model and system suite against immutable candidate artifacts and publishes only the tested digests."
+
+[[machine]]
+id = "application"
+title = "Application process"
+mode = "finite"
+initial_state = "not-started"
+terminal_states = ["terminated"]
+
+[[machine.state]]
+id = "not-started"
+title = "Not started"
+kind = "stable"
+description = "No application process owns playback resources."
+
+[[machine.state]]
+id = "starting"
+title = "Starting"
+kind = "transient"
+description = "The application is acquiring configuration, workers, transport, and player ownership."
+
+[[machine.state]]
+id = "running"
+title = "Running"
+kind = "stable"
+description = "The application event loop can own session and player lifecycle work."
+
+[[machine.state]]
+id = "stopping"
+title = "Stopping"
+kind = "transient"
+description = "New lifecycle work is fenced while owned resources drain."
+
+[[machine.state]]
+id = "terminated"
+title = "Terminated"
+kind = "terminal"
+description = "The process and every owned playback resource are released."
+
+[[machine.transition]]
+id = "APP-LAUNCH-001"
+title = "Launch application"
+from = ["not-started"]
+to = "starting"
+cause = "A user or harness launches the client application."
+authority = "application-process"
+risk = "high"
+invariants = ["LIFE-IDENT-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["GUI-PLAYER-001", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "APP-RUN-001"
+title = "Complete startup"
+from = ["starting"]
+to = "running"
+cause = "Required startup ownership is established."
+authority = "application-process"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["GUI-PLAYER-001", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "APP-STOP-001"
+title = "Begin shutdown or startup rollback"
+from = ["starting", "running"]
+to = "stopping"
+cause = "The user exits or startup cannot safely continue."
+authority = "application-process"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-SHUTDOWN-001", "LIFE-FAILURE-001"]
+evidence = ["PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "APP-TERM-001"
+title = "Complete shutdown"
+from = ["stopping"]
+to = "terminated"
+cause = "Every owned process, task, socket, root, and evidence writer is released."
+authority = "application-process"
+risk = "critical"
+invariants = ["LIFE-SHUTDOWN-001", "LIFE-TRACE-001", "LIFE-FAILURE-001"]
+evidence = ["PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001", "GAP-RELEASE-001"]
+
+[[machine]]
+id = "player-attachment"
+title = "Player attachment"
+mode = "cyclic"
+initial_state = "absent"
+terminal_states = []
+
+[[machine.state]]
+id = "absent"
+title = "Absent"
+kind = "stable"
+description = "No player attachment owns observations or commands."
+
+[[machine.state]]
+id = "launching"
+title = "Launching"
+kind = "transient"
+description = "An owned player process is being created."
+
+[[machine.state]]
+id = "connecting"
+title = "Connecting"
+kind = "transient"
+description = "The client is establishing and validating player IPC."
+
+[[machine.state]]
+id = "attached"
+title = "Attached"
+kind = "stable"
+description = "One attachment epoch owns commands and observations."
+
+[[machine.state]]
+id = "disconnected"
+title = "Disconnected"
+kind = "transient"
+description = "The attachment is unavailable and successor policy is being decided."
+
+[[machine.state]]
+id = "relaunching"
+title = "Relaunching"
+kind = "transient"
+description = "A bounded successor player is being created under a new attachment epoch."
+
+[[machine.state]]
+id = "stopped"
+title = "Stopped"
+kind = "stable"
+description = "The former attachment is terminal and owns no live resource."
+
+[[machine.transition]]
+id = "PLAYER-LAUNCH-001"
+title = "Launch player"
+from = ["absent", "stopped"]
+to = "launching"
+cause = "Playback requires an owned player."
+authority = "player-owner"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["GUI-PLAYER-001", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-CONNECT-001"
+title = "Connect player IPC"
+from = ["launching", "relaunching"]
+to = "connecting"
+cause = "The player process exposes its IPC endpoint."
+authority = "player-owner"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-EXIT-001"]
+evidence = ["PL-IPC-001", "PL-IPC-003", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-ATTACH-001"
+title = "Activate attachment"
+from = ["connecting"]
+to = "attached"
+cause = "IPC identity and supported-player capability are validated."
+authority = "player-owner"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-TRACE-001"]
+evidence = ["PL-EPOCH-001", "PL-STALE-001", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-LOSS-001"
+title = "Lose active attachment"
+from = ["connecting", "attached"]
+to = "disconnected"
+cause = "IPC or player process ownership ends unexpectedly."
+authority = "player-owner"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-RECOVERY-001", "LIFE-FAILURE-001"]
+evidence = ["PL-EPOCH-001", "PL-STALE-001", "PL-IPC-003", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-RELAUNCH-001"
+title = "Allocate replacement attachment"
+from = ["disconnected"]
+to = "relaunching"
+cause = "Bounded recovery policy authorizes a successor player."
+authority = "player-owner"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-RECOVERY-001", "LIFE-EXIT-001"]
+evidence = ["PL-EPOCH-001", "PL-RECOVERY-001", "PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-STOP-001"
+title = "Stop attachment"
+from = ["attached", "disconnected", "launching", "connecting", "relaunching"]
+to = "stopped"
+cause = "Shutdown or terminal player failure ends attachment ownership."
+authority = "player-owner"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001", "LIFE-FAILURE-001"]
+evidence = ["PL-PROC-001", "PL-STALE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYER-RESET-001"
+title = "Return to absent"
+from = ["stopped"]
+to = "absent"
+cause = "Terminal attachment bookkeeping is released."
+authority = "player-owner"
+risk = "medium"
+invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001"]
+evidence = ["PL-PROC-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam"]
+gaps = ["GAP-MODEL-001"]
+
+[[machine]]
+id = "session"
+title = "Client-server session"
+mode = "cyclic"
+initial_state = "disconnected"
+terminal_states = []
+
+[[machine.state]]
+id = "disconnected"
+title = "Disconnected"
+kind = "stable"
+description = "No connection generation owns server traffic."
+
+[[machine.state]]
+id = "connecting"
+title = "Connecting"
+kind = "transient"
+description = "A transport attempt is in progress."
+
+[[machine.state]]
+id = "awaiting-hello"
+title = "Awaiting Hello"
+kind = "transient"
+description = "Transport exists but canonical server identity and features are not installed."
+
+[[machine.state]]
+id = "active"
+title = "Active"
+kind = "stable"
+description = "One validated connection generation owns session traffic."
+
+[[machine.state]]
+id = "reconnecting"
+title = "Reconnecting"
+kind = "transient"
+description = "Old connection-scoped work is fenced while retry policy selects a successor."
+
+[[machine.state]]
+id = "closing"
+title = "Closing"
+kind = "transient"
+description = "New traffic is stopped and connection resources drain."
+
+[[machine.transition]]
+id = "SESSION-CONNECT-001"
+title = "Begin connection"
+from = ["disconnected", "reconnecting"]
+to = "connecting"
+cause = "Initial connection or bounded retry becomes due."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["NET-DEADLINE-001", "NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "SESSION-HELLO-001"
+title = "Await server Hello"
+from = ["connecting"]
+to = "awaiting-hello"
+cause = "Transport and optional TLS negotiation complete."
+authority = "client-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-EXIT-001"]
+evidence = ["NET-DEADLINE-001", "NET-CODEC-001", "NET-TLS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "SESSION-ACTIVE-001"
+title = "Activate connection generation"
+from = ["awaiting-hello"]
+to = "active"
+cause = "A valid server Hello installs negotiated identity and capabilities."
+authority = "server-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-REJOIN-001"]
+evidence = ["NET-DEADLINE-001", "NET-CODEC-001", "NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "SESSION-LOSS-001"
+title = "Fence lost connection"
+from = ["connecting", "awaiting-hello", "active"]
+to = "reconnecting"
+cause = "Transport failure or liveness deadline retires the connection generation."
+authority = "client-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-REJOIN-001", "LIFE-FAILURE-001"]
+evidence = ["NET-RECONNECT-001", "NET-DEADLINE-001", "NET-GUI-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "SESSION-CLOSE-001"
+title = "Begin session close"
+from = ["connecting", "awaiting-hello", "active", "reconnecting"]
+to = "closing"
+cause = "Application shutdown or explicit disconnect stops successor retry."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001", "LIFE-EXIT-001"]
+evidence = ["NET-RECONNECT-001", "NET-GUI-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "SESSION-DISCONNECT-001"
+title = "Complete disconnect"
+from = ["closing"]
+to = "disconnected"
+cause = "Connection tasks and pending connection-scoped effects are released."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001", "LIFE-TRACE-001"]
+evidence = ["NET-RECONNECT-001", "NET-GUI-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "room-membership"
+title = "Room membership"
+mode = "cyclic"
+initial_state = "outside"
+terminal_states = []
+
+[[machine.state]]
+id = "outside"
+title = "Outside room"
+kind = "stable"
+description = "No room membership epoch owns participant or canonical room facts."
+
+[[machine.state]]
+id = "joining"
+title = "Joining"
+kind = "transient"
+description = "A room membership request awaits server authority."
+
+[[machine.state]]
+id = "joined"
+title = "Joined"
+kind = "stable"
+description = "One authenticated room membership epoch owns room facts."
+
+[[machine.state]]
+id = "switching"
+title = "Switching"
+kind = "transient"
+description = "The old room is fenced while destination authority is acquired."
+
+[[machine.state]]
+id = "leaving"
+title = "Leaving"
+kind = "transient"
+description = "Membership-owned facts and effects are being withdrawn."
+
+[[machine.transition]]
+id = "ROOM-JOIN-001"
+title = "Request room join"
+from = ["outside"]
+to = "joining"
+cause = "An active session requests room membership."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001"]
+evidence = ["NET-GUI-001", "NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "ROOM-ACTIVE-001"
+title = "Install membership snapshot"
+from = ["joining", "switching"]
+to = "joined"
+cause = "Server authority identifies the room and its current snapshots."
+authority = "server-room"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-REJOIN-001"]
+evidence = ["NET-GUI-001", "NET-RECONNECT-001", "SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-START-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "ROOM-SWITCH-001"
+title = "Fence old room and request destination"
+from = ["joined"]
+to = "switching"
+cause = "The client requests a different room."
+authority = "client-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-ONCE-001"]
+evidence = ["NET-GUI-001", "NET-RECONNECT-001", "SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "ROOM-LEAVE-001"
+title = "Begin room leave"
+from = ["joining", "joined", "switching"]
+to = "leaving"
+cause = "Disconnect, shutdown, rejection, or explicit leave retires membership."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SHUTDOWN-001"]
+evidence = ["NET-GUI-001", "SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "ROOM-OUTSIDE-001"
+title = "Complete room leave"
+from = ["leaving"]
+to = "outside"
+cause = "Membership-owned state and effects are cleared."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SHUTDOWN-001"]
+evidence = ["NET-GUI-001", "SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "playlist-selection"
+title = "Canonical playlist selection"
+mode = "cyclic"
+initial_state = "unknown"
+terminal_states = []
+
+[[machine.state]]
+id = "unknown"
+title = "Unknown"
+kind = "stable"
+description = "No coherent canonical playlist snapshot is installed."
+
+[[machine.state]]
+id = "empty"
+title = "Empty"
+kind = "stable"
+description = "Canonical playlist contents are empty."
+
+[[machine.state]]
+id = "populated"
+title = "Populated"
+kind = "stable"
+description = "Canonical contents exist without a valid selected entry."
+
+[[machine.state]]
+id = "selected"
+title = "Selected"
+kind = "stable"
+description = "Canonical contents and selected entry are coherent."
+
+[[machine.state]]
+id = "mutation-pending"
+title = "Mutation pending"
+kind = "transient"
+description = "A playlist-contents intent awaits canonical commit or rejection."
+
+[[machine.state]]
+id = "index-pending"
+title = "Index pending"
+kind = "transient"
+description = "A selected-entry intent awaits canonical commit or rejection."
+
+[[machine.state]]
+id = "exhausted"
+title = "Exhausted"
+kind = "stable"
+description = "The selected entry completed and policy offers no successor."
+
+[[machine.transition]]
+id = "PLAYLIST-SNAPSHOT-EMPTY-001"
+title = "Install empty playlist snapshot"
+from = ["unknown", "populated", "selected", "mutation-pending", "index-pending", "exhausted"]
+to = "empty"
+cause = "Server authority publishes coherent empty contents and index."
+authority = "server-playlist"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001"]
+evidence = ["NET-RECONNECT-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-SNAPSHOT-POPULATED-001"
+title = "Install populated playlist snapshot"
+from = ["unknown", "empty", "mutation-pending", "index-pending", "exhausted"]
+to = "populated"
+cause = "Server authority publishes coherent contents without a valid selection."
+authority = "server-playlist"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001"]
+evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-SNAPSHOT-SELECTED-001"
+title = "Install selected playlist snapshot"
+from = ["unknown", "empty", "populated", "mutation-pending", "index-pending", "selected", "exhausted"]
+to = "selected"
+cause = "Server authority publishes coherent contents and selected entry."
+authority = "server-playlist"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-ONCE-001"]
+evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-MUTATE-001"
+title = "Submit contents mutation"
+from = ["empty", "populated", "selected", "exhausted"]
+to = "mutation-pending"
+cause = "An authorized client submits playlist contents."
+authority = "client-intent"
+risk = "high"
+invariants = ["LIFE-AUTH-001", "LIFE-DELIVERY-001", "LIFE-ONCE-001"]
+evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-SELECT-001"
+title = "Submit selected-entry mutation"
+from = ["populated", "selected"]
+to = "index-pending"
+cause = "An authorized client selects or advances an entry."
+authority = "client-intent"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-DELIVERY-001", "LIFE-ONCE-001", "LIFE-EOF-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-EXHAUST-001"
+title = "Record playlist exhaustion"
+from = ["selected", "index-pending"]
+to = "exhausted"
+cause = "Correlated natural completion has no policy-authorized successor."
+authority = "server-playlist"
+risk = "high"
+invariants = ["LIFE-AUTH-001", "LIFE-EOF-001", "LIFE-ONCE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "PLAYLIST-LOSE-AUTHORITY-001"
+title = "Lose playlist authority"
+from = ["empty", "populated", "selected", "mutation-pending", "index-pending", "exhausted"]
+to = "unknown"
+cause = "Connection or membership epoch ends before a successor snapshot is installed."
+authority = "client-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-REJOIN-001"]
+evidence = ["NET-RECONNECT-001", "NET-GUI-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "media-resolution"
+title = "Selected media resolution"
+mode = "cyclic"
+initial_state = "absent"
+terminal_states = []
+
+[[machine.state]]
+id = "absent"
+title = "Absent"
+kind = "stable"
+description = "No canonical selected target requires resolution."
+
+[[machine.state]]
+id = "unresolved"
+title = "Unresolved"
+kind = "stable"
+description = "A selected logical target exists without a playable local target."
+
+[[machine.state]]
+id = "resolving"
+title = "Resolving"
+kind = "transient"
+description = "A generation-fenced resolver operation is in progress."
+
+[[machine.state]]
+id = "playable"
+title = "Playable"
+kind = "stable"
+description = "The current generation has a trusted playable target."
+
+[[machine.state]]
+id = "missing"
+title = "Missing"
+kind = "stable"
+description = "No acceptable local or remote target was found."
+
+[[machine.state]]
+id = "untrusted"
+title = "Untrusted"
+kind = "stable"
+description = "A candidate exists but policy forbids automatic playback."
+
+[[machine.state]]
+id = "failed"
+title = "Failed"
+kind = "stable"
+description = "Resolution ended with an explicit retryable or terminal failure."
+
+[[machine.transition]]
+id = "MEDIA-SELECT-001"
+title = "Require media resolution"
+from = ["absent", "playable", "missing", "untrusted", "failed"]
+to = "unresolved"
+cause = "Canonical playlist selection or media generation changes."
+authority = "server-playlist"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-IDENT-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-RESOLVE-001"
+title = "Start resolution"
+from = ["unresolved", "missing", "untrusted", "failed"]
+to = "resolving"
+cause = "Resolution policy authorizes a bounded operation."
+authority = "client-media-resolver"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-PLAYABLE-001"
+title = "Resolve playable target"
+from = ["resolving"]
+to = "playable"
+cause = "A trusted candidate matches the current selection and generation."
+authority = "client-media-resolver"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-ONCE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-MISSING-001"
+title = "Resolve missing target"
+from = ["resolving"]
+to = "missing"
+cause = "All bounded trusted resolution candidates are unavailable."
+authority = "client-media-resolver"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-CONVERGE-001"]
+evidence = ["GUI-PLAYER-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-UNTRUSTED-001"
+title = "Reject untrusted target"
+from = ["resolving"]
+to = "untrusted"
+cause = "A target exists but automatic playback trust policy rejects it."
+authority = "client-media-resolver"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-CONVERGE-001"]
+evidence = ["GUI-PLAYER-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-FAIL-001"
+title = "Fail resolution"
+from = ["resolving"]
+to = "failed"
+cause = "Resolution reaches an explicit bounded failure."
+authority = "client-media-resolver"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-FAILURE-001"]
+evidence = ["GUI-PLAYER-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "MEDIA-CLEAR-001"
+title = "Clear selected target"
+from = ["unresolved", "resolving", "playable", "missing", "untrusted", "failed"]
+to = "absent"
+cause = "Playlist selection or membership authority is cleared."
+authority = "client-session"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "load-attempt"
+title = "Physical load attempt"
+mode = "cyclic"
+initial_state = "none"
+terminal_states = []
+
+[[machine.state]]
+id = "none"
+title = "None"
+kind = "stable"
+description = "No physical load attempt owns the current player."
+
+[[machine.state]]
+id = "submitting"
+title = "Submitting"
+kind = "transient"
+description = "A physical load command is being submitted."
+
+[[machine.state]]
+id = "accepted-unbound"
+title = "Accepted unbound"
+kind = "transient"
+description = "The player accepted the command but authoritative physical identity is not bound."
+
+[[machine.state]]
+id = "bound"
+title = "Bound"
+kind = "transient"
+description = "The physical playlist entry is uniquely bound to the attempt."
+
+[[machine.state]]
+id = "starting"
+title = "Starting"
+kind = "transient"
+description = "Correlated physical start evidence exists before active file completion."
+
+[[machine.state]]
+id = "active"
+title = "Active"
+kind = "stable"
+description = "The attempt physically owns the loaded transport."
+
+[[machine.state]]
+id = "may-still-emit"
+title = "May still emit"
+kind = "transient"
+description = "Logical ownership ended but physical late events remain possible."
+
+[[machine.state]]
+id = "terminal"
+title = "Terminal"
+kind = "stable"
+description = "The physical attempt has one terminal outcome."
+
+[[machine.state]]
+id = "recovering"
+title = "Recovering"
+kind = "transient"
+description = "A same-generation successor attempt is being allocated."
+
+[[machine.transition]]
+id = "LOAD-SUBMIT-001"
+title = "Submit physical load"
+from = ["none", "terminal"]
+to = "submitting"
+cause = "A playable current-generation target requires a physical load."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-ONCE-001"]
+evidence = ["PL-PROP-001", "PL-START-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-ACCEPT-001"
+title = "Accept physical load"
+from = ["submitting"]
+to = "accepted-unbound"
+cause = "The load command is semantically accepted."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-EXIT-001"]
+evidence = ["PL-PROP-001", "PL-RECOVERY-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-BIND-001"
+title = "Bind authoritative physical identity"
+from = ["accepted-unbound"]
+to = "bound"
+cause = "Unique causal player playlist evidence binds the attempt."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-SNAPSHOT-001"]
+evidence = ["PL-START-001", "PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-START-001"
+title = "Observe physical start"
+from = ["accepted-unbound", "bound"]
+to = "starting"
+cause = "Correlated start-file evidence establishes physical ownership."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-ONCE-001"]
+evidence = ["PL-START-001", "PL-EPOCH-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-ACTIVE-001"
+title = "Observe active file"
+from = ["bound", "starting"]
+to = "active"
+cause = "Correlated file-loaded evidence activates the attempt."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-ONCE-001"]
+evidence = ["PL-START-001", "PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-SUPERSEDE-001"
+title = "Revoke logical ownership while retaining physical possibility"
+from = ["accepted-unbound", "bound", "starting", "active"]
+to = "may-still-emit"
+cause = "A successor or terminal semantic outcome revokes logical ownership before physical quiescence."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-RECOVERY-001"]
+evidence = ["PL-EPOCH-001", "PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-TERMINAL-001"
+title = "Commit physical terminal outcome"
+from = ["submitting", "accepted-unbound", "bound", "starting", "active", "may-still-emit", "recovering"]
+to = "terminal"
+cause = "Correlated terminal evidence or explicit terminal failure closes the attempt."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-EOF-001", "LIFE-FAILURE-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001", "PL-STALE-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-RECOVER-001"
+title = "Allocate recovery successor"
+from = ["active", "may-still-emit", "terminal"]
+to = "recovering"
+cause = "A bounded recoverable failure preserves the media generation and allocates a successor."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-RECOVERY-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-RECOVERY-SUBMIT-001"
+title = "Submit recovery successor"
+from = ["recovering"]
+to = "submitting"
+cause = "Recovery policy supplies the successor target."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-RECOVERY-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "LOAD-CLEAR-001"
+title = "Release terminal attempt"
+from = ["terminal"]
+to = "none"
+cause = "Terminal replay and retention obligations are satisfied."
+authority = "player-lifecycle"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-SHUTDOWN-001"]
+evidence = ["PL-ACK-001", "PL-STALE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam"]
+gaps = []
+
+[[machine]]
+id = "local-transport"
+title = "Local physical playback observation"
+mode = "cyclic"
+initial_state = "unavailable"
+terminal_states = []
+
+[[machine.state]]
+id = "unavailable"
+title = "Unavailable"
+kind = "stable"
+description = "No current physical playback observation is trustworthy."
+
+[[machine.state]]
+id = "loading"
+title = "Loading"
+kind = "transient"
+description = "The active attempt has not reached stable playback."
+
+[[machine.state]]
+id = "paused"
+title = "Paused"
+kind = "stable"
+description = "The active attempt is physically paused for non-cache reasons."
+
+[[machine.state]]
+id = "playing"
+title = "Playing"
+kind = "stable"
+description = "The active attempt is making playback progress."
+
+[[machine.state]]
+id = "seeking"
+title = "Seeking"
+kind = "transient"
+description = "The active attempt is physically applying a seek."
+
+[[machine.state]]
+id = "cache-paused"
+title = "Cache paused"
+kind = "transient"
+description = "Playback is temporarily paused by buffer depletion rather than room intent."
+
+[[machine.state]]
+id = "provisional-eof"
+title = "Provisional EOF"
+kind = "transient"
+description = "EOF-like evidence awaits corroboration or contradiction."
+
+[[machine.state]]
+id = "ended"
+title = "Ended"
+kind = "stable"
+description = "Correlated natural completion is terminal for the active attempt."
+
+[[machine.state]]
+id = "failed"
+title = "Failed"
+kind = "stable"
+description = "The local transport cannot continue without explicit retry or replacement."
+
+[[machine.transition]]
+id = "TRANSPORT-LOAD-001"
+title = "Begin physical loading"
+from = ["unavailable", "paused", "playing", "seeking", "cache-paused", "provisional-eof", "ended", "failed"]
+to = "loading"
+cause = "A current-generation load attempt starts or replaces transport."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-TRACE-001"]
+evidence = ["PL-START-001", "PL-EPOCH-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-PAUSE-001"
+title = "Observe physical pause"
+from = ["loading", "playing", "seeking", "cache-paused", "provisional-eof"]
+to = "paused"
+cause = "Correlated player telemetry reports a non-cache pause."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-AUTH-001", "LIFE-IDENT-001"]
+evidence = ["PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-PLAY-001"
+title = "Observe physical play"
+from = ["loading", "paused", "seeking", "cache-paused", "provisional-eof"]
+to = "playing"
+cause = "Correlated player telemetry reports unpaused progress."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-AUTH-001", "LIFE-IDENT-001"]
+evidence = ["PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-SEEK-001"
+title = "Observe physical seek"
+from = ["loading", "paused", "playing", "cache-paused"]
+to = "seeking"
+cause = "Correlated seek evidence is observed for the active attempt."
+authority = "player-observation"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-IDENT-001", "LIFE-ONCE-001"]
+evidence = ["GUI-SEEK-001", "PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-CACHE-PAUSE-001"
+title = "Observe cache pause"
+from = ["loading", "playing", "seeking"]
+to = "cache-paused"
+cause = "The active player reports buffer depletion without canonical pause intent."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-EOF-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-EOF-CANDIDATE-001"
+title = "Observe provisional EOF"
+from = ["loading", "paused", "playing", "seeking", "cache-paused"]
+to = "provisional-eof"
+cause = "The active attempt reports EOF-like evidence without terminal corroboration."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EOF-001", "LIFE-ONCE-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-EOF-CANCEL-001"
+title = "Cancel provisional EOF"
+from = ["provisional-eof"]
+to = "playing"
+cause = "Restart, progress, seek, or other contradictory active-attempt evidence arrives."
+authority = "player-observation"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EOF-001", "LIFE-RECOVERY-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-END-001"
+title = "Commit natural completion"
+from = ["playing", "paused", "provisional-eof"]
+to = "ended"
+cause = "Correlated active-attempt terminal evidence satisfies natural-completion policy."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EOF-001", "LIFE-ONCE-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-FAIL-001"
+title = "Observe terminal transport failure"
+from = ["loading", "paused", "playing", "seeking", "cache-paused", "provisional-eof"]
+to = "failed"
+cause = "Correlated active-attempt evidence reaches explicit terminal failure."
+authority = "player-lifecycle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-EOF-001", "LIFE-RECOVERY-001", "LIFE-FAILURE-001"]
+evidence = ["PL-RECOVERY-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TRANSPORT-DETACH-001"
+title = "Invalidate local transport observation"
+from = ["loading", "paused", "playing", "seeking", "cache-paused", "provisional-eof", "ended", "failed"]
+to = "unavailable"
+cause = "Attachment, membership, or media authority retires the observation scope."
+authority = "client-session"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SNAPSHOT-001"]
+evidence = ["PL-STALE-001", "PL-EPOCH-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "canonical-transaction"
+title = "Canonical playback transaction"
+mode = "cyclic"
+initial_state = "quiescent"
+terminal_states = []
+
+[[machine.state]]
+id = "quiescent"
+title = "Quiescent"
+kind = "stable"
+description = "No canonical playback transaction is in flight."
+
+[[machine.state]]
+id = "local-effect-pending"
+title = "Local effect pending"
+kind = "transient"
+description = "The client is applying or observing the local side of an intent."
+
+[[machine.state]]
+id = "protocol-delivery-pending"
+title = "Protocol delivery pending"
+kind = "transient"
+description = "The exact causal protocol frame awaits terminal write receipt."
+
+[[machine.state]]
+id = "server-commit-pending"
+title = "Server commit pending"
+kind = "transient"
+description = "The frame was delivered but canonical acceptance or rejection is not observed."
+
+[[machine.state]]
+id = "committed"
+title = "Committed"
+kind = "transient"
+description = "The server accepted one canonical transition."
+
+[[machine.state]]
+id = "peer-application-pending"
+title = "Peer application pending"
+kind = "transient"
+description = "Canonical fanout or snapshot awaits peer application."
+
+[[machine.state]]
+id = "converged"
+title = "Converged"
+kind = "stable"
+description = "Capable peers applied matching authority and physical observation."
+
+[[machine.state]]
+id = "rejected"
+title = "Rejected"
+kind = "stable"
+description = "Authority explicitly rejected the intent without canonical mutation."
+
+[[machine.state]]
+id = "failed"
+title = "Failed"
+kind = "stable"
+description = "A required causal boundary failed with explicit retained evidence."
+
+[[machine.state]]
+id = "superseded"
+title = "Superseded"
+kind = "stable"
+description = "A newer transaction replaced the intent without stale effects."
+
+[[machine.transition]]
+id = "TX-BEGIN-001"
+title = "Begin playback transaction"
+from = ["quiescent"]
+to = "local-effect-pending"
+cause = "User, server, readiness, synchronization, or EOF policy creates an intent."
+authority = "client-transaction"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-DELIVERY-001"
+title = "Fence on protocol delivery"
+from = ["local-effect-pending"]
+to = "protocol-delivery-pending"
+cause = "The transaction requires a canonical protocol mutation."
+authority = "client-transaction"
+risk = "critical"
+invariants = ["LIFE-DELIVERY-001", "LIFE-EPOCH-001", "LIFE-ONCE-001"]
+evidence = ["PL-ACK-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-WRITTEN-001"
+title = "Observe terminal frame receipt"
+from = ["protocol-delivery-pending"]
+to = "server-commit-pending"
+cause = "The exact causal frame reaches terminal delivered state."
+authority = "protocol-transport"
+risk = "critical"
+invariants = ["LIFE-DELIVERY-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-COMMIT-001"
+title = "Commit canonical transition"
+from = ["server-commit-pending"]
+to = "committed"
+cause = "The actual server validates and installs one newer canonical revision."
+authority = "server-room"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-SNAPSHOT-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-FANOUT-001"
+title = "Deliver canonical authority to peers"
+from = ["committed"]
+to = "peer-application-pending"
+cause = "Server fanout or a current authoritative snapshot reaches participants."
+authority = "server-room"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-SNAPSHOT-001", "LIFE-REJOIN-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-CONVERGE-001"
+title = "Observe peer convergence"
+from = ["peer-application-pending"]
+to = "converged"
+cause = "Every capable participant applies matching authority and physical effects."
+authority = "verification-oracle"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-CONVERGE-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-REJECT-001"
+title = "Reject transaction"
+from = ["local-effect-pending", "protocol-delivery-pending", "server-commit-pending"]
+to = "rejected"
+cause = "Local validation, delivery policy, or server authority explicitly rejects the intent."
+authority = "client-or-server-transaction"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-FAILURE-001"]
+evidence = ["PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-FAIL-001"
+title = "Fail transaction"
+from = ["local-effect-pending", "protocol-delivery-pending", "server-commit-pending", "committed", "peer-application-pending"]
+to = "failed"
+cause = "A required causal boundary reaches explicit failure or bounded timeout."
+authority = "client-transaction"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-FAILURE-001"]
+evidence = ["PL-PROP-001", "NET-DEADLINE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-SUPERSEDE-001"
+title = "Supersede transaction"
+from = ["local-effect-pending", "protocol-delivery-pending", "server-commit-pending", "committed", "peer-application-pending"]
+to = "superseded"
+cause = "A newer epoch or authoritative transaction replaces the pending intent."
+authority = "client-or-server-transaction"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-CONVERGE-001"]
+evidence = ["PL-EPOCH-001", "PL-PROP-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "TX-RESET-001"
+title = "Release terminal transaction"
+from = ["converged", "rejected", "failed", "superseded"]
+to = "quiescent"
+cause = "Terminal evidence is retained and transaction ownership is released."
+authority = "client-transaction"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-SHUTDOWN-001"]
+evidence = ["PL-ACK-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam"]
+gaps = []
+
+[[machine]]
+id = "start-gate"
+title = "Readiness and coordinated start gate"
+mode = "cyclic"
+initial_state = "inactive"
+terminal_states = []
+
+[[machine.state]]
+id = "inactive"
+title = "Inactive"
+kind = "stable"
+description = "No media generation is gated for coordinated start."
+
+[[machine.state]]
+id = "waiting-for-intent"
+title = "Waiting for intent"
+kind = "transient"
+description = "The server awaits required user readiness intent."
+
+[[machine.state]]
+id = "waiting-for-technical-readiness"
+title = "Waiting for technical readiness"
+kind = "transient"
+description = "The server awaits required current-generation playability."
+
+[[machine.state]]
+id = "ready-to-commit"
+title = "Ready to commit"
+kind = "transient"
+description = "Current policy allows one canonical start commit."
+
+[[machine.state]]
+id = "committed"
+title = "Committed"
+kind = "stable"
+description = "The server committed canonical start for one media generation and revision."
+
+[[machine.state]]
+id = "degraded"
+title = "Degraded"
+kind = "stable"
+description = "The gate cannot satisfy policy and exposes a bounded degraded disposition."
+
+[[machine.transition]]
+id = "GATE-PREPARE-001"
+title = "Prepare start gate"
+from = ["inactive", "committed", "degraded"]
+to = "waiting-for-intent"
+cause = "A new media generation enters readiness policy."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-EXIT-001"]
+evidence = ["GUI-READY-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "GATE-PLAYABILITY-001"
+title = "Satisfy user intent"
+from = ["waiting-for-intent"]
+to = "waiting-for-technical-readiness"
+cause = "Required users declare readiness for the current generation."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-ONCE-001"]
+evidence = ["GUI-READY-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "GATE-READY-001"
+title = "Satisfy technical readiness"
+from = ["waiting-for-technical-readiness"]
+to = "ready-to-commit"
+cause = "Every policy-required participant is technically playable for the current generation."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-ONCE-001"]
+evidence = ["GUI-READY-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "GATE-COMMIT-001"
+title = "Commit coordinated start"
+from = ["ready-to-commit"]
+to = "committed"
+cause = "Server authority commits one current-generation playstate revision."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-CONVERGE-001"]
+evidence = ["GUI-READY-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "GATE-DEGRADE-001"
+title = "Degrade start gate"
+from = ["waiting-for-intent", "waiting-for-technical-readiness", "ready-to-commit"]
+to = "degraded"
+cause = "Bounded policy, timeout, capability, departure, or failure rules prevent normal commit."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-FAILURE-001"]
+evidence = ["GUI-READY-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "GATE-CLEAR-001"
+title = "Clear start gate"
+from = ["waiting-for-intent", "waiting-for-technical-readiness", "ready-to-commit", "committed", "degraded"]
+to = "inactive"
+cause = "Media generation, room, connection, or gate policy is retired."
+authority = "server-readiness"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SNAPSHOT-001"]
+evidence = ["GUI-READY-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-START-001", "GAP-TRACE-001"]
+
+[[machine]]
+id = "participant-status"
+title = "Participant status projection"
+mode = "cyclic"
+initial_state = "unavailable"
+terminal_states = []
+
+[[machine.state]]
+id = "unavailable"
+title = "Unavailable"
+kind = "stable"
+description = "Capability, membership, or current status epoch is unavailable."
+
+[[machine.state]]
+id = "awaiting"
+title = "Awaiting"
+kind = "transient"
+description = "The status epoch exists but no accepted current report is projected."
+
+[[machine.state]]
+id = "fresh"
+title = "Fresh"
+kind = "stable"
+description = "A current-epoch report is inside the server freshness bound."
+
+[[machine.state]]
+id = "delayed"
+title = "Delayed"
+kind = "stable"
+description = "A current-epoch report exceeds the fresh bound but remains retained."
+
+[[machine.state]]
+id = "stale"
+title = "Stale"
+kind = "stable"
+description = "Retained current-epoch evidence exceeds the delayed bound or loses trustworthy age."
+
+[[machine.state]]
+id = "withdrawn"
+title = "Withdrawn"
+kind = "stable"
+description = "The reporting participant explicitly or implicitly withdrew current evidence."
+
+[[machine.transition]]
+id = "STATUS-NEGOTIATE-001"
+title = "Open status epoch"
+from = ["unavailable", "withdrawn"]
+to = "awaiting"
+cause = "Capability and authenticated room membership establish a new status epoch."
+authority = "server-status"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "STATUS-FRESH-001"
+title = "Accept fresh report"
+from = ["awaiting", "fresh", "delayed", "stale"]
+to = "fresh"
+cause = "The server accepts a newer valid current-epoch participant report."
+authority = "server-status"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-ONCE-001", "LIFE-CONVERGE-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "STATUS-DELAY-001"
+title = "Age report to delayed"
+from = ["fresh"]
+to = "delayed"
+cause = "Server-derived report age exceeds the fresh bound."
+authority = "server-status"
+risk = "high"
+invariants = ["LIFE-STATUS-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "STATUS-STALE-001"
+title = "Age report to stale"
+from = ["fresh", "delayed"]
+to = "stale"
+cause = "Report age or clock validity exceeds trustworthy retained evidence."
+authority = "server-status"
+risk = "high"
+invariants = ["LIFE-STATUS-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
+evidence = ["SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "STATUS-WITHDRAW-001"
+title = "Withdraw participant evidence"
+from = ["awaiting", "fresh", "delayed", "stale"]
+to = "withdrawn"
+cause = "Explicit withdrawal, disconnect, room change, capability loss, or scope replacement retires the report."
+authority = "server-status"
+risk = "critical"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SNAPSHOT-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+
+[[machine.transition]]
+id = "STATUS-UNAVAILABLE-001"
+title = "Close status epoch"
+from = ["awaiting", "fresh", "delayed", "stale", "withdrawn"]
+to = "unavailable"
+cause = "Capability or authenticated membership is absent."
+authority = "server-status"
+risk = "high"
+invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SHUTDOWN-001"]
+evidence = ["SYNC-PSTATUS-001"]
+covered_tiers = ["model", "seam"]
+required_tiers = ["model", "seam", "system"]
+gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]

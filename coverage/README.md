@@ -9,12 +9,94 @@ The catalog is enforced by `scripts/behavior_evidence.py`:
 ```text
 python -m pip install -r requirements/ci-policy.txt
 python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
+python scripts/playback_lifecycle_model.py validate \
+  --model coverage/playback-lifecycle.toml
+python scripts/playback_lifecycle_oracle.py witness-summary \
+  --model coverage/playback-lifecycle.toml \
+  --compact
+python scripts/playback_lifecycle_oracle.py run-suite \
+  --schedule-dir fixtures/playback-lifecycle
+python scripts/playback_lifecycle_oracle.py explore \
+  --model coverage/playback-lifecycle.toml \
+  --seed 0x50A077E20260831 \
+  --cases 64 \
+  --steps 128 \
+  --failure-dir target/verification/playback-lifecycle-model-failures \
+  --compact
+python scripts/playback_lifecycle_system.py run \
+  --server <exact-sorotte-server> \
+  --client <exact-sorotte-cli> \
+  --mpv <exact-supported-mpv> \
+  --artifact-dir target/verification/playback-lifecycle-system \
+  --candidate-sha <40-character-git-sha>
+python scripts/playback_lifecycle_system.py stage-safe-evidence \
+  --artifact-dir target/verification/playback-lifecycle-system \
+  --output-dir target/verification/playback-lifecycle-safe-evidence
 python scripts/ignored_test_policy.py validate --registry coverage/ignored-tests.toml
 python scripts/known_defect_policy.py validate \
   --registry coverage/known-defects.toml \
   --catalog coverage/behaviors.toml
 python -m unittest discover -s scripts/tests -p "test_*.py" -v
 ```
+
+`playback-lifecycle.toml` is the whole-playback lifecycle proof map. It keeps
+application startup and shutdown, player attachment, session and room
+membership, playlist selection, media resolution, physical loads, local
+transport, canonical transactions, readiness, and participant status in one
+validated composition without collapsing their separate authorities. Every
+critical transition must require independent model, boundary-seam, and real
+system proof. A missing tier is accepted only while it points at an explicit
+open gap with a concrete closure condition. Normal pull-request validation
+keeps that map internally complete. GUI and server publication both depend on
+the reusable `playback-lifecycle-release-gate.yml`, which executes release-mode
+server and client candidates at the exact publication SHA with pinned real mpv
+and then uses `--require-closed`; candidate artifacts cannot publish while a
+lifecycle gap remains open.
+
+The packaged system command is intentionally separate from the fast model and
+seam checks. It launches an actual server, three isolated production CLI
+clients, and three managed real mpv processes over generated media. Its
+privacy-safe report binds the exact candidate SHA to the server, client, and
+mpv digests. Missing executables produce exit code 125 and a `skipped` report;
+required CI treats that as failure and supplies the pinned mpv executable.
+The follower traverses a deterministic fragmenting TCP proxy; the walk cuts
+and holds its connection, starts playback while it is absent, then releases
+the production reconnect and requires authoritative real-player catch-up.
+Before upload, a separate command revalidates the closed trace schemas and
+stages only the report, causal/player projections, and digest manifest. Raw
+process logs, generated media, Lua, configuration, IPC names, and executable
+paths are never included in the CI artifact.
+
+The release gate intentionally runs the system walk before checking
+`--require-closed`, and uploads its validated safe projection even when the
+closure check fails. This lets a first hosted candidate produce the evidence
+needed to close a gap without allowing that same still-open candidate to be
+published.
+
+The independent oracle executes the shortest legal path to every
+transition/source pair (currently 217 paths over 78 transitions), enforcing
+authority ownership, epoch and nested-sequence fencing, causal predecessor
+order, exact frame-receipt ownership for player effects, correlated natural
+completion, monotonic per-process time, and the closed privacy-safe event
+schema. Committed TOML schedules are stable replay seeds. The initial seeds
+cover the complete startup-to-shutdown composition plus late join, connection
+replacement, stale-event rejection, status-epoch reset, and authoritative
+snapshot convergence. The same oracle verifies JSONL ledgers emitted by the
+later packaged-system harness; a later success never erases its first failed
+requirement.
+
+The state-aware explorer adds deterministic composed walks to those fixed
+seeds. Each invocation first executes all 217 transition/source witnesses,
+then interleaves the 11 authority machines across isolated server, room,
+transaction, and two-client subjects. It evaluates every invariant assigned to
+each accepted event and runs nine invalid-history probes for authority,
+identity, causality, deadline, privacy, duplication, epoch, EOF, and exact-frame
+ordering. Pull requests use 64 cases of 128 steps; nightly runs use 512 cases of
+256 steps, both with seed `0x50A077E20260831`. The JSON summary includes the
+seed and deterministic SHA-256 event-stream digests. If a generated event
+diverges, the ordered history is delta-debugged and a minimized privacy-safe
+JSONL ledger plus replay metadata is written without overwriting an earlier
+artifact.
 
 The CI workflow runs two evidence lanes:
 

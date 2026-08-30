@@ -160,8 +160,10 @@ use self::notifications::{
 use self::session_runner::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
 #[cfg(test)]
 use self::session_runner::{
-    cli_plex_config_from_env_and_stored_settings, run_client_network_loop,
+    cli_plex_config_from_env_and_stored_settings, client_runtime_now_seconds,
+    run_client_network_loop, run_client_network_loop_with_prepared_runtime_for_test,
     run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
+    run_connected_client_session_with_plex_config_for_test,
 };
 #[cfg(test)]
 use self::startup_playlist::protocol_lines_for_startup_playlist_load_from_file_legacy_compatible;

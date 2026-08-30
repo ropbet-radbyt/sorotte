@@ -1,0 +1,287 @@
+# Playback lifecycle assurance contract
+
+Status: authoritative composition contract for playback verification
+
+Machine-readable companion: `coverage/playback-lifecycle.toml`
+
+Specialized contracts remain authoritative inside their boundaries:
+
+- `docs/player-lifecycle-stabilization.md` for mpv attachment, command, load-attempt, event, acknowledgement, and recovery ownership;
+- `docs/PARTICIPANT_STATUS_INVARIANTS.md` for advisory participant evidence;
+- `docs/READINESS.md` and `docs/STREAM_SYNCHRONIZATION.md` for readiness and playback-barrier behavior;
+- `coverage/behaviors.toml` for exact merge-proof identities.
+
+This document owns how those domains compose into one user-visible lifecycle. If a specialized contract and this composition contract appear to disagree, stop and resolve the authority boundary rather than silently weakening either one.
+
+## Scope
+
+The playback lifecycle begins before a client or player exists and ends only after all session, player, server, and evidence ownership is released. It includes:
+
+1. application and player startup;
+2. transport negotiation and room membership;
+3. canonical playlist publication and selection;
+4. media resolution and physical load attempts;
+5. readiness and coordinated start;
+6. play, pause, seek, buffering, correction, and status reporting;
+7. natural completion and playlist progression;
+8. replacement, reconnect, player recovery, room switch, and late join;
+9. explicit failure and user-visible inability to converge;
+10. clean shutdown with no stale effect or orphaned process.
+
+The currently reported playback failures are seed histories used to test this contract. They do not define its scope.
+
+## Composition boundary
+
+The complete causal path is:
+
+```text
+native user or player observation
+  -> GUI/runtime request ownership
+  -> client-core transaction and protocol intent
+  -> terminal frame-delivery receipt
+  -> actual server validation and canonical commit
+  -> server fanout or authoritative snapshot
+  -> peer client-core transaction
+  -> peer player command and physical observation
+  -> acknowledgement, compaction, and convergence evidence
+```
+
+A test that enters after the first boundary or exits before the last boundary proves only the portion it crosses. Mock servers, direct reducer calls, direct projection application, and product-derived final snapshots remain valuable but are not whole-lifecycle proof.
+
+## Identity and authority
+
+The following identities are distinct and must never be compared or substituted merely because their numeric values happen to match:
+
+| Identity | Scope | Advances when |
+|---|---|---|
+| process run | one harness or application execution | a new process execution begins |
+| protocol connection generation | one client/server transport ownership period | the client establishes a replacement transport |
+| room membership epoch | one authenticated membership in one room | join, leave, room switch, or connection replacement changes membership |
+| player attachment epoch | one client/player relationship | the player adapter or owned player is replaced |
+| media generation | one logical room-media selection | canonical logical media changes |
+| playlist revision | one canonical playlist contents revision | the server accepts different playlist contents |
+| playlist selection generation | one canonical selection or replay | the server accepts a selected-entry event, including replay of the same row |
+| load attempt | one physical load effort | a physical load or recovery successor is allocated |
+| player command | one player-side semantic command transaction | a new load, play, pause, or seek command is submitted |
+| protocol mutation receipt | one causally required outbound frame | the frame enters terminal delivered or failed state |
+| participant report sequence | one status epoch | a participant publishes the next advisory report |
+
+Authority is similarly separated:
+
+- The server owns canonical room playstate, playlist selection, room membership, readiness snapshots, and start-gate decisions.
+- A client owns its pending intent and the decision to expose success, rejection, or failure to its user.
+- A player attachment owns physical player observations and load-attempt identity.
+- Participant status owns no canonical decision; it is advisory evidence only.
+- The verification oracle owns expected lifecycle facts and effects; product projections cannot define their own expected result.
+
+## Lifecycle machines
+
+`coverage/playback-lifecycle.toml` is the source of truth for state and transition identifiers. The machines are orthogonal: a participant can be reconnecting while its old player attempt may still emit, or be technically playable while the room start gate waits for user intent.
+
+### Application process
+
+The application progresses from not started through startup, running, stopping, and terminated. Startup failure must enter an explicit stopping or terminal path. Shutdown is incomplete while an owned player, server connection, worker, listener, or evidence writer remains live.
+
+### Player attachment
+
+The local player progresses through absent, launching, connecting, attached, disconnected, relaunching, and stopped. Replacement advances the attachment epoch before successor evidence can be accepted. Old-epoch events are strict no-ops after their required terminal handoff.
+
+### Session and room membership
+
+Transport progresses through disconnected, connecting, awaiting Hello, active, reconnecting, and closing. Room membership separately progresses through outside, joining, joined, switching, and leaving. Reconnect and room switch fence connection-scoped transactions before successor authority is installed.
+
+### Canonical playlist selection
+
+Playlist authority progresses through unknown, empty, populated, selected, mutation pending, index pending, and exhausted. Local UI projection, local player playlist, and media resolver output cannot commit canonical contents or index. Every accepted selection event establishes a successor selection generation even when it replays the same row. A natural completion may request progression only while its playlist contents revision, row, and selection generation all remain current; only an accepted server transition advances the canonical selection.
+
+### Media resolution
+
+A selected logical target progresses through absent, unresolved, resolving, playable, missing, untrusted, or failed. Resolution outcome is correlated to the selected playlist revision and media generation. Late resolution from a retired selection cannot open media or change readiness.
+
+### Physical load attempt
+
+A physical load progresses through none, submitting, accepted-unbound, bound, starting, active, may-still-emit, terminal, and recovery allocation. Physical ownership and semantic outcome remain separate. Recovery may allocate a successor attempt without advancing the logical media generation.
+
+### Local transport observation
+
+The physical player observation progresses among unavailable, loading, paused, playing, seeking, cache-paused, provisional-EOF, ended, and failed. Natural completion requires correlated active-attempt evidence. Cache pause, transport interruption, and an isolated EOF property are nonterminal until their specialized contract says otherwise.
+
+### Canonical transaction delivery
+
+A user or system intent progresses through quiescent, local effect pending, protocol delivery pending, server commit pending, committed, peer application pending, converged, rejected, failed, or superseded. Success is not inferred from a local player effect. Any player effect that depends on a protocol mutation remains fenced on the exact terminal frame receipt.
+
+### Readiness and start gate
+
+The start gate progresses through inactive, waiting for intent, waiting for technical readiness, ready to commit, committed, and degraded. User readiness, technical playability, participant status, and canonical pause ownership remain separate facts. A late joiner must receive enough authority to converge or expose its inability.
+
+### Participant status
+
+Status progresses through unavailable, awaiting, fresh, delayed, stale, and withdrawn within one indivisible status epoch. Periodic complete snapshots self-heal coalesced loss. Status never seeks, pauses, advances a playlist, admits readiness, or commits a start.
+
+## Global invariants
+
+The machine-readable model assigns these identifiers to every affected transition.
+
+### Safety
+
+- `LIFE-AUTH-001`: only a validated server transition changes canonical room playstate or playlist selection.
+- `LIFE-EPOCH-001`: evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt cannot mutate successor authority.
+- `LIFE-IDENT-001`: identities from different domains are never compared as interchangeable counters.
+- `LIFE-DELIVERY-001`: a dependent player effect cannot precede terminal delivery of its exact causal protocol frame.
+- `LIFE-ONCE-001`: one accepted semantic transition produces at most one canonical commit and at most one terminal client result.
+- `LIFE-EOF-001`: only correlated natural completion can request canonical playlist progression.
+- `LIFE-STATUS-001`: participant status remains advisory, privacy-safe, epoch-bound, and absent when correlation is insufficient.
+- `LIFE-SNAPSHOT-001`: an authoritative snapshot installs one internally coherent generation of room, playlist, playstate, readiness, and status facts.
+
+### Liveness
+
+- `LIFE-EXIT-001`: every transient state has a bounded transition to progress, retry, explicit failure, or termination.
+- `LIFE-CONVERGE-001`: after accepted canonical authority and bounded faults cease, every capable participant converges or exposes a specific inability.
+- `LIFE-REJOIN-001`: reconnect and late join obtain a current authoritative snapshot without depending on missed deltas.
+- `LIFE-RECOVERY-001`: a recoverable player or transport failure cannot leave the lifecycle permanently terminal while a bounded successor is available.
+- `LIFE-SHUTDOWN-001`: shutdown releases every owned process, task, socket, temporary root, and evidence writer.
+
+### Observability and privacy
+
+- `LIFE-TRACE-001`: every causal transition can be attributed to a run, actor, epoch, generation, revision, sequence, source, and result without recording secret or raw media identity.
+- `LIFE-FAILURE-001`: a failed requirement preserves the first divergent boundary and does not become success because a retry later passes.
+
+## Causal evidence ledger
+
+The system harness and opt-in product recorder will emit the same schema-versioned event shape. Required fields are:
+
+- schema version and run identifier;
+- monotonic timestamp and emitting process role;
+- connection generation, room-membership epoch, player-attachment epoch, media generation, playlist contents revision/selection generation, load attempt, command, frame receipt, and report sequence when applicable;
+- redacted target kind rather than raw path, URL, room, username, token, or credential;
+- source transition and causal predecessor identifiers;
+- authority before and after;
+- expected effect, observed effect, and terminal disposition;
+- bounded deadline and whether it expired;
+- product role, version, and digest in system evidence, stored once per process inventory; executable paths remain local and are never published.
+
+Unknown or inapplicable identities are absent, never fabricated as zero. Events from different clocks are ordered only through explicit causal edges; wall-clock subtraction across processes is diagnostic and cannot establish authority.
+
+## Assurance layers
+
+Every critical transition requires all three layers:
+
+1. **Model**: a small independent oracle generates valid and invalid histories, checks invariants after every step, shrinks failures, and persists minimized schedules.
+2. **Seam**: exact producer/consumer or protocol-boundary tests prove framing, validation, ordering, rejection, acknowledgement, and effect ownership.
+3. **System**: packaged actual server and client binaries, multiple isolated clients, and real supported players traverse the transition while an external oracle observes raw protocol, process, player, and UI evidence.
+
+Line coverage, a product-derived final projection, or a mock-server native flow cannot replace a missing layer. They remain useful supporting evidence.
+
+## Independent model explorer
+
+`scripts/playback_lifecycle_oracle.py explore` is the required model-layer gate. It begins with the shortest executable path to all 217 transition/source pairs, then performs deterministic state-aware interleavings across all 11 machines and multiple isolated client, room, transaction, player, and server subjects. Every accepted event is checked against every invariant assigned to that transition. A separate adversarial inventory proves that invalid authority, identity, causal edge, deadline, privacy schema, duplicate, retired epoch, uncorrelated EOF, and premature dependent-effect histories are rejected.
+
+Pull requests run the fixed seed at 64 cases of 128 steps. The nightly job runs 512 cases of 256 steps under the same declared seed and emits deterministic event-stream digests, making any history exactly reproducible without relying on timing. Run the pull-request budget locally with:
+
+```text
+python scripts/playback_lifecycle_oracle.py explore \
+  --model coverage/playback-lifecycle.toml \
+  --seed 0x50A077E20260831 \
+  --cases 64 \
+  --steps 128 \
+  --failure-dir target/verification/playback-lifecycle-model-failures \
+  --compact
+```
+
+On the first unexpected divergence, the explorer preserves that failure class, delta-debugs the ordered ledger, and writes a minimized privacy-safe JSONL replay plus metadata. It refuses to overwrite an artifact with the same seed, case, and failure signature. This closes the independent composition-model gap; it does not substitute for process, protocol-fault, GUI, real-player, or release-artifact evidence.
+
+## Packaged system harness
+
+`scripts/playback_lifecycle_system.py` is the first system-layer composition runner. It takes explicit paths to the exact candidate server, client, and supported mpv executables and records their SHA-256 digests against a full candidate Git SHA. It does not build, discover, or silently substitute a different product binary.
+
+One run creates two deterministic PCM WAV fixtures and then verifies this ordinary production path:
+
+1. launch the packaged server on an ephemeral IPv4 loopback listener;
+2. connect an independent protocol observer and publish a two-item canonical playlist;
+3. launch two isolated packaged CLI clients, each owning a real managed mpv;
+4. drive play, pause, and seek through the controller's production stdin command path;
+5. require canonical server commits and physical convergence in both players;
+6. launch a third client after the seek and require snapshot-only catch-up;
+7. require advancing participant-status snapshots from all three real players;
+8. move to a paused baseline, cut and hold the follower's fragmenting TCP proxy, and require its participant-status withdrawal;
+9. start playback while the follower is absent, release its replacement transport, and require the same production CLI and real mpv to catch up without overwriting canonical state;
+10. resume near the end of the generated first item, observe natural mpv EOF, require exactly one canonical index advance, and require every player to load the second item;
+11. let every client reach its bounded normal exit, require participant-status withdrawal and owned IPC cleanup, then require the server's signal-driven drain to exit cleanly.
+
+The observer records playlist contents only as a count and generated media only as `media-1` or `media-2`. Its causal JSONL schema rejects path, URL, credential, token, and unknown fields. Per-player Lua observers also emit only stable role, media slot, coarse transport properties, and the terminal reason. Candidate paths remain in local generated scripts and process logs, not in the privacy-safe report or causal ledger.
+
+Run it locally after building the candidates:
+
+```text
+cargo build --locked -p sorotte-server -p sorotte-cli
+python scripts/playback_lifecycle_system.py run \
+  --server target/debug/sorotte-server \
+  --client target/debug/sorotte-cli \
+  --mpv /exact/path/to/mpv \
+  --artifact-dir target/verification/playback-lifecycle-system \
+  --candidate-sha <40-character-git-sha>
+```
+
+On Windows, use the corresponding `.exe` paths. Exit code `125` means a declared executable was unavailable and writes a `result = skipped` report; it is never a pass. Exit code `1` is a lifecycle failure with the first divergent stage. Exit code `0` requires every check above. Pull-request CI builds its pinned mpv first and treats the harness as a required step in `mpv-pr-semantics`.
+
+Before CI publishes evidence, a separate fail-closed command revalidates every causal and player record, rejects unknown or sensitive fields, and copies only the report, causal ledger, player projections, and a digest manifest into a fresh directory:
+
+```text
+python scripts/playback_lifecycle_system.py stage-safe-evidence \
+  --artifact-dir target/verification/playback-lifecycle-system \
+  --output-dir target/verification/playback-lifecycle-safe-evidence
+```
+
+Raw process logs, generated Lua, client configuration, media fixtures, IPC names, and executable paths are deliberately excluded. CI records the harness and staging outcomes separately and fails unless both succeeded; a skipped harness may publish its safe diagnostic report but cannot satisfy the required gate.
+
+The artifact directory must be absent or empty. Reusing a populated directory is rejected before execution so a later pass cannot overwrite an earlier failed attempt; choose a new attempt directory when replaying a failure.
+
+## Deterministic schedule grammar
+
+The independent model and system orchestrator share named schedule operations:
+
+- start, stop, kill, relaunch, attach, detach, connect, disconnect, half-close, and reconnect;
+- join, leave, switch room, and replace connection or membership;
+- publish, replace, clear, select, advance, exhaust, shuffle, and restore playlist authority;
+- resolve playable, missing, untrusted, ambiguous, delayed, or failed media;
+- submit, accept, reject, time out, supersede, delay, duplicate, and acknowledge commands or frames;
+- start-file, file-loaded, play, pause, seek, cache pause, progress, EOF, end-file, and recovery successor;
+- prepare, become technically playable, declare readiness, commit start, degrade, and recover;
+- emit, coalesce, delay, stale, withdraw, and refresh participant status;
+- partition one participant, slow one reader, stall one worker, overflow one bounded queue, and resume after the fault;
+- join a new participant before or after every authoritative transition.
+
+The TCP proxy may delay, fragment, throttle, half-close, or reset a stream. It must not claim that impossible within-stream byte reordering is a production network schedule. Cross-channel causal reordering is exercised at the owning worker or event boundary.
+
+## Current proof and gap map
+
+The machine model records the following current evidence honestly:
+
+| Boundary | Strong existing evidence | Remaining composition gap |
+|---|---|---|
+| independent lifecycle composition | transition-complete state-aware exploration, all 15 assigned invariants, fixed cross-machine replay seeds, nine invalid-history probes, and minimized replay persistence | product-role causal emission and replayable/shrinkable cross-boundary fault schedules remain open |
+| mpv command/load/epoch ownership | `PL-ACK-001`, `PL-EPOCH-001`, `PL-START-001`, `PL-RECOVERY-001`, `PL-PROP-001`, `PL-STALE-001`, `PL-IPC-*`, `PL-PROC-001` | packaged real-player and actual-GUI composition remain open |
+| reconnect and transport | `NET-RECONNECT-001`, `NET-DEADLINE-001`, `NET-CODEC-001`, `NET-GUI-001`, an actual-server production-loop seam, and a packaged fragment/cut/hold/missed-start/reconnect walk | half-close/reset replay, slow-reader schedules, and actual-GUI walks remain open |
+| participant status | `SYNC-PSTATUS-001` plus actual-server late snapshot, heartbeat, withdrawal, and packaged withdrawal/recovery across a controlled cut | controlled report loss/delay/stale classification and second-client UI projection remain open |
+| readiness and seek | `GUI-READY-001`, `GUI-SEEK-001`, plus actual-server delayed-member, late-join, and production seek seams | every start-gate phase under reconnect, sleep/resume, and slow resolution remains open |
+| native GUI and real mpv | strict native/real-mpv inventories and a required packaged server/three-client/real-mpv harness | the current host lacks mpv, and actual-GUI composition plus successful pinned-CI evidence remain open |
+| server release | packaged server protocol/persistence smoke plus a reusable exact-SHA release-mode server/CLI/real-mpv gate | successful hosted evidence and exact packaged-GUI consumption remain open |
+| playlist mutation and EOF | extensive component tests, selection-generation fencing for same-row replay, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | loop, last-item, cache-pause, and transport-failure system schedules remain open |
+| publication | GUI and server publication depend on the reusable lifecycle gate, safe evidence staging, and `--require-closed` | no successful exact-candidate gate evidence yet; the system walk still uses packaged CLI rather than the GUI artifact |
+
+Open gaps are first-class entries in `coverage/playback-lifecycle.toml`, with owners, risk, affected transitions, and mechanical closure criteria. A gap may be explicit while this branch is under construction; the final release gate must run the validator with `--require-closed`.
+
+## Completion criteria
+
+The playback-lifecycle assurance goal is complete only when:
+
+- the model validates with no open gap under `--require-closed`;
+- every state and transition is reachable in the independent model;
+- every critical transition has model, seam, and system evidence bound to the exact candidate SHA;
+- generated failures shrink and persist as replayable schedules;
+- the actual-server multi-client real-player suite covers a minimal transition-complete set of walks;
+- nightly deterministic schedule exploration and soak have declared resource and convergence bounds;
+- failure artifacts contain the causal ledger and first divergence without secrets;
+- release verification executes the exact packaged binaries and publishes only their tested digests;
+- a fail-then-pass run remains a failure until its first failure is explained and closed;
+- currently known playback symptoms are ordinary replay seeds, not special-case acceptance rules.

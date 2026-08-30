@@ -43,6 +43,22 @@ fn connected_session_drain_plan_legacy_compatible_specializes_tick_and_local_inp
     assert!(!autoplay_tick_plan.flush_chat_notifications);
     assert!(!autoplay_tick_plan.flush_user_change_notifications);
 
+    let player_coordination_tick_plan = connected_session_drain_plan_legacy_compatible(
+        ConnectedSessionLoopEventKind::PlayerCoordinationTick,
+        ConnectedSessionDiagnosticsPlan {
+            log_player_telemetry: false,
+            log_player_drift: false,
+            reconnect_correction_diagnostics_format: None,
+        },
+    );
+    assert!(!player_coordination_tick_plan.flush_player_playback_diagnostics);
+    assert!(player_coordination_tick_plan.flush_reconnect_notifications);
+    assert!(player_coordination_tick_plan.flush_file_difference_notifications);
+    assert!(!player_coordination_tick_plan.flush_autoplay_notifications);
+    assert!(!player_coordination_tick_plan.flush_controller_auth_notifications);
+    assert!(!player_coordination_tick_plan.flush_chat_notifications);
+    assert!(!player_coordination_tick_plan.flush_user_change_notifications);
+
     let local_input_plan = connected_session_drain_plan_legacy_compatible(
         ConnectedSessionLoopEventKind::LocalInput,
         ConnectedSessionDiagnosticsPlan {
@@ -174,18 +190,22 @@ fn connected_session_inbound_post_apply_actions_legacy_compatible_omits_disabled
 fn connected_session_runtime_step_plan_legacy_compatible_matches_inbound_and_tick_policy() {
     let inbound_plan = connected_session_runtime_step_plan_legacy_compatible(
         ConnectedSessionLoopEventKind::InboundMessage,
+        true,
     );
     assert!(inbound_plan.run_room_pause_sync);
     assert!(inbound_plan.run_readiness_unpause_attempt);
     assert!(inbound_plan.run_desync_correction);
     assert!(inbound_plan.run_reconnect_state_restore_validation);
     assert!(inbound_plan.publish_pending_local_file_updates);
+    assert!(inbound_plan.advance_playlist_after_natural_completion);
+    assert!(inbound_plan.synchronize_canonical_playlist_selection);
     assert!(!inbound_plan.run_update_autoplay_check);
     assert!(!inbound_plan.run_tick_autoplay);
     assert!(!inbound_plan.run_state_sync_heartbeat);
 
     let tick_plan = connected_session_runtime_step_plan_legacy_compatible(
         ConnectedSessionLoopEventKind::AutoplayTick,
+        true,
     );
     assert!(tick_plan.run_room_pause_sync);
     assert!(tick_plan.run_update_autoplay_check);
@@ -194,13 +214,31 @@ fn connected_session_runtime_step_plan_legacy_compatible_matches_inbound_and_tic
     assert!(tick_plan.run_reconnect_state_restore_validation);
     assert!(tick_plan.run_state_sync_heartbeat);
     assert!(tick_plan.publish_pending_local_file_updates);
+    assert!(tick_plan.advance_playlist_after_natural_completion);
+    assert!(tick_plan.synchronize_canonical_playlist_selection);
     assert!(!tick_plan.run_readiness_unpause_attempt);
+
+    let player_coordination_tick_plan = connected_session_runtime_step_plan_legacy_compatible(
+        ConnectedSessionLoopEventKind::PlayerCoordinationTick,
+        true,
+    );
+    assert!(player_coordination_tick_plan.run_room_pause_sync);
+    assert!(player_coordination_tick_plan.run_reconnect_state_restore_validation);
+    assert!(player_coordination_tick_plan.publish_pending_local_file_updates);
+    assert!(player_coordination_tick_plan.advance_playlist_after_natural_completion);
+    assert!(player_coordination_tick_plan.synchronize_canonical_playlist_selection);
+    assert!(!player_coordination_tick_plan.run_readiness_unpause_attempt);
+    assert!(!player_coordination_tick_plan.run_update_autoplay_check);
+    assert!(!player_coordination_tick_plan.run_tick_autoplay);
+    assert!(!player_coordination_tick_plan.run_desync_correction);
+    assert!(!player_coordination_tick_plan.run_state_sync_heartbeat);
 }
 
 #[test]
 fn connected_session_runtime_step_plan_legacy_compatible_keeps_local_input_minimal() {
     let plan = connected_session_runtime_step_plan_legacy_compatible(
         ConnectedSessionLoopEventKind::LocalInput,
+        false,
     );
     assert!(!plan.run_room_pause_sync);
     assert!(!plan.run_readiness_unpause_attempt);
@@ -210,6 +248,8 @@ fn connected_session_runtime_step_plan_legacy_compatible_keeps_local_input_minim
     assert!(plan.run_reconnect_state_restore_validation);
     assert!(!plan.run_state_sync_heartbeat);
     assert!(!plan.publish_pending_local_file_updates);
+    assert!(!plan.advance_playlist_after_natural_completion);
+    assert!(!plan.synchronize_canonical_playlist_selection);
 }
 
 #[test]
@@ -224,6 +264,8 @@ fn connected_session_runtime_step_actions_legacy_compatible_preserve_execution_o
             run_reconnect_state_restore_validation: true,
             run_state_sync_heartbeat: true,
             publish_pending_local_file_updates: true,
+            advance_playlist_after_natural_completion: true,
+            synchronize_canonical_playlist_selection: true,
         },
         true,
     );
@@ -239,6 +281,8 @@ fn connected_session_runtime_step_actions_legacy_compatible_preserve_execution_o
             ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation,
             ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat,
             ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates,
+            ConnectedSessionRuntimeStepAction::AdvancePlaylistAfterNaturalCompletion,
+            ConnectedSessionRuntimeStepAction::SynchronizeCanonicalPlaylistSelection,
         ]
     );
 }
@@ -255,6 +299,8 @@ fn connected_session_runtime_step_actions_preserve_the_public_heartbeat_action()
             run_reconnect_state_restore_validation: true,
             run_state_sync_heartbeat: true,
             publish_pending_local_file_updates: false,
+            advance_playlist_after_natural_completion: false,
+            synchronize_canonical_playlist_selection: false,
         },
         false,
     );
@@ -379,6 +425,17 @@ fn connected_session_protocol_plan_legacy_compatible_handles_tick_and_local_inpu
     );
     assert_eq!(
         connected_session_protocol_plan_legacy_compatible(
+            ConnectedSessionLoopEventKind::PlayerCoordinationTick,
+            false,
+            true,
+        ),
+        ConnectedSessionProtocolPlan {
+            flush_runtime_protocol_lines: true,
+            startup_playlist_disposition: ConnectedSessionStartupPlaylistDisposition::LeavePending,
+        }
+    );
+    assert_eq!(
+        connected_session_protocol_plan_legacy_compatible(
             ConnectedSessionLoopEventKind::LocalInput,
             false,
             true,
@@ -420,6 +477,7 @@ fn connected_session_branch_plan_legacy_compatible_assembles_inbound_policy() {
             run_protocol_before_runtime_steps: false,
             runtime_steps: connected_session_runtime_step_plan_legacy_compatible(
                 ConnectedSessionLoopEventKind::InboundMessage,
+                true,
             ),
             protocol: connected_session_protocol_plan_legacy_compatible(
                 ConnectedSessionLoopEventKind::InboundMessage,
@@ -457,6 +515,7 @@ fn connected_session_branch_plan_legacy_compatible_assembles_local_input_policy(
             run_protocol_before_runtime_steps: true,
             runtime_steps: connected_session_runtime_step_plan_legacy_compatible(
                 ConnectedSessionLoopEventKind::LocalInput,
+                true,
             ),
             protocol: connected_session_protocol_plan_legacy_compatible(
                 ConnectedSessionLoopEventKind::LocalInput,
@@ -654,6 +713,37 @@ fn connected_session_autoplay_tick_event_execution_plan_legacy_compatible_packs_
         connected_session_autoplay_tick_event_execution_plan_legacy_compatible(shared),
         connected_session_event_execution_plan_legacy_compatible(
             ConnectedSessionLoopEventKind::AutoplayTick,
+            ConnectedSessionEventExecutionPlanInputs {
+                event: ConnectedSessionEventPlanInputs {
+                    emitted_runtime_action: false,
+                    inbound_is_server_hello: false,
+                    has_pending_chat_message_on_connect: false,
+                    shared_playlists_enabled: true,
+                    diagnostics: shared.diagnostics,
+                },
+                inbound_message_is_state: false,
+                outbound_state_sync_enabled: true,
+            },
+        ),
+    );
+}
+
+#[test]
+fn connected_session_player_coordination_tick_event_execution_plan_legacy_compatible_packs_inputs()
+{
+    let shared = ConnectedSessionSharedExecutionInputs {
+        shared_playlists_enabled: true,
+        diagnostics: ConnectedSessionDiagnosticsPlan {
+            log_player_telemetry: true,
+            log_player_drift: false,
+            reconnect_correction_diagnostics_format: None,
+        },
+        outbound_state_sync_enabled: true,
+    };
+    assert_eq!(
+        connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(shared),
+        connected_session_event_execution_plan_legacy_compatible(
+            ConnectedSessionLoopEventKind::PlayerCoordinationTick,
             ConnectedSessionEventExecutionPlanInputs {
                 event: ConnectedSessionEventPlanInputs {
                     emitted_runtime_action: false,

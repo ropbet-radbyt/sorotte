@@ -385,6 +385,8 @@ impl Default for MpvAdapter {
             ipc_endpoint: None,
             ipc_reconnect_not_before: None,
             simulation_mode: false,
+            #[cfg(feature = "test-support")]
+            test_simulated_natural_eof_trigger: None,
             ipc_client: None,
             pending_ipc_connection_events: VecDeque::new(),
         }

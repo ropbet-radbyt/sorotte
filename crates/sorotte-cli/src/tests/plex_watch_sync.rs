@@ -6,6 +6,8 @@ use std::sync::mpsc;
 use std::thread;
 use tokio::sync::oneshot;
 
+const TEST_PLEX_FIXTURE_DEADLINE: Duration = Duration::from_secs(15);
+
 fn read_test_plex_request(
     stream: &mut std::net::TcpStream,
     overall_timeout: Duration,
@@ -62,7 +64,7 @@ fn spawn_test_plex_server() -> (
     let (request_tx, request_rx) = mpsc::channel();
     let (timeline_served_tx, timeline_served_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + TEST_PLEX_FIXTURE_DEADLINE;
         let mut accepted = 0_usize;
         let mut timeline_served_tx = Some(timeline_served_tx);
         while accepted < 3 && std::time::Instant::now() < deadline {
@@ -212,10 +214,18 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     let config_path = cache_root.join("sorotte.ini");
     let (plex_url, plex_requests, plex_timeline_served, plex_thread) = spawn_test_plex_server();
     env.set_var("SOROTTE_CLIENT_CONFIG_PATH", config_path.as_os_str());
-    env.set_var("SOROTTE_CLIENT_PLEX_SYNC", "1");
-    env.set_var("SOROTTE_CLIENT_PLEX_TOKEN", "user-token");
-    env.set_var("SOROTTE_CLIENT_PLEX_SERVER_URL", &plex_url);
-    env.set_var("SOROTTE_CLIENT_PLEX_SERVER_TOKEN", "server-token");
+    // Pass Plex configuration through the production launch boundary rather
+    // than publishing it in process-global environment variables for the
+    // duration of this async test. Parallel connected-session tests otherwise
+    // become accidental Plex clients and can consume this fixture's requests.
+    let plex_config = PlexClientConfig {
+        enabled: true,
+        streaming_enabled: false,
+        user_token: Some("user-token".into()),
+        selected_server_id: None,
+        selected_server_url: Some(plex_url),
+        selected_server_token: Some("server-token".into()),
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -239,39 +249,38 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
             .expect("file line read should succeed")
             .expect("file line should be present");
         assert!(file_line.contains("\"Set\""));
-        tokio::time::timeout(Duration::from_secs(5), plex_timeline_served)
+        tokio::time::timeout(TEST_PLEX_FIXTURE_DEADLINE, plex_timeline_served)
             .await
             .expect("Plex timeline should be served before the fixture deadline")
             .expect("Plex fixture must signal timeline completion");
     });
 
     let mut config = test_client_loop_config_with_addr(addr);
-    config.max_connected_runtime_seconds = 8.0;
+    config.max_connected_runtime_seconds = 20.0;
     let mut runtime = create_client_runtime(&config);
     runtime.with_player_io(|player| {
         player
             .open_file("C:/media/Movie Name.mkv")
             .expect("simulated player should accept the owned local file");
+        player
+            .set_paused(false)
+            .expect("simulated player should accept the physical playing state");
+        player
+            .set_position(12.5)
+            .expect("simulated player should accept the physical playback position");
         player.queue_local_file_update(
             LocalFileUpdate::new("Movie Name.mkv")
                 .with_duration_seconds(95.5)
                 .with_path("C:/media/Movie Name.mkv"),
         );
     });
-    runtime
-        .session_mut()
-        .apply_player_playback_telemetry_update(
-            &PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(12.5),
-        );
     let stream = TcpStream::connect(addr)
         .await
         .expect("client should connect to test listener");
     let mut notification_sink = ignore_autoplay_notification;
     let mut file_difference_sink = ignore_file_difference_notification;
 
-    let exit = run_connected_client_session(
+    let exit = run_connected_client_session_with_plex_config_for_test(
         stream,
         &mut runtime,
         &config,
@@ -279,6 +288,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         None,
         &mut notification_sink,
         &mut file_difference_sink,
+        &plex_config,
     )
     .await
     .expect("connected session should run");
@@ -312,10 +322,22 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         timeline_request.starts_with("GET /:/timeline?"),
         "third Plex request should report timeline, got {timeline_request:?}"
     );
-    assert!(timeline_request.contains("ratingKey=99"));
-    assert!(timeline_request.contains("state=playing"));
-    assert!(timeline_request.contains("time=12500"));
-    assert!(timeline_request.contains("duration=95500"));
+    assert!(
+        timeline_request.contains("ratingKey=99"),
+        "timeline should identify the resolved item, got {timeline_request:?}"
+    );
+    assert!(
+        timeline_request.contains("state=playing"),
+        "timeline should retain the sampled playing state, got {timeline_request:?}"
+    );
+    assert!(
+        timeline_request.contains("time=12500"),
+        "timeline should retain the sampled position, got {timeline_request:?}"
+    );
+    assert!(
+        timeline_request.contains("duration=95500"),
+        "timeline should retain the sampled duration, got {timeline_request:?}"
+    );
     assert!(
         timeline_request
             .to_ascii_lowercase()

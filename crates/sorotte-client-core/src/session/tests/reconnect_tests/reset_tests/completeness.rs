@@ -90,6 +90,8 @@ struct PlaylistResetProjection {
     rooms: BTreeMap<String, crate::RoomPlaylistView>,
     pending: Option<crate::RoomPlaylistView>,
     pending_remote_revision: u64,
+    selection_revisions: BTreeMap<String, u64>,
+    pending_selection_revision: u64,
     pending_local_change_echoes: Vec<PlaylistEchoTrackerProjection>,
     pending_local_index_echoes: Vec<PlaylistIndexEchoTrackerProjection>,
     remote_revisions: BTreeMap<String, u64>,
@@ -110,6 +112,8 @@ impl PlaylistResetProjection {
             rooms: playlist.rooms.clone(),
             pending: playlist.pending.clone(),
             pending_remote_revision: playlist.pending_remote_revision,
+            selection_revisions: playlist.selection_revisions.clone(),
+            pending_selection_revision: playlist.pending_selection_revision,
             pending_local_change_echoes: playlist
                 .pending_local_change_echoes
                 .iter()
@@ -749,10 +753,14 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
     });
     playlist.pending_remote_revision = 303 + seed;
     playlist
+        .selection_revisions
+        .insert("room1".to_owned(), 304 + seed);
+    playlist.pending_selection_revision = 305 + seed;
+    playlist
         .pending_local_change_echoes
         .entry("room1".to_owned())
         .or_default()
-        .record(304 + seed, &room_playlist.files);
+        .record(306 + seed, &room_playlist.files);
     playlist
         .pending_local_change_echoes
         .entry("invalidated-room".to_owned())
@@ -762,7 +770,7 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
         .pending_local_index_echoes
         .entry("room1".to_owned())
         .or_default()
-        .record(305 + seed, 1);
+        .record(307 + seed, 1);
     playlist
         .pending_local_index_echoes
         .entry("invalidated-room".to_owned())

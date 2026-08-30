@@ -345,7 +345,9 @@ pub(super) fn run_contained_planned_local_runtime_action(
     contain_planned_local_runtime_action_result(runtime, now_seconds, player_bound, result)
 }
 
-fn planned_local_runtime_action_is_player_bound(action: &PlannedLocalRuntimeAction) -> bool {
+pub(super) fn planned_local_runtime_action_is_player_bound(
+    action: &PlannedLocalRuntimeAction,
+) -> bool {
     matches!(
         action,
         PlannedLocalRuntimeAction::UndoSeek
@@ -500,7 +502,22 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                     runtime,
                     config,
                     network_options_health_reporter,
+                    now_seconds,
                 ),
+            ),
+            ConnectedSessionRuntimeStepAction::AdvancePlaylistAfterNaturalCompletion => (
+                "advance playlist after natural completion",
+                runtime
+                    .run_advance_playlist_after_natural_completion()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+            ),
+            ConnectedSessionRuntimeStepAction::SynchronizeCanonicalPlaylistSelection => (
+                "synchronize canonical playlist selection",
+                runtime
+                    .synchronize_canonical_playlist_selection_to_player()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
             ),
         };
         if let Err(error) = outcome {
@@ -1110,6 +1127,8 @@ mod tests {
                     run_reconnect_state_restore_validation: false,
                     run_state_sync_heartbeat: false,
                     publish_pending_local_file_updates: false,
+                    advance_playlist_after_natural_completion: false,
+                    synchronize_canonical_playlist_selection: false,
                 },
                 protocol: ConnectedSessionProtocolPlan {
                     flush_runtime_protocol_lines: false,
