@@ -26,6 +26,28 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_next(&self) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_playlist_next_with_selection_proof(false)
+    }
+
+    /// Builds the ordinary playlist-next action after the runtime has already
+    /// proved that an owned physical completion belongs to the exact current
+    /// canonical selection.
+    ///
+    /// The generic Next surface intentionally compares the published user
+    /// filename with the playlist row before acting. That projection can be
+    /// lossy (for example, a basename published for an absolute local path),
+    /// so it must not override the stronger attempt/generation, selection,
+    /// and physical-file proof retained by `ClientRuntime` at natural EOF.
+    pub(crate) fn runtime_actions_for_verified_local_playlist_next(
+        &self,
+    ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_playlist_next_with_selection_proof(true)
+    }
+
+    fn runtime_actions_for_local_playlist_next_with_selection_proof(
+        &self,
+        current_selection_already_proven: bool,
+    ) -> Vec<ClientRuntimeAction> {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
@@ -43,7 +65,9 @@ impl ClientSession {
         if current_index >= playlist.files.len() {
             return Vec::new();
         }
-        if self.current_user_file_name() != Some(playlist.files[current_index].as_str()) {
+        if !current_selection_already_proven
+            && self.current_user_file_name() != Some(playlist.files[current_index].as_str())
+        {
             return Vec::new();
         }
 

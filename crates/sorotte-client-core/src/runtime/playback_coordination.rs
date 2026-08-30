@@ -9463,17 +9463,27 @@ mod tests {
 
         runtime.player.ordered_batches.push_back(ordered_batch(
             epoch,
-            2,
+            3,
             2,
             None,
-            vec![SequencedPlayerEvent {
-                order: PlayerEventOrder::new(epoch, 2),
-                event: PlayerEvent::LogicalPlaybackTerminal {
-                    attempt_id,
-                    media_generation,
-                    outcome: PlayerPhysicalLoadOutcome::Ended,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::LoadAttemptTerminal {
+                        attempt_id,
+                        media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    },
                 },
-            }],
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 3),
+                    event: PlayerEvent::LogicalPlaybackTerminal {
+                        attempt_id,
+                        media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    },
+                },
+            ],
             Vec::new(),
         ));
         runtime
@@ -9563,6 +9573,61 @@ mod tests {
                 .expect("replaying the cadence must be a no-op"),
             "one physical EOF must not advance two rows"
         );
+    }
+
+    #[test]
+    fn natural_completion_uses_verified_path_when_published_name_is_lossy() {
+        let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["C:/library/show/episode1.mkv","C:/library/show/episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("absolute-path playlist should apply");
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("absolute-path selection should apply");
+        let (playlist_revision, playlist_index) = runtime
+            .session()
+            .current_room_playlist()
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the absolute-path playlist should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+
+        assert!(
+            runtime
+                .session()
+                .runtime_actions_for_local_playlist_next()
+                .is_empty(),
+            "the ordinary Next surface must retain its filename-projection guard"
+        );
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            playlist_index,
+            completed_file: Some(
+                LocalFileUpdate::new("episode1.mkv").with_path("C:/library/show/episode1.mkv"),
+            ),
+        });
+
+        assert!(
+            runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("verified natural completion should advance"),
+            "an exact physical path proof must not be discarded by a later basename-only check"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(1)
+        );
+        assert!(runtime.pending_natural_playback_completion.is_none());
     }
 
     #[test]

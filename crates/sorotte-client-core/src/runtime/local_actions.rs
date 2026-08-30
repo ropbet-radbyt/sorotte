@@ -411,7 +411,10 @@ where
             return Ok(false);
         }
 
-        let result = self.run_advance_playlist_index();
+        let actions = self
+            .session
+            .runtime_actions_for_verified_local_playlist_next();
+        let result = self.run_local_playlist_action_batch(actions);
         if result.is_ok() {
             // `Ok(false)` is a legitimate terminal playlist boundary (for
             // example, the final item with looping disabled), so the physical
