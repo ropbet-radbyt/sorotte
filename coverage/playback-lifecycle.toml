@@ -15,7 +15,7 @@ allowed_invariant_kinds = ["safety", "liveness", "observability", "privacy"]
 [[invariant]]
 id = "LIFE-AUTH-001"
 kind = "safety"
-statement = "Only a validated server transition changes canonical room playstate or playlist selection."
+statement = "Only a validated server transition changes canonical room playstate or playlist selection; while an authorized local play or pause intent is pending, that semantic intent rather than a preceding player observation is the only local value allowed to request the transition."
 
 [[invariant]]
 id = "LIFE-EPOCH-001"
@@ -1346,7 +1346,7 @@ description = "No canonical playback transaction is in flight."
 id = "local-effect-pending"
 title = "Local effect pending"
 kind = "transient"
-description = "The client is applying or observing the local side of an intent."
+description = "The client is applying or observing the local side of an intent while semantic command ownership remains distinct from the physical player observation."
 
 [[machine.state]]
 id = "protocol-delivery-pending"
@@ -1401,7 +1401,7 @@ id = "TX-BEGIN-001"
 title = "Begin playback transaction"
 from = ["quiescent"]
 to = "local-effect-pending"
-cause = "User, server, readiness, synchronization, or EOF policy creates an intent."
+cause = "User, server, readiness, synchronization, or EOF policy creates an intent; an explicit Pause remains authoritative over preceding local Play telemetry even while buffering policy owns resume."
 authority = "client-transaction"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-ONCE-001", "LIFE-TRACE-001"]

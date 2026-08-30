@@ -111,7 +111,7 @@ The physical player observation progresses among unavailable, loading, paused, p
 
 ### Canonical transaction delivery
 
-A user or system intent progresses through quiescent, local effect pending, protocol delivery pending, server commit pending, committed, peer application pending, converged, rejected, failed, or superseded. Success is not inferred from a local player effect. Any player effect that depends on a protocol mutation remains fenced on the exact terminal frame receipt.
+A user or system intent progresses through quiescent, local effect pending, protocol delivery pending, server commit pending, committed, peer application pending, converged, rejected, failed, or superseded. Success is not inferred from a local player effect. Semantic command ownership and physical player observation remain separate while an edge is in flight: the authorized pending Play or Pause is the only local value allowed to request canonical mutation, and a preceding player sample cannot invert it. Buffering authority may continue to suppress Play, but it cannot convert an explicit Pause back into Play. The intent retires only after canonical acknowledgement and a same-generation physical observation agree. Any player effect that depends on a protocol mutation remains fenced on the exact terminal frame receipt.
 
 ### Readiness and start gate
 
@@ -127,7 +127,7 @@ The machine-readable model assigns these identifiers to every affected transitio
 
 ### Safety
 
-- `LIFE-AUTH-001`: only a validated server transition changes canonical room playstate or playlist selection.
+- `LIFE-AUTH-001`: only a validated server transition changes canonical room playstate or playlist selection; a pending authorized local Play or Pause, rather than stale player telemetry, supplies the local mutation value.
 - `LIFE-EPOCH-001`: evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request carrying a retired canonical playlist epoch, cannot mutate successor authority.
 - `LIFE-IDENT-001`: identities from different domains are never compared as interchangeable counters.
 - `LIFE-DELIVERY-001`: a dependent player effect cannot precede terminal delivery of its exact causal protocol frame.
@@ -264,7 +264,7 @@ The machine model records the following current evidence honestly:
 |---|---|---|
 | independent lifecycle composition | transition-complete state-aware exploration, all 15 assigned invariants, fixed cross-machine replay seeds, nine invalid-history probes, and minimized replay persistence | product-role causal emission and replayable/shrinkable cross-boundary fault schedules remain open |
 | mpv command/load/epoch ownership | `PL-ACK-001`, `PL-EPOCH-001`, `PL-START-001`, `PL-RECOVERY-001`, `PL-PROP-001`, `PL-STALE-001`, `PL-IPC-*`, `PL-PROC-001` | packaged real-player and actual-GUI composition remain open |
-| reconnect and transport | `NET-RECONNECT-001`, `NET-DEADLINE-001`, `NET-CODEC-001`, `NET-GUI-001`, an actual-server production-loop seam, and a packaged fragment/cut/hold/missed-start/reconnect walk | half-close/reset replay, slow-reader schedules, and actual-GUI walks remain open |
+| reconnect and transport | `NET-RECONNECT-001`, `NET-DEADLINE-001`, `NET-CODEC-001`, `NET-GUI-001`, an actual-server production-loop seam, directional Pause/Play intent fencing across heartbeat, canonical-echo, and player-observation races, and a packaged fragment/cut/hold/missed-start/reconnect walk | half-close/reset replay, slow-reader schedules, and actual-GUI walks remain open |
 | participant status | `SYNC-PSTATUS-001` plus actual-server late snapshot, heartbeat, withdrawal, and packaged withdrawal/recovery across a controlled cut | controlled report loss/delay/stale classification and second-client UI projection remain open |
 | readiness and seek | `GUI-READY-001`, `GUI-SEEK-001`, plus actual-server delayed-member, late-join, and production seek seams | every start-gate phase under reconnect, sleep/resume, and slow resolution remains open |
 | native GUI and real mpv | strict native/real-mpv inventories, a locally provisioned supported mpv build, and a required packaged server/three-client/real-mpv harness | actual-GUI composition plus successful exact-candidate and pinned-CI evidence remain open |

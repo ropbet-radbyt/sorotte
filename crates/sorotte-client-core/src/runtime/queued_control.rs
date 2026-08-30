@@ -173,6 +173,9 @@ where
         // remain gated on an active session below.
         self.control.activate_protocol_connection_generation();
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let local_pause_mutation_intent = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent(&self.session);
         let (Some(local_position), Some(local_paused)) = (
             self.outbound_state_sync_position_seconds(
                 clocks.response_at_seconds,
@@ -203,10 +206,7 @@ where
                 client_rtt,
                 crate::session::StateReconcileContext {
                     local_state_change_global_playstate,
-                    allow_local_pause_mutation: self
-                        .playback_coordination
-                        .active_local_pause_intent(&self.session)
-                        .is_some(),
+                    local_pause_mutation_intent,
                     received_at_seconds: clocks.received_at_seconds,
                 },
             );
@@ -264,24 +264,23 @@ where
             .ping_metrics_legacy_compatible
             .client_latency_calculation_now();
         let client_rtt = self.ping_metrics_legacy_compatible.client_rtt_seconds();
+        let local_pause_mutation_intent = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent(&self.session);
 
         let outbound_state = if let (Some(local_position), Some(local_paused)) = (
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
             self.session.model.playback.local_paused,
         ) {
-            let allow_local_pause_mutation = self
-                .playback_coordination
-                .active_local_pause_intent(&self.session)
-                .is_some();
             self.session
-                .reconcile_state_and_build_response_at_with_pause_mutation_policy(
+                .reconcile_state_and_build_response_at_with_pause_mutation_intent(
                     StatePayload::new(),
                     local_position,
                     local_paused,
                     client_latency_calculation,
                     client_rtt,
                     now_seconds,
-                    allow_local_pause_mutation,
+                    local_pause_mutation_intent,
                 )
         } else {
             StatePayload::new().with_ping(

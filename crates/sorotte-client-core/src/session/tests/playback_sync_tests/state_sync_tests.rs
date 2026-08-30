@@ -164,6 +164,125 @@ fn observed_explicit_pause_intent_can_mutate_the_first_remote_room_baseline() {
 }
 
 #[test]
+fn staged_pause_intent_overrides_stale_playing_telemetry_in_state_response() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pause-command-before-player-edge")
+            .expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(true, 0.01);
+
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob"),
+            ),
+            0.0,
+            0.0,
+            false,
+        )
+    );
+
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    let playstate = state_message
+        .state
+        .playstate
+        .as_ref()
+        .expect("the explicit Pause should produce playstate");
+    assert_eq!(playstate.position, Some(12.5));
+    assert_eq!(
+        playstate.paused,
+        Some(true),
+        "the staged semantic command, not the preceding mpv sample, owns canonical mutation"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
+        Some(false),
+        "publishing the command must not falsify the still-playing physical observation"
+    );
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(true),
+        "the command remains fenced until both server and player confirm it"
+    );
+}
+
+#[test]
+fn heartbeat_publishes_pending_pause_instead_of_pre_command_player_sample() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("canonical playing state should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pause-heartbeat-before-player-edge")
+            .expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(true, 0.01);
+
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued heartbeat should be State");
+    };
+    assert_eq!(
+        state_message
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.paused),
+        Some(true),
+        "a heartbeat in the command/player race must carry the pending Pause"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
+        Some(false),
+        "heartbeat publication must retain the physical player observation separately"
+    );
+}
+
+#[test]
 fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() {
     let mut session = ClientSession::default();
     session

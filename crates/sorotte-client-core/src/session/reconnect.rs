@@ -165,19 +165,19 @@ impl ClientSession {
         client_rtt: f64,
         received_at_seconds: f64,
     ) -> StatePayload {
-        self.reconcile_state_and_build_response_at_with_pause_mutation_policy(
+        self.reconcile_state_and_build_response_at_with_pause_mutation_intent(
             inbound_state,
             local_position,
             local_paused,
             client_latency_calculation,
             client_rtt,
             received_at_seconds,
-            true,
+            Some(local_paused),
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn reconcile_state_and_build_response_at_with_pause_mutation_policy(
+    pub(crate) fn reconcile_state_and_build_response_at_with_pause_mutation_intent(
         &mut self,
         inbound_state: StatePayload,
         local_position: f64,
@@ -185,7 +185,7 @@ impl ClientSession {
         client_latency_calculation: f64,
         client_rtt: f64,
         received_at_seconds: f64,
-        allow_local_pause_mutation: bool,
+        local_pause_mutation_intent: Option<bool>,
     ) -> StatePayload {
         self.reconcile_normalized_state_and_build_response_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
@@ -195,7 +195,7 @@ impl ClientSession {
             client_rtt,
             StateReconcileContext {
                 local_state_change_global_playstate: None,
-                allow_local_pause_mutation,
+                local_pause_mutation_intent,
                 received_at_seconds,
             },
         )
@@ -272,7 +272,7 @@ impl ClientSession {
             client_rtt,
             StateReconcileContext {
                 local_state_change_global_playstate,
-                allow_local_pause_mutation: true,
+                local_pause_mutation_intent: Some(local_paused),
                 received_at_seconds: unix_wall_clock_time_seconds_legacy_compatible(),
             },
         )
@@ -289,7 +289,7 @@ impl ClientSession {
     ) -> StatePayload {
         let StateReconcileContext {
             local_state_change_global_playstate,
-            allow_local_pause_mutation,
+            local_pause_mutation_intent,
             received_at_seconds,
         } = context;
         self.apply_participant_status_update(
@@ -313,7 +313,7 @@ impl ClientSession {
             .is_some_and(|(set_by, username)| set_by == username);
         let initial_remote_baseline = (!had_global_playstate
             && has_playstate_update
-            && !allow_local_pause_mutation
+            && local_pause_mutation_intent.is_none()
             && !initial_playstate_is_local_echo)
             .then(|| {
                 local_state_change_global_playstate
@@ -357,11 +357,12 @@ impl ClientSession {
                 .as_ref()
                 .and_then(|playstate| playstate.paused)
                 .or_else(|| {
-                    (!allow_local_pause_mutation)
+                    local_pause_mutation_intent
+                        .is_none()
                         .then_some(canonical_paused)
                         .flatten()
                 })
-                .unwrap_or(local_paused);
+                .unwrap_or_else(|| local_pause_mutation_intent.unwrap_or(local_paused));
             let (pause_change, seeked) = self
                 .determine_local_state_change_with_global_playstate_override_at(
                     reconciled_local_paused,

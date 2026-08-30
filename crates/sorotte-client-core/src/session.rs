@@ -63,7 +63,7 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
 
 pub(crate) struct StateReconcileContext {
     pub(crate) local_state_change_global_playstate: Option<RoomPlaystateView>,
-    pub(crate) allow_local_pause_mutation: bool,
+    pub(crate) local_pause_mutation_intent: Option<bool>,
     pub(crate) received_at_seconds: f64,
 }
 

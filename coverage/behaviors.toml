@@ -152,6 +152,7 @@ risk = "critical"
 owners = ["server", "cli", "client-app", "client-core", "player"]
 invariants = [
     "local play, pause, and seek become canonical before peers apply them",
+    "a pending authorized play or pause command, never stale player telemetry, owns the local canonical mutation; buffering may suppress Play but cannot invert Pause",
     "late and reconnecting clients converge from authoritative snapshots without missed deltas",
     "canonical playlist selection loads every capable player and natural EOF advances exactly once",
     "readiness waits for every required current member before one start commit",
@@ -170,6 +171,42 @@ package = "sorotte-cli"
 target_kind = "lib"
 test = "tests::playback_lifecycle_product_seam::legacy_local_pause_and_play_cross_the_server_authority_boundary_and_converge"
 source = "crates/sorotte-cli/src/tests/playback_lifecycle_product_seam.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.pause-intent-authority"
+kind = "rust-test"
+oracle = "semantic-intent-over-stale-player-observation"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::playback_sync_tests::state_sync_tests::staged_pause_intent_overrides_stale_playing_telemetry_in_state_response"
+source = "crates/sorotte-client-core/src/session/tests/playback_sync_tests/state_sync_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.buffering-pause-fence"
+kind = "rust-test"
+oracle = "buffering-authority-directional-safety"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::explicit_pause_survives_buffering_authority_until_echo_and_player_confirm"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.pause-heartbeat-fence"
+kind = "rust-test"
+oracle = "periodic-state-semantic-intent-fence"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "session::tests::playback_sync_tests::state_sync_tests::heartbeat_publishes_pending_pause_instead_of_pre_command_player_sample"
+source = "crates/sorotte-client-core/src/session/tests/playback_sync_tests/state_sync_tests.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
