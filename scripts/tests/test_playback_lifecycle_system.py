@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import wave
+from types import SimpleNamespace
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -444,6 +445,53 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             stop.set()
             echo_thread.join(timeout=2.0)
             self.assertIsNone(proxy.error)
+
+    def test_initial_player_verification_waits_for_delayed_proxy_accounting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = system.PlaybackLifecycleHarness(
+                server_path=pathlib.Path("server"),
+                client_path=pathlib.Path("client"),
+                mpv_path=pathlib.Path("mpv"),
+                artifact_dir=pathlib.Path(directory) / "artifacts",
+                candidate_sha="a" * 40,
+                client_runtime_seconds=9.0,
+            )
+            proxy = SimpleNamespace(
+                role="follower",
+                error=None,
+                fragment_count=0,
+                forwarded_bytes=0,
+            )
+            passed_checks: list[str] = []
+
+            def start_client(role: str, _first: pathlib.Path, _second: pathlib.Path) -> None:
+                if role == "follower":
+                    harness.proxies[role] = proxy
+
+            harness._start_client = start_client  # type: ignore[method-assign]
+            harness._player_record = lambda *_args, **_kwargs: {}  # type: ignore[method-assign]
+            harness._wait_player_state = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            harness._pass = (  # type: ignore[method-assign]
+                lambda check_id, _detail: passed_checks.append(check_id)
+            )
+
+            def publish_accounting() -> None:
+                proxy.fragment_count = 2
+                proxy.forwarded_bytes = 1
+
+            publisher = threading.Timer(0.1, publish_accounting)
+            publisher.start()
+            try:
+                harness._verify_initial_players(
+                    pathlib.Path("media-one.wav"),
+                    pathlib.Path("media-two.wav"),
+                )
+            finally:
+                publisher.join(timeout=1.0)
+
+            self.assertEqual(proxy.fragment_count, 2)
+            self.assertEqual(proxy.forwarded_bytes, 1)
+            self.assertIn("follower-protocol-fragmentation-active", passed_checks)
 
 
 if __name__ == "__main__":

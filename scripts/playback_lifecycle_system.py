@@ -1518,11 +1518,16 @@ class PlaybackLifecycleHarness:
             "two packaged clients loaded the selected item and honored canonical pause",
         )
         proxy = self.proxies.get("follower")
-        if proxy is None or proxy.fragment_count < 2 or proxy.forwarded_bytes <= 0:
+        if proxy is None:
             raise HarnessFailure(
                 self.stage,
-                "the follower protocol path did not traverse deterministic fragmentation",
+                "the follower protocol proxy was not created",
             )
+        self._wait(
+            "the follower protocol path to traverse deterministic fragmentation",
+            lambda: proxy.fragment_count >= 2 and proxy.forwarded_bytes > 0,
+            timeout=5.0,
+        )
         self._pass(
             "follower-protocol-fragmentation-active",
             "the follower converged through the deterministic fragmenting protocol proxy",
