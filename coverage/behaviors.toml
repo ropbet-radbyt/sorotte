@@ -161,6 +161,7 @@ invariants = [
     "canonical playlist convergence accepts file evidence only from the current player attachment",
     "natural completion belongs to one playlist content, row, and selection generation",
     "simultaneous natural-completion contenders carrying one canonical playlist epoch produce one server commit and no stale-loser fanout",
+    "interactive and targetable platform console shutdown signals enter the same bounded server session and actor drain",
 ]
 
 [[behavior.proof]]

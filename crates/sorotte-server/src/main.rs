@@ -11,6 +11,44 @@ use sorotte_server::{ServerActorHandle, ServerApp, run_server_network_loops_and_
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+#[cfg(any(windows, test))]
+async fn first_shutdown_notification<C, B>(ctrl_c: C, ctrl_break: B)
+where
+    C: Future<Output = ()>,
+    B: Future<Output = ()>,
+{
+    tokio::pin!(ctrl_c);
+    tokio::pin!(ctrl_break);
+    tokio::select! {
+        _ = &mut ctrl_c => {}
+        _ = &mut ctrl_break => {}
+    }
+}
+
+#[cfg(windows)]
+async fn platform_shutdown_signal() -> io::Result<()> {
+    // CTRL_BREAK is the targetable graceful event for a dedicated Windows
+    // process group. Treat it exactly like interactive CTRL_C so supervisors
+    // can request one server drain without signaling their own console group.
+    let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+    let mut ctrl_break = tokio::signal::windows::ctrl_break()?;
+    first_shutdown_notification(
+        async move {
+            let _ = ctrl_c.recv().await;
+        },
+        async move {
+            let _ = ctrl_break.recv().await;
+        },
+    )
+    .await;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+async fn platform_shutdown_signal() -> io::Result<()> {
+    tokio::signal::ctrl_c().await
+}
+
 fn endpoint_label(endpoint: &ServerBindEndpoint) -> &'static str {
     match endpoint.family {
         ServerBindFamily::Ipv4 => "IPv4",
@@ -143,7 +181,7 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
     app.runtime_mut().set_stats_db_path(config.stats_db_file)?;
 
     let runtime = ServerActorHandle::spawn(std::mem::take(app.runtime_mut()));
-    run_server_until_shutdown_signal(listeners, runtime, tokio::signal::ctrl_c()).await
+    run_server_until_shutdown_signal(listeners, runtime, platform_shutdown_signal()).await
 }
 
 #[tokio::main]
@@ -168,11 +206,17 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::ready;
+    use std::future::{pending, ready};
 
     use sorotte_server::{ServerActorError, ServerRuntime};
 
     use super::*;
+
+    #[tokio::test]
+    async fn platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths() {
+        first_shutdown_notification(ready(()), pending::<()>()).await;
+        first_shutdown_notification(pending::<()>(), ready(())).await;
+    }
 
     #[tokio::test]
     async fn production_signal_boundary_runs_the_explicit_actor_shutdown_barrier() {

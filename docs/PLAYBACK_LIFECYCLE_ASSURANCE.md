@@ -142,7 +142,7 @@ The machine-readable model assigns these identifiers to every affected transitio
 - `LIFE-CONVERGE-001`: after accepted canonical authority and bounded faults cease, every capable participant converges or exposes a specific inability.
 - `LIFE-REJOIN-001`: reconnect and late join obtain a current authoritative snapshot without depending on missed deltas.
 - `LIFE-RECOVERY-001`: a recoverable player or transport failure cannot leave the lifecycle permanently terminal while a bounded successor is available.
-- `LIFE-SHUTDOWN-001`: shutdown releases every owned process, task, socket, temporary root, and evidence writer.
+- `LIFE-SHUTDOWN-001`: interactive and targetable platform shutdown signals enter one bounded drain that releases every owned process, task, socket, temporary root, and evidence writer.
 
 ### Observability and privacy
 

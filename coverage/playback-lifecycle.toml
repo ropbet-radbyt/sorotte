@@ -75,7 +75,7 @@ statement = "A recoverable player or transport failure cannot leave the lifecycl
 [[invariant]]
 id = "LIFE-SHUTDOWN-001"
 kind = "liveness"
-statement = "Shutdown releases every owned process, task, socket, temporary root, and evidence writer."
+statement = "Every supported interactive or targetable platform shutdown signal enters the same bounded drain and releases every owned process, task, socket, temporary root, and evidence writer."
 
 [[invariant]]
 id = "LIFE-TRACE-001"
@@ -229,11 +229,11 @@ id = "APP-STOP-001"
 title = "Begin shutdown or startup rollback"
 from = ["starting", "running"]
 to = "stopping"
-cause = "The user exits or startup cannot safely continue."
+cause = "The user exits, a supported interactive or targetable platform console signal arrives, or startup cannot safely continue."
 authority = "application-process"
 risk = "critical"
 invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-SHUTDOWN-001", "LIFE-FAILURE-001"]
-evidence = ["PL-PROC-001"]
+evidence = ["PL-PROC-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
 gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
@@ -247,7 +247,7 @@ cause = "Every owned process, task, socket, root, and evidence writer is release
 authority = "application-process"
 risk = "critical"
 invariants = ["LIFE-SHUTDOWN-001", "LIFE-TRACE-001", "LIFE-FAILURE-001"]
-evidence = ["PL-PROC-001"]
+evidence = ["PL-PROC-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
 gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001", "GAP-RELEASE-001"]
