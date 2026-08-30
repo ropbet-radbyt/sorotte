@@ -51,10 +51,10 @@ MINIMUM_MPV_VERSION = (0, 41, 0)
 FAULT_SCHEDULE_ID = "follower-cut-miss-start-reconnect-v1"
 
 ROLE_USERNAMES = {
-    "observer": "lifecycle-observer",
-    "controller": "lifecycle-controller",
-    "follower": "lifecycle-follower",
-    "late": "lifecycle-late",
+    "observer": "life-observer",
+    "controller": "life-control",
+    "follower": "life-follower",
+    "late": "life-late",
 }
 USERNAME_ROLES = {value: key for key, value in ROLE_USERNAMES.items()}
 

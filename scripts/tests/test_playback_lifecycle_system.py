@@ -36,6 +36,12 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             payload.extend(chunk)
         return bytes(payload)
 
+    def test_role_usernames_are_unique_and_fit_the_server_contract(self) -> None:
+        usernames = tuple(system.ROLE_USERNAMES.values())
+
+        self.assertEqual(len(set(usernames)), len(usernames))
+        self.assertTrue(all(1 <= len(username) <= 16 for username in usernames))
+
     def test_mpv_version_parser_accepts_reviewed_shapes_and_rejects_noise(self) -> None:
         self.assertEqual(system.parse_mpv_version("mpv 0.41.0 Copyright"), (0, 41, 0))
         self.assertEqual(system.parse_mpv_version("mpv v1.2.3-45-gabc"), (1, 2, 3))
