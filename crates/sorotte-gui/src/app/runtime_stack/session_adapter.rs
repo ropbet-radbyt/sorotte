@@ -473,11 +473,40 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
 
     fn note_local_playlist_index_reset_intent(&mut self, _pause_before_sync: bool) {}
 
+    fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
+        None
+    }
+
+    fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
+        &self,
+        _player_attachment_epoch: u64,
+    ) -> bool {
+        false
+    }
+
+    fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        _player_attachment_epoch: u64,
+    ) -> bool {
+        false
+    }
+
+    fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        _player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        None
+    }
+
     fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
         None
     }
 
     fn has_pending_playlist_index_reset_intent(&self) -> bool {
+        false
+    }
+
+    fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
         false
     }
 

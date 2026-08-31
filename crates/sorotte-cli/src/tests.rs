@@ -117,6 +117,29 @@ static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
 static PANIC_SAFE_ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn client_runtime_clock_is_monotonic_and_unix_domain_compatible() {
+    let wall_before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock should be after Unix epoch")
+        .as_secs_f64();
+    let first = client_runtime_now_seconds();
+    let second = client_runtime_now_seconds();
+    let wall_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock should remain after Unix epoch")
+        .as_secs_f64();
+
+    assert!(
+        second >= first,
+        "the client runtime clock must not move backwards"
+    );
+    assert!(
+        first >= wall_before - 1.0 && second <= wall_after + 1.0,
+        "the monotonic client clock must remain in the Unix-time domain used by client-core defaults: wall_before={wall_before}, first={first}, second={second}, wall_after={wall_after}"
+    );
+}
+
 struct TestEnvGuard<'a> {
     _guard: MutexGuard<'a, ()>,
     prior_values: RefCell<BTreeMap<OsString, Option<OsString>>>,

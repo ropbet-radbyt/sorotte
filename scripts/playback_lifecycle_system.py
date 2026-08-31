@@ -446,6 +446,18 @@ def stage_privacy_safe_evidence(artifact_dir: Path, output_dir: Path) -> dict[st
         raise ValueError("system report has the wrong shape or kind")
     if report.get("result") not in {"passed", "failed", "skipped"}:
         raise ValueError("system report has an unknown result")
+    prerequisites = report.get("prerequisites")
+    candidate_attestation = (
+        prerequisites.get("candidate_attestation")
+        if isinstance(prerequisites, dict)
+        else None
+    )
+    if report.get("result") == "passed" and (
+        not isinstance(candidate_attestation, dict)
+        or candidate_attestation.get("verified") is not True
+        or candidate_attestation.get("mode") != "verified-clean-checkout"
+    ):
+        raise ValueError("passed evidence lacks a verified clean candidate attestation")
     assert_privacy_safe_tree(report)
 
     selected: list[Path] = [report_path]
@@ -492,6 +504,7 @@ def stage_privacy_safe_evidence(artifact_dir: Path, output_dir: Path) -> dict[st
         "kind": "sorotte-playback-lifecycle-safe-evidence",
         "result": report["result"],
         "candidate_sha": report.get("candidate_sha"),
+        "candidate_attestation": candidate_attestation,
         "files": sorted(files, key=lambda item: item["name"]),
     }
     atomic_write_json(output_dir / "evidence-manifest.json", manifest)
@@ -1415,6 +1428,7 @@ class PlaybackLifecycleHarness:
     ffmpeg_path: Path
     artifact_dir: Path
     candidate_sha: str | None
+    allow_unverified_candidate: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     client_runtime_seconds: float = DEFAULT_CLIENT_RUNTIME_SECONDS
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -1502,20 +1516,63 @@ class PlaybackLifecycleHarness:
         self._emit(event="check-not-applicable", check_id=check_id, detail=detail)
 
     def _resolve_candidate_sha(self) -> str:
-        if self.candidate_sha is not None:
-            value = self.candidate_sha.strip().lower()
-        else:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
+        git_prefix = ["git", "-c", f"safe.directory={self.repo_root}"]
+        try:
+            head_result = subprocess.run(
+                [*git_prefix, "rev-parse", "--verify", "HEAD^{commit}"],
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
                 timeout=5.0,
                 check=False,
             )
-            value = result.stdout.strip().lower() if result.returncode == 0 else ""
+            status_result = subprocess.run(
+                [*git_prefix, "status", "--porcelain", "--untracked-files=all"],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            head_result = None
+            status_result = None
+
+        checkout_sha = (
+            head_result.stdout.strip().lower()
+            if head_result is not None and head_result.returncode == 0
+            else None
+        )
+        if not isinstance(checkout_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", checkout_sha
+        ):
+            checkout_sha = None
+        checkout_dirty = (
+            bool(status_result.stdout.strip())
+            if status_result is not None and status_result.returncode == 0
+            else None
+        )
+
+        value = (
+            self.candidate_sha.strip().lower()
+            if self.candidate_sha is not None
+            else checkout_sha or ""
+        )
         if not re.fullmatch(r"[0-9a-f]{40}", value):
             raise MissingPrerequisite("candidate-attestation", "a full 40-character candidate SHA is required")
+
+        verified = checkout_sha == value and checkout_dirty is False
+        self.prerequisites["candidate_attestation"] = {
+            "verified": verified,
+            "mode": "verified-clean-checkout" if verified else "development-unverified",
+            "checkout_sha": checkout_sha,
+            "dirty": checkout_dirty,
+        }
+        if not verified and not self.allow_unverified_candidate:
+            raise MissingPrerequisite(
+                "candidate-attestation",
+                "candidate SHA must match a clean source checkout; use the explicit development override only for non-publishable diagnostics",
+            )
         return value
 
     @staticmethod
@@ -2796,6 +2853,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ffmpeg", type=Path, required=True, help="exact FFmpeg fixture generator")
     run.add_argument("--artifact-dir", type=Path, required=True)
     run.add_argument("--candidate-sha", help="full git SHA represented by the candidate binaries")
+    run.add_argument(
+        "--allow-unverified-candidate",
+        action="store_true",
+        help="development only: run with a dirty or mismatched checkout and mark the evidence non-publishable",
+    )
     run.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     run.add_argument(
         "--client-runtime-seconds", type=float, default=DEFAULT_CLIENT_RUNTIME_SECONDS
@@ -2826,6 +2888,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ffmpeg_path=args.ffmpeg,
             artifact_dir=args.artifact_dir,
             candidate_sha=args.candidate_sha,
+            allow_unverified_candidate=args.allow_unverified_candidate,
             timeout_seconds=args.timeout_seconds,
             client_runtime_seconds=args.client_runtime_seconds,
         )

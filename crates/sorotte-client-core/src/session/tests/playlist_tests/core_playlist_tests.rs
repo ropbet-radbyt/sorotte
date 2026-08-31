@@ -148,6 +148,17 @@ fn playlist_reset_waits_for_an_accepted_post_selection_playstate() {
         !session.pending_playlist_index_reset_has_post_selection_playstate(),
         "the predecessor's playstate cannot authorize the successor"
     );
+    assert_eq!(
+        session.complete_pending_playlist_index_reset_for_attachment(7),
+        None,
+        "canonical State alone is not enough without a physical-player reset"
+    );
+    assert!(session.mark_pending_playlist_index_reset_physical_effect_applied(7));
+    assert!(session.pending_playlist_index_reset_physical_effect_applied_for_attachment(7));
+    assert!(
+        !session.pending_playlist_index_reset_physical_effect_applied_for_attachment(8),
+        "physical proof is scoped to one player attachment"
+    );
 
     session
         .apply_message_json_at(
@@ -182,10 +193,79 @@ fn playlist_reset_waits_for_an_accepted_post_selection_playstate() {
         "the first accepted State after the selection authorizes physical reset completion"
     );
     assert_eq!(
-        session.take_pending_playlist_index_reset_intent(),
+        session.complete_pending_playlist_index_reset_for_attachment(8),
+        None,
+        "a replacement attachment cannot inherit its predecessor's reset proof"
+    );
+    assert_eq!(
+        session.complete_pending_playlist_index_reset_for_attachment(7),
         Some(false)
     );
     assert!(!session.pending_playlist_index_reset_has_post_selection_playstate());
+}
+
+#[test]
+fn a_new_playlist_selection_rearms_physical_reset_proof_for_the_same_attachment() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            1.0,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv","c.mkv"],"user":"bob"}}}"#,
+            2.0,
+        )
+        .expect("playlist should apply");
+    session
+        .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#, 3.0)
+        .expect("initial selection should apply");
+    session
+        .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#, 4.0)
+        .expect("first successor selection should apply");
+    assert!(session.mark_pending_playlist_index_reset_physical_effect_applied(11));
+
+    session
+        .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":2,"user":"bob"}}}"#, 5.0)
+        .expect("second successor selection should apply");
+
+    assert!(session.has_pending_playlist_index_reset_intent());
+    assert!(
+        !session.pending_playlist_index_reset_physical_effect_applied_for_attachment(11),
+        "the same attachment must physically reset each canonical selection"
+    );
+}
+
+#[test]
+fn locally_staged_playlist_reset_waits_for_the_next_playstate_receipt() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            1.0,
+        )
+        .expect("hello should apply");
+    session.begin_local_playlist_index_reset_intent(true, 2.0);
+
+    assert!(session.has_pending_playlist_index_reset_intent());
+    assert!(
+        !session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "staging the local selection cannot borrow an earlier room state"
+    );
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            3.0,
+        )
+        .expect("post-selection playstate should apply");
+
+    assert!(
+        session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "the next accepted legacy State should satisfy the local selection receipt fence"
+    );
 }
 
 #[test]

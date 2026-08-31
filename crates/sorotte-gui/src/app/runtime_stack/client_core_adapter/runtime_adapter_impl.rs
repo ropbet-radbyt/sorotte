@@ -101,11 +101,73 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         json_line: &str,
         received_at_seconds: f64,
     ) -> Result<(), String> {
-        GuiClientCoreChatSessionRuntimeAdapter::apply_message_json_at(
+        let inbound_paused = serde_json::from_str::<serde_json::Value>(json_line)
+            .ok()
+            .and_then(|message| {
+                message
+                    .get("State")?
+                    .get("playstate")?
+                    .get("paused")?
+                    .as_bool()
+            });
+        if let Some(target_paused) = inbound_paused {
+            let before = self.runtime.playback_coordination_snapshot();
+            crate::app::test_lifecycle::record_playback_control(
+                "playback-control-canonical-inbound-before",
+                crate::app::test_lifecycle::PlaybackControlObservation {
+                    target_paused: Some(target_paused),
+                    current_room_paused: self
+                        .runtime
+                        .session()
+                        .current_room_playstate()
+                        .and_then(|playstate| playstate.paused),
+                    media_generation: before.media_generation,
+                    pending_local_pause_intent: before.pending_local_pause_intent,
+                    pending_local_pause_intent_dormant: before.pending_local_pause_intent_dormant,
+                    last_local_pause_intent_stage_accepted: before
+                        .last_local_pause_intent_stage_accepted,
+                    transport_telemetry_observed: before.transport_telemetry_observed,
+                    ordinary_correction_blocked: before.ordinary_correction_blocked,
+                    playlist_reset_pending: self
+                        .runtime
+                        .session()
+                        .has_pending_playlist_index_reset_intent(),
+                    state_queued: None,
+                },
+            );
+        }
+        let result = GuiClientCoreChatSessionRuntimeAdapter::apply_message_json_at(
             self,
             json_line,
             received_at_seconds,
-        )
+        );
+        if let Some(target_paused) = inbound_paused {
+            let after = self.runtime.playback_coordination_snapshot();
+            crate::app::test_lifecycle::record_playback_control(
+                "playback-control-canonical-inbound-after",
+                crate::app::test_lifecycle::PlaybackControlObservation {
+                    target_paused: Some(target_paused),
+                    current_room_paused: self
+                        .runtime
+                        .session()
+                        .current_room_playstate()
+                        .and_then(|playstate| playstate.paused),
+                    media_generation: after.media_generation,
+                    pending_local_pause_intent: after.pending_local_pause_intent,
+                    pending_local_pause_intent_dormant: after.pending_local_pause_intent_dormant,
+                    last_local_pause_intent_stage_accepted: after
+                        .last_local_pause_intent_stage_accepted,
+                    transport_telemetry_observed: after.transport_telemetry_observed,
+                    ordinary_correction_blocked: after.ordinary_correction_blocked,
+                    playlist_reset_pending: self
+                        .runtime
+                        .session()
+                        .has_pending_playlist_index_reset_intent(),
+                    state_queued: Some(result.is_ok()),
+                },
+            );
+        }
+        result
     }
 
     fn set_room(&mut self, room: String) -> Result<(), String> {
@@ -893,9 +955,58 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
-        Ok(self
+        let before = self.runtime.playback_coordination_snapshot();
+        crate::app::test_lifecycle::record_playback_control(
+            "playback-control-state-publication-before",
+            crate::app::test_lifecycle::PlaybackControlObservation {
+                target_paused: before.pending_local_pause_intent,
+                current_room_paused: self
+                    .runtime
+                    .session()
+                    .current_room_playstate()
+                    .and_then(|playstate| playstate.paused),
+                media_generation: before.media_generation,
+                pending_local_pause_intent: before.pending_local_pause_intent,
+                pending_local_pause_intent_dormant: before.pending_local_pause_intent_dormant,
+                last_local_pause_intent_stage_accepted: before
+                    .last_local_pause_intent_stage_accepted,
+                transport_telemetry_observed: before.transport_telemetry_observed,
+                ordinary_correction_blocked: before.ordinary_correction_blocked,
+                playlist_reset_pending: self
+                    .runtime
+                    .session()
+                    .has_pending_playlist_index_reset_intent(),
+                state_queued: None,
+            },
+        );
+        let queued = self
             .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me))
+            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me);
+        let after = self.runtime.playback_coordination_snapshot();
+        crate::app::test_lifecycle::record_playback_control(
+            "playback-control-state-publication-after",
+            crate::app::test_lifecycle::PlaybackControlObservation {
+                target_paused: after.pending_local_pause_intent,
+                current_room_paused: self
+                    .runtime
+                    .session()
+                    .current_room_playstate()
+                    .and_then(|playstate| playstate.paused),
+                media_generation: after.media_generation,
+                pending_local_pause_intent: after.pending_local_pause_intent,
+                pending_local_pause_intent_dormant: after.pending_local_pause_intent_dormant,
+                last_local_pause_intent_stage_accepted: after
+                    .last_local_pause_intent_stage_accepted,
+                transport_telemetry_observed: after.transport_telemetry_observed,
+                ordinary_correction_blocked: after.ordinary_correction_blocked,
+                playlist_reset_pending: self
+                    .runtime
+                    .session()
+                    .has_pending_playlist_index_reset_intent(),
+                state_queued: Some(queued),
+            },
+        );
+        Ok(queued)
     }
 
     fn supports_playback_pause_changes(&self) -> bool {
@@ -1015,6 +1126,39 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .begin_local_playlist_index_reset_intent(pause_before_sync, system_time_seconds());
     }
 
+    fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
+        self.runtime.session().pending_playlist_index_reset_intent()
+    }
+
+    fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
+        &self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.runtime
+            .session()
+            .pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_epoch,
+            )
+    }
+
+    fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.runtime
+            .session_mut()
+            .mark_pending_playlist_index_reset_physical_effect_applied(player_attachment_epoch)
+    }
+
+    fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        self.runtime
+            .session_mut()
+            .complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
+    }
+
     fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
         self.runtime
             .session_mut()
@@ -1025,6 +1169,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime
             .session()
             .has_pending_playlist_index_reset_intent()
+    }
+
+    fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
+        self.runtime
+            .session()
+            .pending_playlist_index_reset_has_post_selection_playstate()
     }
 
     fn can_auto_advance_to_next_playlist_item(&self) -> bool {

@@ -71,7 +71,7 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
                 """
                 test "$CANDIDATE_SHA" = "$GITHUB_SHA"
                 test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
-                test -z "$(git status --porcelain --untracked-files=no)"
+                test -z "$(git status --porcelain --untracked-files=all)"
                 """
             ),
         )

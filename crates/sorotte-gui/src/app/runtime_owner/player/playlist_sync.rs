@@ -161,56 +161,78 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return;
         }
-        if !self.player_local_file_ready_for_attached_sync() {
+        let Some(selected_target) = self.current_shared_playlist_target(state) else {
+            return;
+        };
+        if !self.player_media_confirmed_for_pending_playlist_reset(&selected_target) {
             return;
         }
         let Some(pause_before_sync) = self
             .session
-            .as_mut()
-            .and_then(|session| session.take_pending_playlist_index_reset_intent())
-        else {
-            return;
-        };
-
-        self.suppressed_attached_room_playstate_after_playlist_reset = self
-            .session
             .as_ref()
-            .and_then(|session| session.current_room_playstate());
-        let reset_target_position_seconds =
-            self.player_target_position_seconds_for_global_position_impl(0.0);
-
-        let Some(position_result) = self
-            .player
-            .as_mut()
-            .map(|player| player.set_position_tracked(reset_target_position_seconds))
+            .and_then(|session| session.pending_playlist_index_reset_intent())
         else {
             return;
         };
+        let player_attachment_epoch = self.player_attachment_epoch;
+        let physical_effect_applied = self.session.as_ref().is_some_and(|session| {
+            session.pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_epoch,
+            )
+        });
 
-        let mut state_changed = false;
-        match position_result {
-            Ok(adapter_player_command_id) => {
-                self.note_attached_runtime_position_dispatched(
-                    adapter_player_command_id,
-                    0.0,
-                    reset_target_position_seconds,
-                );
-                self.player_position_seconds = Some(0.0);
-                state_changed = true;
-            }
-            Err(error) if Self::attached_player_playlist_reset_error_is_transient(&error) => {
-                if let Some(session) = self.session.as_mut() {
-                    session.note_local_playlist_index_reset_intent(pause_before_sync);
-                }
+        if !physical_effect_applied {
+            let successor_playstate_already_available =
+                self.session.as_ref().is_some_and(|session| {
+                    session.pending_playlist_index_reset_has_post_selection_playstate()
+                });
+            // Legacy direct-sync paths need to reject the predecessor value
+            // while the reset fence is waiting. If successor State arrived
+            // before physical file confirmation, it is already safe and must
+            // not be mistaken for the value being retired.
+            self.suppressed_attached_room_playstate_after_playlist_reset =
+                (!successor_playstate_already_available)
+                    .then(|| {
+                        self.session
+                            .as_ref()
+                            .and_then(|session| session.current_room_playstate())
+                    })
+                    .flatten();
+            let reset_target_position_seconds =
+                self.player_target_position_seconds_for_global_position_impl(0.0);
+
+            let Some(position_result) = self
+                .player
+                .as_mut()
+                .map(|player| player.set_position_tracked(reset_target_position_seconds))
+            else {
                 return;
+            };
+
+            match position_result {
+                Ok(adapter_player_command_id) => {
+                    self.note_attached_runtime_position_dispatched(
+                        adapter_player_command_id,
+                        0.0,
+                        reset_target_position_seconds,
+                    );
+                    self.player_position_seconds = Some(0.0);
+                }
+                Err(error) if Self::attached_player_playlist_reset_error_is_transient(&error) => {
+                    return;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to rewind the attached player for a playlist switch reset; the reset remains fenced: {error}"
+                    );
+                    return;
+                }
             }
-            Err(error) => {
-                eprintln!(
-                    "warning: failed to rewind the attached player for a playlist switch reset: {error}"
-                );
-            }
-        }
-        if pause_before_sync {
+
+            // Always reassert the temporary transition hold after file
+            // confirmation. `pause_before_sync` is retained as the legacy
+            // intent value, while successor room authority decides whether
+            // playback ultimately stays paused or resumes.
             let command_id = match self
                 .begin_attached_player_pause_command(true, PlayerCommandCause::PlaylistTransition)
             {
@@ -235,7 +257,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(()) => {
                     self.note_local_attached_player_pause_command(true);
                     self.player_paused = Some(true);
-                    state_changed = true;
                     if let Some(error) = command_result_error {
                         eprintln!(
                             "warning: failed to register attached-player playlist reset pause: {error}"
@@ -248,36 +269,62 @@ impl GuiPersistedConfigRuntimeOwner {
                             "warning: failed to register transient attached-player playlist reset pause failure: {command_result_error}"
                         );
                     }
-                    if let Some(session) = self.session.as_mut() {
-                        session.note_local_playlist_index_reset_intent(true);
-                    }
                     return;
                 }
                 Err(error) => {
                     eprintln!(
-                        "warning: failed to pause the attached player for a playlist switch reset: {error}"
+                        "warning: failed to pause the attached player for a playlist switch reset; the reset remains fenced: {error}"
                     );
                     if let Some(command_result_error) = command_result_error {
                         eprintln!(
                             "warning: failed to register attached-player playlist reset pause failure: {command_result_error}"
                         );
                     }
+                    return;
                 }
             }
-        }
 
-        if let Some(session) = self.session.as_mut()
-            && let Err(error) =
-                session.sync_local_playback_telemetry(pause_before_sync.then_some(true), Some(0.0))
-        {
-            eprintln!(
-                "warning: failed to mirror playlist switch reset telemetry into the session runtime: {error}"
-            );
-        }
+            let physical_effect_recorded = self.session.as_mut().is_some_and(|session| {
+                session.mark_pending_playlist_index_reset_physical_effect_applied(
+                    player_attachment_epoch,
+                )
+            });
+            if !physical_effect_recorded {
+                eprintln!(
+                    "warning: playlist switch reset ownership changed while applying it to the attached player"
+                );
+                return;
+            }
 
-        self.last_applied_attached_room_playstate = None;
-        if state_changed {
+            if let Some(session) = self.session.as_mut()
+                && let Err(error) = session.sync_local_playback_telemetry(Some(true), Some(0.0))
+            {
+                eprintln!(
+                    "warning: failed to mirror playlist switch reset telemetry into the session runtime: {error}"
+                );
+            }
+
+            self.last_applied_attached_room_playstate = None;
             self.refresh_player_state_impl();
+        }
+
+        if !self.session.as_ref().is_some_and(|session| {
+            session.pending_playlist_index_reset_has_post_selection_playstate()
+        }) {
+            return;
+        }
+
+        // Receipt sequencing, rather than value equality, proves that this is
+        // successor authority. Clear the legacy predecessor suppression even
+        // when the successor happens to carry the same playstate values.
+        self.suppressed_attached_room_playstate_after_playlist_reset = None;
+        let consumed_reset = self.session.as_mut().and_then(|session| {
+            session.complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
+        });
+        if consumed_reset != Some(pause_before_sync) {
+            eprintln!(
+                "warning: playlist switch reset ownership changed before successor authority completed it"
+            );
         }
     }
 

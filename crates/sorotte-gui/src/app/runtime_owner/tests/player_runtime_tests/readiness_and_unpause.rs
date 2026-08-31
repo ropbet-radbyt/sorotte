@@ -1623,6 +1623,194 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackPublicationProbeFailure {
+    FinalizeUnpause,
+    FourthTelemetrySync,
+}
+
+#[derive(Debug, Default)]
+struct PlaybackPublicationProbeState {
+    telemetry_sync_calls: usize,
+    staged_pause_targets: Vec<bool>,
+    immediate_publication_attempts: usize,
+    player_pause_commands: Vec<bool>,
+}
+
+struct PlaybackPublicationProbeSession {
+    state: std::sync::Arc<std::sync::Mutex<PlaybackPublicationProbeState>>,
+    failure: PlaybackPublicationProbeFailure,
+}
+
+impl GuiSessionRuntimeAdapter for PlaybackPublicationProbeSession {
+    fn sync_local_playback_telemetry(
+        &mut self,
+        _paused: Option<bool>,
+        _position_seconds: Option<f64>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.telemetry_sync_calls += 1;
+        if self.failure == PlaybackPublicationProbeFailure::FourthTelemetrySync
+            && state.telemetry_sync_calls == 4
+        {
+            return Err("synthetic telemetry housekeeping failure".to_owned());
+        }
+        Ok(())
+    }
+
+    fn handle_local_player_unpause_attempt(
+        &mut self,
+    ) -> Result<crate::app::runtime_stack::GuiLocalPlayerUnpauseDecision, String> {
+        Ok(crate::app::runtime_stack::GuiLocalPlayerUnpauseDecision::Allow)
+    }
+
+    fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        if self.failure == PlaybackPublicationProbeFailure::FinalizeUnpause {
+            return Err("synthetic readiness finalization failure".to_owned());
+        }
+        Ok(())
+    }
+
+    fn stage_attached_player_pause_intent(
+        &mut self,
+        paused: bool,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .staged_pause_targets
+            .push(paused);
+        Ok(Vec::new())
+    }
+
+    fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .immediate_publication_attempts += 1;
+        Ok(true)
+    }
+
+    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn connect_public_server(
+        &mut self,
+        _selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        _current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Ok(Vec::new())
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+struct PlaybackPublicationProbePlayer {
+    state: std::sync::Arc<std::sync::Mutex<PlaybackPublicationProbeState>>,
+}
+
+impl PlayerAdapter for PlaybackPublicationProbePlayer {
+    fn name(&self) -> &'static str {
+        "playback-publication-probe"
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .player_pause_commands
+            .push(paused);
+        Ok(())
+    }
+}
+
+fn assert_housekeeping_failure_does_not_suppress_playback_publication(
+    previous_paused: bool,
+    target_paused: bool,
+    failure: PlaybackPublicationProbeFailure,
+    expected_error: &str,
+) {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(
+        PlaybackPublicationProbeState::default(),
+    ));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(PlaybackPublicationProbeSession {
+            state: recorded.clone(),
+            failure,
+        }),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        PlaybackPublicationProbePlayer {
+            state: recorded.clone(),
+        },
+    )));
+    owner.player_paused = Some(previous_paused);
+    owner.player_position_seconds = Some(10.0);
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let (effective_paused, sync_error) = owner
+        .apply_playback_pause_change_with_detached_session_impl(
+            &state,
+            previous_paused,
+            target_paused,
+        )
+        .expect("a successful physical playback command should remain handled");
+
+    assert_eq!(effective_paused, target_paused);
+    assert!(
+        sync_error
+            .as_deref()
+            .is_some_and(|error| error.contains(expected_error)),
+        "the independent housekeeping failure should remain observable"
+    );
+    let recorded = recorded
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(recorded.player_pause_commands, vec![target_paused]);
+    assert_eq!(recorded.staged_pause_targets, vec![target_paused]);
+    assert_eq!(
+        recorded.immediate_publication_attempts, 1,
+        "a successful physical command must publish its semantic intent exactly once"
+    );
+}
+
+#[test]
+fn gui_play_and_pause_publish_even_when_independent_housekeeping_fails() {
+    assert_housekeeping_failure_does_not_suppress_playback_publication(
+        true,
+        false,
+        PlaybackPublicationProbeFailure::FinalizeUnpause,
+        "readiness finalization",
+    );
+    assert_housekeeping_failure_does_not_suppress_playback_publication(
+        false,
+        true,
+        PlaybackPublicationProbeFailure::FourthTelemetrySync,
+        "telemetry housekeeping",
+    );
+}
+
 #[test]
 fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     #[derive(Debug, Default)]

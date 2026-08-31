@@ -3464,6 +3464,68 @@ impl RuntimePlaybackCoordination {
         Some(position.position_seconds + projection_elapsed_seconds * playback_rate)
     }
 
+    /// Returns a position anchor for an already-authorized local Play/Pause
+    /// mutation when ordinary transport projection is temporarily blocked.
+    ///
+    /// Rebuffering and cache-pause telemetry must remain ineligible for
+    /// periodic room-state publication, but it must not erase a distinct user
+    /// command. The mutation is fenced separately by room, connection, media
+    /// generation, and transport revision; this helper additionally requires
+    /// the position sample to belong to the current media generation and to be
+    /// recent. It never turns the sample into a seek.
+    pub(crate) fn local_pause_mutation_position_at(
+        &self,
+        external_now_seconds: f64,
+        legacy_position_seconds: Option<f64>,
+    ) -> Option<f64> {
+        if self.awaiting_ordered_snapshot {
+            return None;
+        }
+        if matches!(
+            self.external_player_availability,
+            Some(
+                ExternalPlayerAvailability::Unavailable
+                    | ExternalPlayerAvailability::Disconnected
+                    | ExternalPlayerAvailability::Failed,
+            )
+        ) {
+            return None;
+        }
+        if !self.transport_telemetry_observed {
+            return if participant_status_legacy_position_fallback(
+                self.external_player_availability,
+                self.transport_telemetry_ever_observed,
+            ) {
+                legacy_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
+            } else {
+                None
+            };
+        }
+
+        let observation = self.latest_observation.as_ref()?;
+        let position = self.latest_position_observation?;
+        let current_media_generation = self.coordinator.current_media_generation()?;
+        if observation.media_generation != current_media_generation
+            || position.media_generation != current_media_generation
+            || observation.seeking == Some(true)
+        {
+            return None;
+        }
+
+        let coordinator_now = self.coordinator_now(external_now_seconds);
+        let sample_age_seconds =
+            coordinator_now - position.last_actual_position_observed_at_seconds;
+        if !sample_age_seconds.is_finite()
+            || !(0.0..=MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS).contains(&sample_age_seconds)
+        {
+            return None;
+        }
+
+        self.project_position_observation_to(coordinator_now)
+            .map(|position| position.position_seconds)
+            .filter(|position| position.is_finite() && *position >= 0.0)
+    }
+
     pub(crate) fn stage_local_pause_intent(&mut self, paused: bool, session: &ClientSession) {
         let Some(room) = session.room() else {
             self.pending_local_pause_intent = None;
@@ -15496,6 +15558,127 @@ mod tests {
             runtime.outbound_state_sync_position_seconds(105.1, false),
             None,
             "cache-stalled rich telemetry must produce ping-only State instead of re-anchoring the room"
+        );
+    }
+
+    #[test]
+    fn authorized_play_intent_survives_cache_blocked_position_projection() {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+                now_seconds,
+            )
+            .expect("legacy room Hello should apply");
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+                now_seconds,
+            )
+            .expect("canonical paused state should apply");
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer::default(),
+            QueuedRuntimeControl::default(),
+        );
+        runtime.playback_coordination.prepare_media(
+            LogicalMediaId::new("cache-blocked-local-play").unwrap(),
+            MediaTransportKind::LocalFile,
+            now_seconds,
+        );
+        let mut cache_paused = transport(1, 0.0, PlayerTransportPhase::Rebuffering, 0.0);
+        cache_paused.logical_pause = Some(true);
+        cache_paused.core_idle = Some(true);
+        runtime
+            .playback_coordination
+            .observe_transport(cache_paused, now_seconds);
+        runtime.session.model.playback.local_position = Some(0.0);
+        runtime.session.model.playback.local_paused = Some(false);
+
+        assert_eq!(
+            runtime.outbound_state_sync_position_seconds(now_seconds, false),
+            None,
+            "cache-paused telemetry must remain blocked from ordinary State publication"
+        );
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        let ordinary = runtime.flush_queued_protocol_messages();
+        let ProtocolMessage::State(ordinary) = ordinary
+            .last()
+            .expect("ordinary cache-paused heartbeat should be queued")
+        else {
+            panic!("ordinary cache-paused heartbeat should remain State");
+        };
+        assert!(
+            ordinary.state.playstate.is_none(),
+            "cache telemetry without semantic intent must remain ping-only"
+        );
+
+        runtime.stage_external_player_pause_intent(false, now_seconds);
+        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        let mutation = runtime.flush_queued_protocol_messages();
+        let ProtocolMessage::State(mutation) = mutation
+            .last()
+            .expect("authorized Play heartbeat should be queued")
+        else {
+            panic!("authorized Play heartbeat should remain State");
+        };
+        let playstate = mutation
+            .state
+            .playstate
+            .as_ref()
+            .expect("authorized Play must not be downgraded to ping-only by cache telemetry");
+        assert_eq!(playstate.position, Some(0.0));
+        assert_eq!(playstate.paused, Some(false));
+        assert_ne!(
+            playstate.do_seek,
+            Some(true),
+            "Play/Pause fallback must never become a seek"
+        );
+        assert_eq!(playstate.set_by, None);
+    }
+
+    #[test]
+    fn pause_mutation_position_never_crosses_media_generation() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("legacy room Hello should apply");
+        let mut coordination = RuntimePlaybackCoordination::default();
+        coordination.prepare_media(
+            LogicalMediaId::new("retired-pause-anchor").unwrap(),
+            MediaTransportKind::LocalFile,
+            100.0,
+        );
+        let mut cache_paused = transport(1, 0.0, PlayerTransportPhase::Rebuffering, 7.5);
+        cache_paused.logical_pause = Some(true);
+        cache_paused.core_idle = Some(true);
+        coordination.observe_transport(cache_paused, 100.0);
+        coordination.stage_local_pause_intent(false, &session);
+        assert_eq!(
+            coordination.local_pause_mutation_position_at(100.1, Some(99.0)),
+            Some(7.5),
+            "the current generation may anchor its authorized command despite cache pause"
+        );
+
+        coordination.prepare_media(
+            LogicalMediaId::new("replacement-pause-anchor").unwrap(),
+            MediaTransportKind::LocalFile,
+            100.2,
+        );
+        session.model.playback.local_position = Some(99.0);
+        assert_eq!(
+            coordination
+                .local_pause_mutation_position_at(100.3, session.model.playback.local_position),
+            None,
+            "retired rich telemetry and its legacy mirror must not anchor the replacement media"
+        );
+        assert_eq!(
+            coordination.active_local_pause_state_mutation_intent(&session),
+            None,
+            "a predecessor command must not survive the replacement media generation"
         );
     }
 

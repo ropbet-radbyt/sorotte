@@ -291,6 +291,9 @@ impl ClientSession {
             .pending_index_reset_base_playstate_receipt_sequence = None;
         self.model
             .playlist
+            .pending_index_reset_physical_attachment_epoch = None;
+        self.model
+            .playlist
             .pending_index_reset_refresh_recently_advanced = false;
         self.model.playlist.suppress_next_self_index_reset = false;
         self.model
@@ -341,6 +344,12 @@ impl ClientSession {
         self.model
             .playlist
             .pending_index_reset_base_playstate_receipt_sequence = base_playstate_receipt_sequence;
+        // A canonical selection owns a new physical reset even when it replays
+        // the same playlist row. Do not let a reset proven on the predecessor
+        // selection (or on an older player attachment) satisfy this one.
+        self.model
+            .playlist
+            .pending_index_reset_physical_attachment_epoch = None;
     }
 
     pub fn begin_local_playlist_index_reset_intent(
@@ -381,6 +390,9 @@ impl ClientSession {
             self.model
                 .playlist
                 .pending_index_reset_base_playstate_receipt_sequence = None;
+            self.model
+                .playlist
+                .pending_index_reset_physical_attachment_epoch = None;
             if self
                 .model
                 .playlist
@@ -410,6 +422,59 @@ impl ClientSession {
     /// actually available before committing the pause-and-rewind side effect.
     pub fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
         self.model.playlist.pending_index_reset_pause_before_sync
+    }
+
+    /// Returns whether the pending playlist reset has been applied to the
+    /// currently-owned physical player attachment.
+    ///
+    /// The epoch is supplied by the player owner. Binding the proof to that
+    /// epoch prevents a replacement player from inheriting a reset that was
+    /// only applied to its predecessor.
+    pub fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
+        &self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.has_pending_playlist_index_reset_intent()
+            && self
+                .model
+                .playlist
+                .pending_index_reset_physical_attachment_epoch
+                == Some(player_attachment_epoch)
+    }
+
+    /// Records that the pending playlist reset reached the physical player
+    /// owned by `player_attachment_epoch`.
+    ///
+    /// Returns false if the selection reset was retired before the effect
+    /// completed, allowing the caller to reject a late player command result.
+    pub fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        if !self.has_pending_playlist_index_reset_intent() {
+            return false;
+        }
+        self.model
+            .playlist
+            .pending_index_reset_physical_attachment_epoch = Some(player_attachment_epoch);
+        true
+    }
+
+    /// Completes a pending reset only after both independent halves of the
+    /// successor handoff are proven: the selected media was reset on the
+    /// current physical attachment and canonical post-selection playstate was
+    /// accepted.
+    pub fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        if !self.pending_playlist_index_reset_physical_effect_applied_for_attachment(
+            player_attachment_epoch,
+        ) || !self.pending_playlist_index_reset_has_post_selection_playstate()
+        {
+            return None;
+        }
+        self.take_pending_playlist_index_reset_intent()
     }
 
     /// Returns whether canonical room playstate accepted after the pending

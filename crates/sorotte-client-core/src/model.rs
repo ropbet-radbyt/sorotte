@@ -537,6 +537,7 @@ pub struct PlaylistState {
     pub(crate) pending_index_reset_room: Option<String>,
     pub(crate) pending_index_reset_base_transport_revision: Option<u64>,
     pub(crate) pending_index_reset_base_playstate_receipt_sequence: Option<u64>,
+    pub(crate) pending_index_reset_physical_attachment_epoch: Option<u64>,
     pub(crate) pending_index_reset_refresh_recently_advanced: bool,
     pub(crate) suppress_next_self_index_reset: bool,
     pub(crate) last_seek_position_before_manual_seek: Option<f64>,
@@ -617,6 +618,10 @@ impl std::fmt::Debug for PlaylistState {
             .field(
                 "pending_index_reset_base_playstate_receipt_sequence",
                 &self.pending_index_reset_base_playstate_receipt_sequence,
+            )
+            .field(
+                "pending_index_reset_physical_attachment_epoch",
+                &self.pending_index_reset_physical_attachment_epoch,
             )
             .field(
                 "pending_index_reset_refresh_recently_advanced",

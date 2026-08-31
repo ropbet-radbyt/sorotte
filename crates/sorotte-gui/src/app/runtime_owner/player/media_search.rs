@@ -1368,6 +1368,22 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .is_some_and(|attempt| attempt.state == PlaylistResolutionAttemptState::Loading)
         {
+            // `file-loaded` can be ordered ahead of the tracked command's
+            // terminal event. That physical confirmation is enough to perform
+            // the one-shot playlist reset, while the attempt remains Loading
+            // for ordinary ownership and supersession bookkeeping.
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_playlist_index_reset_intent())
+                && self.player_media_confirmed_for_pending_playlist_reset(plan.target())
+            {
+                self.unresolved_attached_media_target = None;
+                if !self.attached_media_search_refresh_pending() {
+                    self.attached_media_search_next_retry_at = None;
+                }
+                return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
+            }
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         let failed_candidates = self.failed_playlist_resolution_candidates();

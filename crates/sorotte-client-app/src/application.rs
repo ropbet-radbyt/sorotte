@@ -752,27 +752,46 @@ where
         else {
             return Ok(changed);
         };
-
-        self.runtime.player_mut().set_position(0.0)?;
-        // Always reassert the temporary transition hold after authoritative
-        // file evidence. A load can change mpv's pause property even when the
-        // preceding command was accepted. `pause_before_sync` remains part of
-        // the legacy-facing intent shape, while post-selection room authority
-        // decides whether playback ultimately stays paused or resumes.
-        self.runtime.player_mut().set_paused(true)?;
+        let player_attachment_revision = self.player_attachment_revision;
+        if !self
+            .runtime
+            .session()
+            .pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_revision,
+            )
+        {
+            self.runtime.player_mut().set_position(0.0)?;
+            // Always reassert the temporary transition hold after authoritative
+            // file evidence. A load can change mpv's pause property even when
+            // the preceding command was accepted. `pause_before_sync` remains
+            // part of the legacy-facing intent shape, while post-selection
+            // room authority decides whether playback ultimately stays paused
+            // or resumes.
+            self.runtime.player_mut().set_paused(true)?;
+            if !self
+                .runtime
+                .session_mut()
+                .mark_pending_playlist_index_reset_physical_effect_applied(
+                    player_attachment_revision,
+                )
+            {
+                return Ok(changed);
+            }
+            changed = true;
+        }
         if !self
             .runtime
             .session()
             .pending_playlist_index_reset_has_post_selection_playstate()
         {
-            return Ok(true);
+            return Ok(changed);
         }
         let consumed = self
             .runtime
             .session_mut()
-            .take_pending_playlist_index_reset_intent();
+            .complete_pending_playlist_index_reset_for_attachment(player_attachment_revision);
         debug_assert_eq!(consumed, Some(pause_before_sync));
-        Ok(true)
+        Ok(changed || consumed.is_some())
     }
 
     fn current_canonical_playlist_selection(&self) -> Option<CanonicalPlaylistSelection> {
@@ -2288,7 +2307,9 @@ mod tests {
         opened: Vec<String>,
         paused_when_opened: Vec<bool>,
         paused: bool,
+        pause_calls: usize,
         position_seconds: Option<f64>,
+        position_calls: usize,
         connected: Option<bool>,
         open_error: Option<String>,
         pause_error: Option<String>,
@@ -2336,6 +2357,7 @@ mod tests {
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+            self.pause_calls = self.pause_calls.saturating_add(1);
             self.paused = paused;
             match self.pause_error.as_ref() {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
@@ -2344,6 +2366,7 @@ mod tests {
         }
 
         fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+            self.position_calls = self.position_calls.saturating_add(1);
             self.position_seconds = Some(position_seconds);
             match self.position_error.as_ref() {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
@@ -3042,10 +3065,27 @@ mod tests {
                 .expect("observed media should receive its physical reset")
         );
         assert_eq!(application.player().position_seconds, Some(0.0));
+        let physical_reset_calls = (
+            application.player().position_calls,
+            application.player().pause_calls,
+        );
         assert_eq!(
             application.session().pending_playlist_index_reset_intent(),
             Some(false),
             "physical reset cannot replay predecessor authority before a post-selection State"
+        );
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("waiting for successor authority should be idempotent")
+        );
+        assert_eq!(
+            (
+                application.player().position_calls,
+                application.player().pause_calls,
+            ),
+            physical_reset_calls,
+            "the physical reset must run once while canonical State is delayed"
         );
         application
             .apply_protocol_line(
@@ -3064,6 +3104,14 @@ mod tests {
         assert_eq!(
             application.session().pending_playlist_index_reset_intent(),
             None
+        );
+        assert_eq!(
+            (
+                application.player().position_calls,
+                application.player().pause_calls,
+            ),
+            physical_reset_calls,
+            "completing the authority half must not repeat the player commands"
         );
     }
 

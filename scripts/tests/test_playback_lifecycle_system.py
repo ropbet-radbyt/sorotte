@@ -551,6 +551,7 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                     str(artifact_dir),
                     "--candidate-sha",
                     "a" * 40,
+                    "--allow-unverified-candidate",
                     "--client-runtime-seconds",
                     "9",
                 ]
@@ -689,6 +690,14 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             report = {
                 "kind": system.REPORT_KIND,
                 "result": "passed",
+                "prerequisites": {
+                    "candidate_attestation": {
+                        "verified": True,
+                        "mode": "verified-clean-checkout",
+                        "checkout_sha": "a" * 40,
+                        "dirty": False,
+                    }
+                },
                 "artifacts": {
                     "player_traces": ["player-controller.jsonl"],
                 },
@@ -710,6 +719,89 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "non-whitelisted"):
+                system.stage_privacy_safe_evidence(artifact_dir, root / "safe")
+
+    def test_candidate_attestation_requires_matching_clean_checkout(self) -> None:
+        candidate_sha = "a" * 40
+
+        def harness(*, allow_unverified_candidate: bool = False):
+            return system.PlaybackLifecycleHarness(
+                server_path=pathlib.Path("server"),
+                client_path=pathlib.Path("client"),
+                mpv_path=pathlib.Path("mpv"),
+                ffmpeg_path=pathlib.Path("ffmpeg"),
+                artifact_dir=pathlib.Path("artifacts"),
+                candidate_sha=candidate_sha,
+                allow_unverified_candidate=allow_unverified_candidate,
+            )
+
+        clean_head = system.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=f"{candidate_sha}\n", stderr=""
+        )
+        clean_status = system.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with mock.patch.object(
+            system.subprocess, "run", side_effect=[clean_head, clean_status]
+        ):
+            verified = harness()
+            self.assertEqual(verified._resolve_candidate_sha(), candidate_sha)
+            self.assertEqual(
+                verified.prerequisites["candidate_attestation"],
+                {
+                    "verified": True,
+                    "mode": "verified-clean-checkout",
+                    "checkout_sha": candidate_sha,
+                    "dirty": False,
+                },
+            )
+
+        dirty_status = system.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=" M source.rs\n", stderr=""
+        )
+        with mock.patch.object(
+            system.subprocess, "run", side_effect=[clean_head, dirty_status]
+        ):
+            with self.assertRaisesRegex(system.MissingPrerequisite, "clean source checkout"):
+                harness()._resolve_candidate_sha()
+
+        different_head = system.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=f"{'b' * 40}\n", stderr=""
+        )
+        with mock.patch.object(
+            system.subprocess, "run", side_effect=[different_head, clean_status]
+        ):
+            development = harness(allow_unverified_candidate=True)
+            self.assertEqual(development._resolve_candidate_sha(), candidate_sha)
+            self.assertEqual(
+                development.prerequisites["candidate_attestation"]["mode"],
+                "development-unverified",
+            )
+
+    def test_passed_safe_evidence_rejects_unverified_candidate_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            report = {
+                "kind": system.REPORT_KIND,
+                "result": "passed",
+                "prerequisites": {
+                    "candidate_attestation": {
+                        "verified": False,
+                        "mode": "development-unverified",
+                        "checkout_sha": "a" * 40,
+                        "dirty": True,
+                    }
+                },
+                "artifacts": {"player_traces": []},
+            }
+            (artifact_dir / "report.json").write_text(
+                json.dumps(report) + "\n", encoding="utf-8"
+            )
+            (artifact_dir / "causal-trace.jsonl").write_text("", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "verified clean candidate"):
                 system.stage_privacy_safe_evidence(artifact_dir, root / "safe")
 
     def test_protocol_fault_proxy_fragments_then_holds_and_releases_reconnect(self) -> None:

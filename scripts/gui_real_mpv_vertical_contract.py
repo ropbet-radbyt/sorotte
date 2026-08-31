@@ -35,6 +35,33 @@ HTTP_STALL_EXPECTED_PREFIX_PLAYABLE_SECONDS = (
 ) / HTTP_STALL_PCM_BYTES_PER_SECOND
 HTTP_STALL_POSITION_TOLERANCE_SECONDS = 0.25
 SESSION_CAPABILITIES = ("chat", "readiness", "sharedPlaylists")
+SESSION_EXCHANGE_KEYS = {
+    "schema_version",
+    "kind",
+    "result",
+    "bound_endpoint",
+    "connected_peer_endpoint",
+    "listener_ipv4_loopback",
+    "peer_ipv4_loopback",
+    "client_hello",
+    "server_hello",
+    "advertised_capabilities",
+    "playlist_change_request",
+    "playlist_change_echo",
+    "playlist_index_request",
+    "playlist_index_echo",
+    "initial_authoritative_playstate",
+    "playstate_exchanges",
+    "server_thread_released",
+    "socket_released",
+    "error",
+}
+PLAYSTATE_EXCHANGE_KEYS = {
+    "action",
+    "expected_paused",
+    "request",
+    "authoritative_echo",
+}
 EXPECTED_CLIENT_HELLO = {
     "Hello": {
         "username": "real-mpv-user",
@@ -49,7 +76,8 @@ EXPECTED_CLIENT_HELLO = {
             "persistentRooms": True,
             "readiness": True,
             "setOthersReadiness": True,
-            "sharedPlaylists": False,
+            "sharedPlaylists": True,
+            "sorotteParticipantStatusV1": True,
             "sorottePlaybackBarrierV1": True,
             "sorottePlexPlaylistUris": True,
             "sorotteReadinessV2": True,
@@ -408,6 +436,88 @@ def validate_binary_identity(
     require(identity.get("sha256") == expected_sha256, f"{label} digest mismatch")
     require(identity.get("bytes") == expected_path.stat().st_size, f"{label} size mismatch")
     require(sha256_file(expected_path) == expected_sha256, f"{label} bytes changed")
+
+
+def validate_playstate_exchange(
+    row: Any,
+    *,
+    expected_action: str,
+    expected_paused: bool,
+) -> None:
+    require(isinstance(row, dict), "session playstate exchange must be an object")
+    require(
+        set(row) == PLAYSTATE_EXCHANGE_KEYS,
+        "session playstate exchange field inventory drifted",
+    )
+    require(row.get("action") == expected_action, "session playstate action order drifted")
+    require(
+        row.get("expected_paused") is expected_paused,
+        f"{expected_action} expected pause level drifted",
+    )
+    try:
+        request = json.loads(str(row.get("request", "")))
+        echo = json.loads(str(row.get("authoritative_echo", "")))
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"{expected_action} request/echo evidence was invalid JSON: {error}"
+        ) from error
+
+    require(
+        isinstance(request, dict) and set(request) == {"State"},
+        f"{expected_action} request envelope drifted",
+    )
+    request_state = request.get("State")
+    require(
+        isinstance(request_state, dict)
+        and set(request_state) == {"playstate", "ping"},
+        f"{expected_action} request State schema drifted",
+    )
+    request_playstate = request_state.get("playstate")
+    request_ping = request_state.get("ping")
+    require(
+        isinstance(request_playstate, dict)
+        and set(request_playstate) == {"position", "paused"},
+        f"{expected_action} request playstate schema drifted",
+    )
+    require(
+        request_playstate.get("paused") is expected_paused
+        and is_json_number(request_playstate.get("position"))
+        and float(request_playstate["position"]) >= 0.0,
+        f"{expected_action} request pause or position was invalid",
+    )
+    require(
+        isinstance(request_ping, dict)
+        and set(request_ping) == {"clientLatencyCalculation", "clientRtt"}
+        and is_json_number(request_ping.get("clientLatencyCalculation"))
+        and is_json_number(request_ping.get("clientRtt"))
+        and float(request_ping["clientRtt"]) >= 0.0,
+        f"{expected_action} request ping schema drifted",
+    )
+
+    require(
+        isinstance(echo, dict) and set(echo) == {"State"},
+        f"{expected_action} authoritative echo envelope drifted",
+    )
+    echo_state = echo.get("State")
+    require(
+        isinstance(echo_state, dict) and set(echo_state) == {"playstate"},
+        f"{expected_action} authoritative echo State schema drifted",
+    )
+    echo_playstate = echo_state.get("playstate")
+    require(
+        isinstance(echo_playstate, dict)
+        and set(echo_playstate) == {"doSeek", "paused", "position", "setBy"},
+        f"{expected_action} authoritative echo playstate schema drifted",
+    )
+    require(
+        echo_playstate.get("paused") is expected_paused
+        and echo_playstate.get("doSeek") is False
+        and echo_playstate.get("setBy") == "real-mpv-user"
+        and is_json_number(echo_playstate.get("position"))
+        and float(echo_playstate["position"])
+        == float(request_playstate["position"]),
+        f"{expected_action} authoritative echo did not authenticate the exact mutation",
+    )
 
 
 def validate_observations(
@@ -1437,6 +1547,10 @@ def validate_report(
         resolved_artifacts["session_exchange"], "real-mpv session exchange"
     )
     require(
+        set(session_exchange) == SESSION_EXCHANGE_KEYS,
+        "session exchange field inventory drifted",
+    )
+    require(
         session_exchange.get("schema_version") == SCHEMA_VERSION,
         "session exchange schema mismatch",
     )
@@ -1492,70 +1606,129 @@ def validate_report(
     )
     require(client_hello == expected_client_hello, "client Hello exchange drifted")
     require(server_hello == EXPECTED_SERVER_HELLO, "server Hello exchange drifted")
-    if expect_http:
-        expected_media_url = isolation.get("media_url")
-        try:
-            playlist_change_request = json.loads(
-                str(session_exchange.get("playlist_change_request", ""))
-            )
-            playlist_change_echo = json.loads(
-                str(session_exchange.get("playlist_change_echo", ""))
-            )
-            playlist_index_request = json.loads(
-                str(session_exchange.get("playlist_index_request", ""))
-            )
-            playlist_index_echo = json.loads(
-                str(session_exchange.get("playlist_index_echo", ""))
-            )
-        except json.JSONDecodeError as error:
-            raise ValueError(
-                f"session playlist request/echo evidence was invalid JSON: {error}"
-            ) from error
-        require(
-            playlist_change_request
-            == {
-                "Set": {
-                    "playlistChange": {
-                        "files": [expected_media_url],
-                    }
-                }
-            },
-            "session playlistChange request drifted from the exact closed request schema",
+    expected_playlist_target = isolation.get("media_url") if expect_http else Path(
+        str(isolation.get("media_path", ""))
+    ).name
+    require(
+        isinstance(expected_playlist_target, str) and bool(expected_playlist_target),
+        "session playlist target was unavailable",
+    )
+    try:
+        playlist_change_request = json.loads(
+            str(session_exchange.get("playlist_change_request", ""))
         )
-        require(
-            playlist_change_echo
-            == {
-                "Set": {
-                    "playlistChange": {
-                        "files": [expected_media_url],
-                        "user": "real-mpv-user",
-                    }
-                }
-            },
-            "session authoritative playlistChange echo drifted",
+        playlist_change_echo = json.loads(
+            str(session_exchange.get("playlist_change_echo", ""))
         )
-        require(
-            playlist_index_request
-            == {
-                "Set": {
-                    "playlistIndex": {
-                        "index": 0,
-                    }
-                }
-            },
-            "session playlistIndex request drifted from the exact closed request schema",
+        playlist_index_request = json.loads(
+            str(session_exchange.get("playlist_index_request", ""))
         )
-        require(
-            playlist_index_echo
-            == {
-                "Set": {
-                    "playlistIndex": {
-                        "index": 0,
-                        "user": "real-mpv-user",
-                    }
+        playlist_index_echo = json.loads(
+            str(session_exchange.get("playlist_index_echo", ""))
+        )
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"session playlist request/echo evidence was invalid JSON: {error}"
+        ) from error
+    require(
+        playlist_change_request
+        == {
+            "Set": {
+                "playlistChange": {
+                    "files": [expected_playlist_target],
                 }
-            },
-            "session authoritative playlistIndex echo drifted",
+            }
+        },
+        "session playlistChange request drifted from the exact closed request schema",
+    )
+    require(
+        playlist_change_echo
+        == {
+            "Set": {
+                "playlistChange": {
+                    "files": [expected_playlist_target],
+                    "user": "real-mpv-user",
+                }
+            }
+        },
+        "session authoritative playlistChange echo drifted",
+    )
+    require(
+        playlist_index_request
+        == {
+            "Set": {
+                "playlistIndex": {
+                    "index": 0,
+                }
+            }
+        },
+        "session playlistIndex request drifted from the exact closed request schema",
+    )
+    require(
+        playlist_index_echo
+        == {
+            "Set": {
+                "playlistIndex": {
+                    "index": 0,
+                    "user": "real-mpv-user",
+                }
+            }
+        },
+        "session authoritative playlistIndex echo drifted",
+    )
+    try:
+        initial_authoritative_playstate = json.loads(
+            str(session_exchange.get("initial_authoritative_playstate", ""))
+        )
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"initial authoritative playstate evidence was invalid JSON: {error}"
+        ) from error
+    require(
+        initial_authoritative_playstate
+        == {
+            "State": {
+                "playstate": {
+                    "doSeek": False,
+                    "paused": True,
+                    "position": 0.0,
+                    "setBy": "real-mpv-user",
+                }
+            }
+        },
+        "initial authoritative paused playstate drifted",
+    )
+    expected_playstate_exchanges = [
+        ("GUI Play canonical transport", False),
+        (
+            "GUI Pause after HTTP fault canonical transport"
+            if expect_http_fault
+            else "GUI Pause after HTTP stall canonical transport"
+            if expect_http_stall
+            else "GUI Pause canonical transport",
+            True,
+        ),
+    ]
+    if expect_recovery:
+        expected_playstate_exchanges.extend(
+            [
+                ("GUI Play on replacement mpv canonical transport", False),
+                ("GUI Pause on replacement mpv canonical transport", True),
+            ]
+        )
+    playstate_exchanges = session_exchange.get("playstate_exchanges")
+    require(
+        isinstance(playstate_exchanges, list)
+        and len(playstate_exchanges) == len(expected_playstate_exchanges),
+        "session canonical Play/Pause exchange inventory drifted",
+    )
+    for row, (expected_action, expected_paused) in zip(
+        playstate_exchanges, expected_playstate_exchanges, strict=True
+    ):
+        validate_playstate_exchange(
+            row,
+            expected_action=expected_action,
+            expected_paused=expected_paused,
         )
 
     menu_interactions = load_json(

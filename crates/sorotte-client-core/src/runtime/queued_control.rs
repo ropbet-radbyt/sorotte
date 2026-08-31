@@ -95,6 +95,34 @@ where
         self.projected_local_position_at(now_seconds)
     }
 
+    fn outbound_state_sync_position_seconds_for_pause_mutation(
+        &self,
+        now_seconds: f64,
+        dont_slow_down_with_me: bool,
+        has_local_pause_mutation_intent: bool,
+    ) -> Option<f64> {
+        self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me)
+            .or_else(|| {
+                has_local_pause_mutation_intent.then_some(())?;
+                self.playback_coordination
+                    .local_pause_mutation_position_at(
+                        now_seconds,
+                        self.session.model.playback.local_position,
+                    )
+                    .or_else(|| {
+                        // A canonical room position is the neutral fallback
+                        // when the local player is between trustworthy
+                        // samples. The outgoing mutation carries doSeek=false,
+                        // so this preserves the Play/Pause command without
+                        // laundering cache telemetry into a seek.
+                        self.session
+                            .current_room_playstate_at(now_seconds)
+                            .and_then(|playstate| playstate.position)
+                            .filter(|position| position.is_finite() && *position >= 0.0)
+                    })
+            })
+    }
+
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
         &mut self,
         inbound_state: StatePayload,
@@ -210,9 +238,10 @@ where
             );
         let local_playback = player_projection_is_current.then(|| {
             (
-                self.outbound_state_sync_position_seconds(
+                self.outbound_state_sync_position_seconds_for_pause_mutation(
                     clocks.response_at_seconds,
                     dont_slow_down_with_me,
+                    local_pause_mutation_intent.is_some(),
                 ),
                 self.session.model.playback.local_paused,
             )
@@ -304,7 +333,11 @@ where
             .active_local_pause_state_mutation_intent(&self.session);
 
         let outbound_state = if let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
+            self.outbound_state_sync_position_seconds_for_pause_mutation(
+                now_seconds,
+                dont_slow_down_with_me,
+                local_pause_mutation_intent.is_some(),
+            ),
             self.session.model.playback.local_paused,
         ) {
             self.session

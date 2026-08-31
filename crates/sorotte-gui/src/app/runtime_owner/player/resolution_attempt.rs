@@ -102,6 +102,33 @@ impl GuiPersistedConfigRuntimeOwner {
         !self.player_local_file_placeholder && !playlist_load_unconfirmed
     }
 
+    /// Returns whether the selected successor has generation-correlated
+    /// `file-loaded` evidence even though its tracked load command has not yet
+    /// emitted its terminal bookkeeping event.
+    ///
+    /// A successful media outcome is the physical fact needed to apply the
+    /// playlist pause-and-rewind handoff. Keeping the attempt in `Loading`
+    /// until command completion still protects normal attached-player sync and
+    /// preserves command ownership, but must not strand the selection fence or
+    /// let its corrective Pause race a later user Play.
+    pub(in crate::app::runtime_owner) fn player_media_confirmed_for_pending_playlist_reset(
+        &self,
+        target: &str,
+    ) -> bool {
+        self.player_local_file_ready_for_attached_sync()
+            || (self.player_local_file.is_some()
+                && self.current_player_is_loading_media_target(target)
+                && self
+                    .playlist_resolution_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.playlist_generation == self.playlist_resolution.generation
+                            && attempt.target == target
+                            && attempt.state == PlaylistResolutionAttemptState::Loading
+                            && !attempt.media_confirmation_pending
+                    }))
+    }
+
     pub(super) fn ensure_playlist_resolution_attempt(
         &mut self,
         row_id: GuiPlaylistEntryId,
@@ -2148,6 +2175,10 @@ mod tests {
             Some(media_generation),
             None,
         ));
+        assert!(
+            !owner.player_media_confirmed_for_pending_playlist_reset("episode.mkv"),
+            "an accepted load command is not physical file-loaded evidence"
+        );
 
         let success = PlayerMediaLoadOutcome::success(path, Some(path.to_owned()));
         for mismatched_generation in [
@@ -2166,6 +2197,10 @@ mod tests {
                     .media_confirmation_pending,
                 "a different media generation cannot confirm the tracked load"
             );
+            assert!(
+                !owner.player_media_confirmed_for_pending_playlist_reset("episode.mkv"),
+                "a mismatched generation cannot open the physical handoff fence"
+            );
         }
 
         owner.handle_playlist_media_load_outcome_for_generation(&success, Some(media_generation));
@@ -2178,6 +2213,14 @@ mod tests {
         );
         assert!(!provisional.handoff_pending);
         assert!(owner.player_local_file_placeholder);
+        assert!(
+            owner.player_media_confirmed_for_pending_playlist_reset("episode.mkv"),
+            "generation-correlated file-loaded evidence must open the physical reset fence before unrelated terminal bookkeeping"
+        );
+        assert!(
+            !owner.player_media_confirmed_for_pending_playlist_reset("other-episode.mkv"),
+            "file-loaded evidence remains scoped to the selected target"
+        );
 
         owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::finished(
             command_id,
@@ -2193,6 +2236,116 @@ mod tests {
         assert!(active.handoff_pending);
         assert!(!owner.player_local_file_placeholder);
         assert!(owner.player_local_file_ready_for_attached_sync());
+    }
+
+    #[test]
+    fn file_loaded_before_command_terminal_completes_the_playlist_reset_handoff() {
+        let path = "C:/media/episode.mkv";
+        let command_id = PlayerCommandId::new(13);
+        let media_generation = PlayerMediaGeneration::new(5);
+        let stored_settings = StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        state.main_window.active_playlist_index = Some(0);
+        let row_id = state.main_window.playlist[0].entry_id;
+
+        let (mut owner, _session_transport) =
+            GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime should bootstrap");
+        owner.active_session_settings = Some(
+            sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible(
+                &stored_settings,
+            ),
+        );
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+            GuiTestPlayerAdapter::default(),
+        )));
+        owner
+            .session
+            .as_mut()
+            .expect("session should exist")
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            )
+            .expect("hello should apply");
+        owner
+            .session
+            .as_mut()
+            .expect("session should exist")
+            .note_local_playlist_index_reset_intent(true);
+
+        owner.reconcile_local_shared_playlist_media_paths(&state);
+        let playlist_generation = owner.playlist_resolution.generation;
+        owner.ensure_playlist_resolution_attempt(
+            row_id,
+            playlist_generation,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        owner.begin_playlist_resolution_candidate_load(local_candidate(path), &started(13));
+        owner.player_local_file = Some(LocalFileUpdate::new("episode.mkv").with_path(path));
+        owner.player_local_file_placeholder = true;
+        owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::accepted(
+            command_id,
+            Some(media_generation),
+            None,
+        ));
+        owner.handle_playlist_media_load_outcome_for_generation(
+            &PlayerMediaLoadOutcome::success(path, Some(path.to_owned())),
+            Some(media_generation),
+        );
+        owner
+            .session
+            .as_mut()
+            .expect("session should exist")
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-selection State should apply");
+
+        let selected_media_sync =
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+        assert_eq!(
+            selected_media_sync,
+            SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
+            "generation-correlated file-loaded evidence should make the selected successor eligible for its reset"
+        );
+        let handoff_ready = selected_media_sync.selection_handoff_ready(
+            owner
+                .session
+                .as_ref()
+                .expect("session should exist")
+                .has_pending_playlist_index_reset_intent(),
+        );
+        assert!(handoff_ready);
+
+        owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, handoff_ready);
+
+        assert!(
+            !owner
+                .session
+                .as_ref()
+                .expect("session should exist")
+                .has_pending_playlist_index_reset_intent(),
+            "the completed physical handoff must release the coordinator transport hold"
+        );
+        assert_eq!(owner.player_position_seconds, Some(0.0));
+        assert_eq!(owner.player_paused, Some(true));
+        let attempt = owner
+            .playlist_resolution_attempt
+            .as_ref()
+            .expect("tracked attempt should remain");
+        assert_eq!(attempt.state, PlaylistResolutionAttemptState::Loading);
+        assert!(
+            owner.player_local_file_placeholder,
+            "ordinary attached sync remains fenced until the independent command terminal arrives"
+        );
     }
 
     #[test]

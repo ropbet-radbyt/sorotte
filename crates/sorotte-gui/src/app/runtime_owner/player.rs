@@ -124,10 +124,6 @@ pub(super) enum SelectedPlaylistMediaSyncOutcome {
 }
 
 impl SelectedPlaylistMediaSyncOutcome {
-    pub(super) fn selection_started(self) -> bool {
-        !matches!(self, Self::NoChange)
-    }
-
     pub(super) fn selection_handoff_ready(self, pending_playlist_reset: bool) -> bool {
         matches!(self, Self::MatchedCurrentTarget) && pending_playlist_reset
     }

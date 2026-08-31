@@ -353,6 +353,22 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.take_pending_playlist_index_reset_intent()
     }
 
+    pub fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.session
+            .mark_pending_playlist_index_reset_physical_effect_applied(player_attachment_epoch)
+    }
+
+    pub fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        self.session
+            .complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
+    }
+
     pub fn runtime_actions_for_desync_correction_against_room_playstate(
         &mut self,
         room_playstate: RoomPlaystateView,

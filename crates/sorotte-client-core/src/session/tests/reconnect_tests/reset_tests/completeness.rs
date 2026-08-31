@@ -104,6 +104,7 @@ struct PlaylistResetProjection {
     pending_index_reset_room: Option<String>,
     pending_index_reset_base_transport_revision: Option<u64>,
     pending_index_reset_base_playstate_receipt_sequence: Option<u64>,
+    pending_index_reset_physical_attachment_epoch: Option<u64>,
     pending_index_reset_refresh_recently_advanced: bool,
     suppress_next_self_index_reset: bool,
     last_seek_position_before_manual_seek: Option<f64>,
@@ -155,6 +156,8 @@ impl PlaylistResetProjection {
                 .pending_index_reset_base_transport_revision,
             pending_index_reset_base_playstate_receipt_sequence: playlist
                 .pending_index_reset_base_playstate_receipt_sequence,
+            pending_index_reset_physical_attachment_epoch: playlist
+                .pending_index_reset_physical_attachment_epoch,
             pending_index_reset_refresh_recently_advanced: playlist
                 .pending_index_reset_refresh_recently_advanced,
             suppress_next_self_index_reset: playlist.suppress_next_self_index_reset,
@@ -827,6 +830,7 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
     playlist.pending_index_reset_room = Some("room1".to_owned());
     playlist.pending_index_reset_base_transport_revision = Some(seed.max(1));
     playlist.pending_index_reset_base_playstate_receipt_sequence = Some(seed.max(1));
+    playlist.pending_index_reset_physical_attachment_epoch = Some(900 + seed);
     playlist.pending_index_reset_refresh_recently_advanced = true;
     playlist.suppress_next_self_index_reset = true;
     playlist.last_seek_position_before_manual_seek = Some(308.0 + seed as f64);

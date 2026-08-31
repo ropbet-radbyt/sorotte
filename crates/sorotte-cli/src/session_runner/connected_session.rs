@@ -5,6 +5,7 @@ mod execution;
 use std::{
     collections::VecDeque,
     sync::{Arc, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use self::execution::{
@@ -38,11 +39,21 @@ struct PendingReadyAtStart {
 }
 
 pub(crate) fn client_runtime_now_seconds() -> f64 {
-    static CLIENT_RUNTIME_CLOCK_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    CLIENT_RUNTIME_CLOCK_EPOCH
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_secs_f64()
+    // Client-core also has legacy-compatible entry points whose default clock
+    // is Unix wall time. Keep this process-monotonic clock in the same numeric
+    // domain so a local command cannot rebase fresh mpv observations from a
+    // process-relative timestamp to epoch seconds. The Instant component keeps
+    // retry/status deadlines monotonic after startup even if the wall clock is
+    // adjusted.
+    static CLIENT_RUNTIME_CLOCK_ORIGIN: OnceLock<(std::time::Instant, f64)> = OnceLock::new();
+    let (origin, unix_seconds_at_origin) = CLIENT_RUNTIME_CLOCK_ORIGIN.get_or_init(|| {
+        let unix_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        (std::time::Instant::now(), unix_seconds)
+    });
+    unix_seconds_at_origin + origin.elapsed().as_secs_f64()
 }
 
 fn insert_readiness_reconnect_token(

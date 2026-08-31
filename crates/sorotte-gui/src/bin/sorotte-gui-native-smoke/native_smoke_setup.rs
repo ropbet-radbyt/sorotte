@@ -308,6 +308,57 @@ pub(super) fn wait_for_lifecycle_events(
     }
 }
 
+pub(super) fn wait_for_lifecycle_event_suffix(
+    path: &Path,
+    expected_events: &[&str],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_events = Vec::new();
+    loop {
+        if let Ok(contents) = fs::read_to_string(path) {
+            let events = contents
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .map_err(|error| {
+                            format!(
+                                "lifecycle observation {} contained invalid JSON line {line:?}: {error}",
+                                path.display()
+                            )
+                        })?
+                        .get("event")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            format!(
+                                "lifecycle observation {} line did not contain an event string: {line:?}",
+                                path.display()
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if events.len() >= expected_events.len()
+                && events[events.len() - expected_events.len()..]
+                    .iter()
+                    .map(String::as_str)
+                    .eq(expected_events.iter().copied())
+            {
+                return Ok(());
+            }
+            last_events = events;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for exact GUI lifecycle suffix at {}; expected={expected_events:?}, observed={last_events:?}",
+                path.display()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 pub(super) fn seed_native_smoke_config_with_saved_server(
     config_path: &Path,
     host: Option<&str>,

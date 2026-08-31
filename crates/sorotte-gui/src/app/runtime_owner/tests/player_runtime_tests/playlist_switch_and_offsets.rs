@@ -429,7 +429,7 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
 
     for line in outbound_lines
         .iter()
-        .filter(|line| line.contains("\"Set\""))
+        .filter(|line| line.contains("\"Set\"") || line.contains("\"State\""))
     {
         session_transport.push_inbound_protocol_line(line.clone());
     }

@@ -31,7 +31,7 @@ jobs:
         run: |
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28

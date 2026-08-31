@@ -1266,6 +1266,111 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
 }
 
 #[test]
+fn same_selected_shared_media_reopen_after_player_replacement_does_not_rearm_a_canonical_reset() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let transport = owner
+        .session_transport
+        .as_ref()
+        .expect("loopback owner should expose its transport")
+        .clone();
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let media_root = test_temp_root("same-selection-player-replacement");
+    let media_path = media_root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("media fixture should be written");
+    let media_path_text = media_path.to_string_lossy().into_owned();
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: None,
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| state.main_window.active_playlist_index == Some(0),
+        "initial selected shared-media open",
+    );
+    transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":3.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#
+            .to_owned(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline
+        && owner
+            .session
+            .as_ref()
+            .expect("session should remain installed")
+            .has_pending_playlist_index_reset_intent()
+    {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !owner
+            .session
+            .as_ref()
+            .expect("session should remain installed")
+            .has_pending_playlist_index_reset_intent(),
+        "physical media confirmation plus post-selection State should complete the initial reset"
+    );
+
+    // Model a fresh physical transport which has not yet reported its file,
+    // while preserving the already-selected canonical playlist row.
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = None;
+    owner.player_local_file_placeholder = false;
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![media_path_text.clone()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: None,
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline
+        && owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            != Some(media_path_text.as_str())
+    {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(media_path_text.as_str()),
+        "the replacement physical transport should load the already-selected row"
+    );
+
+    assert!(
+        !owner
+            .session
+            .as_ref()
+            .expect("session should remain installed")
+            .has_pending_playlist_index_reset_intent(),
+        "a physical reload of the selected row must not manufacture a canonical selection fence"
+    );
+
+    let _ = std::fs::remove_dir_all(media_root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open() {
     struct RecordingTransportDriver {
         writes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
