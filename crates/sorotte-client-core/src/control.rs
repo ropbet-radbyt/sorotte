@@ -459,6 +459,15 @@ impl ClientEffect {
 pub trait ClientEffectSink {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
 
+    /// Emits a connection-scoped FIFO State for one playback control edge.
+    ///
+    /// Sinks without an ordered protocol outbox retain source compatibility
+    /// and observe an ordinary State effect. The production queued sink
+    /// overrides this so periodic and advisory State cannot replace the edge.
+    fn emit_causal_state(&mut self, state: StatePayload) -> Result<(), ClientEffectError> {
+        self.emit(ClientEffect::SendState(state))
+    }
+
     /// Starts a fresh transport generation. Reliable commands remain owned by
     /// the sink, while connection-scoped effects from the previous transport
     /// are discarded.
@@ -551,6 +560,11 @@ impl QueuedRuntimeControl {
     pub(crate) fn queue_connection_scoped_state(&mut self, state: StatePayload) -> bool {
         self.outbound_messages
             .push_connection_scoped_state(ProtocolMessage::state(state))
+    }
+
+    pub(crate) fn queue_connection_scoped_causal_state(&mut self, state: StatePayload) -> bool {
+        self.outbound_messages
+            .push_connection_scoped_causal_state(ProtocolMessage::state(state))
     }
 
     pub fn drain_outbound_messages(&mut self) -> Vec<ProtocolMessage> {
@@ -852,6 +866,15 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 self.reconnect_delays.push(delay_seconds);
             }
             ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
+        }
+        Ok(())
+    }
+
+    fn emit_causal_state(&mut self, state: StatePayload) -> Result<(), ClientEffectError> {
+        if !self.queue_connection_scoped_causal_state(state) {
+            return Err(ClientEffectError::OperationFailed(
+                "causal state is not valid for the active connection generation".to_owned(),
+            ));
         }
         Ok(())
     }

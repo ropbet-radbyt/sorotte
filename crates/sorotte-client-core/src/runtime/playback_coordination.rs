@@ -1101,6 +1101,51 @@ impl RuntimePlaybackCoordination {
         plan
     }
 
+    pub(crate) fn retire_media(&mut self) -> Vec<PlaybackCoordinatorAction> {
+        let actions = self.coordinator.retire_media();
+        self.adapter_generation_bindings.clear();
+        self.pending_media_identity = None;
+        self.highest_bound_adapter_generation = None;
+        self.player_command_bindings.clear();
+        self.pending_coordinator_command_completion_replay = false;
+        self.last_player_transition_classification = None;
+        self.pending_native_play_authority_fence = None;
+        self.last_technical_readiness_fingerprint = None;
+        self.latest_observation = None;
+        self.latest_position_observation = None;
+        self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
+        self.desired_generation = None;
+        self.desired_fingerprint = None;
+        self.pending_local_pause_intent = None;
+        self.last_local_pause_intent_stage_accepted = None;
+        self.pending_forced_seek_revision = None;
+        self.transport_telemetry_observed = false;
+        self.last_transport_telemetry_received_at_seconds = None;
+        self.transport_telemetry_wait_started_at_seconds = None;
+        self.transport_telemetry_lifecycle_fence_at_seconds = None;
+        self.participant_status_owner_clock_invalidated = false;
+        self.reconnect_reconciliation = None;
+        self.last_applied_revision = None;
+        self.last_started_revision = None;
+        self.last_degraded_reason = None;
+        self.last_reported_barrier_ready = None;
+        self.last_reported_barrier_started = None;
+        self.initiated_barrier = None;
+        self.accepted_barrier = None;
+        self.pending_barrier_recovery = None;
+        self.accepted_barrier_terminal = false;
+        self.pending_media_coordination = None;
+        self.handled_barrier_timeout = None;
+        self.pending_barrier_timeout_action = None;
+        self.last_reported_room_buffering = None;
+        self.last_participant_status_fingerprint = None;
+        self.last_participant_status_sent_at_seconds = None;
+        self.participant_status_room_scope = None;
+        self.participant_status_applied_room_scope = None;
+        self.participant_status_desired_scope_bindings.clear();
+        actions
+    }
+
     fn prepare_media_internal(
         &mut self,
         logical_id: LogicalMediaId,
@@ -5298,6 +5343,32 @@ where
             .playback_coordination
             .prepare_media_for_room_participation(logical_id, kind, now_seconds);
         self.finish_prepared_playback_media(plan, now_seconds)
+    }
+
+    /// Retires the active logical media after canonical playlist authority no
+    /// longer selects an entry. The player attachment remains usable, but no
+    /// cached file, EOF, telemetry, or barrier evidence from this generation
+    /// may bind a later selection.
+    pub fn retire_playback_media(&mut self) -> Result<bool, PlayerError> {
+        let had_media = self
+            .playback_coordination
+            .coordinator
+            .current_media_generation()
+            .is_some()
+            || self.last_local_file_update.is_some()
+            || self.pending_natural_playback_completion.is_some();
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let actions = self.playback_coordination.retire_media();
+        self.last_local_file_update = None;
+        self.pending_natural_playback_completion = None;
+        self.pending_player_playback_telemetry_updates = EffectOutbox::default();
+        self.pending_ordered_local_file_updates = EffectOutbox::default();
+        self.pending_state_sync_player_error = None;
+        self.pending_reconnect_rate_reset = false;
+        self.control.cancel_protocol_playback_barrier_requests();
+        self.execute_playback_coordinator_actions(actions, now_seconds)?;
+        let status_changed = self.emit_participant_status_transition(now_seconds)?;
+        Ok(had_media || status_changed)
     }
 
     fn finish_prepared_playback_media(

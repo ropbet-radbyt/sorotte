@@ -188,6 +188,7 @@ enum ProtocolDelivery {
         membership_epoch: u64,
         cancelled: bool,
     },
+    ConnectionScopedCausalState,
     ConnectionScopedState {
         generation: u64,
         participant_status_cancelled: bool,
@@ -239,8 +240,9 @@ pub struct ProtocolLineLease(u64);
 ///
 /// Durable reliable commands remain in FIFO order until acknowledged.
 /// Playback-barrier Set requests are reliable only within their connection,
-/// room, and local-media scope. Playback State is scoped to one connection
-/// generation and coalesces to the latest pending value. A State returned by
+/// room, and local-media scope. Causal playback State is connection-scoped and
+/// FIFO, while observational playback State is connection-scoped and
+/// coalesces to the latest pending value. A State returned by
 /// [`Self::front_for_delivery`] is leased until it is acknowledged; a newer
 /// State may wait behind that lease without changing the bytes owned by an
 /// asynchronous transport.
@@ -325,6 +327,17 @@ impl ProtocolOutbox {
                 cancelled: false,
             },
         );
+        true
+    }
+
+    pub(crate) fn push_connection_scoped_causal_state(&mut self, message: ProtocolMessage) -> bool {
+        if self.active_generation != Some(self.connection_generation)
+            || !matches!(message, ProtocolMessage::State(_))
+        {
+            return false;
+        }
+
+        self.insert_reliable(message, ProtocolDelivery::ConnectionScopedCausalState);
         true
     }
 
@@ -731,6 +744,78 @@ mod tests {
             41,
         ));
         outbox.push_back(ProtocolMessage::chat_text("durable"));
+
+        outbox.begin_connection_generation();
+
+        assert_eq!(outbox.pending().len(), 1);
+        assert!(matches!(outbox.pending()[0], ProtocolMessage::Chat(_)));
+    }
+
+    #[test]
+    fn causal_state_remains_fifo_ahead_of_later_periodic_state() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        outbox.push_back(ProtocolMessage::set(
+            SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(0)),
+        ));
+
+        let reset = StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(0.0)
+                .with_paused(true)
+                .with_do_seek(true)
+                .with_transport_revision(9),
+        );
+        assert!(outbox.push_connection_scoped_causal_state(ProtocolMessage::state(reset)));
+
+        let periodic = StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(7.0)
+                .with_paused(true)
+                .with_do_seek(false)
+                .with_transport_revision(10),
+        );
+        assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(periodic)));
+
+        assert_eq!(outbox.pending().len(), 3);
+        let ProtocolMessage::State(reset) = &outbox.pending()[1] else {
+            panic!("causal reset should remain a distinct State");
+        };
+        let reset = reset
+            .state
+            .playstate
+            .as_ref()
+            .expect("causal reset should retain playstate");
+        assert_eq!(reset.position, Some(0.0));
+        assert_eq!(reset.do_seek, Some(true));
+
+        let ProtocolMessage::State(periodic) = &outbox.pending()[2] else {
+            panic!("periodic sample should follow the causal reset");
+        };
+        let periodic = periodic
+            .state
+            .playstate
+            .as_ref()
+            .expect("periodic sample should retain playstate");
+        assert_eq!(periodic.position, Some(7.0));
+        assert_eq!(periodic.do_seek, Some(false));
+    }
+
+    #[test]
+    fn reconnect_discards_causal_state_from_the_retired_connection() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        outbox.push_back(ProtocolMessage::chat_text("durable"));
+        assert!(
+            outbox.push_connection_scoped_causal_state(ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(0.0)
+                        .with_paused(true)
+                        .with_do_seek(true),
+                ),
+            ))
+        );
 
         outbox.begin_connection_generation();
 

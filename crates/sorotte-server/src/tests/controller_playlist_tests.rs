@@ -50,6 +50,12 @@ fn playlist_index_payloads(
         .collect()
 }
 
+fn playback_lifecycle_hello(username: &str) -> String {
+    format!(
+        r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.7.5","features":{{"sorottePlaybackBarrierV1":true}}}}}}"#
+    )
+}
+
 #[test]
 fn simultaneous_natural_eof_compare_and_set_commits_one_selection_generation() {
     let mut runtime = ServerRuntime::default();
@@ -121,6 +127,177 @@ fn simultaneous_natural_eof_compare_and_set_commits_one_selection_generation() {
         payload.index_value() == Some(1) && payload.playlist_epoch() == Some(4)
     }));
     assert_eq!(runtime.room_playlist_state("room1").epoch, 4);
+}
+
+#[test]
+fn direct_selection_atomically_retires_an_already_paused_predecessor_position() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello_line = if client_id == "client-1" {
+            playback_lifecycle_hello(username)
+        } else {
+            format!(
+                r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
+            )
+        };
+        let hello = runtime
+            .handle_line_fanout(client_id, &hello_line)
+            .expect("participant hello should establish a session");
+        acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&hello));
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    let positioned = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":7.0,"paused":true,"doSeek":true}}}"#,
+        )
+        .expect("predecessor position should become canonical");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&positioned));
+    assert_eq!(runtime.room_playback_state("room1").position, 7.0);
+    assert!(runtime.room_playback_state("room1").paused);
+    let predecessor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the predecessor should have transport authority");
+
+    let selection = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("direct selection should be accepted");
+    let selection_messages = decode_directed_lines(&selection);
+    let successor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the successor should have transport authority");
+    assert!(successor_revision > predecessor_revision);
+    assert_eq!(runtime.room_playback_state("room1").position, 0.0);
+    assert!(runtime.room_playback_state("room1").paused);
+
+    for client_id in ["client-1", "client-2"] {
+        let recipient_messages: Vec<_> = selection_messages
+            .iter()
+            .filter(|(recipient, _)| recipient == client_id)
+            .map(|(_, message)| message)
+            .collect();
+        let playlist_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(0)
+                        })
+                )
+            })
+            .expect("the successor selection should be fanned out");
+        let state_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::State(payload)
+                        if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.position == Some(0.0)
+                                && playstate.paused == Some(true)
+                        })
+                )
+            })
+            .expect("the successor transport reset should be fanned out");
+        assert!(playlist_offset < state_offset);
+    }
+}
+
+#[test]
+fn selected_entry_replacement_at_the_same_index_starts_fresh_transport_authority() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = runtime
+            .handle_line_fanout(client_id, &playback_lifecycle_hello(username))
+            .expect("participant hello should establish a session");
+        acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&hello));
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    let initial_selection = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&initial_selection));
+    let positioned = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":7.0,"paused":true,"doSeek":true}}}"#,
+        )
+        .expect("predecessor position should become canonical");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&positioned));
+    let predecessor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the predecessor should have transport authority");
+
+    let replacement = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["replacement.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("selected entry replacement should be accepted");
+    let replacement_messages = decode_directed_lines(&replacement);
+    assert_eq!(runtime.room_playlist_state("room1").index, Some(0));
+    assert_eq!(runtime.room_playback_state("room1").position, 0.0);
+    assert!(runtime.room_playback_state("room1").paused);
+    assert!(
+        runtime
+            .transport_authority_revision_for_room("room1")
+            .expect("the replacement should have transport authority")
+            > predecessor_revision
+    );
+
+    for client_id in ["client-1", "client-2"] {
+        let recipient_messages: Vec<_> = replacement_messages
+            .iter()
+            .filter(|(recipient, _)| recipient == client_id)
+            .map(|(_, message)| message)
+            .collect();
+        let playlist_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(message, ProtocolMessage::Set(payload) if payload.set.playlist_change.is_some())
+            })
+            .expect("replacement contents should be fanned out");
+        let index_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(0)
+                        })
+                )
+            })
+            .expect("the stable numeric row should be announced as a fresh selection");
+        let state_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::State(payload)
+                        if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.position == Some(0.0)
+                                && playstate.paused == Some(true)
+                                && playstate.set_by.as_deref() == Some("alice")
+                        })
+                )
+            })
+            .expect("fresh zero-position transport should follow the replacement selection");
+        assert!(playlist_offset < index_offset);
+        assert!(index_offset < state_offset);
+    }
 }
 
 #[test]
@@ -385,6 +562,84 @@ fn playlist_join_snapshot_carries_one_coherent_canonical_epoch() {
             && payload.index_value() == Some(0)
             && payload.playlist_epoch() == Some(2)
     }));
+}
+
+#[test]
+fn empty_playlist_change_retires_selection_without_autoselecting_restore() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        runtime
+            .handle_line(client_id, &playback_lifecycle_hello(username))
+            .expect("participant hello should establish a session");
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("initial selection should be accepted");
+
+    let cleared = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+        .expect("empty playlist should be accepted");
+    let decoded = decode_directed_lines(&cleared);
+    assert_eq!(
+        runtime.room_playlist_state("room1").files,
+        Vec::<String>::new()
+    );
+    assert_eq!(runtime.room_playlist_state("room1").index, None);
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 3);
+    assert_eq!(runtime.room_playback_state("room1").position, 0.0);
+    assert!(runtime.room_playback_state("room1").paused);
+
+    let changes = playlist_change_payloads(&cleared);
+    let indices = playlist_index_payloads(&cleared);
+    assert_eq!(changes.len(), 2);
+    assert_eq!(indices.len(), 2);
+    assert!(changes.iter().all(|(_, payload)| {
+        payload.files.is_empty()
+            && payload.user.as_deref() == Some("alice")
+            && payload.playlist_epoch() == Some(3)
+    }));
+    assert!(indices.iter().all(|(_, payload)| {
+        payload.index_value().is_none()
+            && payload.user.as_deref() == Some("alice")
+            && payload.playlist_epoch() == Some(3)
+    }));
+    for client_id in ["client-1", "client-2"] {
+        let recipient: Vec<_> = decoded
+            .iter()
+            .filter(|(recipient, _)| recipient == client_id)
+            .map(|(_, message)| message)
+            .collect();
+        assert!(matches!(
+            recipient.as_slice(),
+            [ProtocolMessage::Set(change), ProtocolMessage::Set(index), ProtocolMessage::State(state)]
+                if change.set.playlist_change.is_some()
+                    && index.set.playlist_index.as_ref().is_some_and(|payload| {
+                        payload.index_value().is_none()
+                    })
+                    && state.state.playstate.as_ref().is_some_and(|playstate| {
+                        playstate.position == Some(0.0) && playstate.paused == Some(true)
+                    })
+        ));
+    }
+
+    let restored = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["replacement.mkv"]}}}"#,
+        )
+        .expect("replacement contents should be accepted");
+    assert_eq!(runtime.room_playlist_state("room1").index, None);
+    assert_eq!(runtime.room_playlist_state("room1").epoch, 4);
+    assert!(
+        playlist_index_payloads(&restored).is_empty(),
+        "non-empty contents must not silently select a row"
+    );
 }
 
 #[test]
@@ -974,13 +1229,10 @@ fn playlist_index_rejects_negative_and_out_of_range_values() {
 }
 
 #[test]
-fn playlist_replacement_preserves_explicit_index_without_implicit_index_fanout() {
+fn playlist_replacement_retires_an_explicit_index_that_no_longer_names_an_entry() {
     let mut runtime = ServerRuntime::default();
     runtime
-        .handle_line(
-            "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
-        )
+        .handle_line("client-1", &playback_lifecycle_hello("alice"))
         .expect("hello should establish session");
     runtime
         .handle_line_fanout(
@@ -998,21 +1250,24 @@ fn playlist_replacement_preserves_explicit_index_without_implicit_index_fanout()
             r#"{"Set":{"playlistChange":{"files":["replacement.mkv"]}}}"#,
         )
         .expect("shorter replacement should be accepted");
-    assert_eq!(runtime.room_playlist_state("room1").index, Some(2));
+    assert_eq!(runtime.room_playlist_state("room1").index, None);
     assert!(
         decode_directed_lines(&shortened)
             .iter()
-            .all(|(_, message)| !matches!(
+            .any(|(_, message)| matches!(
                 message,
-                ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
+                ProtocolMessage::Set(payload)
+                    if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                        index.index_value().is_none()
+                    })
             )),
-        "playlist replacement must fan out only playlistChange"
+        "playlist replacement must retire the now-invalid selection"
     );
 
     let cleared = runtime
         .handle_line_fanout("client-1", r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("playlist clear should be accepted");
-    assert_eq!(runtime.room_playlist_state("room1").index, Some(2));
+    assert_eq!(runtime.room_playlist_state("room1").index, None);
     assert!(
         decode_directed_lines(&cleared)
             .iter()
@@ -1020,6 +1275,6 @@ fn playlist_replacement_preserves_explicit_index_without_implicit_index_fanout()
                 message,
                 ProtocolMessage::Set(payload) if payload.set.playlist_index.is_some()
             )),
-        "clearing a playlist must not synthesize playlistIndex(null)"
+        "an already-retired selection must not synthesize another playlistIndex(null)"
     );
 }

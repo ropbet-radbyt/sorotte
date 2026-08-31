@@ -463,6 +463,10 @@ where
         .map(|_| ())
     }
 
+    pub fn unload(&mut self) -> Result<(), PlayerError> {
+        self.player.unload()
+    }
+
     pub fn open_media(
         &mut self,
         path: &str,
@@ -658,13 +662,14 @@ where
             return Ok(());
         }
         let playstate = self.session.with_current_transport_revision(
-            PlaystatePayload::new().with_position(0.0).with_paused(true),
+            PlaystatePayload::new()
+                .with_position(0.0)
+                .with_paused(true)
+                .with_do_seek(true),
         );
         self.control.activate_protocol_connection_generation();
         self.control
-            .emit(ClientEffect::SendState(
-                StatePayload::new().with_playstate(playstate),
-            ))
+            .emit_causal_state(StatePayload::new().with_playstate(playstate))
             .map_err(client_effect_player_error)
     }
 

@@ -393,6 +393,19 @@ fn client_runtime_replace_playlist_finalizes_changed_target_at_same_index_before
         None,
         "the matching replacement echo must not create a second reset"
     );
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":3}}}"#,
+        )
+        .expect("the server's same-index selection announcement should apply");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "the server confirmation for a locally projected replacement must not double-reset"
+    );
     assert_eq!(runtime.control().outbound_messages().len(), 2);
     assert!(matches!(
         runtime.control().outbound_messages()[1],

@@ -1613,6 +1613,11 @@ pub trait PlayerAdapter: Send + Sync {
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("open_file"))
     }
+    /// Retires the currently loaded media while keeping the player
+    /// attachment available for a later canonical selection.
+    fn unload(&mut self) -> Result<(), PlayerError> {
+        Err(PlayerError::Unsupported("unload"))
+    }
     fn set_option_string(&mut self, _name: &str, _value: &str) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("set_option_string"))
     }

@@ -33,6 +33,10 @@ impl PlayerAdapter for GuiNoopClientRuntimePlayer {
     fn set_playback_rate(&mut self, _rate: f64) -> Result<(), sorotte_player_api::PlayerError> {
         Ok(())
     }
+
+    fn unload(&mut self) -> Result<(), sorotte_player_api::PlayerError> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -63,7 +67,7 @@ mod path_tests {
 
     use sorotte_player_api::PlayerAdapter;
 
-    use super::{GuiTestPlayerAdapter, local_file_update_for_player_path};
+    use super::{GuiOwnedPlayer, GuiTestPlayerAdapter, local_file_update_for_player_path};
 
     #[test]
     fn local_file_identity_accepts_both_path_separator_styles() {
@@ -118,6 +122,20 @@ mod path_tests {
         std::fs::remove_file(observation_path)
             .expect("observation fixture file should be removable");
         std::fs::remove_dir(root).expect("observation fixture directory should be removable");
+    }
+
+    #[test]
+    fn gui_owned_player_forwards_unload_to_its_active_adapter() {
+        let mut player = GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default());
+        player
+            .open_file("episode.mkv")
+            .expect("the GUI test player should accept a media load");
+
+        player
+            .unload()
+            .expect("the GUI owner should forward canonical media retirement");
+
+        assert!(player.take_local_file_update().is_none());
     }
 }
 
@@ -188,6 +206,13 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
                 .with_paused(true)
                 .with_position_seconds(0.0),
         );
+        Ok(())
+    }
+
+    fn unload(&mut self) -> Result<(), sorotte_player_api::PlayerError> {
+        self.local_file_updates.clear();
+        self.media_load_outcomes.clear();
+        self.playback_updates.clear();
         Ok(())
     }
 
@@ -334,6 +359,15 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Mpv(player) => player.open_file(path),
             #[cfg(test)]
             Self::Custom(player) => player.open_file(path),
+        }
+    }
+
+    fn unload(&mut self) -> Result<(), sorotte_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.unload(),
+            Self::Mpv(player) => player.unload(),
+            #[cfg(test)]
+            Self::Custom(player) => player.unload(),
         }
     }
 

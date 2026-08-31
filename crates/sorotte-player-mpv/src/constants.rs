@@ -3,6 +3,7 @@ pub(crate) const MPV_COMMAND_SET: &str = "set";
 pub(crate) const MPV_COMMAND_GET_PROPERTY: &str = "get_property";
 pub(crate) const MPV_COMMAND_OBSERVE_PROPERTY: &str = "observe_property";
 pub(crate) const MPV_COMMAND_LOADFILE: &str = "loadfile";
+pub(crate) const MPV_COMMAND_STOP: &str = "stop";
 pub(crate) const MPV_COMMAND_APPLY_PROFILE: &str = "apply-profile";
 pub(crate) const MPV_COMMAND_SHOW_TEXT: &str = "show-text";
 pub(crate) const MPV_COMMAND_LOAD_SCRIPT: &str = "load-script";

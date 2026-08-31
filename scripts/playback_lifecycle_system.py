@@ -43,11 +43,11 @@ REPORT_KIND = "sorotte-playback-lifecycle-system"
 TRACE_KIND = "sorotte-playback-lifecycle-causal-trace"
 PLAYER_TRACE_KIND = "sorotte-real-mpv-observation"
 MISSING_PREREQUISITE_EXIT = 125
-DEFAULT_TIMEOUT_SECONDS = 75.0
-DEFAULT_CLIENT_RUNTIME_SECONDS = 24.0
+DEFAULT_TIMEOUT_SECONDS = 135.0
+DEFAULT_CLIENT_RUNTIME_SECONDS = 65.0
 ROOM_VERSION = "1.7.5"
 MINIMUM_MPV_VERSION = (0, 41, 0)
-FAULT_SCHEDULE_ID = "follower-cut-miss-start-reconnect-v1"
+FAULT_SCHEDULE_ID = "status-replacement-empty-partition-eof-recovery-v3"
 
 ROLE_USERNAMES = {
     "observer": "life-observer",
@@ -75,6 +75,7 @@ SAFE_TRACE_FIELDS = {
     "eof_reached",
     "reason",
     "playlist_index",
+    "selection_present",
     "playlist_size",
     "set_by",
     "do_seek",
@@ -774,11 +775,14 @@ def project_protocol_message(
         playlist_index = set_payload.get("playlistIndex")
         if isinstance(playlist_index, dict):
             value = playlist_index.get("index")
-            if isinstance(value, int) and not isinstance(value, bool):
+            if value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+            ):
                 events.append(
                     {
                         "event": "playlist-index",
-                        "playlist_index": value,
+                        "selection_present": value is not None,
+                        "playlist_index": value if value is not None else None,
                         "set_by": _role(playlist_index.get("user"), role_by_username),
                     }
                 )
@@ -920,7 +924,10 @@ class ProtocolObserver:
                     "username": ROLE_USERNAMES["observer"],
                     "room": {"name": self.room},
                     "version": ROOM_VERSION,
-                    "features": {"sorotteParticipantStatusV1": True},
+                    "features": {
+                        "sorotteParticipantStatusV1": True,
+                        "sorottePlaybackBarrierV1": True,
+                    },
                 }
             }
         )
@@ -1062,6 +1069,12 @@ class ProtocolFaultProxy:
         self._upstream_connection_count = 0
         self._fragment_count = 0
         self._forwarded_bytes = 0
+        self._participant_status_report_count = 0
+        self._participant_status_forwarded_count = 0
+        self._participant_status_dropped_count = 0
+        self._drop_next_participant_status_reports = 0
+        self._block_participant_status_reports = False
+        self._upstream_send_lock = threading.Lock()
         self.error: str | None = None
         self.thread = threading.Thread(
             target=self._run,
@@ -1109,6 +1122,110 @@ class ProtocolFaultProxy:
         with self._lock:
             return self._forwarded_bytes
 
+    @property
+    def participant_status_report_count(self) -> int:
+        with self._lock:
+            return self._participant_status_report_count
+
+    @property
+    def participant_status_forwarded_count(self) -> int:
+        with self._lock:
+            return self._participant_status_forwarded_count
+
+    @property
+    def participant_status_dropped_count(self) -> int:
+        with self._lock:
+            return self._participant_status_dropped_count
+
+    @staticmethod
+    def _participant_status_report_sequence(message: Mapping[str, Any]) -> int | None:
+        state = message.get("State")
+        if not isinstance(state, dict):
+            return None
+        extension = state.get("sorotteParticipantStatusV1")
+        if not isinstance(extension, dict):
+            return None
+        report = extension.get("report")
+        if not isinstance(report, dict):
+            return None
+        sequence = report.get("reportSequence")
+        return (
+            sequence
+            if isinstance(sequence, int) and not isinstance(sequence, bool)
+            else None
+        )
+
+    def drop_next_participant_status_reports(self, count: int = 1) -> None:
+        if count <= 0:
+            raise ValueError("participant status drop count must be positive")
+        with self._lock:
+            self._drop_next_participant_status_reports += count
+        self.ledger.emit(
+            source="protocol-fault-proxy",
+            role=self.role,
+            event="participant-status-drop-armed",
+            detail="bounded advisory report loss",
+        )
+
+    def set_participant_status_blocked(self, blocked: bool) -> None:
+        with self._lock:
+            self._block_participant_status_reports = blocked
+        self.ledger.emit(
+            source="protocol-fault-proxy",
+            role=self.role,
+            event=(
+                "participant-status-blocked"
+                if blocked
+                else "participant-status-unblocked"
+            ),
+            detail="advisory report lane only",
+        )
+
+    def _participant_status_frame_should_be_dropped(
+        self, message: Mapping[str, Any]
+    ) -> tuple[bool, int | None]:
+        sequence = self._participant_status_report_sequence(message)
+        if sequence is None:
+            return False, None
+        with self._lock:
+            self._participant_status_report_count += 1
+            should_drop = self._block_participant_status_reports
+            if self._drop_next_participant_status_reports > 0:
+                self._drop_next_participant_status_reports -= 1
+                should_drop = True
+            if should_drop:
+                self._participant_status_dropped_count += 1
+            else:
+                self._participant_status_forwarded_count += 1
+        self.ledger.emit(
+            source="protocol-fault-proxy",
+            role=self.role,
+            event=(
+                "participant-status-report-dropped"
+                if should_drop
+                else "participant-status-report-forwarded"
+            ),
+            source_sequence=sequence,
+            detail="advisory report frame",
+        )
+        return should_drop, sequence
+
+    @staticmethod
+    def _without_participant_status_report(
+        message: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        state = message.get("State")
+        if not isinstance(state, dict):
+            return dict(message)
+        forwarded_state = dict(state)
+        forwarded_state.pop("sorotteParticipantStatusV1", None)
+        forwarded_message = dict(message)
+        if forwarded_state:
+            forwarded_message["State"] = forwarded_state
+        else:
+            forwarded_message.pop("State", None)
+        return forwarded_message or None
+
     def _fragmented_send(self, destination: socket.socket, data: bytes) -> None:
         offset = 0
         fragment_index = 0
@@ -1140,11 +1257,16 @@ class ProtocolFaultProxy:
                     while b"\n" in line_buffer:
                         line, _, tail = line_buffer.partition(b"\n")
                         line_buffer = bytearray(tail)
+                        framed_line = bytes(line) + b"\n"
                         try:
                             message = json.loads(line.decode("utf-8"))
                         except (UnicodeDecodeError, json.JSONDecodeError):
+                            with self._upstream_send_lock:
+                                self._fragmented_send(destination, framed_line)
                             continue
                         if not isinstance(message, dict):
+                            with self._upstream_send_lock:
+                                self._fragmented_send(destination, framed_line)
                             continue
                         for event in project_client_protocol_message(message):
                             self.ledger.emit(
@@ -1152,10 +1274,30 @@ class ProtocolFaultProxy:
                                 role=self.role,
                                 **event,
                             )
+                        should_drop, _sequence = (
+                            self._participant_status_frame_should_be_dropped(message)
+                        )
+                        if should_drop:
+                            forwarded_message = self._without_participant_status_report(
+                                message
+                            )
+                            if forwarded_message is None:
+                                continue
+                            framed_line = (
+                                json.dumps(
+                                    forwarded_message,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                                + b"\n"
+                            )
+                        with self._upstream_send_lock:
+                            self._fragmented_send(destination, framed_line)
                     if len(line_buffer) > 1024 * 1024:
                         # A malformed unterminated frame is never useful
                         # evidence and must not create an unbounded raw buffer.
                         line_buffer.clear()
+                    continue
                 self._fragmented_send(destination, data)
         except OSError:
             return
@@ -1733,6 +1875,17 @@ class PlaybackLifecycleHarness:
             {"Set": {"playlistChange": {"files": [str(first), str(second)]}}}
         )
         self.observer.send({"Set": {"playlistIndex": {"index": 0}}})
+        self.observer.send(
+            {
+                "State": {
+                    "playstate": {
+                        "position": 0.0,
+                        "paused": True,
+                        "doSeek": False,
+                    }
+                }
+            }
+        )
         self._observer_event(
             cursor,
             lambda event: event.get("event") == "playlist-change"
@@ -2131,6 +2284,330 @@ class PlaybackLifecycleHarness:
         self._pass(
             "participant-status-snapshot-and-cadence",
             f"all real players appeared in advancing status revisions through {second_status.fields['status_revision']}",
+        )
+
+    def _verify_participant_status_loss_delay_stale_recovery(self) -> None:
+        assert self.observer is not None
+        proxy = self.proxies.get("follower")
+        if proxy is None:
+            raise HarnessFailure(
+                "participant-status-faults", "the follower fault proxy is missing"
+            )
+
+        canonical_events = [
+            event
+            for event in self.observer.events_after(0)
+            if event.fields.get("event") == "playstate"
+            and isinstance(event.fields.get("transport_revision"), int)
+        ]
+        if not canonical_events:
+            raise HarnessFailure(
+                "participant-status-faults",
+                "canonical transport authority was unavailable before status faults",
+            )
+        canonical_baseline = canonical_events[-1].fields
+        baseline_revision = canonical_baseline["transport_revision"]
+        baseline_position = _safe_number(canonical_baseline.get("position_seconds"))
+        if canonical_baseline.get("paused") is not True or baseline_position is None:
+            raise HarnessFailure(
+                "participant-status-faults",
+                "status faults require a finite paused canonical baseline",
+            )
+
+        def follower_availability(event: dict[str, Any], expected: str) -> bool:
+            if event.get("event") != "participant-status-snapshot":
+                return False
+            views = event.get("participant_views", {})
+            follower = views.get("follower") if isinstance(views, dict) else None
+            return isinstance(follower, dict) and follower.get("availability") == expected
+
+        self.stage = "participant-status-single-loss"
+        dropped_before = proxy.participant_status_dropped_count
+        proxy.drop_next_participant_status_reports()
+        self._wait(
+            "one real participant-status report to be dropped",
+            lambda: proxy.participant_status_dropped_count > dropped_before,
+            timeout=4.0,
+        )
+        forwarded_after_drop = proxy.participant_status_forwarded_count
+        self._wait(
+            "the next periodic participant-status report to self-heal the loss",
+            lambda: proxy.participant_status_forwarded_count > forwarded_after_drop,
+            timeout=5.0,
+        )
+        status_cursor = self.observer.cursor()
+        self._observer_event(
+            status_cursor,
+            lambda event: follower_availability(event, "fresh"),
+            timeout=5.0,
+        )
+        self._pass(
+            "participant-status-single-loss-self-healed",
+            "one dropped advisory report was repaired by a later complete periodic report",
+        )
+
+        self.stage = "participant-status-delay-and-stale"
+        status_cursor = self.observer.cursor()
+        dropped_before = proxy.participant_status_dropped_count
+        proxy.set_participant_status_blocked(True)
+        self._wait(
+            "the advisory-only block to suppress a real report",
+            lambda: proxy.participant_status_dropped_count > dropped_before,
+            timeout=4.0,
+        )
+        delayed = self._observer_event(
+            status_cursor,
+            lambda event: follower_availability(event, "delayed"),
+            timeout=7.0,
+        )
+        self._observer_event(
+            delayed.sequence,
+            lambda event: follower_availability(event, "stale"),
+            timeout=9.0,
+        )
+        self._pass(
+            "participant-status-delayed-and-stale",
+            "the live member aged through server-derived delayed and stale classifications while only advisory reports were suppressed",
+        )
+
+        self.stage = "participant-status-fresh-recovery"
+        recovery_cursor = self.observer.cursor()
+        forwarded_before = proxy.participant_status_forwarded_count
+        proxy.set_participant_status_blocked(False)
+        self._wait(
+            "a fresh real participant-status report after the advisory block",
+            lambda: proxy.participant_status_forwarded_count > forwarded_before,
+            timeout=5.0,
+        )
+        self._observer_event(
+            recovery_cursor,
+            lambda event: follower_availability(event, "fresh"),
+            timeout=5.0,
+        )
+
+        for event in self.observer.events_after(status_cursor):
+            if event.fields.get("event") == "playlist-index" and event.fields.get(
+                "playlist_index"
+            ) != 0:
+                raise HarnessFailure(
+                    self.stage,
+                    "participant-status faults changed canonical playlist selection",
+                )
+            if event.fields.get("event") != "playstate":
+                continue
+            position = _safe_number(event.fields.get("position_seconds"))
+            if (
+                event.fields.get("paused") is not True
+                or event.fields.get("transport_revision") != baseline_revision
+                or position is None
+                or abs(position - baseline_position) > 0.25
+            ):
+                raise HarnessFailure(
+                    self.stage,
+                    "participant-status faults changed canonical transport authority",
+                )
+        self._pass(
+            "participant-status-fresh-recovery-advisory",
+            "a fresh report restored detail without changing paused transport or playlist authority",
+        )
+
+    def _verify_same_index_selected_entry_replacement(
+        self, first: Path, second: Path
+    ) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+
+        def latest_transport_revision() -> int:
+            revisions = [
+                event.fields["transport_revision"]
+                for event in self.observer.events_after(0)
+                if event.fields.get("event") == "playstate"
+                and isinstance(event.fields.get("transport_revision"), int)
+            ]
+            if not revisions:
+                raise HarnessFailure(
+                    self.stage,
+                    "canonical transport authority was unavailable before replacement",
+                )
+            return revisions[-1]
+
+        def replace_selected_entry(
+            files: list[Path], media_slot: str, prior_revision: int, label: str
+        ) -> int:
+            observer_cursor = self.observer.cursor()
+            player_cursors = {role: self._player_cursor(role) for role in roles}
+            self.observer.send(
+                {"Set": {"playlistChange": {"files": [str(path) for path in files]}}}
+            )
+            contents = self._observer_event(
+                observer_cursor,
+                lambda event: event.get("event") == "playlist-change"
+                and event.get("playlist_size") == 2,
+            )
+            selection = self._observer_event(
+                contents.sequence,
+                lambda event: event.get("event") == "playlist-index"
+                and event.get("selection_present") is True
+                and event.get("playlist_index") == 0
+                and event.get("set_by") == "observer",
+            )
+            transport = self._observer_event(
+                selection.sequence,
+                lambda event: event.get("event") == "playstate"
+                and event.get("paused") is True
+                and abs(float(event.get("position_seconds", math.inf))) <= 0.25
+                and event.get("set_by") == "observer",
+            )
+            revision = transport.fields.get("transport_revision")
+            if not isinstance(revision, int) or revision <= prior_revision:
+                raise HarnessFailure(
+                    self.stage,
+                    f"{label} did not establish fresh transport authority",
+                )
+            self._wait_player_state(
+                roles,
+                player_cursors,
+                media_slot=media_slot,
+                paused=True,
+                position=0.0,
+                tolerance=0.75,
+                timeout=10.0,
+            )
+            return revision
+
+        self.stage = "same-index-selected-entry-replacement"
+        replacement_revision = replace_selected_entry(
+            [second, second],
+            "media-2",
+            latest_transport_revision(),
+            "same-index replacement",
+        )
+        self._pass(
+            "same-index-replacement-fresh-authority",
+            "changing the selected entry under row zero announced a fresh selection and reset every real player",
+        )
+
+        self.stage = "same-index-selected-entry-restore"
+        replace_selected_entry(
+            [first, second],
+            "media-1",
+            replacement_revision,
+            "same-index restoration",
+        )
+        self._pass(
+            "same-index-restore-fresh-authority",
+            "restoring the first selected entry repeated the fresh paused-zero physical generation",
+        )
+
+    def _verify_empty_playlist_clear_and_restore(self, first: Path, second: Path) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+
+        self.stage = "canonical-empty-playlist"
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self.observer.send({"Set": {"playlistChange": {"files": []}}})
+        empty_change = self._observer_event(
+            observer_cursor,
+            lambda event: event.get("event") == "playlist-change"
+            and event.get("playlist_size") == 0,
+        )
+        self._observer_event(
+            empty_change.sequence,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("selection_present") is False,
+        )
+        for role in roles:
+            self._player_record(
+                role,
+                player_cursors[role],
+                lambda record: record.get("event") == "media-changed"
+                and record.get("media_slot") is None,
+                timeout=8.0,
+            )
+        self._pass(
+            "empty-playlist-clears-selected-media",
+            "an actual empty canonical playlist retired selection and cleared every real player",
+        )
+
+        self.stage = "canonical-playlist-restore"
+        canonical_playstates = [
+            event
+            for event in self.observer.events_after(0)
+            if event.fields.get("event") == "playstate"
+            and isinstance(event.fields.get("transport_revision"), int)
+        ]
+        if not canonical_playstates:
+            raise HarnessFailure(
+                self.stage,
+                "the selected-media transport revision was unavailable before restore",
+            )
+        base_transport_revision = canonical_playstates[-1].fields["transport_revision"]
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self.observer.send(
+            {"Set": {"playlistChange": {"files": [str(first), str(second)]}}}
+        )
+        self._observer_event(
+            observer_cursor,
+            lambda event: event.get("event") == "playlist-change"
+            and event.get("playlist_size") == 2,
+        )
+        next_selection_attempt = 0.0
+
+        def restored_selection() -> ObserverEvent | None:
+            nonlocal next_selection_attempt
+            committed = next(
+                (
+                    event
+                    for event in self.observer.events_after(observer_cursor)
+                    if event.fields.get("event") == "playlist-index"
+                    and event.fields.get("playlist_index") == 0
+                    and event.fields.get("set_by") == "controller"
+                ),
+                None,
+            )
+            if committed is not None:
+                return committed
+            now = time.monotonic()
+            if now >= next_selection_attempt:
+                self._command("controller", "select 1")
+                next_selection_attempt = now + 0.25
+            return None
+
+        restored_index = self._wait(
+            "the production controller to commit the restored selection",
+            restored_selection,
+            timeout=5.0,
+        )
+        restored_transport = self._observer_event(
+            restored_index.sequence,
+            lambda event: event.get("event") == "playstate"
+            and event.get("paused") is True
+            and abs(float(event.get("position_seconds", math.inf))) <= 0.25
+            and event.get("set_by") == "controller",
+            timeout=5.0,
+        )
+        if (
+            restored_transport.fields.get("transport_revision", 0)
+            <= base_transport_revision
+        ):
+            raise HarnessFailure(
+                self.stage,
+                "the restored selection did not establish fresh transport authority",
+            )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-1",
+            paused=True,
+            position=0.0,
+            tolerance=0.75,
+            timeout=10.0,
+        )
+        self._pass(
+            "playlist-restore-reloads-selected-media",
+            "the restored canonical selection established a fresh paused-at-zero physical generation everywhere",
         )
 
     def _verify_partitioned_follower_catches_up_to_missed_start(self) -> None:
@@ -2711,6 +3188,20 @@ class PlaybackLifecycleHarness:
                 "fragment_sizes": list(ProtocolFaultProxy._FRAGMENT_SIZES),
                 "steps": [
                     "converge-through-fragmenting-proxy",
+                    "drop-one-participant-status-report",
+                    "verify-periodic-status-self-heal",
+                    "block-participant-status-reports",
+                    "verify-delayed-then-stale-status",
+                    "release-participant-status-reports",
+                    "verify-fresh-status-without-authority-mutation",
+                    "replace-selected-entry-under-stable-index",
+                    "verify-fresh-selection-and-paused-zero-real-players",
+                    "restore-selected-entry-under-stable-index",
+                    "verify-second-fresh-selection-generation",
+                    "clear-canonical-playlist-and-selection",
+                    "verify-all-real-players-unloaded",
+                    "restore-playlist-and-select-through-production-client",
+                    "verify-fresh-paused-zero-transport-generation",
                     "seek-paused-baseline",
                     "cut-and-hold-follower",
                     "start-while-follower-absent",
@@ -2820,6 +3311,9 @@ class PlaybackLifecycleHarness:
             self._verify_initial_players(first, second)
             self._verify_play_pause_seek()
             self._verify_late_join_and_status(first, second)
+            self._verify_participant_status_loss_delay_stale_recovery()
+            self._verify_same_index_selected_entry_replacement(first, second)
+            self._verify_empty_playlist_clear_and_restore(first, second)
             self._verify_partitioned_follower_catches_up_to_missed_start()
             self._verify_resume_eof_and_playlist()
             self._verify_terminal_playlist_boundary()

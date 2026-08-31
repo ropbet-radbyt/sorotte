@@ -75,7 +75,7 @@ fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
         .expect("reset state should include a playstate payload");
     assert_eq!(playstate.position, Some(0.0));
     assert_eq!(playstate.paused, Some(true));
-    assert_eq!(playstate.do_seek, None);
+    assert_eq!(playstate.do_seek, Some(true));
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn client_runtime_advance_playlist_index_loops_to_start_when_loop_at_end_enabled
         .expect("reset state should include a playstate payload");
     assert_eq!(playstate.position, Some(0.0));
     assert_eq!(playstate.paused, Some(true));
-    assert_eq!(playstate.do_seek, None);
+    assert_eq!(playstate.do_seek, Some(true));
 }
 
 #[test]

@@ -1798,6 +1798,12 @@ impl ServerRuntime {
             .collect()
     }
 
+    pub(crate) fn room_uses_playback_lifecycle_authority(&self, room_name: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.room == room_name && session.capabilities.playback_barrier_v1)
+    }
+
     pub(crate) fn legacy_readiness_chat_clients_in_room(&self, room_name: &str) -> Vec<String> {
         self.sessions
             .iter()

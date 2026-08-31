@@ -633,7 +633,7 @@ impl MockSessionServer {
         &self,
         timeout: Duration,
         label: &str,
-    ) -> Result<(String, String, String, String, String), String> {
+    ) -> Result<PlaylistExchangeEvidence, String> {
         let receiver = self.playlist_exchange_rx.as_ref().ok_or_else(|| {
             format!("{label} mock TCP server does not expose playlist exchange evidence")
         })?;
@@ -1165,7 +1165,7 @@ fn validated_client_playstate_transition(
             .get("doSeek")
             .cloned()
             .filter(|value| !value.is_null())
-            .unwrap_or_else(|| serde_json::json!(false)),
+            .unwrap_or(serde_json::Value::Bool(false)),
     );
     if let Some(revision) = playstate.get("sorotteTransportRevision") {
         authoritative_playstate.insert("sorotteTransportRevision".to_owned(), revision.clone());

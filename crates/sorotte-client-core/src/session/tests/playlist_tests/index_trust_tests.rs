@@ -68,7 +68,7 @@ fn client_runtime_set_playlist_index_dispatches_protocol_message() {
         .expect("reset state should include a playstate payload");
     assert_eq!(playstate.position, Some(0.0));
     assert_eq!(playstate.paused, Some(true));
-    assert_eq!(playstate.do_seek, None);
+    assert_eq!(playstate.do_seek, Some(true));
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn client_runtime_set_playlist_index_allows_default_trusted_youtube_domain() {
         .expect("reset state should include a playstate payload");
     assert_eq!(playstate.position, Some(0.0));
     assert_eq!(playstate.paused, Some(true));
-    assert_eq!(playstate.do_seek, None);
+    assert_eq!(playstate.do_seek, Some(true));
 }
 
 #[test]

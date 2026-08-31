@@ -94,6 +94,10 @@ macro_rules! impl_player_wrapper {
                 self.0.execute_tracked(command)
             }
 
+            fn unload(&mut self) -> Result<(), PlayerError> {
+                self.0.unload()
+            }
+
             fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
                 self.0.take_local_file_update()
             }
@@ -176,5 +180,14 @@ mod tests {
         assert!(update.media_generation.is_some());
         assert!(update.observed_at.is_some());
         assert_eq!(update.buffered_ahead_seconds, Some(5.0));
+    }
+
+    #[test]
+    fn simulated_wrapper_forwards_media_unload() {
+        let mut player = SimulatedPlayer::new();
+
+        player
+            .unload()
+            .expect("the wrapper should forward unload to its simulated adapter");
     }
 }

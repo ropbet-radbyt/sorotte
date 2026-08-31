@@ -962,6 +962,30 @@ impl PlayerAdapter for MpvAdapter {
         Ok(())
     }
 
+    fn unload(&mut self) -> Result<(), PlayerError> {
+        let result = self.send_ipc_command_if_attached(json!([MPV_COMMAND_STOP]));
+        if result.is_ok() {
+            // Canonical media retirement supersedes both an in-flight load and
+            // any unpublished observation of the retired file. Real mpv
+            // end-file/path events still establish physical Empty state.
+            self.pending_load_request = None;
+            self.pending_load_generation = None;
+            self.pending_local_file_update = None;
+            self.pending_local_file_generation = None;
+            self.pending_local_file_observed_at = None;
+            self.last_polled_local_file_update = None;
+            self.interrupted_network_stream_recovery = None;
+            self.network_stream_recovery_evidence = None;
+            self.network_cache_stall = None;
+            if self.simulation_mode {
+                self.clear_physical_projection();
+                self.observed_state = MpvObservedState::default();
+                self.transport_phase = PlayerTransportPhase::Empty;
+            }
+        }
+        result
+    }
+
     fn set_option_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
         self.send_ipc_command_if_attached(json!([MPV_COMMAND_SET, name, value]))?;
         Ok(())

@@ -20,7 +20,7 @@ statement = "Only a validated server transition changes canonical room playstate
 [[invariant]]
 id = "LIFE-EPOCH-001"
 kind = "safety"
-statement = "Evidence carrying a retired connection, membership, room transport-authority revision, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request whose expected server-issued canonical playlist epoch no longer matches, cannot mutate successor authority; a client cannot pair a newly observed transport revision with player state sampled before that revision's dependent command was applied, predecessor Play authority remains fenced until the selected successor is physically reset and accepts a post-selection playstate, and an accepted guarded natural-selection boundary retires completed-item position and watcher samples before publishing successor transport state."
+statement = "Evidence carrying a retired connection, membership, room transport-authority revision, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request whose expected server-issued canonical playlist epoch no longer matches, cannot mutate successor authority; a client cannot pair a newly observed transport revision with player state sampled before that revision's dependent command was applied, predecessor Play authority remains fenced until the selected successor is physically reset and accepts a post-selection playstate, and every changed canonical selection in a room with negotiated Sorotte lifecycle authority retires predecessor position and watcher samples before publishing successor transport state."
 
 [[invariant]]
 id = "LIFE-IDENT-001"
@@ -111,7 +111,7 @@ title = "Actual-server multi-client real-player lifecycle harness"
 status = "open"
 risk = "critical"
 owners = ["verification", "gui", "server", "player"]
-summary = "The packaged actual-server, three-client, real-mpv harness now proves the CLI/server/player lifecycle with deterministic protocol fragmentation, missed-start reconnect, a natural-EOF successor boundary that rejects completed-media transport leakage, a revision-fenced terminal pause that remains bounded through client exit, and clean withdrawal; exact packaged GUI composition remains outside it."
+summary = "The packaged actual-server, three-client, real-mpv harness now proves the CLI/server/player lifecycle through deterministic fragmentation, participant-status loss and aging, selected-entry replacement under a stable index, empty-playlist unload and restore, missed-start reconnect, natural-EOF successor fencing, bounded terminal pause, player failure recovery, and clean withdrawal; exact packaged GUI composition remains outside it."
 closure = "A required harness runs the packaged actual server, at least two isolated packaged clients, and their real supported players while an external oracle verifies the complete causal path."
 
 [[gap]]
@@ -120,7 +120,7 @@ title = "Replayable cross-boundary schedule control"
 status = "open"
 risk = "high"
 owners = ["verification", "client-app", "gui", "server", "player"]
-summary = "The packaged harness now composes deterministic protocol fragmentation, cut-and-hold, a missed start, production reconnect, and real-player catch-up, but the cross-boundary fault schedule is not yet externally replayable/shrinkable and lacks delay, backpressure, half-close, reset, worker-stall, and IPC-fault variants."
+summary = "The packaged harness now composes deterministic protocol fragmentation, bounded advisory-report loss and suppression, cut-and-hold, a missed start, production reconnect, and real-player catch-up, but the cross-boundary schedule is not yet externally replayable/shrinkable and lacks general frame delay, backpressure, half-close, reset, worker-stall, and additional IPC-fault variants."
 closure = "A deterministic scheduler and protocol proxy record, replay, and shrink realistic delay, fragmentation, backpressure, half-close, reset, worker stall, and cross-channel ordering schedules."
 
 [[gap]]
@@ -129,7 +129,7 @@ title = "Natural completion through canonical peer playlist progression"
 status = "open"
 risk = "critical"
 owners = ["verification", "gui", "client-core", "server", "player"]
-summary = "Client/server seams prove guarded natural-EOF publication, one canonical commit across simultaneous contenders, stale ABA and playlist-replacement rejection, successor transport reset, legacy fallback, peer loads, and an authorized finite terminal pause; the packaged real-mpv walk proves one ordinary video advance without completed-media authority leakage and a no-loop final-video pause that cannot project beyond duration, while loop-enabled, cache-pause, and transport-failure terminal schedules remain open."
+summary = "Client/server seams prove coherent empty selection retirement, physical unload, atomic paused-zero transport authority for every changed selection, guarded natural-EOF publication, one canonical commit across simultaneous contenders, stale ABA and replacement rejection, legacy fallback, peer loads, and an authorized finite terminal pause; the packaged real-mpv walk proves selected-entry replacement under a stable numeric index, empty/restore convergence, one ordinary video advance without completed-media leakage, and a no-loop final-video pause that cannot project beyond duration, while loop-enabled, cache-pause, and transport-failure terminal schedules remain open."
 closure = "Real players complete generated media under ordinary, loop, last-item, cache-pause, and transport-failure schedules; only valid natural completion commits one canonical transition and all capable peers converge."
 
 [[gap]]
@@ -147,8 +147,8 @@ title = "Packaged participant-status cadence and self-healing"
 status = "open"
 risk = "high"
 owners = ["verification", "client-core", "client-app", "gui", "server"]
-summary = "Actual-server seams cover late snapshots, cadence, and withdrawal; the packaged real-player harness also proves withdrawal and recovery across a controlled transport cut, while controlled report loss/delay/stale recovery and second-client UI projection remain open."
-closure = "The multi-process harness proves heartbeat cadence, one-loss self-healing, delayed and stale classification, late-join snapshot delivery, withdrawal, and privacy under controlled delay."
+summary = "The packaged real-player harness proves cadence, one-loss self-healing, delayed and stale server classification under advisory-only suppression, fresh recovery without canonical mutation, late-join delivery, withdrawal, and reconnect recovery; second-client GUI projection remains open."
+closure = "The multi-process harness proves heartbeat cadence, one-loss self-healing, delayed and stale classification, late-join snapshot delivery, withdrawal, privacy under controlled delay, and the exact packaged GUI projection in a second client."
 
 [[gap]]
 id = "GAP-RELEASE-001"
@@ -687,14 +687,14 @@ id = "PLAYLIST-SNAPSHOT-EMPTY-001"
 title = "Install empty playlist snapshot"
 from = ["unknown", "populated", "selected", "mutation-pending", "index-pending", "exhausted"]
 to = "empty"
-cause = "Server authority publishes coherent empty contents and index."
+cause = "A room with negotiated Sorotte lifecycle authority receives coherent empty contents and no selected index; every current player owner retires logical media and unloads physical playback."
 authority = "server-playlist"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001"]
-evidence = ["NET-RECONNECT-001"]
-covered_tiers = ["model", "seam"]
+evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
+covered_tiers = ["model", "seam", "system"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+gaps = []
 
 [[machine.transition]]
 id = "PLAYLIST-SNAPSHOT-POPULATED-001"
@@ -706,23 +706,23 @@ authority = "server-playlist"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001"]
 evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
-covered_tiers = ["model", "seam"]
+covered_tiers = ["model", "seam", "system"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+gaps = []
 
 [[machine.transition]]
 id = "PLAYLIST-SNAPSHOT-SELECTED-001"
 title = "Install selected playlist snapshot"
 from = ["unknown", "empty", "populated", "mutation-pending", "index-pending", "selected", "exhausted"]
 to = "selected"
-cause = "Server authority publishes coherent contents and selected entry; a guarded natural successor first retires completed-media position and watcher samples under fresh transport authority."
+cause = "In a room with negotiated Sorotte lifecycle authority, the server publishes coherent contents and selected entry; every changed selection, including selected-entry replacement under a stable numeric index, atomically retires predecessor position and watcher samples under fresh paused-zero transport authority."
 authority = "server-playlist"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-EPOCH-001", "LIFE-SNAPSHOT-001", "LIFE-ONCE-001"]
 evidence = ["NET-RECONNECT-001", "SYNC-LIFECYCLE-001"]
-covered_tiers = ["model", "seam"]
+covered_tiers = ["model", "seam", "system"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+gaps = []
 
 [[machine.transition]]
 id = "PLAYLIST-MUTATE-001"
@@ -748,9 +748,9 @@ authority = "client-intent"
 risk = "critical"
 invariants = ["LIFE-AUTH-001", "LIFE-DELIVERY-001", "LIFE-ONCE-001", "LIFE-EOF-001"]
 evidence = ["SYNC-LIFECYCLE-001"]
-covered_tiers = ["model", "seam"]
+covered_tiers = ["model", "seam", "system"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-PLAYLIST-001", "GAP-TRACE-001"]
+gaps = []
 
 [[machine.transition]]
 id = "PLAYLIST-EXHAUST-001"
@@ -1718,7 +1718,7 @@ invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-TRACE-001"]
 evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+gaps = ["GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
 
 [[machine.transition]]
 id = "STATUS-FRESH-001"
@@ -1732,7 +1732,7 @@ invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-ONCE-001", "LIFE-CONVER
 evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+gaps = ["GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
 
 [[machine.transition]]
 id = "STATUS-DELAY-001"
@@ -1743,10 +1743,10 @@ cause = "Server-derived report age exceeds the fresh bound."
 authority = "server-status"
 risk = "high"
 invariants = ["LIFE-STATUS-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
-evidence = ["SYNC-PSTATUS-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+gaps = ["GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
 
 [[machine.transition]]
 id = "STATUS-STALE-001"
@@ -1757,10 +1757,10 @@ cause = "Report age or clock validity exceeds trustworthy retained evidence."
 authority = "server-status"
 risk = "high"
 invariants = ["LIFE-STATUS-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
-evidence = ["SYNC-PSTATUS-001"]
+evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-FAULT-001", "GAP-TRACE-001"]
+gaps = ["GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
 
 [[machine.transition]]
 id = "STATUS-WITHDRAW-001"
@@ -1774,7 +1774,7 @@ invariants = ["LIFE-EPOCH-001", "LIFE-STATUS-001", "LIFE-SNAPSHOT-001"]
 evidence = ["SYNC-PSTATUS-001", "SYNC-LIFECYCLE-001"]
 covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
-gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
+gaps = ["GAP-SYSTEM-001", "GAP-STATUS-001", "GAP-TRACE-001"]
 
 [[machine.transition]]
 id = "STATUS-UNAVAILABLE-001"

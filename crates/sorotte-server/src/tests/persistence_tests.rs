@@ -134,9 +134,10 @@ fn persistent_room_retains_playlist_index_and_position_after_empty_transition() 
             r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
         )
         .expect("playlist change should succeed");
-    runtime
+    let selection = runtime
         .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
         .expect("playlist index change should succeed");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&selection));
     runtime
         .handle_line_fanout(
             "client-1",
@@ -285,9 +286,10 @@ fn persistent_room_sqlite_reload_restores_playlist_index_and_position() {
                 r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
             )
             .expect("playlist change should succeed");
-        runtime
+        let selection = runtime
             .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
             .expect("playlist index change should succeed");
+        acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&selection));
         runtime
             .handle_line_fanout(
                 "client-1",
@@ -986,7 +988,7 @@ fn permanent_rooms_file_works_without_a_rooms_database() {
 }
 
 #[test]
-fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
+fn permanent_room_file_retires_selection_when_its_playlist_is_cleared() {
     let db_path = temporary_sqlite_path("permanent-room-retention");
     let permanent_rooms_file = temporary_text_path("permanent-room-retention");
     let _ = fs::remove_file(&db_path);
@@ -1005,7 +1007,7 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
     runtime
         .handle_line(
             "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"permanent-room"},"version":"9.9.9"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"permanent-room"},"version":"9.9.9","features":{"sorottePlaybackBarrierV1":true}}}"#,
         )
         .expect("alice hello should establish session");
     runtime
@@ -1032,8 +1034,8 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
         .expect("bob hello should succeed");
     let directed_messages = decode_directed_lines(&directed_lines);
     assert!(
-        has_playlist_snapshot(&directed_messages, "client-2", &[]),
-        "permanent room should preserve empty playlist snapshot"
+        has_playlist_snapshot_with_user(&directed_messages, "client-2", &[], "alice"),
+        "permanent room should preserve the attributed empty playlist snapshot"
     );
     assert!(
         directed_messages.iter().any(|(client_id, message)| {
@@ -1042,11 +1044,11 @@ fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
                     message,
                         ProtocolMessage::Set(payload)
                             if payload.set.playlist_index.as_ref().is_some_and(|index| {
-                            index.index_value() == Some(0)
+                            index.index_value().is_none()
                         })
                 )
         }),
-        "empty permanent-room playlists must preserve their explicit legacy index"
+        "empty permanent-room playlists must not restore a retired selection"
     );
 
     drop(runtime);

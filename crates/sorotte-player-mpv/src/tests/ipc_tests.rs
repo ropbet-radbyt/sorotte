@@ -2383,6 +2383,26 @@ fn open_file_sends_mpv_loadfile_replace_command_when_attached() {
 }
 
 #[test]
+fn unload_sends_mpv_stop_command_when_attached() {
+    let (transport, state) = fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .unload()
+        .expect("attached mpv transport should accept stop");
+
+    let writes = state.writes();
+    let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+    assert_eq!(
+        payload,
+        json!({
+            "command": [MPV_COMMAND_STOP],
+            "request_id": 1
+        })
+    );
+}
+
+#[test]
 fn open_network_file_scopes_configured_cache_options_to_the_load() {
     let (transport, state) = fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
     let mut adapter = MpvAdapter::with_test_transport(transport);

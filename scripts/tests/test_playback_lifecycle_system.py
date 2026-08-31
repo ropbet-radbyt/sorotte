@@ -413,6 +413,37 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertNotIn("unrecognized-private-name", json.dumps(status))
         self.assertNotIn("positionSeconds", json.dumps(status))
 
+    def test_protocol_projection_preserves_nullable_selection_semantics(self) -> None:
+        selected, _ = system.project_protocol_message(
+            {"Set": {"playlistIndex": {"index": 2, "user": system.ROLE_USERNAMES["controller"]}}}
+        )
+        empty, _ = system.project_protocol_message(
+            {"Set": {"playlistIndex": {"index": None, "user": system.ROLE_USERNAMES["controller"]}}}
+        )
+
+        self.assertEqual(
+            selected,
+            [
+                {
+                    "event": "playlist-index",
+                    "selection_present": True,
+                    "playlist_index": 2,
+                    "set_by": "controller",
+                }
+            ],
+        )
+        self.assertEqual(
+            empty,
+            [
+                {
+                    "event": "playlist-index",
+                    "selection_present": False,
+                    "playlist_index": None,
+                    "set_by": "controller",
+                }
+            ],
+        )
+
     def test_protocol_projection_combines_ping_and_ignore_obligations(self) -> None:
         events, response = system.project_protocol_message(
             {
@@ -844,8 +875,10 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 ledger=ledger,
             )
             first = socket.create_connection(("127.0.0.1", proxy.port), timeout=2.0)
-            first.sendall(b"first-frame")
-            self.assertEqual(self.receive_exact(first, len(b"first-frame")), b"first-frame")
+            first.sendall(b"first-frame\n")
+            self.assertEqual(
+                self.receive_exact(first, len(b"first-frame\n")), b"first-frame\n"
+            )
             self.wait_until(lambda: proxy.fragment_count > 2)
             accepted_before_cut = proxy.accepted_count
             upstream_before_cut = proxy.upstream_connection_count
@@ -853,7 +886,7 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             proxy.cut_and_hold()
             replacement = socket.create_connection(("127.0.0.1", proxy.port), timeout=2.0)
             replacement.settimeout(2.0)
-            replacement.sendall(b"replacement-frame")
+            replacement.sendall(b"replacement-frame\n")
             self.wait_until(lambda: proxy.accepted_count > accepted_before_cut)
             self.assertEqual(proxy.upstream_connection_count, upstream_before_cut)
 
@@ -862,11 +895,93 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 lambda: proxy.upstream_connection_count > upstream_before_cut
             )
             self.assertEqual(
-                self.receive_exact(replacement, len(b"replacement-frame")),
-                b"replacement-frame",
+                self.receive_exact(replacement, len(b"replacement-frame\n")),
+                b"replacement-frame\n",
             )
             replacement.close()
             first.close()
+            proxy.close()
+            stop.set()
+            echo_thread.join(timeout=2.0)
+            self.assertIsNone(proxy.error)
+
+    def test_protocol_fault_proxy_drops_only_armed_participant_status_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            upstream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            upstream.bind(("127.0.0.1", 0))
+            upstream.listen(1)
+            upstream.settimeout(2.0)
+            upstream_port = int(upstream.getsockname()[1])
+            stop = threading.Event()
+
+            def echo_server() -> None:
+                try:
+                    connection, _ = upstream.accept()
+                    with connection:
+                        while not stop.is_set():
+                            try:
+                                payload = connection.recv(4096)
+                            except OSError:
+                                return
+                            if not payload:
+                                return
+                            connection.sendall(payload)
+                finally:
+                    upstream.close()
+
+            echo_thread = threading.Thread(target=echo_server, daemon=True)
+            echo_thread.start()
+            root = pathlib.Path(directory)
+            ledger = system.TraceLedger(root / "trace.jsonl", "status-proxy-test")
+            proxy = system.ProtocolFaultProxy(
+                upstream_host="127.0.0.1",
+                upstream_port=upstream_port,
+                role="follower",
+                ledger=ledger,
+            )
+            client = socket.create_connection(("127.0.0.1", proxy.port), timeout=2.0)
+            client.settimeout(0.2)
+            ordinary = b'{"State":{"playstate":{"position":1.0,"paused":true}}}\n'
+            dropped = b'{"State":{"playstate":{"position":2.0,"paused":true},"sorotteParticipantStatusV1":{"report":{"reportSequence":7}}}}\n'
+            recovered = b'{"State":{"sorotteParticipantStatusV1":{"report":{"reportSequence":8}}}}\n'
+
+            client.sendall(ordinary)
+            self.assertEqual(self.receive_exact(client, len(ordinary)), ordinary)
+            proxy.drop_next_participant_status_reports()
+            client.sendall(dropped)
+            self.wait_until(lambda: proxy.participant_status_dropped_count == 1)
+            expected_without_status = (
+                b'{"State":{"playstate":{"position":2.0,"paused":true}}}\n'
+            )
+            self.assertEqual(
+                self.receive_exact(client, len(expected_without_status)),
+                expected_without_status,
+            )
+
+            client.sendall(recovered)
+            self.assertEqual(self.receive_exact(client, len(recovered)), recovered)
+            self.assertEqual(proxy.participant_status_report_count, 2)
+            self.assertEqual(proxy.participant_status_forwarded_count, 1)
+            self.assertEqual(proxy.participant_status_dropped_count, 1)
+
+            records = system.read_jsonl(root / "trace.jsonl")
+            self.assertTrue(
+                any(
+                    record.get("event") == "participant-status-report-dropped"
+                    and record.get("source_sequence") == 7
+                    for record in records
+                )
+            )
+            self.assertTrue(
+                any(
+                    record.get("event") == "participant-status-report-forwarded"
+                    and record.get("source_sequence") == 8
+                    for record in records
+                )
+            )
+
+            client.close()
             proxy.close()
             stop.set()
             echo_thread.join(timeout=2.0)
