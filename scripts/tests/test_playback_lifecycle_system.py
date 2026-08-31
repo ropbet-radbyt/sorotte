@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-import wave
+from unittest import mock
 from types import SimpleNamespace
 
 
@@ -48,22 +48,287 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "semantic version"):
             system.parse_mpv_version("unrelated player 0.41.0")
 
-    def test_generated_wav_is_deterministic_and_has_the_declared_shape(self) -> None:
+    def test_av_fixture_generation_requests_bitexact_video_and_audio(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            first = root / "first.wav"
-            second = root / "second.wav"
+            fixture = root / "fixture.mkv"
+            observed_command: list[str] = []
 
-            first_metadata = system.generate_pcm_wav(first, 1.25)
-            second_metadata = system.generate_pcm_wav(second, 1.25)
+            def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+                observed_command.extend(command)
+                pathlib.Path(command[-1]).write_bytes(b"deterministic-av-fixture")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-            self.assertEqual(first_metadata, second_metadata)
-            self.assertEqual(first.read_bytes(), second.read_bytes())
-            with wave.open(str(first), "rb") as fixture:
-                self.assertEqual(fixture.getnchannels(), 1)
-                self.assertEqual(fixture.getsampwidth(), 2)
-                self.assertEqual(fixture.getframerate(), 48_000)
-                self.assertEqual(fixture.getnframes(), 60_000)
+            with mock.patch.object(system.subprocess, "run", side_effect=fake_run):
+                metadata = system.generate_av_fixture(
+                    root / "ffmpeg",
+                    fixture,
+                    1.25,
+                    color="red",
+                )
+
+            self.assertEqual(observed_command[0], str(root / "ffmpeg"))
+            self.assertIn("color=c=red:s=320x180:r=10:d=1.25", observed_command)
+            self.assertIn("anullsrc=r=48000:cl=mono:d=1.25", observed_command)
+            self.assertIn("ffv1", observed_command)
+            self.assertIn("pcm_s16le", observed_command)
+            self.assertIn("+bitexact", observed_command)
+            self.assertEqual(observed_command[-1], str(fixture))
+            self.assertEqual(metadata["container"], "matroska")
+            self.assertEqual(metadata["video_codec"], "ffv1")
+            self.assertEqual(metadata["audio_codec"], "pcm_s16le")
+            self.assertEqual(metadata["duration_seconds"], 1.25)
+            self.assertEqual(metadata["sha256"], system.sha256_file(fixture))
+
+    def test_av_fixture_generation_fails_closed_when_ffmpeg_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(
+                system.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="failure"),
+            ):
+                with self.assertRaisesRegex(ValueError, "FFmpeg failed"):
+                    system.generate_av_fixture(
+                        root / "ffmpeg",
+                        root / "fixture.mkv",
+                        1.0,
+                        color="blue",
+                    )
+
+    def test_terminal_playlist_boundary_accepts_one_canonical_pause_and_bounded_players(self) -> None:
+        records = {
+            "controller": [
+                {"event": "pause-changed", "media_slot": "media-2", "paused": False},
+                {"event": "end-file", "reason": "eof", "media_slot": "media-2"},
+            ],
+            "follower": [
+                {"event": "pause-changed", "media_slot": "media-2", "paused": False},
+                {
+                    "event": "pause-changed",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 13.8,
+                },
+            ],
+            "late": [
+                {"event": "pause-changed", "media_slot": "media-2", "paused": False},
+                {"event": "end-file", "reason": "eof", "media_slot": "media-2"},
+            ],
+        }
+
+        system.validate_terminal_playlist_boundary(
+            [
+                {
+                    "event": "playstate",
+                    "paused": False,
+                    "position_seconds": 11.0,
+                    "transport_revision": 20,
+                },
+                {
+                    "event": "playstate",
+                    "paused": True,
+                    "position_seconds": 14.0,
+                    "do_seek": False,
+                    "transport_revision": 21,
+                },
+                {
+                    "event": "playstate",
+                    "paused": True,
+                    "position_seconds": 14.0,
+                    "do_seek": False,
+                    "transport_revision": 21,
+                },
+            ],
+            records,
+            terminal_duration_seconds=14.0,
+            initial_transport_revision=20,
+        )
+
+    def test_terminal_playlist_boundary_rejects_selection_mutation_duplicate_or_reload(self) -> None:
+        one_eof = {
+            "controller": [
+                {
+                    "event": "end-file",
+                    "reason": "eof",
+                    "media_slot": "media-2",
+                }
+            ]
+        }
+        terminal_states = [
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 14.0,
+                "do_seek": False,
+                "transport_revision": 21,
+            },
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 14.0,
+                "do_seek": False,
+                "transport_revision": 21,
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "mutated canonical selection"):
+            system.validate_terminal_playlist_boundary(
+                [
+                    {"event": "playlist-index", "playlist_index": 0},
+                    *terminal_states,
+                ],
+                one_eof,
+                terminal_duration_seconds=14.0,
+                initial_transport_revision=20,
+            )
+        with self.assertRaisesRegex(ValueError, "2 final-item EOF"):
+            system.validate_terminal_playlist_boundary(
+                terminal_states,
+                {"controller": one_eof["controller"] * 2},
+                terminal_duration_seconds=14.0,
+                initial_transport_revision=20,
+            )
+        with self.assertRaisesRegex(ValueError, "reloaded media"):
+            system.validate_terminal_playlist_boundary(
+                terminal_states,
+                {"controller": [*one_eof["controller"], {"event": "file-loaded"}]},
+                terminal_duration_seconds=14.0,
+                initial_transport_revision=20,
+            )
+
+    def test_terminal_playlist_boundary_rejects_unbounded_or_drifting_authority(self) -> None:
+        one_eof = {
+            "controller": [
+                {"event": "end-file", "reason": "eof", "media_slot": "media-2"}
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "never committed"):
+            system.validate_terminal_playlist_boundary(
+                [{"event": "playstate", "paused": False, "transport_revision": 20}],
+                one_eof,
+                terminal_duration_seconds=14.0,
+                initial_transport_revision=20,
+            )
+        with self.assertRaisesRegex(ValueError, "continued projecting"):
+            system.validate_terminal_playlist_boundary(
+                [
+                    {
+                        "event": "playstate",
+                        "paused": True,
+                        "position_seconds": 13.8,
+                        "do_seek": False,
+                        "transport_revision": 21,
+                    },
+                    {
+                        "event": "playstate",
+                        "paused": True,
+                        "position_seconds": 14.2,
+                        "do_seek": False,
+                        "transport_revision": 21,
+                    },
+                ],
+                one_eof,
+                terminal_duration_seconds=14.0,
+                initial_transport_revision=20,
+            )
+
+    def test_natural_eof_successor_boundary_accepts_fresh_stable_origin(self) -> None:
+        canonical = [
+            {"event": "playstate", "paused": False, "transport_revision": 20},
+            {"event": "playlist-index", "playlist_index": 1},
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 22,
+            },
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 22,
+            },
+        ]
+        records = {
+            "controller": [
+                {"event": "end-file", "reason": "eof", "media_slot": "media-1"},
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                },
+            ],
+            "follower": [
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                }
+            ],
+            "late": [
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                }
+            ],
+        }
+
+        revision = system.validate_natural_eof_successor_boundary(
+            canonical,
+            records,
+            previous_transport_revision=20,
+        )
+
+        self.assertEqual(revision, 22)
+
+    def test_natural_eof_successor_boundary_rejects_completed_media_authority(self) -> None:
+        canonical = [
+            {"event": "playlist-index", "playlist_index": 1},
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 22,
+            },
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 22,
+            },
+        ]
+        records = {
+            "controller": [
+                {"event": "end-file", "reason": "eof", "media_slot": "media-1"},
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                },
+                {
+                    "event": "position-changed",
+                    "media_slot": "media-2",
+                    "paused": True,
+                    "position_seconds": 10.0,
+                },
+            ]
+        }
+
+        with self.assertRaisesRegex(ValueError, "completed-media position crossed"):
+            system.validate_natural_eof_successor_boundary(
+                canonical,
+                records,
+                previous_transport_revision=20,
+            )
 
     def test_mpv_observer_emits_slots_and_never_emits_a_path_field(self) -> None:
         script = system.render_mpv_observer_lua(
@@ -166,6 +431,58 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertGreater(response["State"]["ping"]["clientLatencyCalculation"], 0.0)
         self.assertEqual(response["State"]["ignoringOnTheFly"], {"server": 9})
 
+    def test_protocol_projection_exposes_only_the_safe_transport_revision(self) -> None:
+        events, response = system.project_protocol_message(
+            {
+                "State": {
+                    "playstate": {
+                        "position": 7.0,
+                        "paused": True,
+                        "setBy": system.ROLE_USERNAMES["controller"],
+                        "sorotteTransportRevision": 19,
+                    }
+                }
+            }
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(events[0]["transport_revision"], 19)
+        self.assertEqual(events[0]["set_by"], "controller")
+
+    def test_client_protocol_projection_omits_identity_media_and_raw_extensions(self) -> None:
+        events = system.project_client_protocol_message(
+            {
+                "State": {
+                    "playstate": {
+                        "position": 0.8,
+                        "paused": True,
+                        "doSeek": False,
+                        "setBy": "private-user",
+                        "sorotteTransportRevision": 5,
+                    },
+                    "sorotteParticipantStatusV1": {
+                        "report": {"privatePath": r"C:\private\movie.mkv"}
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(
+            events,
+            [
+                {
+                    "event": "client-playstate",
+                    "paused": True,
+                    "position_seconds": 0.8,
+                    "do_seek": False,
+                    "transport_revision": 5,
+                }
+            ],
+        )
+        serialized = json.dumps(events)
+        self.assertNotIn("private-user", serialized)
+        self.assertNotIn("privatePath", serialized)
+
     def test_trace_contract_accepts_only_whitelisted_privacy_safe_fields(self) -> None:
         safe = {
             "schema_version": 1,
@@ -178,6 +495,7 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             "event": "file-loaded",
             "media_slot": "media-1",
             "paused": True,
+            "participant_health": ["controller:fresh:connected:playing"],
         }
         system.assert_privacy_safe_trace_record(safe)
 
@@ -227,6 +545,8 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                     str(pathlib.Path(directory) / "missing-client"),
                     "--mpv",
                     str(pathlib.Path(directory) / "missing-mpv"),
+                    "--ffmpeg",
+                    str(pathlib.Path(directory) / "missing-ffmpeg"),
                     "--artifact-dir",
                     str(artifact_dir),
                     "--candidate-sha",
@@ -272,6 +592,7 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 server_path=pathlib.Path("missing-server"),
                 client_path=pathlib.Path("missing-client"),
                 mpv_path=pathlib.Path("missing-mpv"),
+                ffmpeg_path=pathlib.Path("missing-ffmpeg"),
                 artifact_dir=artifact_dir,
                 candidate_sha="a" * 40,
                 client_runtime_seconds=9.0,
@@ -465,6 +786,7 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 server_path=pathlib.Path("server"),
                 client_path=pathlib.Path("client"),
                 mpv_path=pathlib.Path("mpv"),
+                ffmpeg_path=pathlib.Path("ffmpeg"),
                 artifact_dir=pathlib.Path(directory) / "artifacts",
                 candidate_sha="a" * 40,
                 client_runtime_seconds=9.0,
@@ -505,6 +827,63 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             self.assertEqual(proxy.fragment_count, 2)
             self.assertEqual(proxy.forwarded_bytes, 1)
             self.assertIn("follower-protocol-fragmentation-active", passed_checks)
+
+    def test_player_progress_is_relative_to_each_players_current_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            traces = {
+                "controller": [
+                    {"media_slot": "media-1", "position_seconds": 0.0, "paused": False},
+                    {"media_slot": "media-1", "position_seconds": 1.0, "paused": False},
+                ],
+                "follower": [
+                    {"media_slot": "media-1", "position_seconds": 0.1, "paused": False},
+                ],
+            }
+            harness = system.PlaybackLifecycleHarness(
+                server_path=pathlib.Path("server"),
+                client_path=pathlib.Path("client"),
+                mpv_path=pathlib.Path("mpv"),
+                ffmpeg_path=pathlib.Path("ffmpeg"),
+                artifact_dir=root / "artifacts",
+                candidate_sha="a" * 40,
+            )
+            for role, records in traces.items():
+                trace = root / f"{role}.jsonl"
+                trace.write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+                harness.clients[role] = SimpleNamespace(player_trace=trace)
+
+            later = {
+                "controller": {
+                    "media_slot": "media-1",
+                    "position_seconds": 1.5,
+                    "paused": False,
+                },
+                "follower": {
+                    "media_slot": "media-1",
+                    "position_seconds": 0.6,
+                    "paused": False,
+                },
+            }
+            observed: list[tuple[str, int]] = []
+
+            def player_record(role: str, after: int, predicate: object, **_kwargs: object) -> dict[str, object]:
+                observed.append((role, after))
+                self.assertTrue(predicate(later[role]))  # type: ignore[operator]
+                return later[role]
+
+            harness._player_record = player_record  # type: ignore[method-assign]
+            harness._wait_player_progress(
+                ("controller", "follower"),
+                {role: len(records) for role, records in traces.items()},
+                media_slot="media-1",
+                minimum_delta=0.5,
+            )
+
+            self.assertEqual(observed, [("controller", 2), ("follower", 1)])
 
 
 if __name__ == "__main__":

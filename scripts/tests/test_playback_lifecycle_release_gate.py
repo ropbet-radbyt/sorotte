@@ -106,6 +106,7 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
                   --server target/release/sorotte-server
                   --client target/release/sorotte-cli
                   --mpv target/mpv-supported-release/build/mpv
+                  --ffmpeg ffmpeg
                   --artifact-dir target/verification/playback-lifecycle-release
                   --candidate-sha "$CANDIDATE_SHA"
                 """

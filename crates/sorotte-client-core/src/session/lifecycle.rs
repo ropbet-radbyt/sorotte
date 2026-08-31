@@ -298,19 +298,6 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn recently_rewound(&self, now_seconds: f64, threshold_seconds: f64) -> bool {
-        if !threshold_seconds.is_finite() || threshold_seconds <= 0.0 {
-            return false;
-        }
-        self.model
-            .playback
-            .last_rewound_at_seconds
-            .is_some_and(|last_rewound_at_seconds| {
-                let elapsed = now_seconds - last_rewound_at_seconds;
-                elapsed >= 0.0 && elapsed < threshold_seconds
-            })
-    }
-
     pub(super) fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
         self.model.playlist.pending_index_reset_pause_before_sync = Some(
             self.model

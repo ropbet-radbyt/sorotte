@@ -98,6 +98,7 @@ pub(crate) fn readiness_legacy_chat_message(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StateSyncOptions<'a> {
     pub(crate) set_by: Option<&'a str>,
+    pub(crate) transport_revision: Option<u64>,
     pub(crate) server_ignoring_counter: Option<u32>,
     pub(crate) client_latency_calculation: Option<f64>,
     pub(crate) client_ignoring_counter: Option<u32>,
@@ -122,6 +123,9 @@ pub(crate) fn state_sync_message(
     }
     if let Some(set_by) = options.set_by {
         playstate = playstate.with_set_by(set_by);
+    }
+    if let Some(transport_revision) = options.transport_revision {
+        playstate = playstate.with_transport_revision(transport_revision);
     }
 
     let mut ping = PingPayload::new()

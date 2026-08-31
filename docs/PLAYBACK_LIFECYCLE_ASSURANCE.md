@@ -57,6 +57,7 @@ The following identities are distinct and must never be compared or substituted 
 | process run | one harness or application execution | a new process execution begins |
 | protocol connection generation | one client/server transport ownership period | the client establishes a replacement transport |
 | room membership epoch | one authenticated membership in one room | join, leave, room switch, or connection replacement changes membership |
+| room transport-authority revision | one canonical play/pause/seek causal boundary | the server accepts a canonical transport mutation |
 | player attachment epoch | one client/player relationship | the player adapter or owned player is replaced |
 | media generation | one logical room-media selection | canonical logical media changes |
 | playlist revision | one canonical playlist contents revision | the server accepts different playlist contents |
@@ -77,6 +78,10 @@ Authority is similarly separated:
 
 The canonical playlist epoch is an equality-only fencing token. It is not a playlist contents revision or selection generation and must never be ordered or compared numerically with either. A coherent server snapshot publishes the same epoch with contents and index; reconnecting clients replace any retired token with that snapshot. A new server process may restart the token because no old connection can remain authoritative across the process boundary.
 
+The room transport-authority revision is also an equality fence, but it owns playstate samples rather than playlist selection. The server includes the current nonzero revision as `sorotteTransportRevision` on every Sorotte-authored playstate. A current client echoes that revision on local Seek and State samples. A tagged sample whose revision is zero, older, or otherwise different cannot mutate canonical playstate or refresh the server's slowest-client projection; the sender receives a forced current correction instead. The client refuses a backwards tagged revision and, when any new revision or explicit canonical Seek arrives, keeps every response ping-only until sampled player pause and, for Seek, position evidence match that authority. This includes the first tagged room baseline and the path where server authority arrives before the player has emitted any sample. A user Play or Pause staged after room join but before that first baseline is not discarded: it binds to the first non-seek revision and is emitted with that exact equality token, while a first canonical Seek remains server-owned and supersedes the earlier transport-only intent. The fence survives any number of intervening server ticks, so a slow mpv acknowledgement cannot turn a later tick into a pre-effect sample carrying the new revision.
+
+Missing `sorotteTransportRevision` remains an explicit legacy-compatibility path: the server cannot infer an epoch that an older peer did not send. Such samples retain legacy handling and therefore do not provide the stronger causal proof claimed by tagged current peers. A client that has not observed a tagged playstate in its current membership likewise accepts a legacy server, but observing one establishes revision support until that membership or connection ends; a later untagged frame cannot downgrade the fence. A new membership clears the local comparison token because a room can be destroyed and recreated with a fresh revision sequence. Compatibility tests must keep these distinctions visible rather than treating absence as revision zero or silently fabricating correlation.
+
 ## Lifecycle machines
 
 `coverage/playback-lifecycle.toml` is the source of truth for state and transition identifiers. The machines are orthogonal: a participant can be reconnecting while its old player attempt may still emit, or be technically playable while the room start gate waits for user intent.
@@ -95,7 +100,7 @@ Transport progresses through disconnected, connecting, awaiting Hello, active, r
 
 ### Canonical playlist selection
 
-Playlist authority progresses through unknown, empty, populated, selected, mutation pending, index pending, and exhausted. Local UI projection, local player playlist, and media resolver output cannot commit canonical contents or index. Every accepted contents or selection event advances an opaque server-issued canonical playlist epoch, and every accepted selection establishes a successor selection generation even when it replays the same row. A natural completion may publish a guarded progression only while its local playlist contents revision, row, and selection generation remain current. The request carries its expected canonical row and epoch; the server commits only if both still match. Simultaneous or late contenders that lose that compare-and-set are consumed as no-ops without another canonical fanout. Explicit user selections remain ordinary server-authorized mutations and preserve legacy wire compatibility.
+Playlist authority progresses through unknown, empty, populated, selected, mutation pending, index pending, and exhausted. Local UI projection, local player playlist, and media resolver output cannot commit canonical contents or index. Every accepted contents or selection event advances an opaque server-issued canonical playlist epoch, and every accepted selection establishes a successor selection generation even when it replays the same row. A natural completion may publish a guarded progression only while its local playlist contents revision, row, and selection generation remain current. The request carries its expected canonical row and epoch; the server commits only if both still match. Simultaneous or late contenders that lose that compare-and-set are consumed as no-ops without another canonical fanout. An accepted guarded progression retires the completed item's canonical position and cached watcher samples, selects the successor first, and then publishes paused position zero under the successor transport revision; no completed-media sample may cross that boundary. When the verified row is the last item and looping is disabled, an authorized client instead publishes one pause at a finite terminal position under the current room transport revision; the server's revision fence turns concurrent terminal contenders into one canonical commit and prevents time from continuing beyond the media duration. Explicit user selections remain ordinary server-authorized mutations and preserve legacy wire compatibility.
 
 ### Media resolution
 
@@ -128,7 +133,7 @@ The machine-readable model assigns these identifiers to every affected transitio
 ### Safety
 
 - `LIFE-AUTH-001`: only a validated server transition changes canonical room playstate or playlist selection; a pending authorized local Play or Pause, rather than stale player telemetry, supplies the local mutation value.
-- `LIFE-EPOCH-001`: evidence from a retired connection, membership, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request carrying a retired canonical playlist epoch, cannot mutate successor authority.
+- `LIFE-EPOCH-001`: tagged evidence from a retired connection, membership, room transport-authority revision, attachment, media generation, playlist contents revision, selection generation, or load attempt, and a guarded playlist request carrying a retired canonical playlist epoch, cannot mutate successor authority; a new transport revision cannot be acknowledged with pre-effect player state, and an accepted guarded natural-selection boundary retires completed-item position and watcher samples before successor state is published.
 - `LIFE-IDENT-001`: identities from different domains are never compared as interchangeable counters.
 - `LIFE-DELIVERY-001`: a dependent player effect cannot precede terminal delivery of its exact causal protocol frame.
 - `LIFE-ONCE-001`: one accepted semantic transition, including concurrent equivalent intents, produces at most one canonical commit and at most one terminal client result.
@@ -195,9 +200,9 @@ On the first unexpected divergence, the explorer preserves that failure class, d
 
 ## Packaged system harness
 
-`scripts/playback_lifecycle_system.py` is the first system-layer composition runner. It takes explicit paths to the exact candidate server, client, and supported mpv executables and records their SHA-256 digests against a full candidate Git SHA. It does not build, discover, or silently substitute a different product binary.
+`scripts/playback_lifecycle_system.py` is the first system-layer composition runner. It takes explicit paths to the exact candidate server and client, the supported mpv executable, and the FFmpeg fixture generator, then records every executable's SHA-256 digest against a full candidate Git SHA. It does not build, discover, or silently substitute a different product binary.
 
-One run creates two deterministic PCM WAV fixtures and then verifies this ordinary production path:
+One run creates two deterministic Matroska A/V fixtures with FFV1 video and PCM audio. Using video containers is part of the contract: audio-only fixture names activate Sorotte's intentional music-loop behavior and cannot prove the no-loop terminal video boundary. The harness then verifies this ordinary production path:
 
 1. launch the packaged server on an ephemeral IPv4 loopback listener;
 2. connect an independent protocol observer and publish a two-item canonical playlist;
@@ -208,10 +213,13 @@ One run creates two deterministic PCM WAV fixtures and then verifies this ordina
 7. require advancing participant-status snapshots from all three real players;
 8. move to a paused baseline, cut and hold the follower's fragmenting TCP proxy, and require its participant-status withdrawal;
 9. start playback while the follower is absent, release its replacement transport, and require the same production CLI and real mpv to catch up without overwriting canonical state;
-10. resume near the end of the generated first item, correlate each terminal mpv event to its last known media slot, let every completing client contend with the same canonical row and epoch, require exactly one server index commit with no stale-loser fanout, and require every player to load the second item;
-11. let every client reach its bounded normal exit, require participant-status withdrawal and owned IPC cleanup, then require the server's signal-driven drain to exit cleanly.
+10. resume near the end of the generated first item, correlate each terminal mpv event to its last known media slot, let every completing client contend with the same canonical row and epoch, require exactly one server index commit with no stale-loser fanout, require a fresh paused-at-zero successor transport revision after that selection, and prove every player loads and remains at the second-item origin across a server refresh without the completed position resurfacing;
+11. seek and resume the final video item, require at least one correlated physical EOF to commit exactly one successor transport revision, then prove every real player either ends or pauses near the endpoint while canonical selection remains fixed and repeated server refreshes hold one finite paused position;
+12. let every client reach its bounded normal exit, revalidate that the terminal pause, position, selection, and physical players stayed bounded for the remainder of the run, require participant-status withdrawal and owned IPC cleanup, then require the server's signal-driven drain to exit cleanly.
 
 The observer records playlist contents only as a count and generated media only as `media-1` or `media-2`. Its causal JSONL schema rejects path, URL, credential, token, and unknown fields. Per-player Lua observers also emit only stable role, media slot, coarse transport properties, and the terminal reason. Candidate paths remain in local generated scripts and process logs, not in the privacy-safe report or causal ledger.
+
+The fragmenting proxy projects client-to-server playstate frames while relaying them, but never stores raw protocol bytes. Its closed event contains only the stable role, finite position, pause value, one-shot Seek flag, and optional transport revision. Usernames, room names, participant payloads, media identities, URLs, paths, and unknown extension fields are discarded before the event reaches the causal ledger. This projection is what distinguished an old-revision delayed frame from a same-frame new-revision/pre-effect sample during the lifecycle sweep.
 
 Run it locally after building the candidates:
 
@@ -221,6 +229,7 @@ python scripts/playback_lifecycle_system.py run \
   --server target/debug/sorotte-server \
   --client target/debug/sorotte-cli \
   --mpv /exact/path/to/mpv \
+  --ffmpeg /exact/path/to/ffmpeg \
   --artifact-dir target/verification/playback-lifecycle-system \
   --candidate-sha <40-character-git-sha>
 ```
@@ -269,7 +278,7 @@ The machine model records the following current evidence honestly:
 | readiness and seek | `GUI-READY-001`, `GUI-SEEK-001`, plus actual-server delayed-member, late-join, and production seek seams | every start-gate phase under reconnect, sleep/resume, and slow resolution remains open |
 | native GUI and real mpv | strict native/real-mpv inventories, a locally provisioned supported mpv build, and a required packaged server/three-client/real-mpv harness | actual-GUI composition plus successful exact-candidate and pinned-CI evidence remain open |
 | server release | packaged server protocol/persistence smoke plus a reusable exact-SHA release-mode server/CLI/real-mpv gate | successful hosted evidence and exact packaged-GUI consumption remain open |
-| playlist mutation and EOF | extensive component tests, selection-generation fencing for same-row replay, client publication of expected canonical state, server-owned compare-and-set proof across simultaneous contenders and stale ABA/replacement schedules, legacy fallback, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | successful exact-candidate evidence plus loop, last-item, cache-pause, and transport-failure system schedules remain open |
+| playlist mutation and EOF | extensive component tests, selection-generation fencing for same-row replay, client publication of expected canonical state, server-owned compare-and-set proof across simultaneous contenders and stale ABA/replacement schedules, guarded successor transport reset, legacy fallback, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | successful exact-candidate evidence plus loop, cache-pause, and transport-failure system schedules remain open |
 | publication | GUI and server publication depend on the reusable lifecycle gate, safe evidence staging, and `--require-closed` | no successful exact-candidate gate evidence yet; the system walk still uses packaged CLI rather than the GUI artifact |
 
 Open gaps are first-class entries in `coverage/playback-lifecycle.toml`, with owners, risk, affected transitions, and mechanical closure criteria. A gap may be explicit while this branch is under construction; the final release gate must run the validator with `--require-closed`.

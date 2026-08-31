@@ -58,6 +58,7 @@ pub struct RoomState {
     pub(crate) media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     pub(crate) known_rooms: BTreeSet<String>,
     pub(crate) playstates: BTreeMap<String, RoomPlaystateView>,
+    pub(crate) playstate_transport_revisions: BTreeMap<String, u64>,
     pub(crate) playstate_updated_at_seconds: BTreeMap<String, f64>,
     pub(crate) playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
     pub(crate) participant_statuses: BTreeMap<String, ClientParticipantStatusView>,

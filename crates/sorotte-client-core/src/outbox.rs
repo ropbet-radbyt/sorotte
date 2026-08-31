@@ -50,19 +50,29 @@ fn merge_playback_barrier_observations(previous: &StatePayload, latest: &mut Sta
 fn merge_pending_state_obligations(previous: &StatePayload, latest: &mut StatePayload) {
     if let Some(previous_playstate) = previous.playstate.as_ref() {
         if let Some(latest_playstate) = latest.playstate.as_mut() {
-            latest_playstate.position = latest_playstate.position.or(previous_playstate.position);
-            latest_playstate.paused = latest_playstate.paused.or(previous_playstate.paused);
-            latest_playstate.do_seek = if previous_playstate.do_seek == Some(true) {
-                Some(true)
-            } else {
-                latest_playstate.do_seek.or(previous_playstate.do_seek)
-            };
-            if latest_playstate.set_by.is_none() {
-                latest_playstate
-                    .set_by
-                    .clone_from(&previous_playstate.set_by);
+            let revisions_match = matches!(
+                (
+                    latest_playstate.transport_revision(),
+                    previous_playstate.transport_revision(),
+                ),
+                (Ok(latest), Ok(previous)) if latest == previous
+            );
+            if revisions_match {
+                latest_playstate.position =
+                    latest_playstate.position.or(previous_playstate.position);
+                latest_playstate.paused = latest_playstate.paused.or(previous_playstate.paused);
+                latest_playstate.do_seek = if previous_playstate.do_seek == Some(true) {
+                    Some(true)
+                } else {
+                    latest_playstate.do_seek.or(previous_playstate.do_seek)
+                };
+                if latest_playstate.set_by.is_none() {
+                    latest_playstate
+                        .set_by
+                        .clone_from(&previous_playstate.set_by);
+                }
+                merge_missing_entries(&previous_playstate.extra, &mut latest_playstate.extra);
             }
-            merge_missing_entries(&previous_playstate.extra, &mut latest_playstate.extra);
         } else {
             latest.playstate = Some(previous_playstate.clone());
         }
@@ -818,6 +828,47 @@ mod tests {
             state.state.extra.get("newExtension"),
             Some(&serde_json::json!(true))
         );
+    }
+
+    #[test]
+    fn coalescing_never_launders_an_old_seek_into_a_new_transport_revision() {
+        let mut outbox = ProtocolOutbox::default();
+        outbox.activate_connection_generation();
+        assert!(
+            outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(1.0)
+                        .with_paused(true)
+                        .with_do_seek(true)
+                        .with_transport_revision(7),
+                ),
+            ))
+        );
+        assert!(
+            outbox.push_connection_scoped_state(ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(8.0)
+                        .with_paused(true)
+                        .with_do_seek(false)
+                        .with_transport_revision(8),
+                ),
+            ))
+        );
+
+        assert_eq!(outbox.pending().len(), 1);
+        let ProtocolMessage::State(state) = &outbox.pending()[0] else {
+            panic!("the tail State should coalesce to one transaction");
+        };
+        let playstate = state
+            .state
+            .playstate
+            .as_ref()
+            .expect("new transport sample should remain");
+        assert_eq!(playstate.position, Some(8.0));
+        assert_eq!(playstate.do_seek, Some(false));
+        assert_eq!(playstate.transport_revision().unwrap(), Some(8));
     }
 
     #[test]

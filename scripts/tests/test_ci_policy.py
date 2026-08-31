@@ -507,6 +507,7 @@ class CiPolicyTests(unittest.TestCase):
               --server target/debug/sorotte-server \
               --client target/debug/sorotte-cli \
               --mpv target/mpv-supported/build/mpv \
+              --ffmpeg ffmpeg \
               --artifact-dir target/verification/playback-lifecycle-system \
               --candidate-sha "$GITHUB_SHA"
             """,
@@ -2755,6 +2756,7 @@ done""",
                             "(participant_status|ParticipantStatus|"
                             "collect_due_periodic_updates_at|"
                             "delete field (set_by|"
+                            "transport_revision|"
                             "client_latency_calculation|"
                             "client_ignoring_counter|server_rtt_seconds|"
                             "latency_calculation_seconds) from struct "
@@ -4397,6 +4399,7 @@ done""",
 
         for field in (
             "set_by",
+            "transport_revision",
             "client_latency_calculation",
             "client_ignoring_counter",
             "server_rtt_seconds",

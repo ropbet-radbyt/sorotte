@@ -73,6 +73,8 @@ impl ClientSession {
         self.model.room.domain = SyncDomain::default();
         self.model.playlist.rooms.clear();
         self.model.room.playstates.clear();
+        self.model.room.playstate_transport_revisions.clear();
+        self.pending_playstate_transport_evidence = None;
         self.model.room.playstate_updated_at_seconds.clear();
         self.model
             .room
@@ -172,7 +174,10 @@ impl ClientSession {
             client_latency_calculation,
             client_rtt,
             received_at_seconds,
-            Some(local_paused),
+            Some(LocalPauseMutationIntent {
+                paused: local_paused,
+                base_transport_revision: self.current_room_transport_revision(),
+            }),
         )
     }
 
@@ -185,7 +190,7 @@ impl ClientSession {
         client_latency_calculation: f64,
         client_rtt: f64,
         received_at_seconds: f64,
-        local_pause_mutation_intent: Option<bool>,
+        local_pause_mutation_intent: Option<LocalPauseMutationIntent>,
     ) -> StatePayload {
         self.reconcile_normalized_state_and_build_response_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
@@ -220,7 +225,36 @@ impl ClientSession {
             .playstate
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
-        if has_playstate_update && self.model.playback.client_ignoring_on_the_fly == 0 {
+        let current_transport_revision = self.current_room_transport_revision();
+        let transport_revision_is_rejected =
+            inbound_state.playstate.as_ref().is_some_and(|playstate| {
+                match (playstate.transport_revision, current_transport_revision) {
+                    (Some(0), _) => true,
+                    (Some(candidate), Some(current)) => candidate < current,
+                    (None, Some(_)) => true,
+                    _ => false,
+                }
+            });
+        let revision_or_seek_edge = inbound_state.playstate.as_ref().is_some_and(|playstate| {
+            playstate.transport_revision.is_some_and(|revision| {
+                current_transport_revision != Some(revision) || playstate.do_seek == Some(true)
+            })
+        });
+        let may_apply_playstate = has_playstate_update
+            && self.model.playback.client_ignoring_on_the_fly == 0
+            && !transport_revision_is_rejected;
+        if revision_or_seek_edge
+            && may_apply_playstate
+            && let Some(playstate) = inbound_state.playstate.as_ref()
+            && let Some(transport_revision) = playstate.transport_revision
+        {
+            self.stage_pending_playstate_transport_evidence(
+                playstate,
+                transport_revision,
+                received_at_seconds,
+            );
+        }
+        if may_apply_playstate {
             self.apply_state_at(inbound_state.clone(), Some(received_at_seconds));
         }
 
@@ -272,7 +306,10 @@ impl ClientSession {
             client_rtt,
             StateReconcileContext {
                 local_state_change_global_playstate,
-                local_pause_mutation_intent: Some(local_paused),
+                local_pause_mutation_intent: Some(LocalPauseMutationIntent {
+                    paused: local_paused,
+                    base_transport_revision: self.current_room_transport_revision(),
+                }),
                 received_at_seconds: unix_wall_clock_time_seconds_legacy_compatible(),
             },
         )
@@ -292,6 +329,10 @@ impl ClientSession {
             local_pause_mutation_intent,
             received_at_seconds,
         } = context;
+        let inbound_transport_revision = inbound_state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.transport_revision);
         self.apply_participant_status_update(
             inbound_state.participant_status_scope.take(),
             inbound_state.participant_status_snapshot.take(),
@@ -301,10 +342,100 @@ impl ClientSession {
         self.apply_inbound_ignore_counters(&inbound_state);
 
         let had_global_playstate = self.has_global_playstate();
+        let current_transport_revision = self.current_room_transport_revision();
         let has_playstate_update = inbound_state
             .playstate
             .as_ref()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
+        let transport_revision_is_rejected =
+            inbound_state.playstate.as_ref().is_some_and(|playstate| {
+                match (playstate.transport_revision, current_transport_revision) {
+                    (Some(0), _) => true,
+                    (Some(candidate), Some(current)) => candidate < current,
+                    (None, Some(_)) => true,
+                    _ => false,
+                }
+            });
+        let revision_or_seek_edge = inbound_state.playstate.as_ref().is_some_and(|playstate| {
+            playstate.transport_revision.is_some_and(|revision| {
+                current_transport_revision != Some(revision) || playstate.do_seek == Some(true)
+            })
+        });
+        let local_intent_supersedes_first_transport_baseline = current_transport_revision.is_none()
+            && !transport_revision_is_rejected
+            && inbound_state
+                .playstate
+                .as_ref()
+                .is_some_and(|playstate| playstate.do_seek != Some(true))
+            && local_pause_mutation_intent.is_some_and(|intent| {
+                intent.base_transport_revision == inbound_transport_revision
+                    && inbound_state
+                        .playstate
+                        .as_ref()
+                        .and_then(|playstate| playstate.paused)
+                        != Some(intent.paused)
+            });
+        let pending_transport_evidence_superseded_by_local_intent = self
+            .pending_playstate_transport_evidence
+            .as_ref()
+            .zip(local_pause_mutation_intent)
+            .is_some_and(|(pending, intent)| {
+                intent.base_transport_revision == Some(pending.transport_revision)
+                    && intent.paused != pending.paused
+            });
+        if pending_transport_evidence_superseded_by_local_intent {
+            // A user command based on this exact canonical revision is newer
+            // than the still-pending player proof for that revision. Waiting
+            // for the superseded pause state would deadlock the new command's
+            // State response forever.
+            self.pending_playstate_transport_evidence = None;
+        }
+        let pending_transport_evidence_satisfied = self
+            .pending_playstate_transport_evidence
+            .as_ref()
+            .is_some_and(|pending| {
+                self.model.room.name.as_deref() == Some(pending.room.as_str())
+                    && current_transport_revision == Some(pending.transport_revision)
+                    && local_paused == pending.paused
+                    && pending.seek_position_seconds.is_none_or(|position| {
+                        let elapsed = if !pending.paused
+                            && received_at_seconds.is_finite()
+                            && pending.authority_observed_at_seconds.is_finite()
+                            && received_at_seconds >= pending.authority_observed_at_seconds
+                        {
+                            received_at_seconds - pending.authority_observed_at_seconds
+                        } else {
+                            0.0
+                        };
+                        local_position.is_finite()
+                            && (local_position - (position + elapsed)).abs()
+                                <= SEEK_THRESHOLD_SECONDS
+                    })
+            });
+        if pending_transport_evidence_satisfied {
+            self.pending_playstate_transport_evidence = None;
+        }
+        let may_apply_playstate = has_playstate_update
+            && self.model.playback.client_ignoring_on_the_fly == 0
+            && !transport_revision_is_rejected;
+        let stage_transport_evidence = revision_or_seek_edge
+            && !local_intent_supersedes_first_transport_baseline
+            && may_apply_playstate
+            && inbound_transport_revision.is_some();
+        if stage_transport_evidence {
+            let playstate = inbound_state
+                .playstate
+                .as_ref()
+                .expect("a complete transport edge must retain playstate");
+            self.stage_pending_playstate_transport_evidence(
+                playstate,
+                inbound_transport_revision.expect("a staged transport edge must carry a revision"),
+                received_at_seconds,
+            );
+        }
+        let withhold_playstate_until_post_revision_player_evidence = transport_revision_is_rejected
+            || (revision_or_seek_edge && !local_intent_supersedes_first_transport_baseline)
+            || self.pending_playstate_transport_evidence.is_some();
         let initial_playstate_is_local_echo = inbound_state
             .playstate
             .as_ref()
@@ -348,7 +479,10 @@ impl ClientSession {
             });
 
         let mut state_change = false;
-        if has_global_playstate && client_ignore_not_set {
+        if has_global_playstate
+            && client_ignore_not_set
+            && !withhold_playstate_until_post_revision_player_evidence
+        {
             let reconciled_local_position = initial_remote_baseline
                 .as_ref()
                 .and_then(|playstate| playstate.position)
@@ -362,7 +496,11 @@ impl ClientSession {
                         .then_some(canonical_paused)
                         .flatten()
                 })
-                .unwrap_or_else(|| local_pause_mutation_intent.unwrap_or(local_paused));
+                .unwrap_or_else(|| {
+                    local_pause_mutation_intent
+                        .map(|intent| intent.paused)
+                        .unwrap_or(local_paused)
+                });
             let (pause_change, seeked) = self
                 .determine_local_state_change_with_global_playstate_override_at(
                     reconciled_local_paused,
@@ -376,6 +514,11 @@ impl ClientSession {
                 .with_paused(reconciled_local_paused);
             if seeked {
                 playstate = playstate.with_do_seek(true);
+            }
+            if let Some(transport_revision) =
+                inbound_transport_revision.or_else(|| self.current_room_transport_revision())
+            {
+                playstate = playstate.with_transport_revision(transport_revision);
             }
             response.playstate = Some(playstate);
             state_change = pause_change || seeked;
@@ -425,5 +568,25 @@ impl ClientSession {
         }
 
         response
+    }
+
+    fn stage_pending_playstate_transport_evidence(
+        &mut self,
+        playstate: &ClientPlaystate,
+        transport_revision: u64,
+        received_at_seconds: f64,
+    ) {
+        self.pending_playstate_transport_evidence = Some(PendingPlaystateTransportEvidence {
+            room: self.model.room.name.clone().unwrap_or_default(),
+            transport_revision,
+            paused: playstate
+                .paused
+                .expect("a complete transport edge must carry paused"),
+            seek_position_seconds: (playstate.do_seek == Some(true))
+                .then_some(playstate.position)
+                .flatten()
+                .filter(|position| position.is_finite()),
+            authority_observed_at_seconds: received_at_seconds,
+        });
     }
 }

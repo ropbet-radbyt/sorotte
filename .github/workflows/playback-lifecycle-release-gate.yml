@@ -48,6 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
+            ffmpeg \
             libass-dev \
             libavcodec-dev \
             libavfilter-dev \
@@ -121,6 +122,7 @@ jobs:
             --server target/release/sorotte-server \
             --client target/release/sorotte-cli \
             --mpv target/mpv-supported-release/build/mpv \
+            --ffmpeg ffmpeg \
             --artifact-dir target/verification/playback-lifecycle-release \
             --candidate-sha "$CANDIDATE_SHA"
 

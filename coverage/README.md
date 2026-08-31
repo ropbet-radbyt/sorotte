@@ -27,6 +27,7 @@ python scripts/playback_lifecycle_system.py run \
   --server <exact-sorotte-server> \
   --client <exact-sorotte-cli> \
   --mpv <exact-supported-mpv> \
+  --ffmpeg <exact-ffmpeg> \
   --artifact-dir target/verification/playback-lifecycle-system \
   --candidate-sha <40-character-git-sha>
 python scripts/playback_lifecycle_system.py stage-safe-evidence \
@@ -56,12 +57,20 @@ lifecycle gap remains open.
 The packaged system command is intentionally separate from the fast model and
 seam checks. It launches an actual server, three isolated production CLI
 clients, and three managed real mpv processes over generated media. Its
-privacy-safe report binds the exact candidate SHA to the server, client, and
-mpv digests. Missing executables produce exit code 125 and a `skipped` report;
+privacy-safe report binds the exact candidate SHA to the server, client, mpv,
+and FFmpeg digests. Missing executables produce exit code 125 and a `skipped` report;
 required CI treats that as failure and supplies the pinned mpv executable.
 The follower traverses a deterministic fragmenting TCP proxy; the walk cuts
 and holds its connection, starts playback while it is absent, then releases
 the production reconnect and requires authoritative real-player catch-up.
+At the first natural EOF, the server must select the successor exactly once,
+retire the completed item's position and watcher samples, publish a fresh
+paused-at-zero transport revision, and keep all three loaded players at that
+origin across a server refresh.
+At the final no-loop video boundary, a correlated real-player EOF must commit
+exactly one finite canonical pause; repeated server refreshes and every player
+must remain bounded through the clients' normal exit without a playlist
+mutation or media reload.
 Before upload, a separate command revalidates the closed trace schemas and
 stages only the report, causal/player projections, and digest manifest. Raw
 process logs, generated media, Lua, configuration, IPC names, and executable
@@ -794,10 +803,11 @@ status transition. That shard admits only this exact field, struct, and
 function identity; its policy self-test rejects neighboring fields, structs,
 and functions instead of widening the shard to every ordered-event mutation.
 
-The server selector similarly admits only the five `StateSyncOptions` fields
+The server selector similarly admits only the six `StateSyncOptions` fields
 that cargo-mutants selects from the enclosing periodic status-projection
-function: `set_by`, `client_latency_calculation`, `client_ignoring_counter`,
-`server_rtt_seconds`, and `latency_calculation_seconds`. These are viable
+function: `set_by`, `transport_revision`, `client_latency_calculation`,
+`client_ignoring_counter`, `server_rtt_seconds`, and
+`latency_calculation_seconds`. These are viable
 mutations, not exceptions, so the scheduled server tests must kill them; the
 policy self-test rejects neighboring fields, structs, and functions.
 
@@ -1150,8 +1160,8 @@ oracle path was passed unchanged to Cargo and resolved from the crate working
 directory; the wrapper now passes the absolute already-attested path. After
 adding the generated differential below, the prior committed-source report
 over `e3d8554` listed 144 tests, passed all 137 executable tests, skipped zero,
-and retained the same seven fixture writers. The current committed
-inventory is 149 tests: 142 executable tests and the same seven fixture
+and retained the same seven fixture writers. The current lifecycle branch
+inventory is 150 tests: 143 executable tests and the same seven fixture
 writers. The historical coverage-policy checkpoint at `829ab98` passed all
 142 with zero failures or skips. A fresh local report at `dd3012c` passed the
 same complete accounting in 48.280455 seconds, and exact-head hosted run

@@ -42,27 +42,89 @@ impl ClientSession {
         &self,
         expected_index: i64,
         expected_epoch: Option<u64>,
+        terminal_position_seconds: Option<f64>,
     ) -> Vec<ClientRuntimeAction> {
         let actions = self.runtime_actions_for_local_playlist_next_with_selection_proof(true);
-        let Some(expected_epoch) = expected_epoch else {
-            // A legacy server does not publish a canonical epoch and will
-            // ignore Sorotte extension fields, so retain the established
-            // unconditional playlistIndex behavior for that connection.
-            return actions;
-        };
-        actions
-            .into_iter()
-            .map(|action| match action {
-                ClientRuntimeAction::SetPlaylistIndex { index } => {
-                    ClientRuntimeAction::SetPlaylistIndexIfCurrent {
-                        index,
-                        expected_index,
-                        expected_epoch,
+        if !actions.is_empty() {
+            let Some(expected_epoch) = expected_epoch else {
+                // A legacy server does not publish a canonical epoch and will
+                // ignore Sorotte extension fields, so retain the established
+                // unconditional playlistIndex behavior for that connection.
+                return actions;
+            };
+            return actions
+                .into_iter()
+                .map(|action| match action {
+                    ClientRuntimeAction::SetPlaylistIndex { index } => {
+                        ClientRuntimeAction::SetPlaylistIndexIfCurrent {
+                            index,
+                            expected_index,
+                            expected_epoch,
+                        }
                     }
-                }
-                action => action,
-            })
-            .collect()
+                    action => action,
+                })
+                .collect();
+        }
+
+        if !self.verified_natural_completion_is_no_loop_terminal_boundary(expected_index) {
+            return Vec::new();
+        }
+        let Some(terminal_position_seconds) =
+            terminal_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
+        else {
+            // Pausing without a finite terminal position would replace one
+            // unbounded authority sample with another ambiguous one. Keep the
+            // completion fail-closed until a trustworthy player sample exists.
+            return Vec::new();
+        };
+        if self
+            .current_room_playstate()
+            .and_then(|playstate| playstate.paused)
+            == Some(true)
+        {
+            return Vec::new();
+        }
+
+        let playstate = self.with_current_transport_revision(
+            PlaystatePayload::new()
+                .with_position(terminal_position_seconds)
+                .with_paused(true)
+                .with_do_seek(false),
+        );
+        vec![ClientRuntimeAction::SendState(
+            StatePayload::new().with_playstate(playstate),
+        )]
+    }
+
+    fn verified_natural_completion_is_no_loop_terminal_boundary(
+        &self,
+        expected_index: i64,
+    ) -> bool {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
+            || self.local_can_control() != Some(true)
+        {
+            return false;
+        }
+        let Some(playlist) = self.current_room_playlist() else {
+            return false;
+        };
+        if playlist.index != Some(expected_index) || playlist.files.is_empty() {
+            return false;
+        }
+        let Ok(current_index) = usize::try_from(expected_index) else {
+            return false;
+        };
+        if current_index >= playlist.files.len() {
+            return false;
+        }
+        if playlist.files.len() == 1 {
+            return !self.loop_single_files_enabled_legacy_compatible();
+        }
+        current_index.checked_add(1).is_some_and(|next_index| {
+            next_index >= playlist.files.len()
+                && !self.loop_at_end_of_playlist_enabled_legacy_compatible()
+        })
     }
 
     fn runtime_actions_for_local_playlist_next_with_selection_proof(

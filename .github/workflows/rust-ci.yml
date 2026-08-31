@@ -997,6 +997,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
+            ffmpeg \
             libass-dev \
             libavcodec-dev \
             libavfilter-dev \
@@ -1072,6 +1073,7 @@ jobs:
             --server target/debug/sorotte-server \
             --client target/debug/sorotte-cli \
             --mpv target/mpv-supported/build/mpv \
+            --ffmpeg ffmpeg \
             --artifact-dir target/verification/playback-lifecycle-system \
             --candidate-sha "$GITHUB_SHA"
 

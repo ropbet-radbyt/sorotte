@@ -8,9 +8,35 @@ impl ClientSession {
         updated_at_seconds: f64,
     ) {
         let room_key = room_name.clone();
+        if playstate.transport_revision == Some(0) {
+            return;
+        }
+        let current_transport_revision = self
+            .model
+            .room
+            .playstate_transport_revisions
+            .get(&room_key)
+            .copied();
+        if current_transport_revision.is_some() && playstate.transport_revision.is_none() {
+            // Observing a tagged server playstate establishes transport-revision
+            // support for this membership. Do not let a later untagged frame
+            // downgrade the causal fence and then be re-emitted with the
+            // retained current revision.
+            return;
+        }
+        if playstate
+            .transport_revision
+            .zip(current_transport_revision)
+            .is_some_and(|(candidate, current)| candidate < current)
+        {
+            return;
+        }
         let room_playstate = self.model.room.playstates.entry(room_name).or_default();
-        let authority_changed =
-            room_playstate.set_by != playstate.set_by || playstate.do_seek == Some(true);
+        let authority_changed = room_playstate.set_by != playstate.set_by
+            || playstate.do_seek == Some(true)
+            || playstate
+                .transport_revision
+                .is_some_and(|candidate| Some(candidate) != current_transport_revision);
         if let Some(position) = playstate.position {
             room_playstate.position = Some(position);
         }
@@ -19,6 +45,12 @@ impl ClientSession {
         }
         room_playstate.do_seek = Some(playstate.do_seek.unwrap_or(false));
         room_playstate.set_by = playstate.set_by;
+        if let Some(transport_revision) = playstate.transport_revision {
+            self.model
+                .room
+                .playstate_transport_revisions
+                .insert(room_key.clone(), transport_revision);
+        }
         if authority_changed {
             self.model
                 .room
@@ -29,6 +61,16 @@ impl ClientSession {
             .room
             .playstate_updated_at_seconds
             .insert(room_key, updated_at_seconds);
+    }
+
+    pub(crate) fn with_current_transport_revision(
+        &self,
+        mut playstate: PlaystatePayload,
+    ) -> PlaystatePayload {
+        if let Some(transport_revision) = self.current_room_transport_revision() {
+            playstate = playstate.with_transport_revision(transport_revision);
+        }
+        playstate
     }
 
     pub(super) fn apply_inbound_ignore_counters(&mut self, state_payload: &ClientStateUpdate) {
@@ -323,6 +365,15 @@ impl ClientSession {
 
     pub(super) fn update_local_room(&mut self, room_name: String) {
         if self.model.room.name.as_deref() != Some(room_name.as_str()) {
+            // Transport revisions are monotonic only inside one room
+            // membership. A room can disappear and later be recreated with a
+            // fresh counter, so the first snapshot in a successor membership
+            // must not be compared with the retired membership's revision.
+            self.model
+                .room
+                .playstate_transport_revisions
+                .remove(&room_name);
+            self.pending_playstate_transport_evidence = None;
             self.clear_participant_status_views();
             self.model.readiness.reconnect_token = None;
             self.reset_playback_barrier();

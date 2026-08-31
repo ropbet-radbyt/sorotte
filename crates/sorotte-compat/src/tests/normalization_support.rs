@@ -448,8 +448,37 @@ pub(super) fn normalize_cross_impl_message_with_options(
             }
         }
     }
+    strip_sorotte_causal_extensions(&mut value);
     strip_null_object_fields(&mut value);
     value
+}
+
+fn strip_sorotte_causal_extensions(value: &mut Value) {
+    // Python parity compares the shared Syncplay contract. Sorotte's
+    // namespaced equality fences are tested independently and deliberately
+    // have no legacy-Python counterpart, so retaining them here would turn
+    // every additive causal guard into a false compatibility regression.
+    if let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut) {
+        for field in ["playlistChange", "playlistIndex"] {
+            if let Some(playlist) = set_payload.get_mut(field).and_then(Value::as_object_mut) {
+                for extension in [
+                    "sorottePlaylistEpoch",
+                    "sorotteExpectedPlaylistIndex",
+                    "sorotteExpectedPlaylistEpoch",
+                ] {
+                    playlist.remove(extension);
+                }
+            }
+        }
+    }
+    if let Some(playstate) = value
+        .get_mut("State")
+        .and_then(Value::as_object_mut)
+        .and_then(|state| state.get_mut("playstate"))
+        .and_then(Value::as_object_mut)
+    {
+        playstate.remove("sorotteTransportRevision");
+    }
 }
 
 fn strip_null_object_fields(value: &mut Value) {

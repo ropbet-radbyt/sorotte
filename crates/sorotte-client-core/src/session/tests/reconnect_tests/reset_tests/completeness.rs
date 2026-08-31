@@ -13,6 +13,7 @@ use sorotte_protocol::{
 };
 
 use super::*;
+use crate::session::PendingPlaystateTransportEvidence;
 use crate::{ClientEvent, ReconnectPlaylistRestoreIntent};
 
 const RESET_DEFECT_ID: &str =
@@ -308,6 +309,7 @@ struct SessionResetProjection {
     room_media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     room_known_rooms: BTreeSet<String>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
+    room_playstate_transport_revisions: BTreeMap<String, u64>,
     room_playstate_updated_at_seconds: BTreeMap<String, f64>,
     room_playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
     playback: PlaybackResetProjection,
@@ -322,6 +324,7 @@ struct SessionResetProjection {
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
     pending_compatibility_fallbacks: Vec<crate::ClientCompatibilityFallback>,
+    pending_playstate_transport_evidence: String,
     playback_barrier: String,
 }
 
@@ -338,6 +341,7 @@ impl SessionResetProjection {
             pending_controller_auth_notifications,
             pending_user_change_notifications,
             pending_compatibility_fallbacks,
+            pending_playstate_transport_evidence,
             playback_barrier,
         } = session;
         let crate::ClientModel {
@@ -382,6 +386,7 @@ impl SessionResetProjection {
             room_media_match_peer_tiers: room.media_match_peer_tiers.clone(),
             room_known_rooms: room.known_rooms.clone(),
             room_playstates: room.playstates.clone(),
+            room_playstate_transport_revisions: room.playstate_transport_revisions.clone(),
             room_playstate_updated_at_seconds: room.playstate_updated_at_seconds.clone(),
             room_playstate_authority_changed_at_seconds: room
                 .playstate_authority_changed_at_seconds
@@ -399,6 +404,9 @@ impl SessionResetProjection {
             pending_controller_auth_notifications: pending_controller_auth_notifications.clone(),
             pending_user_change_notifications: pending_user_change_notifications.clone(),
             pending_compatibility_fallbacks: pending_compatibility_fallbacks.clone(),
+            pending_playstate_transport_evidence: format!(
+                "{pending_playstate_transport_evidence:#?}"
+            ),
             playback_barrier: format!("{playback_barrier:#?}"),
         }
     }
@@ -673,6 +681,18 @@ fn seed_room_state(session: &mut ClientSession, seed: u64) {
             set_by: Some("bob".to_owned()),
         },
     );
+    session
+        .model
+        .room
+        .playstate_transport_revisions
+        .insert("room1".to_owned(), seed.max(1));
+    session.pending_playstate_transport_evidence = Some(PendingPlaystateTransportEvidence {
+        room: "room1".to_owned(),
+        transport_revision: seed.max(1),
+        paused: false,
+        seek_position_seconds: Some(101.0 + seed as f64),
+        authority_observed_at_seconds: 101.5 + seed as f64,
+    });
     session
         .model
         .room
@@ -1057,6 +1077,10 @@ fn assert_dense_seed(session: &ClientSession) {
     assert_ne!(projection.connection_phase, fresh.connection_phase);
     assert_ne!(projection.room_domain, fresh.room_domain);
     assert_ne!(projection.room_users, fresh.room_users);
+    assert_ne!(
+        projection.room_playstate_transport_revisions,
+        fresh.room_playstate_transport_revisions
+    );
     assert_ne!(projection.playback, fresh.playback);
     assert_ne!(projection.playlist, fresh.playlist);
     assert_ne!(projection.readiness, fresh.readiness);
@@ -1073,6 +1097,10 @@ fn assert_dense_seed(session: &ClientSession) {
     assert!(!projection.pending_controller_auth_notifications.is_empty());
     assert!(!projection.pending_user_change_notifications.is_empty());
     assert!(!projection.pending_compatibility_fallbacks.is_empty());
+    assert_ne!(
+        projection.pending_playstate_transport_evidence,
+        fresh.pending_playstate_transport_evidence
+    );
     assert_ne!(projection.playback_barrier, fresh.playback_barrier);
     assert!(projection.playback.pending_local_pause_change);
     assert!(projection.playback.pending_room_pause_sync);

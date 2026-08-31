@@ -37,6 +37,7 @@ pub struct ClientRuntime<P, C> {
     last_local_file_update: Option<LocalFileUpdate>,
     pending_natural_playback_completion: Option<PendingNaturalPlaybackCompletion>,
     pending_reconnect_rate_reset: bool,
+    pending_state_sync_player_error: Option<PlayerError>,
     playback_coordination: RuntimePlaybackCoordination,
     ordered_player_events: OrderedPlayerEventConsumer,
 }

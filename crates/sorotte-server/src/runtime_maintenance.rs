@@ -456,6 +456,7 @@ impl ServerRuntime {
         set_by: Option<&str>,
         now_seconds: f64,
     ) -> Option<ProtocolMessage> {
+        let room = self.sessions.get(client_id)?.room.clone();
         let server_ignoring_counter = self.server_ignoring_counter(client_id);
         let server_rtt_seconds = self.server_rtt_seconds(client_id);
         let (pending_client_latency, pending_client_ignoring) =
@@ -465,6 +466,7 @@ impl ServerRuntime {
         }
         let participant_status =
             self.participant_status_snapshot_for_client_at(client_id, now_seconds);
+        let transport_revision = self.transport_authority_revision_for_room(&room);
         let build_message = |participant_status| {
             state_sync_message(
                 position,
@@ -472,6 +474,7 @@ impl ServerRuntime {
                 false,
                 StateSyncOptions {
                     set_by,
+                    transport_revision,
                     client_latency_calculation: pending_client_latency,
                     client_ignoring_counter: pending_client_ignoring,
                     server_rtt_seconds,
@@ -684,6 +687,12 @@ impl ServerRuntime {
             .copied()
             .unwrap_or_default()
             .to_wire(state_revision)
+    }
+
+    pub(crate) fn transport_authority_revision_for_room(&self, room: &str) -> Option<u64> {
+        self.room_participant_status_scopes
+            .get(room)
+            .map(|scope| scope.transport_revision)
     }
 
     fn participant_status_snapshot_for_client_at(
@@ -1426,9 +1435,13 @@ impl ServerRuntime {
         now_seconds: f64,
     ) {
         let position = position.filter(|position| position.is_finite());
+        let transport_revision = self
+            .sessions
+            .get(client_id)
+            .and_then(|session| self.transport_authority_revision_for_room(&session.room));
         self.client_playback_states.insert(
             client_id.to_owned(),
-            ClientPlaybackState::new(position, now_seconds),
+            ClientPlaybackState::new(position, now_seconds, transport_revision),
         );
     }
 
@@ -1437,16 +1450,18 @@ impl ServerRuntime {
         client_id: &str,
         position: Option<f64>,
         now_seconds: f64,
+        transport_revision: Option<u64>,
     ) {
         let position = position.filter(|position| position.is_finite());
         let playback_state = self
             .client_playback_states
             .entry(client_id.to_owned())
-            .or_insert_with(|| ClientPlaybackState::new(None, now_seconds));
+            .or_insert_with(|| ClientPlaybackState::new(None, now_seconds, transport_revision));
         if let Some(position) = position {
             playback_state.position = Some(position);
         }
         playback_state.updated_at_seconds = now_seconds;
+        playback_state.transport_revision = transport_revision;
     }
 
     pub(crate) fn seed_room_client_playback_states(
@@ -1472,6 +1487,7 @@ impl ServerRuntime {
         let controlled_room = self
             .room_password_provider
             .is_controlled_room_name(room_name);
+        let current_transport_revision = self.transport_authority_revision_for_room(room_name);
         let mut slowest: Option<(String, f64, u64)> = None;
         for (client_id, session) in &self.sessions {
             if session.room != room_name || self.playback_barrier_fenced_clients.contains(client_id)
@@ -1487,7 +1503,14 @@ impl ServerRuntime {
             let Some(position) = self
                 .client_playback_states
                 .get(client_id)
-                .and_then(|state| state.position_at(room_paused, now_seconds))
+                .and_then(|state| {
+                    if state.transport_revision.is_some()
+                        && state.transport_revision != current_transport_revision
+                    {
+                        return None;
+                    }
+                    state.position_at(room_paused, now_seconds)
+                })
             else {
                 continue;
             };
@@ -1711,21 +1734,26 @@ impl ServerRuntime {
         let server_rtt_seconds = self.server_rtt_seconds(client_id);
         let (pending_client_latency, pending_client_ignoring) =
             self.take_client_passthrough_state_metadata(client_id);
-        let participant_status = self
+        let room = self
             .sessions
             .get(client_id)
-            .filter(|session| session.capabilities.participant_status_v1)
-            .map(|session| session.room.clone())
-            .map(|room| {
+            .map(|session| session.room.clone());
+        let transport_revision = room
+            .as_deref()
+            .and_then(|room| self.transport_authority_revision_for_room(room));
+        let participant_status = self.sessions.get(client_id).and_then(|session| {
+            session.capabilities.participant_status_v1.then(|| {
                 ParticipantStatusStateExtension::new()
-                    .with_scope(self.participant_status_scope_for_room(&room))
-            });
+                    .with_scope(self.participant_status_scope_for_room(&session.room))
+            })
+        });
         state_sync_message(
             position,
             paused,
             do_seek,
             StateSyncOptions {
                 set_by,
+                transport_revision,
                 server_ignoring_counter: Some(server_ignoring_counter),
                 client_latency_calculation: pending_client_latency,
                 client_ignoring_counter: pending_client_ignoring,

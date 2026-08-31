@@ -284,6 +284,7 @@ pub(crate) struct ServerPlaystateCommand {
     pub(crate) paused: Option<bool>,
     pub(crate) do_seek: Option<bool>,
     pub(crate) set_by: Option<String>,
+    pub(crate) transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -670,11 +671,15 @@ pub(crate) fn normalize_server_protocol_message(
             };
             let ignoring = state.ignoring_on_the_fly.unwrap_or_default();
             ServerInboundCommand::State(Box::new(ServerStateCommand {
-                playstate: state.playstate.map(|playstate| ServerPlaystateCommand {
-                    position: playstate.position,
-                    paused: playstate.paused,
-                    do_seek: playstate.do_seek,
-                    set_by: playstate.set_by,
+                playstate: state.playstate.map(|playstate| {
+                    let transport_revision = playstate.transport_revision().unwrap_or(Some(0));
+                    ServerPlaystateCommand {
+                        position: playstate.position,
+                        paused: playstate.paused,
+                        do_seek: playstate.do_seek,
+                        set_by: playstate.set_by,
+                        transport_revision,
+                    }
                 }),
                 ping: state.ping.map(|ping| ServerPingCommand {
                     latency_calculation: ping.latency_calculation,

@@ -374,6 +374,7 @@ pub(crate) struct ClientPlaystate {
     pub(crate) paused: Option<bool>,
     pub(crate) do_seek: Option<bool>,
     pub(crate) set_by: Option<String>,
+    pub(crate) transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -986,11 +987,15 @@ fn normalize_client_state_payload_with_participant_status(
     participant_status: DecodedClientParticipantStatusState,
 ) -> ClientStateUpdate {
     ClientStateUpdate {
-        playstate: state.playstate.map(|playstate| ClientPlaystate {
-            position: playstate.position,
-            paused: playstate.paused,
-            do_seek: playstate.do_seek,
-            set_by: playstate.set_by,
+        playstate: state.playstate.map(|playstate| {
+            let transport_revision = playstate.transport_revision().unwrap_or(Some(0));
+            ClientPlaystate {
+                position: playstate.position,
+                paused: playstate.paused,
+                do_seek: playstate.do_seek,
+                set_by: playstate.set_by,
+                transport_revision,
+            }
         }),
         ping: state.ping.map(|ping| ClientPing {
             latency_calculation: ping.latency_calculation,

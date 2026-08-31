@@ -1561,7 +1561,7 @@ fn periodic_room_state_refresh_preserves_transport_pairing_in_both_message_order
                 r#"{"Set":{"file":{"name":"movie.mkv","duration":120.0}}}"#,
             )
             .expect("the periodic refresh needs a current media participant");
-        runtime.record_client_playback_state_sample("alice-client", Some(10.0), 100.0);
+        runtime.record_client_playback_state_sample("alice-client", Some(10.0), 100.0, None);
         let epoch = runtime.room_readiness[label].participants["alice"]
             .record
             .membership_epoch;

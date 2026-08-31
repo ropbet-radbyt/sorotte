@@ -39,6 +39,25 @@ impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
 {
+    fn refresh_player_projection_before_state_sync(&mut self, now_seconds: f64) -> bool {
+        if self.player.player_event_delivery_mode()
+            != sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            self.sync_player_playback_telemetry_into_session_and_buffer();
+            return true;
+        }
+        if self.pending_state_sync_player_error.is_some() {
+            return false;
+        }
+        match self.drain_player_transport_coordination(now_seconds) {
+            Ok(()) => true,
+            Err(error) => {
+                self.pending_state_sync_player_error = Some(error);
+                false
+            }
+        }
+    }
+
     fn queue_connection_scoped_state_with_participant_status(
         &mut self,
         mut state: StatePayload,
@@ -172,17 +191,33 @@ where
         // the response, so activate that generation while periodic heartbeats
         // remain gated on an active session below.
         self.control.activate_protocol_connection_generation();
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        let player_projection_is_current =
+            self.refresh_player_projection_before_state_sync(clocks.response_at_seconds);
+        let inbound_transport_revision = inbound_state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.transport_revision);
+        let inbound_do_seek = inbound_state
+            .playstate
+            .as_ref()
+            .is_some_and(|playstate| playstate.do_seek == Some(true));
         let local_pause_mutation_intent = self
             .playback_coordination
-            .active_local_pause_state_mutation_intent(&self.session);
-        let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(
-                clocks.response_at_seconds,
-                dont_slow_down_with_me,
-            ),
-            self.session.model.playback.local_paused,
-        ) else {
+            .active_local_pause_state_mutation_intent_for_inbound_transport(
+                &self.session,
+                inbound_transport_revision,
+                inbound_do_seek,
+            );
+        let local_playback = player_projection_is_current.then(|| {
+            (
+                self.outbound_state_sync_position_seconds(
+                    clocks.response_at_seconds,
+                    dont_slow_down_with_me,
+                ),
+                self.session.model.playback.local_paused,
+            )
+        });
+        let Some((Some(local_position), Some(local_paused))) = local_playback else {
             let outbound_state = self.session.reconcile_ping_only_state_response(
                 inbound_state,
                 client_latency_calculation,

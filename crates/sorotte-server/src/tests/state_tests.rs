@@ -840,6 +840,126 @@ fn periodic_playing_room_state_uses_slowest_watcher_position() {
 }
 
 #[test]
+fn delayed_playstate_sample_cannot_cross_a_newer_transport_revision() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(0.0));
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.2.255"}}}}"#
+                ),
+            )
+            .expect("hello should establish a session");
+        acknowledge_server_state_counter(&mut runtime, client_id, 1);
+        runtime
+            .handle_line_fanout(
+                client_id,
+                r#"{"Set":{"file":{"name":"movie.mkv","duration":95.0}}}"#,
+            )
+            .expect("file update should succeed");
+    }
+
+    assert_eq!(
+        runtime.transport_authority_revision_for_room("room1"),
+        Some(1)
+    );
+    let seek_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":7.0,"paused":true,"doSeek":true,"sorotteTransportRevision":1}}}"#,
+        )
+        .expect("current-revision seek should commit");
+    let seek_messages = decode_directed_lines(&seek_lines);
+    assert_eq!(
+        runtime.transport_authority_revision_for_room("room1"),
+        Some(2)
+    );
+    assert!(seek_messages.iter().all(|(_, message)| {
+        matches!(
+            message,
+            ProtocolMessage::State(payload)
+                if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                    playstate.position == Some(7.0)
+                        && playstate.transport_revision().ok().flatten() == Some(2)
+                })
+        )
+    }));
+    acknowledge_directed_state_counters(&mut runtime, &seek_messages);
+
+    let stale_sample_lines = runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"State":{"playstate":{"position":0.9,"paused":true,"doSeek":false,"sorotteTransportRevision":1}}}"#,
+        )
+        .expect("stale telemetry should be handled without mutating authority");
+    let stale_sample_messages = decode_directed_lines(&stale_sample_lines);
+    assert_eq!(stale_sample_messages.len(), 1);
+    assert!(matches!(
+        &stale_sample_messages[0],
+        (recipient, ProtocolMessage::State(payload))
+            if recipient == "client-2"
+                && payload.state.playstate.as_ref().is_some_and(|playstate| {
+                    playstate.position == Some(7.0)
+                        && playstate.paused == Some(true)
+                        && playstate.do_seek == Some(true)
+                        && playstate.transport_revision().ok().flatten() == Some(2)
+                })
+    ));
+    assert_eq!(
+        runtime.client_playback_states["client-2"].position,
+        Some(7.0),
+        "the delayed sample must not refresh the slowest-client projection"
+    );
+    acknowledge_directed_state_counters(&mut runtime, &stale_sample_messages);
+
+    for invalid_revision in ["0", "3", r#""invalid""#] {
+        let invalid_lines = runtime
+            .handle_line_fanout(
+                "client-2",
+                &format!(
+                    r#"{{"State":{{"playstate":{{"position":2.0,"paused":false,"doSeek":true,"sorotteTransportRevision":{invalid_revision}}}}}}}"#,
+                ),
+            )
+            .expect("an impossible revision should receive an authoritative correction");
+        let invalid_messages = decode_directed_lines(&invalid_lines);
+        assert_eq!(invalid_messages.len(), 1);
+        assert!(matches!(
+            &invalid_messages[0],
+            (recipient, ProtocolMessage::State(payload))
+                if recipient == "client-2"
+                    && payload.state.playstate.as_ref().is_some_and(|playstate| {
+                        playstate.position == Some(7.0)
+                            && playstate.paused == Some(true)
+                            && playstate.transport_revision().ok().flatten() == Some(2)
+                    })
+        ));
+        acknowledge_directed_state_counters(&mut runtime, &invalid_messages);
+        let room = runtime.room_playback_state("room1");
+        assert_eq!(room.position, 7.0);
+        assert!(room.paused);
+    }
+
+    let stale_seek_lines = runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"State":{"playstate":{"position":2.0,"paused":false,"doSeek":true,"sorotteTransportRevision":1}}}"#,
+        )
+        .expect("stale seek should receive an authoritative correction");
+    assert_eq!(stale_seek_lines.len(), 1);
+    let room = runtime.room_playback_state("room1");
+    assert_eq!(room.position, 7.0);
+    assert!(room.paused);
+    assert_eq!(room.set_by.as_deref(), Some("alice"));
+
+    let refreshed = runtime
+        .refresh_room_playback_state_from_clients_at("room1", SERVER_STATE_INTERVAL_SECONDS + 0.1);
+    assert_eq!(refreshed.position, 7.0);
+    assert_eq!(refreshed.set_by.as_deref(), Some("alice"));
+}
+
+#[test]
 fn room_switch_sends_destination_room_playstate() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(100.0));

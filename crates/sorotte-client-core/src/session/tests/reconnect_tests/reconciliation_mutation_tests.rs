@@ -143,3 +143,85 @@ fn ping_only_reconcile_preserves_pending_local_state_until_client_ack() {
         "the ping-only response must continue advertising the pending client counter"
     );
 }
+
+#[test]
+fn ping_only_first_tagged_revision_retains_player_evidence_fence() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    let mut runtime = ClientRuntime::new(
+        session,
+        RecordingPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
+    let first_revision = StatePayload::new().with_playstate(
+        PlaystatePayload::new()
+            .with_position(0.0)
+            .with_paused(false)
+            .with_set_by("bob")
+            .with_transport_revision(1),
+    );
+
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        first_revision.clone(),
+        100.0,
+        0.25,
+        false,
+    ));
+    let ProtocolMessage::State(initial_response) = &runtime.control().outbound_messages()[0] else {
+        panic!("the sample-free first revision should receive State");
+    };
+    assert!(initial_response.state.playstate.is_none());
+
+    runtime.flush_queued_protocol_messages();
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(0.0)
+            .with_paused(true),
+    );
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        first_revision.clone(),
+        100.0,
+        0.25,
+        false,
+    ));
+    let ProtocolMessage::State(pre_effect_response) = &runtime.control().outbound_messages()[0]
+    else {
+        panic!("the pre-effect sample should receive State");
+    };
+    assert!(
+        pre_effect_response.state.playstate.is_none(),
+        "the first revision must remain fenced after a stale startup sample appears"
+    );
+
+    runtime.flush_queued_protocol_messages();
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(0.2)
+            .with_paused(false),
+    );
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        first_revision,
+        100.0,
+        0.25,
+        false,
+    ));
+    let ProtocolMessage::State(post_effect_response) = &runtime.control().outbound_messages()[0]
+    else {
+        panic!("the post-effect sample should receive State");
+    };
+    let playstate = post_effect_response
+        .state
+        .playstate
+        .as_ref()
+        .expect("post-effect evidence should release the first revision");
+    assert_eq!(playstate.paused, Some(false));
+    assert_eq!(playstate.transport_revision().unwrap(), Some(1));
+}

@@ -204,7 +204,7 @@ where
                 "a local pause change is already in progress".to_owned(),
             ));
         }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let original_paused = self.session.model.playback.local_paused;
         let original_ready = self
             .session
@@ -261,7 +261,7 @@ where
                 "a local pause change is already in progress".to_owned(),
             ));
         }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         if paused {
             let _ =
                 self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
@@ -416,17 +416,31 @@ where
         let expected_index = playlist
             .index
             .expect("validated playlist selection must have an index");
+        let terminal_position_seconds = completion
+            .completed_file
+            .as_ref()
+            .and_then(|file| file.duration_seconds)
+            .filter(|position| position.is_finite() && *position >= 0.0)
+            .or_else(|| {
+                self.session
+                    .model
+                    .playback
+                    .local_position
+                    .filter(|position| position.is_finite() && *position >= 0.0)
+            });
         let actions = self
             .session
             .runtime_actions_for_verified_local_playlist_next(
                 expected_index,
                 completion.canonical_playlist_epoch,
+                terminal_position_seconds,
             );
         let result = self.run_local_playlist_action_batch(actions);
         if result.is_ok() {
-            // `Ok(false)` is a legitimate terminal playlist boundary (for
-            // example, the final item with looping disabled), so the physical
-            // EOF is consumed regardless of whether a State mutation exists.
+            // A bounded terminal State is emitted when this client owns an
+            // authorized no-loop boundary and has a finite terminal sample.
+            // `Ok(false)` remains legitimate when authority moved, the room
+            // already paused, or the completion cannot safely publish state.
             self.pending_natural_playback_completion = None;
         }
         result
@@ -576,7 +590,7 @@ where
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         // Cleanup is retried from subsequent observations if the adapter
         // rejects it; a failed rate reset must not swallow the user's seek.
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
@@ -588,7 +602,7 @@ where
     }
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
@@ -600,7 +614,7 @@ where
     }
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
@@ -753,6 +767,24 @@ where
                     .push_back(update);
             }
         }
+    }
+
+    fn refresh_player_projection_before_local_transport_intent(
+        &mut self,
+    ) -> Result<(), PlayerError> {
+        if self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            // A user can issue adjacent commands before the ordinary runtime
+            // tick drains mpv's acknowledged batch. Deriving Seek or Toggle
+            // from the old projection can then pair a fresh intent with the
+            // previous pause state and overwrite newer room authority.
+            return self.drain_player_transport_coordination(
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            );
+        }
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        Ok(())
     }
 }
 

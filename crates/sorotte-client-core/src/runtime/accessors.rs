@@ -616,6 +616,7 @@ where
             last_local_file_update: None,
             pending_natural_playback_completion: None,
             pending_reconnect_rate_reset: false,
+            pending_state_sync_player_error: None,
             playback_coordination,
             ordered_player_events: OrderedPlayerEventConsumer::default(),
         }
@@ -640,11 +641,14 @@ where
         if !self.session.is_active() {
             return Ok(());
         }
+        let playstate = self.session.with_current_transport_revision(
+            PlaystatePayload::new().with_position(0.0).with_paused(true),
+        );
         self.control.activate_protocol_connection_generation();
         self.control
-            .emit(ClientEffect::SendState(StatePayload::new().with_playstate(
-                PlaystatePayload::new().with_position(0.0).with_paused(true),
-            )))
+            .emit(ClientEffect::SendState(
+                StatePayload::new().with_playstate(playstate),
+            ))
             .map_err(client_effect_player_error)
     }
 

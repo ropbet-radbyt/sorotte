@@ -124,6 +124,136 @@ fn simultaneous_natural_eof_compare_and_set_commits_one_selection_generation() {
 }
 
 #[test]
+fn guarded_natural_advance_retires_completed_media_transport_authority() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = runtime
+            .handle_line_fanout(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.7.5"}}}}"#
+                ),
+            )
+            .expect("participant hello should establish a session");
+        acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&hello));
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    let initial_selection = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&initial_selection));
+
+    let initial_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the room should have transport authority");
+    let playing = runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"State":{{"playstate":{{"position":9.75,"paused":false,"doSeek":true,"sorotteTransportRevision":{initial_revision}}}}}}}"#
+            ),
+        )
+        .expect("the first item should become canonical playing state");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&playing));
+    let completed_media_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the playing authority should be revisioned");
+    assert!(!runtime.room_playback_state("room1").paused);
+    assert_eq!(runtime.room_playback_state("room1").position, 9.75);
+
+    let advance = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistIndex":{"index":1,"sorotteExpectedPlaylistIndex":0,"sorotteExpectedPlaylistEpoch":2}}}"#,
+        )
+        .expect("the guarded EOF transition should be accepted");
+    let advance_messages = decode_directed_lines(&advance);
+    let successor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the successor item should have transport authority");
+    assert!(successor_revision > completed_media_revision);
+    let successor = runtime.room_playback_state("room1");
+    assert_eq!(successor.position, 0.0);
+    assert!(successor.paused);
+
+    for client_id in ["client-1", "client-2"] {
+        let recipient_messages: Vec<_> = advance_messages
+            .iter()
+            .filter(|(recipient, _)| recipient == client_id)
+            .map(|(_, message)| message)
+            .collect();
+        let playlist_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(1)
+                        })
+                )
+            })
+            .expect("the successor selection should be fanned out");
+        let state_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::State(payload)
+                        if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.position == Some(0.0)
+                                && playstate.paused == Some(true)
+                                && playstate.do_seek == Some(false)
+                                && playstate.transport_revision().ok().flatten()
+                                    == Some(successor_revision)
+                        })
+                )
+            })
+            .expect("the successor transport reset should be fanned out");
+        assert!(
+            playlist_offset < state_offset,
+            "each client must select the successor before applying its transport reset"
+        );
+        let seeded = &runtime.client_playback_states[client_id];
+        assert_eq!(seeded.position, Some(0.0));
+        assert_eq!(seeded.transport_revision, Some(successor_revision));
+    }
+    acknowledge_directed_state_counters(&mut runtime, &advance_messages);
+
+    let delayed = runtime
+        .handle_line_fanout(
+            "client-2",
+            &format!(
+                r#"{{"State":{{"playstate":{{"position":9.9,"paused":false,"doSeek":false,"sorotteTransportRevision":{completed_media_revision}}}}}}}"#
+            ),
+        )
+        .expect("a retired completed-media sample should receive correction");
+    assert_eq!(runtime.room_playback_state("room1"), successor);
+    assert!(
+        decode_directed_lines(&delayed)
+            .iter()
+            .any(|(recipient, message)| {
+                recipient == "client-2"
+                    && matches!(
+                        message,
+                        ProtocolMessage::State(payload)
+                            if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                                playstate.position == Some(0.0)
+                                    && playstate.paused == Some(true)
+                                    && playstate.transport_revision().ok().flatten()
+                                        == Some(successor_revision)
+                            })
+                    )
+            })
+    );
+}
+
+#[test]
 fn malformed_playlist_precondition_fails_closed_as_a_correction() {
     let mut runtime = ServerRuntime::default();
     runtime

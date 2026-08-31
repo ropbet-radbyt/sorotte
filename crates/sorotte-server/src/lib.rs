@@ -572,6 +572,7 @@ impl RoomPlaybackState {
 struct ClientPlaybackState {
     position: Option<f64>,
     updated_at_seconds: f64,
+    transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -648,10 +649,15 @@ struct CachedParticipantStatusSnapshot {
 }
 
 impl ClientPlaybackState {
-    fn new(position: Option<f64>, updated_at_seconds: f64) -> Self {
+    fn new(
+        position: Option<f64>,
+        updated_at_seconds: f64,
+        transport_revision: Option<u64>,
+    ) -> Self {
         Self {
             position,
             updated_at_seconds,
+            transport_revision,
         }
     }
 

@@ -644,7 +644,7 @@ fn gui_persisted_config_runtime_owner_allows_offset_changes_without_a_player() {
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_suppresses_attached_seeks_after_recent_rewind() {
+fn gui_persisted_config_runtime_owner_preserves_deliberate_seek_after_recent_rewind() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         set_positions: Vec<f64>,
@@ -706,34 +706,33 @@ fn gui_persisted_config_runtime_owner_suppresses_attached_seeks_after_recent_rew
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     assert!(
-        !actions.iter().any(|action| matches!(
+        actions.iter().any(|action| matches!(
             action,
             GuiShellAction::PushTransientNotification { level, message }
-                if (*level == GuiTransientNotificationLevel::Success
-                    || *level == GuiTransientNotificationLevel::Error)
+                if *level == GuiTransientNotificationLevel::Success
                     && message.contains("seek")
         )),
-        "recent-rewind seek suppression should not emit a seek success or error notification"
+        "a deliberate post-rewind seek should report its successful dispatch"
     );
-    assert!(
+    assert_eq!(
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_positions
-            .is_empty(),
-        "recent-rewind seek suppression should prevent the attached player seek"
+            .set_positions,
+        vec![10.0],
+        "technical rewind bookkeeping must not swallow deliberate attached-player seek intent"
     );
     assert_eq!(
         owner.player_position_seconds,
-        Some(2.0),
-        "suppressed attached seeks should leave the stored global position unchanged"
+        Some(10.0),
+        "the accepted attached seek should update the stored global position"
     );
     assert_eq!(
         owner
             .session
             .as_ref()
             .and_then(|session| session.local_position_seconds()),
-        Some(2.0),
-        "suppressed attached seeks should not advance detached-session telemetry"
+        Some(10.0),
+        "the accepted attached seek should publish the detached-session position"
     );
 }

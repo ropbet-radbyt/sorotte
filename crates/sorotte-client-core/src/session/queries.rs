@@ -457,6 +457,15 @@ impl ClientSession {
             .and_then(|room_name| self.model.room.playstates.get(room_name))
     }
 
+    pub(crate) fn current_room_transport_revision(&self) -> Option<u64> {
+        let room_name = self.model.room.name.as_deref()?;
+        self.model
+            .room
+            .playstate_transport_revisions
+            .get(room_name)
+            .copied()
+    }
+
     pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {
         let room_name = self.model.room.name.as_deref()?;
         let mut playstate = self.model.room.playstates.get(room_name)?.clone();

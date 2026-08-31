@@ -456,6 +456,7 @@ async fn wait_for_canonical_seek_by(
                     .position
                     .is_some_and(|position| (position - expected_position_seconds).abs() <= 0.05)
                     && playstate.set_by.as_deref() == Some(expected_user)
+                    && playstate.do_seek == Some(true)
                 {
                     return playstate;
                 }
@@ -1144,8 +1145,8 @@ async fn local_seek_crosses_server_authority_and_reaches_a_late_joining_player()
     assert_eq!(canonical.set_by.as_deref(), Some("controller"));
     assert_eq!(
         canonical.do_seek,
-        Some(false),
-        "the server snapshot carries the committed seek position after normalizing the request edge"
+        Some(true),
+        "the observed server frame must be the canonical seek edge rather than a later periodic snapshot"
     );
     for exit in [controller_exit, follower_exit] {
         assert_eq!(exit, ConnectedSessionExit::RuntimeWindowElapsed);

@@ -32,7 +32,6 @@ import tempfile
 import threading
 import time
 import uuid
-import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,9 +78,11 @@ SAFE_TRACE_FIELDS = {
     "playlist_size",
     "set_by",
     "do_seek",
+    "transport_revision",
     "status_revision",
     "status_mode",
     "participants",
+    "participant_health",
     "server_ignore_counter",
     "check_id",
     "detail",
@@ -117,6 +118,204 @@ _POSIX_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_.])/(?:[^/\s\"'<>]+/)*[^/\s\"
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def validate_terminal_playlist_boundary(
+    canonical_events: Iterable[Mapping[str, Any]],
+    player_records: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    terminal_duration_seconds: float,
+    initial_transport_revision: int,
+) -> None:
+    """Prove bounded canonical and physical state at a no-loop final EOF."""
+
+    if not math.isfinite(terminal_duration_seconds) or terminal_duration_seconds <= 0.0:
+        raise ValueError("the final playlist duration must be finite and positive")
+    if initial_transport_revision <= 0:
+        raise ValueError("the initial transport revision must be positive")
+
+    canonical_events = list(canonical_events)
+    index_mutations = [
+        event for event in canonical_events if event.get("event") == "playlist-index"
+    ]
+    if index_mutations:
+        raise ValueError("the final playlist item mutated canonical selection with looping disabled")
+
+    playstates = [
+        event for event in canonical_events if event.get("event") == "playstate"
+    ]
+    terminal_states = [event for event in playstates if event.get("paused") is True]
+    if not terminal_states:
+        raise ValueError("the final playlist item never committed canonical terminal pause")
+    if len(terminal_states) < 2:
+        raise ValueError("canonical terminal pause was not observed to remain stable")
+
+    terminal_state = terminal_states[0]
+    terminal_position = _safe_number(terminal_state.get("position_seconds"))
+    lower_bound = max(0.0, terminal_duration_seconds - 1.5)
+    upper_bound = terminal_duration_seconds + 0.75
+    if terminal_position is None or not lower_bound <= terminal_position <= upper_bound:
+        raise ValueError("canonical terminal position was not bounded by media duration")
+    terminal_revision = terminal_state.get("transport_revision")
+    if terminal_revision != initial_transport_revision + 1:
+        raise ValueError("canonical terminal pause did not commit exactly one transport revision")
+    if terminal_state.get("do_seek") is True:
+        raise ValueError("canonical terminal pause incorrectly became a seek")
+
+    first_terminal_index = playstates.index(terminal_state)
+    for state in playstates[first_terminal_index:]:
+        position = _safe_number(state.get("position_seconds"))
+        if state.get("paused") is not True:
+            raise ValueError("canonical playback resumed after the no-loop terminal pause")
+        if state.get("transport_revision") != terminal_revision:
+            raise ValueError("canonical terminal authority mutated more than once")
+        if position is None or not lower_bound <= position <= upper_bound:
+            raise ValueError("canonical terminal position drifted beyond media duration")
+        if abs(position - terminal_position) > 0.25:
+            raise ValueError("canonical terminal position continued projecting after pause")
+
+    total_eof_records = 0
+    for role, records in player_records.items():
+        eof_indices = [
+            index
+            for index, record in enumerate(records)
+            if record.get("event") == "end-file"
+            and record.get("reason") == "eof"
+            and record.get("media_slot") == "media-2"
+        ]
+        if len(eof_indices) > 1:
+            raise ValueError(
+                f"the {role} player emitted {len(eof_indices)} final-item EOF records instead of one"
+            )
+        if any(record.get("event") == "file-loaded" for record in records):
+            raise ValueError(f"the {role} player reloaded media at the no-loop final boundary")
+        if eof_indices:
+            total_eof_records += 1
+            continue
+
+        resumed_indices = [
+            index
+            for index, record in enumerate(records)
+            if record.get("media_slot") == "media-2" and record.get("paused") is False
+        ]
+        resumed_index = resumed_indices[0] if resumed_indices else -1
+        physically_paused_near_terminal = any(
+            index > resumed_index
+            and record.get("media_slot") == "media-2"
+            and record.get("paused") is True
+            and (position := _safe_number(record.get("position_seconds"))) is not None
+            and lower_bound <= position <= upper_bound
+            for index, record in enumerate(records)
+        )
+        if not physically_paused_near_terminal:
+            raise ValueError(
+                f"the {role} player neither reached EOF nor paused near the terminal position"
+            )
+
+    if total_eof_records == 0:
+        raise ValueError("no real player produced the natural EOF that authorized terminal pause")
+
+
+def validate_natural_eof_successor_boundary(
+    canonical_events: Iterable[Mapping[str, Any]],
+    player_records: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    previous_transport_revision: int,
+    expected_playlist_index: int = 1,
+) -> int:
+    """Prove that completed-media authority cannot cross a playlist advance."""
+
+    if previous_transport_revision <= 0:
+        raise ValueError("the predecessor transport revision must be positive")
+
+    canonical_events = list(canonical_events)
+    index_mutations = [
+        (index, event)
+        for index, event in enumerate(canonical_events)
+        if event.get("event") == "playlist-index"
+    ]
+    if len(index_mutations) != 1 or index_mutations[0][1].get(
+        "playlist_index"
+    ) != expected_playlist_index:
+        raise ValueError("natural EOF did not produce exactly one bounded playlist advance")
+
+    selection_offset = index_mutations[0][0]
+    successor_playstates = [
+        event
+        for event in canonical_events[selection_offset + 1 :]
+        if event.get("event") == "playstate"
+    ]
+    if len(successor_playstates) < 2:
+        raise ValueError("successor transport authority was not observed to remain stable")
+
+    successor = successor_playstates[0]
+    successor_revision = successor.get("transport_revision")
+    if (
+        not isinstance(successor_revision, int)
+        or isinstance(successor_revision, bool)
+        or successor_revision <= previous_transport_revision
+    ):
+        raise ValueError("the successor did not receive a fresh transport revision")
+
+    for state in successor_playstates:
+        position = _safe_number(state.get("position_seconds"))
+        if state.get("paused") is not True:
+            raise ValueError("canonical successor playback escaped its selection fence")
+        if state.get("do_seek") is True:
+            raise ValueError("the successor origin was incorrectly published as a seek")
+        if state.get("transport_revision") != successor_revision:
+            raise ValueError("canonical successor authority mutated during stabilization")
+        if position is None or abs(position) > 0.25:
+            raise ValueError("completed-media position crossed into canonical successor state")
+
+    total_eof_records = 0
+    for role, records in player_records.items():
+        total_eof_records += sum(
+            record.get("event") == "end-file"
+            and record.get("reason") == "eof"
+            and record.get("media_slot") == "media-1"
+            for record in records
+        )
+        load_indices = [
+            index
+            for index, record in enumerate(records)
+            if record.get("event") == "file-loaded"
+            and record.get("media_slot") == "media-2"
+        ]
+        if len(load_indices) != 1:
+            raise ValueError(
+                f"the {role} player loaded the successor {len(load_indices)} times instead of one"
+            )
+        load_index = load_indices[0]
+        convergence_index = next(
+            (
+                index
+                for index, record in enumerate(records[load_index:], start=load_index)
+                if record.get("media_slot") == "media-2"
+                and record.get("paused") is True
+                and (position := _safe_number(record.get("position_seconds")))
+                is not None
+                and abs(position) <= 0.75
+            ),
+            None,
+        )
+        if convergence_index is None:
+            raise ValueError(f"the {role} player never converged at the successor origin")
+        for record in records[convergence_index:]:
+            if record.get("media_slot") != "media-2":
+                continue
+            position = _safe_number(record.get("position_seconds"))
+            if record.get("paused") is False:
+                raise ValueError(f"the {role} successor resumed before start authority")
+            if position is not None and abs(position) > 1.25:
+                raise ValueError(
+                    f"completed-media position crossed into the {role} successor"
+                )
+
+    if total_eof_records == 0:
+        raise ValueError("no real player produced the natural EOF that authorized playlist advance")
+
+    return successor_revision
 
 
 def sha256_file(path: Path) -> str:
@@ -299,28 +498,89 @@ def stage_privacy_safe_evidence(artifact_dir: Path, output_dir: Path) -> dict[st
     return manifest
 
 
-def generate_pcm_wav(path: Path, duration_seconds: float, sample_rate: int = 48_000) -> dict[str, Any]:
+def generate_av_fixture(
+    ffmpeg_path: Path,
+    path: Path,
+    duration_seconds: float,
+    *,
+    color: str,
+    sample_rate: int = 48_000,
+) -> dict[str, Any]:
+    """Generate a deterministic, seekable A/V fixture without music-mode semantics."""
+
     if not math.isfinite(duration_seconds) or duration_seconds <= 0.0:
         raise ValueError("duration_seconds must be finite and positive")
-    frame_count = int(round(duration_seconds * sample_rate))
+    if not re.fullmatch(r"[a-z]+", color):
+        raise ValueError("fixture color must be a lowercase named color")
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+
+    duration = f"{duration_seconds:.6f}".rstrip("0").rstrip(".")
     path.parent.mkdir(parents=True, exist_ok=True)
-    silence_chunk = b"\0\0" * min(sample_rate, frame_count)
-    remaining = frame_count
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(sample_rate)
-        while remaining:
-            frames = min(remaining, sample_rate)
-            output.writeframesraw(silence_chunk[: frames * 2])
-            remaining -= frames
-        output.writeframes(b"")
+    command = [
+        str(ffmpeg_path),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={color}:s=320x180:r=10:d={duration}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={sample_rate}:cl=mono:d={duration}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        "-pix_fmt",
+        "yuv420p",
+        "-threads:v",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        "-shortest",
+        "-fflags",
+        "+bitexact",
+        "-flags:v",
+        "+bitexact",
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-f",
+        "matroska",
+        "-y",
+        str(path),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(15.0, min(60.0, duration_seconds * 3.0)),
+        check=False,
+    )
+    if result.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
+        raise ValueError("FFmpeg failed to generate a deterministic A/V fixture")
     return {
         "sha256": sha256_file(path),
-        "duration_seconds": frame_count / sample_rate,
+        "duration_seconds": duration_seconds,
+        "container": "matroska",
+        "video_codec": "ffv1",
+        "width_pixels": 320,
+        "height_pixels": 180,
+        "frame_rate_hz": 10,
+        "audio_codec": "pcm_s16le",
         "sample_rate_hz": sample_rate,
         "channels": 1,
-        "sample_width_bytes": 2,
     }
 
 
@@ -525,6 +785,10 @@ def project_protocol_message(
                     if isinstance(playstate.get("doSeek"), bool)
                     else None,
                     "set_by": _role(playstate.get("setBy"), role_by_username),
+                    "transport_revision": playstate.get("sorotteTransportRevision")
+                    if isinstance(playstate.get("sorotteTransportRevision"), int)
+                    and not isinstance(playstate.get("sorotteTransportRevision"), bool)
+                    else None,
                 }
             )
 
@@ -585,6 +849,33 @@ def project_protocol_message(
     return events, ({"State": response_state} if response_state else None)
 
 
+def project_client_protocol_message(message: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project client frames without retaining identity, media, or extension payloads."""
+
+    state = message.get("State")
+    if not isinstance(state, dict):
+        return []
+    playstate = state.get("playstate")
+    if not isinstance(playstate, dict):
+        return []
+    revision = playstate.get("sorotteTransportRevision")
+    return [
+        {
+            "event": "client-playstate",
+            "paused": playstate.get("paused")
+            if isinstance(playstate.get("paused"), bool)
+            else None,
+            "position_seconds": _safe_number(playstate.get("position")),
+            "do_seek": playstate.get("doSeek")
+            if isinstance(playstate.get("doSeek"), bool)
+            else None,
+            "transport_revision": revision
+            if isinstance(revision, int) and not isinstance(revision, bool)
+            else None,
+        }
+    ]
+
+
 @dataclass
 class ObserverEvent:
     sequence: int
@@ -630,7 +921,56 @@ class ProtocolObserver:
 
     def _record(self, fields: dict[str, Any]) -> None:
         internal_fields = dict(fields)
-        trace_fields = {key: value for key, value in fields.items() if key != "participant_views"}
+        trace_fields = dict(fields)
+        participant_views = trace_fields.pop("participant_views", None)
+        if isinstance(participant_views, dict):
+            availability_values = {
+                "fresh",
+                "delayed",
+                "stale",
+                "awaitingReport",
+                "unsupported",
+                "unavailable",
+            }
+            connection_values = {
+                "unavailable",
+                "starting",
+                "connected",
+                "disconnected",
+                "failed",
+            }
+            phase_values = {
+                "empty",
+                "loading",
+                "prebuffering",
+                "readyPaused",
+                "playing",
+                "rebuffering",
+                "seeking",
+                "ended",
+                "failed",
+                "unknown",
+            }
+            participant_health = []
+            for role in sorted(set(ROLE_USERNAMES) & set(participant_views)):
+                view = participant_views.get(role)
+                if not isinstance(view, dict):
+                    continue
+                availability = view.get("availability")
+                connection = view.get("playerConnection")
+                phase = view.get("phase")
+                participant_health.append(
+                    ":".join(
+                        (
+                            role,
+                            availability if availability in availability_values else "unknown",
+                            connection if connection in connection_values else "unknown",
+                            phase if phase in phase_values else "unknown",
+                        )
+                    )
+                )
+            if participant_health:
+                trace_fields["participant_health"] = participant_health
         self.ledger.emit(source="server-protocol", role="server", **trace_fields)
         with self._event_lock:
             self._sequence += 1
@@ -774,12 +1114,35 @@ class ProtocolFaultProxy:
         source: socket.socket,
         destination: socket.socket,
         finished: threading.Event,
+        observe_client_protocol: bool = False,
     ) -> None:
+        line_buffer = bytearray()
         try:
             while not self._stop.is_set() and not finished.is_set():
                 data = source.recv(16 * 1024)
                 if not data:
                     return
+                if observe_client_protocol:
+                    line_buffer.extend(data)
+                    while b"\n" in line_buffer:
+                        line, _, tail = line_buffer.partition(b"\n")
+                        line_buffer = bytearray(tail)
+                        try:
+                            message = json.loads(line.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        if not isinstance(message, dict):
+                            continue
+                        for event in project_client_protocol_message(message):
+                            self.ledger.emit(
+                                source="client-protocol",
+                                role=self.role,
+                                **event,
+                            )
+                    if len(line_buffer) > 1024 * 1024:
+                        # A malformed unterminated frame is never useful
+                        # evidence and must not create an unbounded raw buffer.
+                        line_buffer.clear()
                 self._fragmented_send(destination, data)
         except OSError:
             return
@@ -813,7 +1176,7 @@ class ProtocolFaultProxy:
         pumps = [
             threading.Thread(
                 target=self._pump,
-                args=(client, upstream, finished),
+                args=(client, upstream, finished, True),
                 name=f"{self.role}-proxy-client-upstream",
                 daemon=True,
             ),
@@ -1049,6 +1412,7 @@ class PlaybackLifecycleHarness:
     server_path: Path
     client_path: Path
     mpv_path: Path
+    ffmpeg_path: Path
     artifact_dir: Path
     candidate_sha: str | None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
@@ -1073,11 +1437,18 @@ class PlaybackLifecycleHarness:
         self.checks: list[dict[str, Any]] = []
         self.prerequisites: dict[str, Any] = {}
         self.fixtures: dict[str, Any] = {}
+        self._terminal_boundary_evidence: tuple[
+            int,
+            dict[str, int],
+            float,
+            int,
+        ] | None = None
         self.room = f"lifecycle-{self.correlation_id[:12]}"
         self._known_sensitive_values: list[object] = [
             self.server_path,
             self.client_path,
             self.mpv_path,
+            self.ffmpeg_path,
             self.artifact_dir,
         ]
 
@@ -1154,9 +1525,9 @@ class PlaybackLifecycleHarness:
         located = shutil.which(str(requested))
         return Path(located).resolve() if located else None
 
-    def _version(self, path: Path) -> str:
+    def _version(self, path: Path, *, argument: str = "--version") -> str:
         result = subprocess.run(
-            [str(path), "--version"],
+            [str(path), argument],
             cwd=self.repo_root,
             capture_output=True,
             text=True,
@@ -1180,13 +1551,17 @@ class PlaybackLifecycleHarness:
             ("server", self.server_path),
             ("client", self.client_path),
             ("mpv", self.mpv_path),
+            ("ffmpeg", self.ffmpeg_path),
         ):
             executable = self._resolve_executable(requested)
             if executable is None:
                 raise MissingPrerequisite(self.stage, f"the declared {label} executable is unavailable")
             resolved[label] = executable
             self._known_sensitive_values.append(executable)
-            version = self._version(executable)
+            version = self._version(
+                executable,
+                argument="-version" if label == "ffmpeg" else "--version",
+            )
             if label == "mpv":
                 try:
                     parsed_mpv_version = parse_mpv_version(version)
@@ -1210,19 +1585,20 @@ class PlaybackLifecycleHarness:
         self.server_path = resolved["server"]
         self.client_path = resolved["client"]
         self.mpv_path = resolved["mpv"]
+        self.ffmpeg_path = resolved["ffmpeg"]
         self._pass("prerequisites-attested", "candidate SHA and executable digests were captured")
 
     def _create_fixtures(self) -> tuple[Path, Path]:
         self.stage = "fixture-generation"
         fixture_dir = self.artifact_dir / "generated-media"
-        first = fixture_dir / f"lifecycle-media-one-{self.correlation_id[:8]}.wav"
-        second = fixture_dir / f"lifecycle-media-two-{self.correlation_id[:8]}.wav"
-        self.fixtures = {
-            "media-1": generate_pcm_wav(first, 10.0),
-            "media-2": generate_pcm_wav(second, 14.0),
-        }
+        first = fixture_dir / f"lifecycle-media-one-{self.correlation_id[:8]}.mkv"
+        second = fixture_dir / f"lifecycle-media-two-{self.correlation_id[:8]}.mkv"
         self._known_sensitive_values.extend((first, second))
-        self._emit(event="fixtures-generated", detail="two deterministic PCM WAV fixtures")
+        self.fixtures = {
+            "media-1": generate_av_fixture(self.ffmpeg_path, first, 10.0, color="red"),
+            "media-2": generate_av_fixture(self.ffmpeg_path, second, 14.0, color="blue"),
+        }
+        self._emit(event="fixtures-generated", detail="two deterministic FFmpeg A/V fixtures")
         return first.resolve(), second.resolve()
 
     def _start_server(self) -> None:
@@ -1470,6 +1846,53 @@ class PlaybackLifecycleHarness:
                 timeout=timeout,
             )
 
+    def _wait_player_progress(
+        self,
+        roles: Iterable[str],
+        cursors: Mapping[str, int],
+        *,
+        media_slot: str,
+        minimum_delta: float,
+        timeout: float = 8.0,
+    ) -> None:
+        """Prove that each real player advances from its own observed baseline.
+
+        Players do not necessarily apply a canonical Play frame at the same
+        instant. An absolute target can therefore already be behind the first
+        player by the time the last player has started. Capture each trace's
+        latest position at its cursor and require a later, still-playing sample
+        to advance by the requested delta.
+        """
+        for role in roles:
+            cursor = cursors.get(role, 0)
+            records = read_jsonl(self.clients[role].player_trace)
+            baseline = next(
+                (
+                    float(record["position_seconds"])
+                    for record in reversed(records[:cursor])
+                    if record.get("media_slot") == media_slot
+                    and _safe_number(record.get("position_seconds")) is not None
+                ),
+                None,
+            )
+            if baseline is None:
+                raise HarnessFailure(
+                    self.stage,
+                    f"the {role} player had no position baseline for {media_slot}",
+                )
+            self._player_record(
+                role,
+                cursor,
+                lambda record, baseline=baseline: (
+                    record.get("media_slot") == media_slot
+                    and record.get("paused") is False
+                    and _safe_number(record.get("position_seconds")) is not None
+                    and float(record["position_seconds"])
+                    >= baseline + minimum_delta
+                ),
+                timeout=timeout,
+            )
+
     def _command(self, role: str, command: str) -> None:
         self.clients[role].process.write_line(command)
         safe_command = "seek" if command.startswith(("seek ", "s ")) else command
@@ -1515,6 +1938,7 @@ class PlaybackLifecycleHarness:
                 and record.get("media_slot") == "media-1",
                 timeout=10.0,
             )
+
         self._wait_player_state(
             ("controller", "follower"),
             {"controller": 0, "follower": 0},
@@ -1557,13 +1981,11 @@ class PlaybackLifecycleHarness:
         # Let the real clocks advance enough to distinguish an applied play
         # from a transient property echo.
         progress_cursors = {role: self._player_cursor(role) for role in ("controller", "follower")}
-        self._wait_player_state(
+        self._wait_player_progress(
             ("controller", "follower"),
             progress_cursors,
             media_slot="media-1",
-            paused=False,
-            position=0.6,
-            tolerance=0.25,
+            minimum_delta=0.5,
             timeout=4.0,
         )
 
@@ -1816,7 +2238,11 @@ class PlaybackLifecycleHarness:
         player_cursors = {role: self._player_cursor(role) for role in roles}
         eof_cursors = dict(player_cursors)
         self._command("controller", "play")
-        self._canonical_playstate(observer_cursor, paused=False, set_by="controller")
+        resume_commit = self._canonical_playstate(
+            observer_cursor,
+            paused=False,
+            set_by="controller",
+        )
         self._wait_player_state(roles, player_cursors, media_slot="media-1", paused=False)
         self._pass("resume-committed-and-applied", "all three real players resumed from the canonical seek point")
 
@@ -1827,6 +2253,30 @@ class PlaybackLifecycleHarness:
             and event.get("playlist_index") == 1,
             timeout=10.0,
         )
+        successor_commit = self._observer_event(
+            advance.sequence,
+            lambda event: event.get("event") == "playstate"
+            and event.get("paused") is True
+            and event.get("set_by") == "controller"
+            and event.get("do_seek") is False
+            and _safe_number(event.get("position_seconds")) is not None
+            and abs(float(event["position_seconds"])) <= 0.25
+            and isinstance(event.get("transport_revision"), int)
+            and not isinstance(event.get("transport_revision"), bool),
+            timeout=5.0,
+        )
+        resume_transport_revision = resume_commit.fields.get("transport_revision")
+        successor_transport_revision = successor_commit.fields.get("transport_revision")
+        if (
+            not isinstance(resume_transport_revision, int)
+            or isinstance(resume_transport_revision, bool)
+            or successor_transport_revision <= resume_transport_revision
+        ):
+            raise HarnessFailure(
+                self.stage,
+                "the successor item did not receive a fresh transport authority revision",
+            )
+
         eof_observed = False
         for role in roles:
             records = self._wait(
@@ -1857,39 +2307,84 @@ class PlaybackLifecycleHarness:
 
             self._wait("a natural real-mpv EOF", any_eof, timeout=4.0)
 
+        successor_loaded_cursors: dict[str, int] = {}
         for role in roles:
-            self._player_record(
+            loaded = self._player_record(
                 role,
                 eof_cursors[role],
                 lambda record: record.get("event") == "file-loaded"
                 and record.get("media_slot") == "media-2",
                 timeout=10.0,
             )
+            loaded_sequence = loaded.get("sequence")
+            if not isinstance(loaded_sequence, int) or isinstance(loaded_sequence, bool):
+                raise HarnessFailure(
+                    self.stage,
+                    f"the {role} successor load evidence had no sequence fence",
+                )
+            successor_loaded_cursors[role] = max(0, loaded_sequence - 1)
 
-        stabilization_end = min(self.deadline, time.monotonic() + 1.0)
-        while time.monotonic() < stabilization_end:
-            time.sleep(0.05)
-        index_events = [
-            event
-            for event in self.observer.events_after(observer_cursor)
-            if event.fields.get("event") == "playlist-index"
-        ]
-        committed_ones = [
-            event for event in index_events if event.fields.get("playlist_index") == 1
-        ]
-        invalid_advances = [
-            event
-            for event in index_events
-            if isinstance(event.fields.get("playlist_index"), int)
-            and event.fields["playlist_index"] > 1
-        ]
-        if len(committed_ones) != 1 or invalid_advances:
+        for role in roles:
+            converged = self._player_record(
+                role,
+                successor_loaded_cursors[role],
+                lambda record: record.get("media_slot") == "media-2"
+                and record.get("paused") is True
+                and _safe_number(record.get("position_seconds")) is not None
+                and abs(float(record["position_seconds"])) <= 0.75,
+                timeout=8.0,
+            )
+            converged_sequence = converged.get("sequence")
+            if not isinstance(converged_sequence, int) or isinstance(
+                converged_sequence, bool
+            ):
+                raise HarnessFailure(
+                    self.stage,
+                    f"the {role} successor convergence evidence had no sequence fence",
+                )
+
+        def successor_authority_observed_twice() -> bool:
+            return (
+                len(
+                    [
+                        event
+                        for event in self.observer.events_after(successor_commit.sequence - 1)
+                        if event.fields.get("event") == "playstate"
+                        and event.fields.get("paused") is True
+                        and event.fields.get("transport_revision")
+                        == successor_transport_revision
+                        and _safe_number(event.fields.get("position_seconds"))
+                        is not None
+                        and abs(float(event.fields["position_seconds"])) <= 0.25
+                    ]
+                )
+                >= 2
+            )
+
+        self._wait(
+            "successor transport authority to remain stable across a server refresh",
+            successor_authority_observed_twice,
+            timeout=3.0,
+        )
+
+        try:
+            verified_successor_revision = validate_natural_eof_successor_boundary(
+                (event.fields for event in self.observer.events_after(observer_cursor)),
+                {
+                    role: read_jsonl(self.clients[role].player_trace)[
+                        eof_cursors[role] :
+                    ]
+                    for role in roles
+                },
+                previous_transport_revision=resume_transport_revision,
+            )
+        except ValueError as error:
+            raise HarnessFailure(self.stage, str(error)) from error
+        if verified_successor_revision != successor_transport_revision:
             raise HarnessFailure(
                 self.stage,
-                "natural EOF did not produce exactly one bounded canonical playlist advance",
+                "successor transport evidence changed while it was being verified",
             )
-        if advance.sequence != committed_ones[0].sequence:
-            raise HarnessFailure(self.stage, "playlist evidence changed while it was being verified")
         self._pass(
             "natural-eof-advanced-once",
             "real mpv EOF produced exactly one canonical transition from item zero to item one",
@@ -1897,6 +2392,125 @@ class PlaybackLifecycleHarness:
         self._pass(
             "next-item-loaded-everywhere",
             "every managed real mpv loaded the server-selected second item",
+        )
+        self._pass(
+            "natural-eof-successor-authority-reset",
+            "the server retired completed-media transport state and every real mpv remained at the paused successor origin",
+        )
+
+    def _verify_terminal_playlist_boundary(self) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+
+        self.stage = "final-item-near-tail-seek"
+        observer_cursor = self.observer.cursor()
+        seek_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "seek 11.0")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=11.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            roles,
+            seek_cursors,
+            media_slot="media-2",
+            paused=True,
+            position=11.0,
+            tolerance=1.25,
+        )
+        self._pass(
+            "final-item-seek-committed-and-applied",
+            "canonical near-tail seek reached every real player on the final item",
+        )
+
+        self.stage = "final-item-natural-eof"
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "play")
+        play_commit = self._canonical_playstate(
+            observer_cursor,
+            paused=False,
+            set_by="controller",
+        )
+        initial_transport_revision = play_commit.fields.get("transport_revision")
+        if not isinstance(initial_transport_revision, int) or isinstance(
+            initial_transport_revision, bool
+        ):
+            raise HarnessFailure(
+                self.stage,
+                "the final-item Play commit did not carry transport authority",
+            )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-2",
+            paused=False,
+            position=11.0,
+            tolerance=1.5,
+        )
+        self._pass(
+            "final-item-resume-committed-and-applied",
+            "all three real players resumed the final item from canonical near-tail state",
+        )
+
+        terminal_duration_seconds = float(self.fixtures["media-2"]["duration_seconds"])
+        terminal_commit = self._observer_event(
+            play_commit.sequence,
+            lambda event: event.get("event") == "playstate"
+            and event.get("paused") is True
+            and event.get("set_by") in roles
+            and event.get("do_seek") is False
+            and event.get("transport_revision") == initial_transport_revision + 1
+            and _safe_number(event.get("position_seconds")) is not None
+            and abs(float(event["position_seconds"]) - terminal_duration_seconds) <= 0.75,
+            timeout=8.0,
+        )
+
+        def terminal_authority_observed_twice() -> bool:
+            return (
+                len(
+                    [
+                        event
+                        for event in self.observer.events_after(terminal_commit.sequence - 1)
+                        if event.fields.get("event") == "playstate"
+                        and event.fields.get("paused") is True
+                        and event.fields.get("transport_revision")
+                        == terminal_commit.fields.get("transport_revision")
+                    ]
+                )
+                >= 2
+            )
+
+        self._wait(
+            "canonical terminal pause to remain stable across a server refresh",
+            terminal_authority_observed_twice,
+            timeout=3.0,
+        )
+
+        stabilization_end = min(self.deadline, time.monotonic() + 0.5)
+        while time.monotonic() < stabilization_end:
+            time.sleep(0.05)
+        validate_terminal_playlist_boundary(
+            (event.fields for event in self.observer.events_after(observer_cursor)),
+            {
+                role: read_jsonl(self.clients[role].player_trace)[player_cursors[role] :]
+                for role in roles
+            },
+            terminal_duration_seconds=terminal_duration_seconds,
+            initial_transport_revision=initial_transport_revision,
+        )
+        self._terminal_boundary_evidence = (
+            observer_cursor,
+            player_cursors,
+            terminal_duration_seconds,
+            initial_transport_revision,
+        )
+        self._pass(
+            "final-item-canonical-terminal-bounded",
+            "natural EOF committed one stable terminal pause while selection remained on the final item",
         )
 
     def _verify_clean_shutdown_and_withdrawal(self) -> None:
@@ -1920,6 +2534,37 @@ class PlaybackLifecycleHarness:
         for client in self.clients.values():
             client.process.join_capture()
         self._pass("clients-exited-cleanly", "all production CLI loops reached code zero at their bounded runtime")
+
+        self.stage = "final-item-terminal-through-client-exit"
+        if self._terminal_boundary_evidence is None:
+            raise HarnessFailure(
+                self.stage,
+                "terminal boundary evidence was not retained for full-runtime verification",
+            )
+        (
+            terminal_observer_cursor,
+            terminal_player_cursors,
+            terminal_duration_seconds,
+            initial_transport_revision,
+        ) = self._terminal_boundary_evidence
+        validate_terminal_playlist_boundary(
+            (
+                event.fields
+                for event in self.observer.events_after(terminal_observer_cursor)
+            ),
+            {
+                role: read_jsonl(self.clients[role].player_trace)[
+                    terminal_player_cursors[role] :
+                ]
+                for role in self.clients
+            },
+            terminal_duration_seconds=terminal_duration_seconds,
+            initial_transport_revision=initial_transport_revision,
+        )
+        self._pass(
+            "final-item-terminal-stable-through-client-exit",
+            "canonical pause, terminal position, selection, and physical players remained bounded for the rest of the run",
+        )
 
         self.stage = "participant-status-withdrawal"
         withdrawal_cursor = self.observer.cursor()
@@ -2120,6 +2765,7 @@ class PlaybackLifecycleHarness:
             self._verify_late_join_and_status(first, second)
             self._verify_partitioned_follower_catches_up_to_missed_start()
             self._verify_resume_eof_and_playlist()
+            self._verify_terminal_playlist_boundary()
             self._verify_clean_shutdown_and_withdrawal()
             self._emit(event="verification-passed", detail="all required lifecycle checks")
             self._write_report("passed")
@@ -2147,6 +2793,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--server", type=Path, required=True, help="exact sorotte-server executable")
     run.add_argument("--client", type=Path, required=True, help="exact sorotte-cli executable")
     run.add_argument("--mpv", type=Path, required=True, help="exact supported mpv executable")
+    run.add_argument("--ffmpeg", type=Path, required=True, help="exact FFmpeg fixture generator")
     run.add_argument("--artifact-dir", type=Path, required=True)
     run.add_argument("--candidate-sha", help="full git SHA represented by the candidate binaries")
     run.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
@@ -2176,6 +2823,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             server_path=args.server,
             client_path=args.client,
             mpv_path=args.mpv,
+            ffmpeg_path=args.ffmpeg,
             artifact_dir=args.artifact_dir,
             candidate_sha=args.candidate_sha,
             timeout_seconds=args.timeout_seconds,

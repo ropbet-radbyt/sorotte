@@ -100,6 +100,62 @@ fn roundtrip_message_fixture() {
 }
 
 #[test]
+fn playstate_transport_revision_has_a_stable_additive_wire_shape() {
+    let message = ProtocolMessage::state(
+        StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(7.0)
+                .with_paused(true)
+                .with_transport_revision(19),
+        ),
+    );
+
+    let encoded = encode_message_line(&message).expect("playstate should encode");
+    let value: serde_json::Value = serde_json::from_str(&encoded).expect("state should be JSON");
+    assert_eq!(
+        value.pointer("/State/playstate/sorotteTransportRevision"),
+        Some(&json!(19))
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("encoded playstate should decode"),
+        message
+    );
+    let ProtocolMessage::State(decoded) =
+        decode_message_line(&encoded).expect("encoded playstate should decode")
+    else {
+        panic!("encoded playstate should remain a State message");
+    };
+    assert_eq!(
+        decoded
+            .state
+            .playstate
+            .as_ref()
+            .expect("decoded State should retain playstate")
+            .transport_revision()
+            .expect("transport revision should be well-formed"),
+        Some(19)
+    );
+
+    let malformed = decode_message_line(
+        r#"{"State":{"playstate":{"position":7.0,"paused":true,"sorotteTransportRevision":"invalid"}}}"#,
+    )
+    .expect("an additive malformed extension should remain structurally decodable");
+    let ProtocolMessage::State(malformed) = malformed else {
+        panic!("malformed extension fixture should remain a State message");
+    };
+    assert!(
+        malformed
+            .state
+            .playstate
+            .as_ref()
+            .expect("malformed fixture should retain playstate")
+            .transport_revision()
+            .is_err(),
+        "receivers must be able to reject a malformed causal fence"
+    );
+}
+
+#[test]
 fn roundtrip_raw_json_value_fixture() {
     let fixture = read_fixture("state_ping.json");
     let value = decode_line(&fixture).expect("fixture JSON should decode");

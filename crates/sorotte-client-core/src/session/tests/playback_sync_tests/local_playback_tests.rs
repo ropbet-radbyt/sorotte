@@ -811,8 +811,14 @@ fn client_runtime_seek_to_position_clamps_negative_targets_to_zero() {
 }
 
 #[test]
-fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
+fn client_runtime_deliberate_seek_survives_recent_playlist_rewind() {
     let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session.model.playback.local_paused = Some(true);
     session.model.playback.last_rewound_at_seconds =
         Some(unix_wall_clock_time_seconds_legacy_compatible());
 
@@ -821,17 +827,28 @@ fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
     let mut runtime = ClientRuntime::new(session, player, control);
 
     assert!(
-        !runtime
+        runtime
             .run_seek_to_position(10.0)
-            .expect("recent-rewind seek suppression should not fail"),
-        "late seeks beyond the rewind guard threshold should be ignored right after a rewind"
+            .expect("deliberate post-rewind seek should not fail"),
+        "technical playlist rewind bookkeeping must not swallow deliberate seek intent"
     );
-    assert_eq!(runtime.player().position, None);
-    assert_eq!(runtime.session().local_position_seconds(), None);
+    assert_eq!(runtime.player().position, Some(10.0));
+    assert_eq!(runtime.session().local_position_seconds(), Some(10.0));
     assert_eq!(
         runtime.session().last_seek_position_before_manual_seek(),
-        None
+        Some(0.0)
     );
+    let ProtocolMessage::State(state) = &runtime.control().outbound_messages()[0] else {
+        panic!("active deliberate seek should queue a State message");
+    };
+    let playstate = state
+        .state
+        .playstate
+        .as_ref()
+        .expect("active deliberate seek should publish playstate");
+    assert_eq!(playstate.position, Some(10.0));
+    assert_eq!(playstate.paused, Some(true));
+    assert_eq!(playstate.do_seek, Some(true));
 }
 
 #[test]
@@ -888,7 +905,7 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
             .expect("hello should apply");
     session
             .apply_message_json(
-                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":31}}}"#,
             )
             .expect("state should apply");
 
@@ -919,6 +936,11 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
     assert_eq!(playstate.paused, Some(false));
     assert_eq!(playstate.do_seek, Some(true));
     assert_eq!(playstate.set_by, None);
+    assert_eq!(
+        playstate.transport_revision().unwrap(),
+        Some(31),
+        "explicit seek intent must declare the canonical transport revision it observed"
+    );
     assert_eq!(
         state
             .state

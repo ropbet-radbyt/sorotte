@@ -2,7 +2,82 @@ use super::*;
 use crate::{LogicalMediaId, MediaTransportKind};
 
 #[test]
-fn first_remote_room_baseline_echoes_authority_without_fabricating_physical_convergence() {
+fn transport_revision_fence_rejects_backwards_zero_and_untagged_downgrades() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            1.0,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":12}}}"#,
+            2.0,
+        )
+        .expect("tagged authority should apply");
+
+    for stale in [
+        r#"{"State":{"playstate":{"position":1.0,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":11}}}"#,
+        r#"{"State":{"playstate":{"position":2.0,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":0}}}"#,
+        r#"{"State":{"playstate":{"position":2.5,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":"invalid"}}}"#,
+        r#"{"State":{"playstate":{"position":3.0,"paused":false,"doSeek":true,"setBy":"mallory"}}}"#,
+    ] {
+        session
+            .apply_message_json_at(stale, 3.0)
+            .expect("invalid authority should be ignored without rejecting the State frame");
+    }
+
+    assert_eq!(session.current_room_transport_revision(), Some(12));
+    assert_eq!(
+        session.current_room_playstate(),
+        Some(&RoomPlaystateView {
+            position: Some(10.0),
+            paused: Some(true),
+            do_seek: Some(false),
+            set_by: Some("bob".to_owned()),
+        }),
+        "retired or downgraded authority must not be laundered into the current revision"
+    );
+}
+
+#[test]
+fn room_membership_change_resets_transport_revision_ordering() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"sorotteTransportRevision":12}}}"#,
+        )
+        .expect("first membership authority should apply");
+    session
+        .apply_message_json(r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room2 switch should apply");
+    session
+        .apply_message_json(r#"{"Set":{"room":{"name":"room1"}}}"#)
+        .expect("room1 rejoin should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":1.0,"paused":true,"sorotteTransportRevision":1}}}"#,
+        )
+        .expect("successor membership authority should apply");
+
+    assert_eq!(session.current_room_transport_revision(), Some(1));
+    assert_eq!(
+        session
+            .current_room_playstate()
+            .and_then(|playstate| playstate.position),
+        Some(1.0),
+        "a recreated room's first revision must not be compared with a retired membership"
+    );
+}
+
+#[test]
+fn first_remote_room_revision_waits_for_physical_convergence_before_echo() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -27,7 +102,8 @@ fn first_remote_room_baseline_echoes_authority_without_fabricating_physical_conv
                 PlaystatePayload::new()
                     .with_position(10.0)
                     .with_paused(false)
-                    .with_set_by("bob"),
+                    .with_set_by("bob")
+                    .with_transport_revision(12),
             )
             .with_ping(PingPayload::new().with_latency_calculation(42.0)),
         100.0,
@@ -44,23 +120,9 @@ fn first_remote_room_baseline_echoes_authority_without_fabricating_physical_conv
     let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
         panic!("queued message should be State");
     };
-    assert_eq!(
-        state_message
-            .state
-            .playstate
-            .as_ref()
-            .and_then(|p| p.position),
-        Some(10.0),
-        "a late joiner must echo the established room position, not its pre-membership sample"
-    );
-    assert_eq!(
-        state_message
-            .state
-            .playstate
-            .as_ref()
-            .and_then(|p| p.paused),
-        Some(false),
-        "a late joiner must echo the established room pause state"
+    assert!(
+        state_message.state.playstate.is_none(),
+        "a late joiner must not pair revision 12 with its pre-membership player sample"
     );
     assert_eq!(
         runtime.session().local_position_seconds(),
@@ -102,6 +164,45 @@ fn first_remote_room_baseline_echoes_authority_without_fabricating_physical_conv
             .and_then(|ping| ping.client_rtt),
         Some(0.25),
         "outbound ping should include client RTT"
+    );
+
+    runtime.flush_queued_protocol_messages();
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(12.6)
+            .with_paused(false),
+    );
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob")
+                    .with_transport_revision(12),
+            ),
+            100.0,
+            0.25,
+            false,
+        )
+    );
+    let ProtocolMessage::State(converged_response) = &runtime.control().outbound_messages()[0]
+    else {
+        panic!("post-command evidence should receive State");
+    };
+    let converged_playstate = converged_response
+        .state
+        .playstate
+        .as_ref()
+        .expect("physical convergence should release revision 12");
+    assert_eq!(converged_playstate.position, Some(12.6));
+    assert_eq!(converged_playstate.paused, Some(false));
+    assert_eq!(
+        converged_playstate.transport_revision().unwrap(),
+        Some(12),
+        "the post-effect sample must remain causally bound to the server revision it observed"
     );
 }
 
