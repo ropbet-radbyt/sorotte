@@ -101,6 +101,9 @@ struct PlaylistResetProjection {
     shuffle_nonce: u64,
     received_first_index: bool,
     pending_index_reset_pause_before_sync: Option<bool>,
+    pending_index_reset_room: Option<String>,
+    pending_index_reset_base_transport_revision: Option<u64>,
+    pending_index_reset_base_playstate_receipt_sequence: Option<u64>,
     pending_index_reset_refresh_recently_advanced: bool,
     suppress_next_self_index_reset: bool,
     last_seek_position_before_manual_seek: Option<f64>,
@@ -147,6 +150,11 @@ impl PlaylistResetProjection {
             shuffle_nonce: playlist.shuffle_nonce,
             received_first_index: playlist.received_first_index,
             pending_index_reset_pause_before_sync: playlist.pending_index_reset_pause_before_sync,
+            pending_index_reset_room: playlist.pending_index_reset_room.clone(),
+            pending_index_reset_base_transport_revision: playlist
+                .pending_index_reset_base_transport_revision,
+            pending_index_reset_base_playstate_receipt_sequence: playlist
+                .pending_index_reset_base_playstate_receipt_sequence,
             pending_index_reset_refresh_recently_advanced: playlist
                 .pending_index_reset_refresh_recently_advanced,
             suppress_next_self_index_reset: playlist.suppress_next_self_index_reset,
@@ -310,6 +318,7 @@ struct SessionResetProjection {
     room_known_rooms: BTreeSet<String>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
     room_playstate_transport_revisions: BTreeMap<String, u64>,
+    room_playstate_receipt_sequences: BTreeMap<String, u64>,
     room_playstate_updated_at_seconds: BTreeMap<String, f64>,
     room_playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
     playback: PlaybackResetProjection,
@@ -387,6 +396,7 @@ impl SessionResetProjection {
             room_known_rooms: room.known_rooms.clone(),
             room_playstates: room.playstates.clone(),
             room_playstate_transport_revisions: room.playstate_transport_revisions.clone(),
+            room_playstate_receipt_sequences: room.playstate_receipt_sequences.clone(),
             room_playstate_updated_at_seconds: room.playstate_updated_at_seconds.clone(),
             room_playstate_authority_changed_at_seconds: room
                 .playstate_authority_changed_at_seconds
@@ -686,6 +696,11 @@ fn seed_room_state(session: &mut ClientSession, seed: u64) {
         .room
         .playstate_transport_revisions
         .insert("room1".to_owned(), seed.max(1));
+    session
+        .model
+        .room
+        .playstate_receipt_sequences
+        .insert("room1".to_owned(), seed.max(1));
     session.pending_playstate_transport_evidence = Some(PendingPlaystateTransportEvidence {
         room: "room1".to_owned(),
         transport_revision: seed.max(1),
@@ -809,6 +824,9 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
     playlist.shuffle_nonce = 307 + seed;
     playlist.received_first_index = true;
     playlist.pending_index_reset_pause_before_sync = Some(false);
+    playlist.pending_index_reset_room = Some("room1".to_owned());
+    playlist.pending_index_reset_base_transport_revision = Some(seed.max(1));
+    playlist.pending_index_reset_base_playstate_receipt_sequence = Some(seed.max(1));
     playlist.pending_index_reset_refresh_recently_advanced = true;
     playlist.suppress_next_self_index_reset = true;
     playlist.last_seek_position_before_manual_seek = Some(308.0 + seed as f64);
@@ -1080,6 +1098,10 @@ fn assert_dense_seed(session: &ClientSession) {
     assert_ne!(
         projection.room_playstate_transport_revisions,
         fresh.room_playstate_transport_revisions
+    );
+    assert_ne!(
+        projection.room_playstate_receipt_sequences,
+        fresh.room_playstate_receipt_sequences
     );
     assert_ne!(projection.playback, fresh.playback);
     assert_ne!(projection.playlist, fresh.playlist);

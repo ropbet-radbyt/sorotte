@@ -60,7 +60,14 @@ impl ClientSession {
         self.model
             .room
             .playstate_updated_at_seconds
-            .insert(room_key, updated_at_seconds);
+            .insert(room_key.clone(), updated_at_seconds);
+        let receipt_sequence = self
+            .model
+            .room
+            .playstate_receipt_sequences
+            .entry(room_key)
+            .or_default();
+        *receipt_sequence = receipt_sequence.wrapping_add(1).max(1);
     }
 
     pub(crate) fn with_current_transport_revision(

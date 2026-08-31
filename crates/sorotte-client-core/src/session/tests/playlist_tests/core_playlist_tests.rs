@@ -116,6 +116,79 @@ fn recently_advanced_does_not_refresh_for_remote_playlist_reset() {
 }
 
 #[test]
+fn playlist_reset_waits_for_an_accepted_post_selection_playstate() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            1.0,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":9.5,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":11}}}"#,
+            2.0,
+        )
+        .expect("predecessor playstate should apply");
+    session
+        .apply_message_json_at(
+            r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","episode-b.mkv"],"user":"bob"}}}"#,
+            3.0,
+        )
+        .expect("playlist should apply");
+    session
+        .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#, 4.0)
+        .expect("initial selection should apply");
+    session
+        .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#, 5.0)
+        .expect("successor selection should apply");
+
+    assert_eq!(session.pending_playlist_index_reset_intent(), Some(false));
+    assert!(
+        !session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "the predecessor's playstate cannot authorize the successor"
+    );
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":9.6,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":11}}}"#,
+            5.5,
+        )
+        .expect("same-revision refresh should apply");
+    assert!(
+        !session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "a later receipt carrying predecessor transport authority must not open the fence"
+    );
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":9.6,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":10}}}"#,
+            6.0,
+        )
+        .expect("stale tagged state should be ignored without a parse failure");
+    assert!(
+        !session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "a rejected stale transport revision must not open the selection fence"
+    );
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":12}}}"#,
+            7.0,
+        )
+        .expect("successor playstate should apply");
+    assert!(
+        session.pending_playlist_index_reset_has_post_selection_playstate(),
+        "the first accepted State after the selection authorizes physical reset completion"
+    );
+    assert_eq!(
+        session.take_pending_playlist_index_reset_intent(),
+        Some(false)
+    );
+    assert!(!session.pending_playlist_index_reset_has_post_selection_playstate());
+}
+
+#[test]
 fn local_playlist_actions_are_suppressed_when_server_shared_playlists_disabled() {
     let mut session = ClientSession::default();
     session

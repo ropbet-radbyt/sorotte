@@ -3771,6 +3771,7 @@ impl RuntimePlaybackCoordination {
         else {
             return Vec::new();
         };
+        let playlist_selection_transport_hold = session.has_pending_playlist_index_reset_intent();
         let barrier_state = session
             .playback_barrier_prepare()
             .filter(|prepare| self.current_logical_media_matches(&prepare.logical_media_id))
@@ -3991,8 +3992,20 @@ impl RuntimePlaybackCoordination {
             // play/pause command while its server echo is in flight.
             self.pending_local_pause_intent = None;
         }
-        let local_echo =
+        let mut local_echo =
             canonical_local_echo || (local_intent_active && !local_intent_requires_player_replay);
+        if playlist_selection_transport_hold {
+            // Set.playlistIndex and the State that authorizes its transport are
+            // distinct frames. Hold the physical successor at its origin until
+            // the application has loaded/reset it and accepted a post-selection
+            // playstate; otherwise predecessor Play authority can be replayed
+            // during the gap and land after the successor was briefly paused.
+            // Apply this after readiness/barrier and local-intent overlays so no
+            // predecessor authority class can escape the selection fence.
+            paused = true;
+            position_seconds = 0.0;
+            local_echo = false;
+        }
         if !position_seconds.is_finite() {
             return Vec::new();
         }
@@ -16643,6 +16656,104 @@ mod tests {
         let snapshot = coordination.snapshot();
         assert_eq!(snapshot.pending_local_pause_intent, Some(false));
         assert!(!snapshot.pending_local_pause_intent_dormant);
+    }
+
+    #[test]
+    fn playlist_selection_holds_predecessor_play_until_physical_reset_and_new_authority() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+                0.0,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":9.5,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":11}}}"#,
+                0.1,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","episode-b.mkv"],"user":"bob"}}}"#,
+                0.2,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#, 0.3)
+            .unwrap();
+        session
+            .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#, 0.4)
+            .unwrap();
+        assert!(session.has_pending_playlist_index_reset_intent());
+
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let plan = coordination.prepare_media(
+            LogicalMediaId::new("episode-b.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.4,
+        );
+        coordination.stage_local_pause_intent(false, &session);
+        let initial = coordination.update_desired_from_session(&session, 0.4);
+        assert!(initial.iter().all(|action| !matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(false)
+                    | CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+        let observed = coordination.observe_transport(
+            paused_transport(
+                plan.media_generation,
+                0.5,
+                PlayerTransportPhase::ReadyPaused,
+                0.0,
+            ),
+            0.5,
+        );
+        assert!(observed.iter().all(|action| !matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(false)
+                    | CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":12}}}"#,
+                0.6,
+            )
+            .unwrap();
+        assert!(session.pending_playlist_index_reset_has_post_selection_playstate());
+        let still_held = coordination.update_desired_from_session(&session, 0.6);
+        assert!(still_held.iter().all(|action| !matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(false)
+                    | CoordinatorPlayerCommand::Play(_),
+                ..
+            }
+        )));
+
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            Some(false)
+        );
+        let released = coordination.update_desired_from_session(&session, 0.7);
+        assert!(
+            released.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(false)
+                        | CoordinatorPlayerCommand::Play(_),
+                    ..
+                }
+            )),
+            "post-selection Play authority may resume only after the physical reset consumes the fence"
+        );
     }
 
     #[test]

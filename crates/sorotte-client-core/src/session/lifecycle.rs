@@ -282,6 +282,13 @@ impl ClientSession {
     pub(super) fn reset_playlist_index_transition_tracking(&mut self) {
         self.model.playlist.received_first_index = false;
         self.model.playlist.pending_index_reset_pause_before_sync = None;
+        self.model.playlist.pending_index_reset_room = None;
+        self.model
+            .playlist
+            .pending_index_reset_base_transport_revision = None;
+        self.model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence = None;
         self.model
             .playlist
             .pending_index_reset_refresh_recently_advanced = false;
@@ -299,6 +306,22 @@ impl ClientSession {
     }
 
     pub(super) fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+        let room = self.model.room.name.clone();
+        let base_transport_revision = room.as_deref().and_then(|room| {
+            self.model
+                .room
+                .playstate_transport_revisions
+                .get(room)
+                .copied()
+        });
+        let base_playstate_receipt_sequence = room.as_deref().map(|room| {
+            self.model
+                .room
+                .playstate_receipt_sequences
+                .get(room)
+                .copied()
+                .unwrap_or_default()
+        });
         self.model.playlist.pending_index_reset_pause_before_sync = Some(
             self.model
                 .playlist
@@ -306,6 +329,18 @@ impl ClientSession {
                 .unwrap_or(false)
                 || pause_before_sync,
         );
+        // Every new canonical selection needs a playstate observed after that
+        // selection before predecessor transport authority may be replayed on
+        // the successor. Re-arm the receipt fence even when another reset is
+        // already pending; a second selection must not borrow the first one's
+        // later State acknowledgement.
+        self.model.playlist.pending_index_reset_room = room;
+        self.model
+            .playlist
+            .pending_index_reset_base_transport_revision = base_transport_revision;
+        self.model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence = base_playstate_receipt_sequence;
     }
 
     pub fn begin_local_playlist_index_reset_intent(
@@ -339,6 +374,13 @@ impl ClientSession {
             .pending_index_reset_pause_before_sync
             .take();
         if pending_reset.is_some() {
+            self.model.playlist.pending_index_reset_room = None;
+            self.model
+                .playlist
+                .pending_index_reset_base_transport_revision = None;
+            self.model
+                .playlist
+                .pending_index_reset_base_playstate_receipt_sequence = None;
             if self
                 .model
                 .playlist
@@ -368,6 +410,61 @@ impl ClientSession {
     /// actually available before committing the pause-and-rewind side effect.
     pub fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
         self.model.playlist.pending_index_reset_pause_before_sync
+    }
+
+    /// Returns whether canonical room playstate accepted after the pending
+    /// playlist selection is now available.
+    ///
+    /// A playlist-index frame and its paired State frame are separate protocol
+    /// messages. Until the latter is accepted, replaying the predecessor's
+    /// desired Play level can briefly start the successor. Receipt sequencing
+    /// also covers legacy untagged playstate while the transport-revision
+    /// fence rejects stale tagged or downgrade frames before they reach here.
+    pub fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
+        if self
+            .model
+            .playlist
+            .pending_index_reset_pause_before_sync
+            .is_none()
+        {
+            return false;
+        }
+        let Some(room) = self.model.playlist.pending_index_reset_room.as_deref() else {
+            return false;
+        };
+        if self.model.room.name.as_deref() != Some(room) {
+            return false;
+        }
+        let Some(base_sequence) = self
+            .model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence
+        else {
+            return false;
+        };
+        let receipt_advanced = self
+            .model
+            .room
+            .playstate_receipt_sequences
+            .get(room)
+            .copied()
+            .unwrap_or_default()
+            > base_sequence;
+        if let Some(base_transport_revision) = self
+            .model
+            .playlist
+            .pending_index_reset_base_transport_revision
+        {
+            return receipt_advanced
+                && self
+                    .model
+                    .room
+                    .playstate_transport_revisions
+                    .get(room)
+                    .copied()
+                    .is_some_and(|current| current > base_transport_revision);
+        }
+        receipt_advanced
     }
 
     pub(super) fn clear_reconnect_state_restore_validation_state(&mut self) {

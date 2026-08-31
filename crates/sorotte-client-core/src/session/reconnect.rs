@@ -74,6 +74,7 @@ impl ClientSession {
         self.model.playlist.rooms.clear();
         self.model.room.playstates.clear();
         self.model.room.playstate_transport_revisions.clear();
+        self.model.room.playstate_receipt_sequences.clear();
         self.pending_playstate_transport_evidence = None;
         self.model.room.playstate_updated_at_seconds.clear();
         self.model

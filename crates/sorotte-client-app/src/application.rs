@@ -724,6 +724,19 @@ where
         if !current_file_matches
             && self.pending_canonical_playlist_load.as_ref() != Some(&selection)
         {
+            if self
+                .runtime
+                .session()
+                .has_pending_playlist_index_reset_intent()
+            {
+                // IPC command acceptance preserves order. Pause the retiring
+                // transport before loadfile so a fast successor cannot expose
+                // an autoplay window while its paired canonical State frame is
+                // still in flight. The post-load pause below remains required
+                // because load completion, not command acceptance, proves the
+                // new physical media owns the reset.
+                self.runtime.player_mut().set_paused(true)?;
+            }
             self.runtime.player_mut().open_file(&selection.target)?;
             self.pending_canonical_playlist_load = Some(selection.clone());
             changed = true;
@@ -741,8 +754,18 @@ where
         };
 
         self.runtime.player_mut().set_position(0.0)?;
-        if pause_before_sync {
-            self.runtime.player_mut().set_paused(true)?;
+        // Always reassert the temporary transition hold after authoritative
+        // file evidence. A load can change mpv's pause property even when the
+        // preceding command was accepted. `pause_before_sync` remains part of
+        // the legacy-facing intent shape, while post-selection room authority
+        // decides whether playback ultimately stays paused or resumes.
+        self.runtime.player_mut().set_paused(true)?;
+        if !self
+            .runtime
+            .session()
+            .pending_playlist_index_reset_has_post_selection_playstate()
+        {
+            return Ok(true);
         }
         let consumed = self
             .runtime
@@ -2263,6 +2286,7 @@ mod tests {
     #[derive(Default)]
     struct TestPlayer {
         opened: Vec<String>,
+        paused_when_opened: Vec<bool>,
         paused: bool,
         position_seconds: Option<f64>,
         connected: Option<bool>,
@@ -2293,6 +2317,7 @@ mod tests {
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+            self.paused_when_opened.push(self.paused);
             self.opened.push(path.to_owned());
             match self.open_error.as_ref() {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
@@ -2993,6 +3018,11 @@ mod tests {
             vec!["episode-a.mkv", "episode-b.mkv"]
         );
         assert_eq!(
+            application.player().paused_when_opened,
+            vec![false, true],
+            "a successor load must be preceded by the temporary pause hold"
+        );
+        assert_eq!(
             application.session().pending_playlist_index_reset_intent(),
             Some(false),
             "player command acceptance is not file-load evidence"
@@ -3009,9 +3039,28 @@ mod tests {
         assert!(
             application
                 .synchronize_canonical_playlist_selection_to_player()
-                .expect("observed media should receive its reset")
+                .expect("observed media should receive its physical reset")
         );
         assert_eq!(application.player().position_seconds, Some(0.0));
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false),
+            "physical reset cannot replay predecessor authority before a post-selection State"
+        );
+        application
+            .apply_protocol_line(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":1}}}"#,
+                5.0,
+                false,
+                false,
+                true,
+            )
+            .expect("successor transport authority should apply");
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("post-selection authority should commit the reset")
+        );
         assert_eq!(
             application.session().pending_playlist_index_reset_intent(),
             None

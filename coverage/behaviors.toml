@@ -159,6 +159,7 @@ invariants = [
     "late and reconnecting clients converge from authoritative snapshots without missed deltas",
     "canonical playlist selection loads every capable player and natural EOF advances exactly once",
     "an accepted guarded natural advance selects the successor before publishing a fresh paused-at-zero transport revision, and completed-media position or watcher samples cannot cross that boundary",
+    "a selected successor is physically paused before load and cannot replay predecessor Play authority until its reset and an accepted post-selection playstate are both observed",
     "readiness waits for every required current member before one start commit",
     "participant status advances periodically, reaches late clients, and withdraws on disconnect",
     "startup player evidence remains generation-scoped across the first owner-clock observation",
@@ -357,6 +358,30 @@ package = "sorotte-server"
 target_kind = "lib"
 test = "tests::controller_playlist_tests::guarded_natural_advance_retires_completed_media_transport_authority"
 source = "crates/sorotte-server/src/tests/controller_playlist_tests.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.successor-preload-pause-fence"
+kind = "rust-test"
+oracle = "application-pause-before-successor-load"
+package = "sorotte-client-app"
+target_kind = "lib"
+test = "application::tests::canonical_playlist_selection_waits_for_file_evidence_and_suppresses_duplicate_loads"
+source = "crates/sorotte-client-app/src/application.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.successor-post-selection-playstate-fence"
+kind = "rust-test"
+oracle = "client-predecessor-authority-selection-fence"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::playlist_selection_holds_predecessor_play_until_physical_reset_and_new_authority"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
