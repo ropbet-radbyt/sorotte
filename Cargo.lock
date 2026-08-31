@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-cli"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "rustls",
@@ -3666,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-app"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "proptest",
@@ -3682,7 +3682,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-core"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "getrandom 0.4.3",
  "md-5",
@@ -3702,7 +3702,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-compat"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "rustls",
  "rustls-pemfile",
@@ -3715,14 +3715,14 @@ dependencies = [
 
 [[package]]
 name = "sorotte-core"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "sorotte-gui"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "eframe",
  "egui",
@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-media-match"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "base64",
  "rusqlite",
@@ -3765,14 +3765,14 @@ dependencies = [
 
 [[package]]
 name = "sorotte-player-api"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "sorotte-secret",
 ]
 
 [[package]]
 name = "sorotte-player-mpv"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "mlua",
@@ -3789,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-plex"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "reqwest",
  "rustls",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-protocol"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "proptest",
  "serde",
@@ -3813,11 +3813,11 @@ dependencies = [
 
 [[package]]
 name = "sorotte-secret"
-version = "0.2.7"
+version = "0.2.8"
 
 [[package]]
 name = "sorotte-server"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-sim"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "sorotte-client-core",
  "sorotte-core",
