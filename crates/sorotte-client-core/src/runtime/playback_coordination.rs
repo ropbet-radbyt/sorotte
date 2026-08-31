@@ -4117,9 +4117,22 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         }
 
+        // The fingerprint must describe the effective target admitted through
+        // the playlist-selection fence. Recording the raw canonical position
+        // here would make a Seek received during an asynchronous load appear
+        // already applied: after the physical reset consumed the fence, the
+        // same State revision would no longer look changed and its position
+        // could remain stranded at zero. Keep the held origin in the
+        // fingerprint so releasing the fence deterministically replays the
+        // newest canonical position onto the now-observed successor media.
+        let fingerprint_position_seconds = if playlist_selection_transport_hold {
+            position_seconds
+        } else {
+            raw.position.unwrap_or(position_seconds)
+        };
         let fingerprint = RoomDesiredFingerprint {
             paused,
-            position_seconds: raw.position.unwrap_or(position_seconds),
+            position_seconds: fingerprint_position_seconds,
             do_seek: raw.do_seek == Some(true),
             local_echo,
             barrier_media_generation,
@@ -17007,6 +17020,84 @@ mod tests {
                 }
             )),
             "post-selection Play authority may resume only after the physical reset consumes the fence"
+        );
+    }
+
+    #[test]
+    fn playlist_selection_replays_canonical_seek_received_before_physical_reset() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+                0.0,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":9.5,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":11}}}"#,
+                0.1,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","episode-b.mkv"],"user":"bob"}}}"#,
+                0.2,
+            )
+            .unwrap();
+        session
+            .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#, 0.3)
+            .unwrap();
+        session
+            .apply_message_json_at(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#, 0.4)
+            .unwrap();
+        assert!(session.has_pending_playlist_index_reset_intent());
+
+        let mut coordination = RuntimePlaybackCoordination::default();
+        let plan = coordination.prepare_media(
+            LogicalMediaId::new("episode-b.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.4,
+        );
+        coordination.update_desired_from_session(&session, 0.4);
+        coordination.observe_transport(
+            paused_transport(
+                plan.media_generation,
+                0.45,
+                PlayerTransportPhase::ReadyPaused,
+                0.0,
+            ),
+            0.45,
+        );
+
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":2.0,"paused":true,"doSeek":true,"setBy":"bob","sorotteTransportRevision":12}}}"#,
+                0.5,
+            )
+            .unwrap();
+        let held = coordination.update_desired_from_session(&session, 0.5);
+        assert!(held.iter().all(|action| !matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPosition(position_seconds),
+                ..
+            } if (*position_seconds - 2.0).abs() <= f64::EPSILON
+        )));
+
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            Some(false)
+        );
+        let released = coordination.update_desired_from_session(&session, 0.6);
+        assert!(
+            released.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPosition(position_seconds),
+                    ..
+                } if (*position_seconds - 2.0).abs() <= f64::EPSILON
+            )),
+            "the newest canonical Seek must replay only after the successor load/reset fence opens"
         );
     }
 

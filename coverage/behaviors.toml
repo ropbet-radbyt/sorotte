@@ -499,6 +499,18 @@ operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]
 
 [[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.successor-inflight-seek-fence"
+kind = "rust-test"
+oracle = "canonical-seek-replayed-after-successor-physical-reset"
+package = "sorotte-client-core"
+target_kind = "lib"
+test = "runtime::playback_coordination::tests::playlist_selection_replays_canonical_seek_received_before_physical_reset"
+source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
 id = "SYNC-LIFECYCLE-001.natural-eof-client-guard"
 kind = "rust-test"
 oracle = "client-natural-completion-canonical-state-guard"
