@@ -96,6 +96,28 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                         color="blue",
                     )
 
+    def test_contained_player_failure_audit_counts_only_the_failure_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            clean = root / "client-controller.stderr.log"
+            failed = root / "client-follower.stderr.log"
+            clean.write_text(
+                "warning: ordinary startup compatibility notice\n",
+                encoding="utf-8",
+            )
+            failed.write_text(
+                "warning: external player step 'synchronize room pause state' failed\n"
+                "warning: external player step 'apply canonical seek' failed\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                system.contained_player_failure_counts(
+                    {"controller": clean, "follower": failed}
+                ),
+                {"follower": 2},
+            )
+
     def test_terminal_playlist_boundary_accepts_one_canonical_pause_and_bounded_players(self) -> None:
         records = {
             "controller": [

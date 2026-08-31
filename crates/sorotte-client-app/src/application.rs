@@ -1761,6 +1761,30 @@ where
         self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
     }
 
+    /// Runs legacy room pause synchronization for an application that owns
+    /// canonical shared-playlist selection.
+    ///
+    /// Playlist selection and its successor playstate are separate wire
+    /// messages. While the selected media reset is pending, the retained room
+    /// playstate still belongs to the predecessor and cannot safely target an
+    /// EOF-idle player or the successor. Callers that have shared playlists
+    /// disabled must use the ordinary method above: they do not own the reset
+    /// transaction and must not let an unsolicited playlist frame suspend
+    /// normal legacy pause synchronization indefinitely.
+    pub fn run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        if self
+            .runtime
+            .session()
+            .has_pending_playlist_index_reset_intent()
+        {
+            return Ok(());
+        }
+        self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
     pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
         self.runtime.set_playback_coordinator_config(config);
     }
@@ -3039,6 +3063,68 @@ mod tests {
                 true,
             )
             .expect("playlist index should apply");
+    }
+
+    fn application_with_pending_successor_selection() -> ClientApplication<TestPlayer> {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            )
+            .expect("server Hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","episode-b.mkv"],"user":"bob"}}}"#,
+            )
+            .expect("playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+            .expect("initial selection should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":9.9,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("predecessor playstate should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("successor selection should apply");
+        assert!(session.has_pending_playlist_index_reset_intent());
+        assert!(
+            !session.pending_playlist_index_reset_has_post_selection_playstate(),
+            "the predecessor State must not satisfy successor authority"
+        );
+
+        ClientApplication::new(
+            session,
+            TestPlayer {
+                pause_error: Some("property unavailable".to_owned()),
+                ..TestPlayer::default()
+            },
+        )
+    }
+
+    #[test]
+    fn room_pause_sync_fences_predecessor_only_for_canonical_playlist_owner() {
+        let mut owner = application_with_pending_successor_selection();
+        owner
+            .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(4.0)
+            .expect("the playlist owner should fence predecessor room sync");
+        assert_eq!(
+            owner.player().pause_calls,
+            0,
+            "stale predecessor play authority must not reach the EOF-idle player"
+        );
+        assert!(owner.session().has_pending_playlist_index_reset_intent());
+
+        let mut opted_out = application_with_pending_successor_selection();
+        opted_out
+            .run_room_pause_sync_if_needed_at(4.0)
+            .expect_err("a non-owner must preserve ordinary legacy pause synchronization");
+        assert_eq!(
+            opted_out.player().pause_calls,
+            1,
+            "an unsolicited playlist frame must not suspend an opted-out client's room sync"
+        );
     }
 
     #[test]

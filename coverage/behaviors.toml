@@ -163,7 +163,7 @@ invariants = [
     "legacy-only rooms preserve Python Syncplay playlist wire semantics while a mixed or current Sorotte room negotiates stronger atomic selection authority",
     "a one-shot selection-reset State remains FIFO and cannot be replaced by periodic or participant-status State",
     "an accepted guarded natural advance selects the successor before publishing a fresh paused-at-zero transport revision, and completed-media position or watcher samples cannot cross that boundary",
-    "a selected successor is physically paused before load and cannot replay predecessor Play authority until its reset and an accepted post-selection playstate are both observed",
+    "a selected successor is physically paused before load, legacy room synchronization on its canonical playlist owner cannot apply the retained predecessor playstate while the reset is pending, and predecessor Play authority cannot replay until the reset and an accepted post-selection playstate are both observed",
     "readiness waits for every required current member before one start commit",
     "participant status advances periodically, reaches late clients, and withdraws on disconnect",
     "startup player evidence remains generation-scoped across the first owner-clock observation",
@@ -494,6 +494,18 @@ package = "sorotte-client-core"
 target_kind = "lib"
 test = "runtime::playback_coordination::tests::playlist_selection_holds_predecessor_play_until_physical_reset_and_new_authority"
 source = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+feature_mode = "all-features"
+operating_systems = ["linux"]
+required_lanes = ["lifecycle-contract"]
+
+[[behavior.proof]]
+id = "SYNC-LIFECYCLE-001.successor-predecessor-room-sync-fence"
+kind = "rust-test"
+oracle = "playlist-owner-rejects-retained-predecessor-playstate-with-opt-out-control"
+package = "sorotte-client-app"
+target_kind = "lib"
+test = "application::tests::room_pause_sync_fences_predecessor_only_for_canonical_playlist_owner"
+source = "crates/sorotte-client-app/src/application.rs"
 feature_mode = "all-features"
 operating_systems = ["linux"]
 required_lanes = ["lifecycle-contract"]

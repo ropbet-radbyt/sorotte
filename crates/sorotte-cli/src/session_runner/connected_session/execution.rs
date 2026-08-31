@@ -428,12 +428,18 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
 
     for action in actions {
         let (operation, outcome) = match action {
-            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => (
-                "synchronize room pause state",
-                runtime
-                    .run_room_pause_sync_if_needed_at(now_seconds)
-                    .map_err(anyhow::Error::from),
-            ),
+            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
+                let outcome = if plan.synchronize_canonical_playlist_selection {
+                    runtime
+                        .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(now_seconds)
+                } else {
+                    runtime.run_room_pause_sync_if_needed_at(now_seconds)
+                };
+                (
+                    "synchronize room pause state",
+                    outcome.map_err(anyhow::Error::from),
+                )
+            }
             ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => (
                 "apply readiness unpause",
                 runtime

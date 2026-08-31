@@ -115,10 +115,27 @@ _INLINE_SECRET = re.compile(
 )
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\)[^\s\"'<>]+")
 _POSIX_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_.])/(?:[^/\s\"'<>]+/)*[^/\s\"'<>]+")
+_CONTAINED_PLAYER_FAILURE = "warning: external player step '"
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def contained_player_failure_counts(
+    process_logs: Mapping[str, Path],
+) -> dict[str, int]:
+    """Count contained player-step failures without retaining log contents."""
+
+    failures: dict[str, int] = {}
+    for role, path in process_logs.items():
+        count = sum(
+            _CONTAINED_PLAYER_FAILURE in line
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+        if count:
+            failures[role] = count
+    return failures
 
 
 def validate_terminal_playlist_boundary(
@@ -3068,6 +3085,23 @@ class PlaybackLifecycleHarness:
         for client in self.clients.values():
             client.process.join_capture()
         self._pass("clients-exited-cleanly", "all production CLI loops reached code zero at their bounded runtime")
+
+        self.stage = "contained-player-failure-audit"
+        contained_failures = contained_player_failure_counts(
+            {
+                role: self.artifact_dir / f"client-{role}.stderr.log"
+                for role in self.clients
+            }
+        )
+        if contained_failures:
+            raise HarnessFailure(
+                self.stage,
+                f"packaged clients reported contained external player failures: {contained_failures}",
+            )
+        self._pass(
+            "no-contained-player-failures",
+            "no packaged client recovered past a failed external-player lifecycle step",
+        )
 
         self.stage = "final-item-terminal-through-client-exit"
         if self._terminal_boundary_evidence is None:
