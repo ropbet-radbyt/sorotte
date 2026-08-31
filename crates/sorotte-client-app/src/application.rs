@@ -714,11 +714,14 @@ where
             return Ok(false);
         }
 
-        let current_file_matches =
-            self.last_file_observation_attachment_revision == Some(self.player_attachment_revision)
-                && self.runtime.last_local_file_update().is_some_and(|file| {
-                    local_file_matches_playlist_target(file, &selection.target)
-                });
+        let current_attachment_has_file = self.last_file_observation_attachment_revision
+            == Some(self.player_attachment_revision)
+            && self.runtime.last_local_file_update().is_some();
+        let current_file_matches = current_attachment_has_file
+            && self
+                .runtime
+                .last_local_file_update()
+                .is_some_and(|file| local_file_matches_playlist_target(file, &selection.target));
         if current_file_matches {
             self.pending_canonical_playlist_load = None;
         }
@@ -731,13 +734,17 @@ where
                 .runtime
                 .session()
                 .has_pending_playlist_index_reset_intent()
+                && current_attachment_has_file
             {
                 // IPC command acceptance preserves order. Pause the retiring
                 // transport before loadfile so a fast successor cannot expose
                 // an autoplay window while its paired canonical State frame is
                 // still in flight. The post-load pause below remains required
                 // because load completion, not command acceptance, proves the
-                // new physical media owns the reset.
+                // new physical media owns the reset. An already empty player
+                // has no retiring transport and mpv may not expose its pause
+                // property in that state, so it must proceed directly to the
+                // new load instead of retrying an impossible precondition.
                 self.runtime.player_mut().set_paused(true)?;
             }
             self.runtime.player_mut().open_file(&selection.target)?;
@@ -3325,6 +3332,11 @@ mod tests {
         );
         assert_eq!(application.player().unload_calls, 1);
 
+        let pause_calls_after_unload = application.player().pause_calls;
+        application.with_player_io(|player| {
+            player.pause_error = Some("property unavailable".to_owned());
+        });
+
         application
             .apply_protocol_line(
                 r#"{"Set":{"playlistChange":{"files":["episode-b.mkv"],"user":"bob","sorottePlaylistEpoch":4}}}"#,
@@ -3351,6 +3363,11 @@ mod tests {
         assert_eq!(
             application.player().opened,
             vec!["episode-a.mkv", "episode-b.mkv"]
+        );
+        assert_eq!(
+            application.player().pause_calls,
+            pause_calls_after_unload,
+            "an empty mpv attachment has no predecessor to pause and may not expose the pause property"
         );
     }
 

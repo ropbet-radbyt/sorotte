@@ -345,7 +345,7 @@ required_lanes = ["lifecycle-contract"]
 [[behavior.proof]]
 id = "SYNC-LIFECYCLE-001.empty-selection-application"
 kind = "rust-test"
-oracle = "canonical-null-selection-physical-retirement"
+oracle = "canonical-null-selection-retirement-and-idle-safe-restore"
 package = "sorotte-client-app"
 target_kind = "lib"
 test = "application::tests::canonical_null_selection_unloads_once_and_allows_a_fresh_restore"
