@@ -688,7 +688,9 @@ where
         let Some(selection) = self.current_canonical_playlist_selection() else {
             return self.synchronize_canonical_playlist_absence_to_player();
         };
-        self.retired_canonical_selection_attachment_revision = None;
+        let selection_follows_canonical_retirement = self
+            .retired_canonical_selection_attachment_revision
+            == Some(self.player_attachment_revision);
         if !self
             .runtime
             .session()
@@ -714,8 +716,9 @@ where
             return Ok(false);
         }
 
-        let current_attachment_has_file = self.last_file_observation_attachment_revision
-            == Some(self.player_attachment_revision)
+        let current_attachment_has_file = !selection_follows_canonical_retirement
+            && self.last_file_observation_attachment_revision
+                == Some(self.player_attachment_revision)
             && self.runtime.last_local_file_update().is_some();
         let current_file_matches = current_attachment_has_file
             && self
@@ -748,7 +751,14 @@ where
                 self.runtime.player_mut().set_paused(true)?;
             }
             self.runtime.player_mut().open_file(&selection.target)?;
+            // An observation of the retiring file (including one delivered
+            // late after `stop`) cannot prove this asynchronous load. A
+            // matching same-path restore must wait for file evidence observed
+            // after the new load command, otherwise it can skip `loadfile` or
+            // apply the physical reset against an idle mpv instance.
+            self.last_file_observation_attachment_revision = None;
             self.pending_canonical_playlist_load = Some(selection.clone());
+            self.retired_canonical_selection_attachment_revision = None;
             changed = true;
         }
 
@@ -3332,6 +3342,22 @@ mod tests {
         );
         assert_eq!(application.player().unload_calls, 1);
 
+        application.with_player_io(|player| {
+            player.pending_local_file_update = Some(
+                sorotte_player_api::LocalFileUpdate::new("episode-a.mkv")
+                    .with_path("episode-a.mkv"),
+            );
+        });
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("a delayed retiring-file observation should be reproducible")
+        );
+        assert!(application.runtime.last_local_file_update().is_some());
+
         let pause_calls_after_unload = application.player().pause_calls;
         application.with_player_io(|player| {
             player.pause_error = Some("property unavailable".to_owned());
@@ -3339,7 +3365,7 @@ mod tests {
 
         application
             .apply_protocol_line(
-                r#"{"Set":{"playlistChange":{"files":["episode-b.mkv"],"user":"bob","sorottePlaylistEpoch":4}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv"],"user":"bob","sorottePlaylistEpoch":4}}}"#,
                 5.0,
                 false,
                 false,
@@ -3362,12 +3388,24 @@ mod tests {
         );
         assert_eq!(
             application.player().opened,
-            vec!["episode-a.mkv", "episode-b.mkv"]
+            vec!["episode-a.mkv", "episode-a.mkv"],
+            "same-path evidence from before the restore load must not suppress that load"
         );
         assert_eq!(
             application.player().pause_calls,
             pause_calls_after_unload,
             "an empty mpv attachment has no predecessor to pause and may not expose the pause property"
+        );
+        assert_eq!(application.last_file_observation_attachment_revision, None);
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the restored load should wait idempotently for fresh file evidence")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "episode-a.mkv"],
+            "the same in-flight restore must not dispatch twice"
         );
     }
 
