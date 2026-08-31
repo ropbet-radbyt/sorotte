@@ -412,8 +412,7 @@ impl ClientSession {
                         .record(playlist.revision, files);
                     playlist_changed = true;
                 }
-                ClientRuntimeAction::SetPlaylistIndex { index }
-                | ClientRuntimeAction::SetPlaylistIndexIfCurrent { index, .. } => {
+                ClientRuntimeAction::SetPlaylistIndex { index } => {
                     let Ok(index_usize) = usize::try_from(*index) else {
                         continue;
                     };

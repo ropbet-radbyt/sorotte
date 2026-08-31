@@ -40,35 +40,20 @@ impl ClientSession {
     /// and physical-file proof retained by `ClientRuntime` at natural EOF.
     pub(crate) fn runtime_actions_for_verified_local_playlist_next(
         &self,
-        expected_index: i64,
-        expected_epoch: Option<u64>,
-        terminal_position_seconds: Option<f64>,
     ) -> Vec<ClientRuntimeAction> {
-        let actions = self.runtime_actions_for_local_playlist_next_with_selection_proof(true);
-        if !actions.is_empty() {
-            let Some(expected_epoch) = expected_epoch else {
-                // A legacy server does not publish a canonical epoch and will
-                // ignore Sorotte extension fields, so retain the established
-                // unconditional playlistIndex behavior for that connection.
-                return actions;
-            };
-            return actions
-                .into_iter()
-                .map(|action| match action {
-                    ClientRuntimeAction::SetPlaylistIndex { index } => {
-                        ClientRuntimeAction::SetPlaylistIndexIfCurrent {
-                            index,
-                            expected_index,
-                            expected_epoch,
-                        }
-                    }
-                    action => action,
-                })
-                .collect();
-        }
+        self.runtime_actions_for_local_playlist_next_with_selection_proof(true)
+    }
 
+    /// Builds the bounded room pause for an owned natural completion at a
+    /// no-loop boundary. The state remains an internal runtime obligation so
+    /// the public runtime-action enum can stay exhaustive and patch-compatible.
+    pub(crate) fn terminal_state_for_verified_local_playlist_completion(
+        &self,
+        expected_index: i64,
+        terminal_position_seconds: Option<f64>,
+    ) -> Option<StatePayload> {
         if !self.verified_natural_completion_is_no_loop_terminal_boundary(expected_index) {
-            return Vec::new();
+            return None;
         }
         let Some(terminal_position_seconds) =
             terminal_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
@@ -76,14 +61,14 @@ impl ClientSession {
             // Pausing without a finite terminal position would replace one
             // unbounded authority sample with another ambiguous one. Keep the
             // completion fail-closed until a trustworthy player sample exists.
-            return Vec::new();
+            return None;
         };
         if self
             .current_room_playstate()
             .and_then(|playstate| playstate.paused)
             == Some(true)
         {
-            return Vec::new();
+            return None;
         }
 
         let playstate = self.with_current_transport_revision(
@@ -92,9 +77,7 @@ impl ClientSession {
                 .with_paused(true)
                 .with_do_seek(false),
         );
-        vec![ClientRuntimeAction::SendState(
-            StatePayload::new().with_playstate(playstate),
-        )]
+        Some(StatePayload::new().with_playstate(playstate))
     }
 
     fn verified_natural_completion_is_no_loop_terminal_boundary(

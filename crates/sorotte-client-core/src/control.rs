@@ -53,11 +53,6 @@ pub enum ClientRuntimeAction {
     SetPlaylistIndex {
         index: i64,
     },
-    SetPlaylistIndexIfCurrent {
-        index: i64,
-        expected_index: i64,
-        expected_epoch: u64,
-    },
     RequestControllerAuth {
         room: String,
         password: SecretValue,
@@ -72,7 +67,6 @@ pub enum ClientRuntimeAction {
     NotifyReconnectTransition(ReconnectTransitionNotification),
     NotifyAutoplayCountdown(AutoplayCountdownNotification),
     SetPosition(f64),
-    SendState(StatePayload),
     SetPlaybackRate(f64),
     ScheduleReconnect {
         delay_seconds: f64,
@@ -122,16 +116,6 @@ impl std::fmt::Debug for ClientRuntimeAction {
                 .debug_struct("SetPlaylistIndex")
                 .field("index", index)
                 .finish(),
-            Self::SetPlaylistIndexIfCurrent {
-                index,
-                expected_index,
-                expected_epoch,
-            } => formatter
-                .debug_struct("SetPlaylistIndexIfCurrent")
-                .field("index", index)
-                .field("expected_index", expected_index)
-                .field("expected_epoch", expected_epoch)
-                .finish(),
             Self::RequestControllerAuth { password, .. } => formatter
                 .debug_struct("RequestControllerAuth")
                 .field("room", &sorotte_secret::REDACTED_SECRET)
@@ -156,7 +140,6 @@ impl std::fmt::Debug for ClientRuntimeAction {
                 .field(notification)
                 .finish(),
             Self::SetPosition(value) => formatter.debug_tuple("SetPosition").field(value).finish(),
-            Self::SendState(state) => formatter.debug_tuple("SendState").field(state).finish(),
             Self::SetPlaybackRate(value) => formatter
                 .debug_tuple("SetPlaybackRate")
                 .field(value)
@@ -303,11 +286,6 @@ pub enum ClientEffect {
     SetFile(FilePayload),
     SetPlaylist(Vec<String>),
     SetPlaylistIndex(i64),
-    SetPlaylistIndexIfCurrent {
-        index: i64,
-        expected_index: i64,
-        expected_epoch: u64,
-    },
     /// Connection-scoped reliable Set-envelope control for playback prepare
     /// and ongoing room buffering policy requests. Observation
     /// acknowledgements use SendState.
@@ -381,16 +359,6 @@ impl std::fmt::Debug for ClientEffect {
                 .debug_tuple("SetPlaylistIndex")
                 .field(index)
                 .finish(),
-            Self::SetPlaylistIndexIfCurrent {
-                index,
-                expected_index,
-                expected_epoch,
-            } => formatter
-                .debug_struct("SetPlaylistIndexIfCurrent")
-                .field("index", index)
-                .field("expected_index", expected_index)
-                .field("expected_epoch", expected_epoch)
-                .finish(),
             Self::SendPlaybackBarrierSet { extension, scope } => formatter
                 .debug_struct("SendPlaybackBarrierSet")
                 .field("extension", extension)
@@ -458,6 +426,19 @@ impl ClientEffect {
 
 pub trait ClientEffectSink {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
+
+    /// Emits a playlist-index request that is accepted only while the server's
+    /// canonical selection still matches the completed item. Sinks without
+    /// guarded-playlist support retain source compatibility and emit the
+    /// established unconditional index request.
+    fn emit_playlist_index_if_current(
+        &mut self,
+        index: i64,
+        _expected_index: i64,
+        _expected_epoch: u64,
+    ) -> Result<(), ClientEffectError> {
+        self.emit(ClientEffect::SetPlaylistIndex(index))
+    }
 
     /// Emits a connection-scoped FIFO State for one playback control edge.
     ///
@@ -804,17 +785,6 @@ impl ClientEffectSink for QueuedRuntimeControl {
                 self.outbound_messages
                     .push_back(ProtocolMessage::set(set_payload));
             }
-            ClientEffect::SetPlaylistIndexIfCurrent {
-                index,
-                expected_index,
-                expected_epoch,
-            } => {
-                let playlist_index = PlaylistIndexPayload::new(index)
-                    .with_expected_playlist_state(expected_index, expected_epoch);
-                let set_payload = SetPayload::new().with_playlist_index(playlist_index);
-                self.outbound_messages
-                    .push_back(ProtocolMessage::set(set_payload));
-            }
             ClientEffect::SendPlaybackBarrierSet { extension, scope } => {
                 if !scope.matches(&extension) {
                     return Err(ClientEffectError::OperationFailed(
@@ -867,6 +837,20 @@ impl ClientEffectSink for QueuedRuntimeControl {
             }
             ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
         }
+        Ok(())
+    }
+
+    fn emit_playlist_index_if_current(
+        &mut self,
+        index: i64,
+        expected_index: i64,
+        expected_epoch: u64,
+    ) -> Result<(), ClientEffectError> {
+        let playlist_index = PlaylistIndexPayload::new(index)
+            .with_expected_playlist_state(expected_index, expected_epoch);
+        let set_payload = SetPayload::new().with_playlist_index(playlist_index);
+        self.outbound_messages
+            .push_back(ProtocolMessage::set(set_payload));
         Ok(())
     }
 

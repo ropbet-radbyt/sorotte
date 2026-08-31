@@ -230,8 +230,8 @@ EXPECTED_TESTS = {
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": 422,
-    "mpv-external-process": 428,
+    "mpv-named-pipe": 426,
+    "mpv-external-process": 432,
     "media-tool-process": 1152,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(

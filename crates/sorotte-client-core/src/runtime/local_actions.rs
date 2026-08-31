@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::control::client_effect_player_error;
+
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
@@ -428,14 +430,32 @@ where
                     .local_position
                     .filter(|position| position.is_finite() && *position >= 0.0)
             });
+        let expected_epoch = completion.canonical_playlist_epoch;
         let actions = self
             .session
-            .runtime_actions_for_verified_local_playlist_next(
-                expected_index,
-                completion.canonical_playlist_epoch,
-                terminal_position_seconds,
-            );
-        let result = self.run_local_playlist_action_batch(actions);
+            .runtime_actions_for_verified_local_playlist_next();
+        let result = if actions.is_empty() {
+            match self
+                .session
+                .terminal_state_for_verified_local_playlist_completion(
+                    expected_index,
+                    terminal_position_seconds,
+                ) {
+                Some(state) => {
+                    self.control.activate_protocol_connection_generation();
+                    self.control
+                        .emit_causal_state(state)
+                        .map(|_| true)
+                        .map_err(client_effect_player_error)
+                }
+                None => Ok(false),
+            }
+        } else {
+            self.run_local_playlist_action_batch_with_guard(
+                actions,
+                expected_epoch.map(|epoch| (expected_index, epoch)),
+            )
+        };
         if result.is_ok() {
             // A bounded terminal State is emitted when this client owns an
             // authorized no-loop boundary and has a finite terminal sample.
@@ -458,6 +478,14 @@ where
         &mut self,
         actions: Vec<ClientRuntimeAction>,
     ) -> Result<bool, PlayerError> {
+        self.run_local_playlist_action_batch_with_guard(actions, None)
+    }
+
+    fn run_local_playlist_action_batch_with_guard(
+        &mut self,
+        actions: Vec<ClientRuntimeAction>,
+        expected_playlist_state: Option<(i64, u64)>,
+    ) -> Result<bool, PlayerError> {
         if actions.is_empty() {
             return Ok(false);
         }
@@ -470,18 +498,15 @@ where
             // importing/reordering a playlist around it does not rewind it.
             .or_else(|| self.session.current_user_file_name().map(str::to_owned));
         let dedicated_index_request = actions.len() == 1
-            && matches!(
-                actions[0],
-                ClientRuntimeAction::SetPlaylistIndex { .. }
-                    | ClientRuntimeAction::SetPlaylistIndexIfCurrent { .. }
-            );
+            && matches!(actions[0], ClientRuntimeAction::SetPlaylistIndex { .. });
         let replay_media = dedicated_index_request
             .then(|| self.v2_replay_media_for_playlist_actions(&actions))
             .flatten();
 
-        self.dispatch_runtime_actions_with_pause_cause(
+        self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
             &actions,
             PlayerCommandCause::PlaylistTransition,
+            expected_playlist_state,
         )?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
@@ -518,7 +543,6 @@ where
                 matches!(
                     action,
                     ClientRuntimeAction::SetPlaylistIndex { index }
-                        | ClientRuntimeAction::SetPlaylistIndexIfCurrent { index, .. }
                         if *index == current_index
                 )
             })
@@ -596,8 +620,9 @@ where
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 
@@ -608,8 +633,9 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_seek_offset(offset_seconds);
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 
@@ -618,8 +644,9 @@ where
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 

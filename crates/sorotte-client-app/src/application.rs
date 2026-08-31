@@ -2622,6 +2622,69 @@ mod tests {
     }
 
     #[test]
+    fn contained_failure_attachment_observation_has_an_exact_truth_table() {
+        fn seed_attachment_owned_state<P>(application: &mut ClientApplication<P>)
+        where
+            P: PlayerAdapter,
+        {
+            application.player_connection_observed = Some(true);
+            application.player_attachment_revision = 7;
+            application.pending_canonical_playlist_load = Some(CanonicalPlaylistSelection {
+                room: "room".to_owned(),
+                index: 1,
+                target: "episode2.mkv".to_owned(),
+            });
+            application.retired_canonical_selection_attachment_revision = Some(7);
+        }
+
+        let mut known_disconnect =
+            ClientApplication::new(ClientSession::default(), InitiallyConnectedPlayer);
+        seed_attachment_owned_state(&mut known_disconnect);
+        known_disconnect
+            .record_contained_external_player_failure(
+                ExternalPlayerAvailability::Disconnected,
+                30.0,
+            )
+            .expect("a known disconnect should be contained");
+        assert_eq!(known_disconnect.player_attachment_revision, 8);
+        assert!(known_disconnect.pending_canonical_playlist_load.is_none());
+        assert!(
+            known_disconnect
+                .retired_canonical_selection_attachment_revision
+                .is_none()
+        );
+
+        let mut known_failure =
+            ClientApplication::new(ClientSession::default(), InitiallyConnectedPlayer);
+        seed_attachment_owned_state(&mut known_failure);
+        known_failure
+            .record_contained_external_player_failure(ExternalPlayerAvailability::Failed, 31.0)
+            .expect("a known attached failure should be contained");
+        assert_eq!(known_failure.player_attachment_revision, 7);
+        assert!(known_failure.pending_canonical_playlist_load.is_some());
+        assert_eq!(
+            known_failure.retired_canonical_selection_attachment_revision,
+            Some(7)
+        );
+
+        let mut unknown_disconnect =
+            ClientApplication::new(ClientSession::default(), UnknownAttachmentPlayer);
+        seed_attachment_owned_state(&mut unknown_disconnect);
+        unknown_disconnect
+            .record_contained_external_player_failure(
+                ExternalPlayerAvailability::Disconnected,
+                32.0,
+            )
+            .expect("an unknown attachment disconnect should be contained");
+        assert_eq!(unknown_disconnect.player_attachment_revision, 7);
+        assert!(unknown_disconnect.pending_canonical_playlist_load.is_some());
+        assert_eq!(
+            unknown_disconnect.retired_canonical_selection_attachment_revision,
+            Some(7)
+        );
+    }
+
+    #[test]
     fn contained_terminal_player_status_requires_a_fresh_connecting_transition() {
         let mut session = ClientSession::default();
         session

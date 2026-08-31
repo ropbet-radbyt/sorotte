@@ -673,12 +673,24 @@ where
             .map_err(client_effect_player_error)
     }
 
-    pub(crate) fn dispatch_runtime_actions_with_session_rollback(
+    pub(crate) fn dispatch_local_seek_with_session_rollback(
         &mut self,
         session_snapshot: ClientSessionLocalActionSnapshot,
         actions: &[ClientRuntimeAction],
+        causal_state: Option<StatePayload>,
     ) -> Result<(), PlayerError> {
-        match self.dispatch_runtime_actions_with_causal_tracking(actions) {
+        let result = self
+            .dispatch_runtime_actions_with_causal_tracking(actions)
+            .and_then(|()| {
+                let Some(state) = causal_state else {
+                    return Ok(());
+                };
+                self.control.activate_protocol_connection_generation();
+                self.control
+                    .emit_causal_state(state)
+                    .map_err(client_effect_player_error)
+            });
+        match result {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.session.restore_local_action_state(session_snapshot);
@@ -734,6 +746,19 @@ where
         actions: &[ClientRuntimeAction],
         pause_cause: PlayerCommandCause,
     ) -> Result<(), PlayerError> {
+        self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
+            actions,
+            pause_cause,
+            None,
+        )
+    }
+
+    pub(crate) fn dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+        pause_cause: PlayerCommandCause,
+        expected_playlist_state: Option<(i64, u64)>,
+    ) -> Result<(), PlayerError> {
         for action in actions {
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 self.execute_causal_pause_command(
@@ -741,6 +766,14 @@ where
                     pause_cause,
                     unix_wall_clock_time_seconds_legacy_compatible(),
                 )?;
+            } else if let (
+                ClientRuntimeAction::SetPlaylistIndex { index },
+                Some((expected_index, expected_epoch)),
+            ) = (action, expected_playlist_state)
+            {
+                self.control
+                    .emit_playlist_index_if_current(*index, expected_index, expected_epoch)
+                    .map_err(client_effect_player_error)?;
             } else {
                 ClientSession::dispatch_runtime_actions(
                     std::slice::from_ref(action),

@@ -43,38 +43,50 @@ impl ClientSession {
 
         self.model.playlist.last_seek_position_before_manual_seek = Some(previous_position);
         self.model.playback.local_position = Some(target_position);
-        let mut actions = vec![ClientRuntimeAction::SetPosition(target_position)];
-        if self.is_active() {
-            let paused = self
-                .model
-                .playback
-                .local_paused
-                .or_else(|| {
-                    self.current_room_playstate()
-                        .and_then(|playstate| playstate.paused)
-                })
-                .unwrap_or(true);
-            self.model.playback.client_ignoring_on_the_fly = self
-                .model
-                .playback
-                .client_ignoring_on_the_fly
-                .saturating_add(1);
-            let playstate = self.with_current_transport_revision(
-                PlaystatePayload::new()
-                    .with_position(target_position)
-                    .with_paused(paused)
-                    .with_do_seek(true),
-            );
-            actions.push(ClientRuntimeAction::SendState(
-                StatePayload::new()
-                    .with_playstate(playstate)
-                    .with_ignoring_on_the_fly(
-                        IgnoringOnTheFlyPayload::new()
-                            .with_client(self.model.playback.client_ignoring_on_the_fly),
-                    ),
-            ));
+        vec![ClientRuntimeAction::SetPosition(target_position)]
+    }
+
+    /// Builds the ordered protocol edge paired with a runtime-owned local
+    /// seek. The public action API keeps its established exhaustive enum
+    /// surface; only `ClientRuntime` consumes this internal state obligation.
+    pub(crate) fn causal_state_for_local_seek_actions(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+    ) -> Option<StatePayload> {
+        let [ClientRuntimeAction::SetPosition(target_position)] = actions else {
+            return None;
+        };
+        if !self.is_active() {
+            return None;
         }
-        actions
+        let paused = self
+            .model
+            .playback
+            .local_paused
+            .or_else(|| {
+                self.current_room_playstate()
+                    .and_then(|playstate| playstate.paused)
+            })
+            .unwrap_or(true);
+        self.model.playback.client_ignoring_on_the_fly = self
+            .model
+            .playback
+            .client_ignoring_on_the_fly
+            .saturating_add(1);
+        let playstate = self.with_current_transport_revision(
+            PlaystatePayload::new()
+                .with_position(*target_position)
+                .with_paused(paused)
+                .with_do_seek(true),
+        );
+        Some(
+            StatePayload::new()
+                .with_playstate(playstate)
+                .with_ignoring_on_the_fly(
+                    IgnoringOnTheFlyPayload::new()
+                        .with_client(self.model.playback.client_ignoring_on_the_fly),
+                ),
+        )
     }
 
     pub fn runtime_actions_for_local_seek_offset(
