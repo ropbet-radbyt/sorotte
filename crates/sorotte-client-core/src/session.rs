@@ -63,6 +63,7 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     pending_cache_room_playstate_resync: bool,
     cache_recovery_observation_position: Option<f64>,
     cache_recovery_waiting_for_post_cache_position: bool,
+    server_ignoring_on_the_fly: u32,
     client_ignoring_on_the_fly: u32,
     last_seek_position_before_manual_seek: Option<f64>,
     last_paused_on_leave_at_seconds: Option<f64>,

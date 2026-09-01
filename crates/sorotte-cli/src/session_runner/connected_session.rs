@@ -777,6 +777,7 @@ where
         desired: config.ready_at_start_override.unwrap_or(false),
         had_current_v2_membership,
     });
+    let mut pending_pre_hello_player_input = None;
     let initial_hello_deadline = tokio::time::sleep_until(initial_hello_deadline);
     tokio::pin!(initial_hello_deadline);
     let mut outbound_state_sync_enabled = false;
@@ -808,6 +809,8 @@ where
             }
         };
         tokio::pin!(playback_barrier_retry_timer);
+        let may_poll_local_input = pending_pre_hello_player_input.is_none()
+            || pending_ready_at_start_on_server_hello.is_none();
 
         tokio::select! {
             _ = &mut initial_hello_deadline, if pending_ready_at_start_on_server_hello.is_some() => {
@@ -976,7 +979,13 @@ where
                 .await?;
                 emit_application_service_events(runtime.pump_plex_service().await);
             }
-            local_line = recv_local_input_line(&mut local_input_rx) => {
+            local_line = async {
+                if let Some(line) = pending_pre_hello_player_input.take() {
+                    Some(line)
+                } else {
+                    recv_local_input_line(&mut local_input_rx).await
+                }
+            }, if may_poll_local_input => {
                 let Some(local_line) = local_line else {
                     local_input_rx = None;
                     continue;
@@ -992,6 +1001,20 @@ where
                     );
                     let dispatch =
                         plan_local_input_dispatch_legacy_compatible(command, shared_playlists_enabled);
+                    if pending_ready_at_start_on_server_hello.is_some()
+                        && matches!(
+                            &dispatch,
+                            PlannedLocalInputDispatch::Run(action)
+                                if planned_local_runtime_action_is_player_bound(action)
+                        )
+                    {
+                        // A connected socket is not yet room authority. Keep
+                        // player-bound input in FIFO order until the server
+                        // Hello activates the session; otherwise the physical
+                        // player can change without an eligible causal State.
+                        pending_pre_hello_player_input = Some(local_line);
+                        continue;
+                    }
                     let help_version = config.version.as_str();
                     let emitted = {
                         let language = current_legacy_runtime_language_tag_legacy_compatible();

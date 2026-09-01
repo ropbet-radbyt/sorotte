@@ -849,6 +849,16 @@ fn client_runtime_deliberate_seek_survives_recent_playlist_rewind() {
     assert_eq!(playstate.position, Some(10.0));
     assert_eq!(playstate.paused, Some(true));
     assert_eq!(playstate.do_seek, Some(true));
+    let ignoring = state
+        .state
+        .ignoring_on_the_fly
+        .as_ref()
+        .expect("active deliberate seek should publish its client ignore counter");
+    assert_eq!(ignoring.client, Some(1));
+    assert_eq!(
+        ignoring.server, None,
+        "a seek without pending server correction must not manufacture an acknowledgement"
+    );
 }
 
 #[test]
@@ -904,10 +914,11 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
             )
             .expect("hello should apply");
     session
-            .apply_message_json(
-                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":31}}}"#,
-            )
-            .expect("state should apply");
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":31}}}"#,
+        )
+        .expect("state should apply");
+    session.model.playback.server_ignoring_on_the_fly = 7;
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -949,6 +960,64 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
             .and_then(|ignore| ignore.client),
         Some(1),
         "the explicit seek must use the same client-ignore handshake as inferred seeks"
+    );
+    assert_eq!(
+        state
+            .state
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|ignore| ignore.server),
+        Some(7),
+        "the causal seek must acknowledge the in-flight server correction so the server can apply the edge"
+    );
+    assert_eq!(
+        runtime.session().server_ignoring_on_the_fly(),
+        0,
+        "the acknowledgement is consumed only after it is owned by the causal outbox"
+    );
+}
+
+#[derive(Debug, Default)]
+struct FailCausalStateEffectSink;
+
+impl ClientEffectSink for FailCausalStateEffectSink {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        if matches!(effect, ClientEffect::SendState(_)) {
+            return Err(ClientEffectError::OperationFailed(
+                "forced causal state delivery failure".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn client_runtime_seek_restores_pending_server_ack_when_causal_delivery_fails() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":2.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("forced server state should apply");
+    session.model.playback.server_ignoring_on_the_fly = 9;
+
+    let player = RecordingPlayer::default();
+    let mut runtime = ClientRuntime::new(session, player, FailCausalStateEffectSink);
+    let error = runtime
+        .run_seek_to_position(12.0)
+        .expect_err("causal state delivery failure should surface");
+
+    assert!(matches!(error, PlayerError::OperationFailed(_)));
+    assert_eq!(runtime.session().server_ignoring_on_the_fly(), 9);
+    assert_eq!(
+        runtime.session().model.playback.client_ignoring_on_the_fly,
+        0,
+        "the failed causal edge must restore both halves of the ignore handshake"
     );
 }
 

@@ -24,11 +24,11 @@ async fn connected_client_session_sets_pause_from_local_input_channel() {
             "first client line should be a Hello message"
         );
         writer
-                .write_all(
-                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
-                )
-                .await
-                .expect("server hello write should succeed");
+            .write_all(
+                b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
+            )
+            .await
+            .expect("server hello write should succeed");
         let _ = tokio::time::timeout(Duration::from_millis(150), lines.next_line()).await;
         writer
             .shutdown()
@@ -141,13 +141,39 @@ async fn connected_client_session_seeks_from_local_input_channel() {
             hello_line.contains("\"Hello\""),
             "first client line should be a Hello message"
         );
+        let early_line = tokio::time::timeout(Duration::from_millis(150), lines.next_line()).await;
+        assert!(
+            early_line.is_err(),
+            "a pre-Hello seek must remain queued instead of publishing an ineligible state: {early_line:?}"
+        );
         writer
-                .write_all(
-                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
+            .write_all(
+                b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
                 )
-                .await
-                .expect("server hello write should succeed");
-        let _ = tokio::time::timeout(Duration::from_millis(150), lines.next_line()).await;
+            .await
+            .expect("server hello write should succeed");
+        let causal_seek = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("post-Hello seek read should succeed")
+                    .expect("client should remain connected until the queued seek is published");
+                let message = decode_message_line(&line).expect("post-Hello line should decode");
+                if let ProtocolMessage::State(state) = message
+                    && state.state.playstate.as_ref().is_some_and(|playstate| {
+                        playstate.position == Some(42.0) && playstate.do_seek == Some(true)
+                    })
+                {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(
+            causal_seek.is_ok(),
+            "the queued seek must cross the protocol boundary after the server Hello"
+        );
         writer
             .shutdown()
             .await
