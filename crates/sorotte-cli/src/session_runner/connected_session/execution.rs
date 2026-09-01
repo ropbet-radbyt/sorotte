@@ -425,11 +425,12 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     let actions =
         connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
+    let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
 
     for action in actions {
         let (operation, outcome) = match action {
             ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
-                let outcome = if plan.synchronize_canonical_playlist_selection {
+                let outcome = if shared_playlists_enabled {
                     runtime
                         .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(now_seconds)
                 } else {
@@ -511,20 +512,6 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                     now_seconds,
                 ),
             ),
-            ConnectedSessionRuntimeStepAction::AdvancePlaylistAfterNaturalCompletion => (
-                "advance playlist after natural completion",
-                runtime
-                    .run_advance_playlist_after_natural_completion()
-                    .map(|_| ())
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionRuntimeStepAction::SynchronizeCanonicalPlaylistSelection => (
-                "synchronize canonical playlist selection",
-                runtime
-                    .synchronize_canonical_playlist_selection_to_player()
-                    .map(|_| ())
-                    .map_err(anyhow::Error::from),
-            ),
         };
         if let Err(error) = outcome {
             return Some(contain_connected_session_player_failure(
@@ -533,6 +520,34 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 operation,
                 error,
             ));
+        }
+    }
+
+    if shared_playlists_enabled {
+        for (operation, outcome) in [
+            (
+                "advance playlist after natural completion",
+                runtime
+                    .run_advance_playlist_after_natural_completion()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+            ),
+            (
+                "synchronize canonical playlist selection",
+                runtime
+                    .synchronize_canonical_playlist_selection_to_player()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+            ),
+        ] {
+            if let Err(error) = outcome {
+                return Some(contain_connected_session_player_failure(
+                    runtime,
+                    now_seconds,
+                    operation,
+                    error,
+                ));
+            }
         }
     }
 
@@ -1133,8 +1148,6 @@ mod tests {
                     run_reconnect_state_restore_validation: false,
                     run_state_sync_heartbeat: false,
                     publish_pending_local_file_updates: false,
-                    advance_playlist_after_natural_completion: false,
-                    synchronize_canonical_playlist_selection: false,
                 },
                 protocol: ConnectedSessionProtocolPlan {
                     flush_runtime_protocol_lines: false,

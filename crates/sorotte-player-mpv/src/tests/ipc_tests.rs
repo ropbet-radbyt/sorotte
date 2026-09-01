@@ -2343,8 +2343,10 @@ fn set_position_waits_for_matching_response_and_preserves_async_events() {
 
 #[test]
 fn mpv_error_response_is_reported_and_local_state_is_not_updated() {
-    let (transport, _state) =
-        fake_transport_with_reads(&[r#"{"request_id":1,"error":"property unavailable"}"#]);
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"request_id":1,"error":"property unavailable"}"#,
+    ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
     let err = adapter
@@ -2360,6 +2362,10 @@ fn mpv_error_response_is_reported_and_local_state_is_not_updated() {
         other => panic!("unexpected error variant: {other:?}"),
     }
     assert_eq!(adapter.position_seconds(), 0.0);
+    assert!(
+        adapter.paused(),
+        "a failed command response must still harvest causally preceding player events"
+    );
 }
 
 #[test]

@@ -8870,9 +8870,14 @@ impl MpvAdapter {
     }
 
     fn send_ipc_command_if_attached(&mut self, command: Value) -> Result<(), PlayerError> {
-        self.send_ipc_command_if_attached_without_draining_events(command)?;
+        let result = self.send_ipc_command_if_attached_without_draining_events(command);
+        // mpv may emit a causally earlier lifecycle event immediately before
+        // rejecting a command. In particular, natural EOF can release
+        // `time-pos` before a desync seek reaches the IPC worker. Always
+        // harvest those events so callers can distinguish a terminal media
+        // transition from an unhealthy player connection.
         self.drain_ipc_events_if_attached();
-        Ok(())
+        result
     }
 
     fn send_ipc_command_if_attached_without_draining_events(

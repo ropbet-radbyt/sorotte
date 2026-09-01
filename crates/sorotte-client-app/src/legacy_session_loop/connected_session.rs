@@ -96,8 +96,7 @@ pub fn connected_session_protocol_plan_legacy_compatible(
                 ConnectedSessionStartupPlaylistDisposition::DiscardIfPending
             },
         },
-        ConnectedSessionLoopEventKind::AutoplayTick
-        | ConnectedSessionLoopEventKind::PlayerCoordinationTick => ConnectedSessionProtocolPlan {
+        ConnectedSessionLoopEventKind::AutoplayTick => ConnectedSessionProtocolPlan {
             flush_runtime_protocol_lines: true,
             startup_playlist_disposition: ConnectedSessionStartupPlaylistDisposition::LeavePending,
         },
@@ -119,10 +118,7 @@ pub fn connected_session_branch_plan_legacy_compatible(
             event_kind,
             ConnectedSessionLoopEventKind::LocalInput
         ),
-        runtime_steps: connected_session_runtime_step_plan_legacy_compatible(
-            event_kind,
-            shared_playlists_enabled,
-        ),
+        runtime_steps: connected_session_runtime_step_plan_legacy_compatible(event_kind),
         protocol: connected_session_protocol_plan_legacy_compatible(
             event_kind,
             emitted_runtime_action,
@@ -146,7 +142,6 @@ pub fn connected_session_event_plan_legacy_compatible(
                 ))
             }
             ConnectedSessionLoopEventKind::AutoplayTick
-            | ConnectedSessionLoopEventKind::PlayerCoordinationTick
             | ConnectedSessionLoopEventKind::LocalInput => None,
         },
         branch: connected_session_branch_plan_legacy_compatible(
@@ -171,7 +166,6 @@ pub fn connected_session_event_execution_plan_legacy_compatible(
                 ))
             }
             ConnectedSessionLoopEventKind::AutoplayTick
-            | ConnectedSessionLoopEventKind::PlayerCoordinationTick
             | ConnectedSessionLoopEventKind::LocalInput => None,
         },
         event: connected_session_event_plan_legacy_compatible(event_kind, inputs.event),
@@ -222,20 +216,43 @@ pub fn connected_session_autoplay_tick_event_execution_plan_legacy_compatible(
 pub fn connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(
     shared: ConnectedSessionSharedExecutionInputs,
 ) -> ConnectedSessionEventExecutionPlan {
-    connected_session_event_execution_plan_legacy_compatible(
-        ConnectedSessionLoopEventKind::PlayerCoordinationTick,
-        ConnectedSessionEventExecutionPlanInputs {
-            event: ConnectedSessionEventPlanInputs {
-                emitted_runtime_action: false,
-                inbound_is_server_hello: false,
-                has_pending_chat_message_on_connect: false,
-                shared_playlists_enabled: shared.shared_playlists_enabled,
-                diagnostics: shared.diagnostics,
+    ConnectedSessionEventExecutionPlan {
+        inbound_apply: None,
+        event: ConnectedSessionEventPlan {
+            inbound_post_apply: None,
+            branch: ConnectedSessionBranchPlan {
+                run_protocol_before_runtime_steps: false,
+                runtime_steps: ConnectedSessionRuntimeStepPlan {
+                    run_room_pause_sync: true,
+                    run_readiness_unpause_attempt: false,
+                    run_update_autoplay_check: false,
+                    run_tick_autoplay: false,
+                    run_desync_correction: false,
+                    run_reconnect_state_restore_validation: true,
+                    run_state_sync_heartbeat: false,
+                    publish_pending_local_file_updates: true,
+                },
+                protocol: ConnectedSessionProtocolPlan {
+                    flush_runtime_protocol_lines: true,
+                    startup_playlist_disposition:
+                        ConnectedSessionStartupPlaylistDisposition::LeavePending,
+                },
+                drain: ConnectedSessionDrainPlan {
+                    flush_player_playback_diagnostics: shared.diagnostics.log_player_telemetry
+                        || shared.diagnostics.log_player_drift,
+                    reconnect_correction_diagnostics_format: shared
+                        .diagnostics
+                        .reconnect_correction_diagnostics_format,
+                    flush_reconnect_notifications: true,
+                    flush_controller_auth_notifications: false,
+                    flush_chat_notifications: false,
+                    flush_user_change_notifications: false,
+                    flush_autoplay_notifications: false,
+                    flush_file_difference_notifications: true,
+                },
             },
-            inbound_message_is_state: false,
-            outbound_state_sync_enabled: shared.outbound_state_sync_enabled,
         },
-    )
+    }
 }
 
 pub fn connected_session_local_input_event_execution_plan_legacy_compatible(
@@ -260,7 +277,6 @@ pub fn connected_session_local_input_event_execution_plan_legacy_compatible(
 
 pub fn connected_session_runtime_step_plan_legacy_compatible(
     event_kind: ConnectedSessionLoopEventKind,
-    shared_playlists_enabled: bool,
 ) -> ConnectedSessionRuntimeStepPlan {
     match event_kind {
         ConnectedSessionLoopEventKind::InboundMessage => ConnectedSessionRuntimeStepPlan {
@@ -272,8 +288,6 @@ pub fn connected_session_runtime_step_plan_legacy_compatible(
             run_reconnect_state_restore_validation: true,
             run_state_sync_heartbeat: false,
             publish_pending_local_file_updates: true,
-            advance_playlist_after_natural_completion: shared_playlists_enabled,
-            synchronize_canonical_playlist_selection: shared_playlists_enabled,
         },
         ConnectedSessionLoopEventKind::AutoplayTick => ConnectedSessionRuntimeStepPlan {
             run_room_pause_sync: true,
@@ -284,20 +298,6 @@ pub fn connected_session_runtime_step_plan_legacy_compatible(
             run_reconnect_state_restore_validation: true,
             run_state_sync_heartbeat: true,
             publish_pending_local_file_updates: true,
-            advance_playlist_after_natural_completion: shared_playlists_enabled,
-            synchronize_canonical_playlist_selection: shared_playlists_enabled,
-        },
-        ConnectedSessionLoopEventKind::PlayerCoordinationTick => ConnectedSessionRuntimeStepPlan {
-            run_room_pause_sync: true,
-            run_readiness_unpause_attempt: false,
-            run_update_autoplay_check: false,
-            run_tick_autoplay: false,
-            run_desync_correction: false,
-            run_reconnect_state_restore_validation: true,
-            run_state_sync_heartbeat: false,
-            publish_pending_local_file_updates: true,
-            advance_playlist_after_natural_completion: shared_playlists_enabled,
-            synchronize_canonical_playlist_selection: shared_playlists_enabled,
         },
         ConnectedSessionLoopEventKind::LocalInput => ConnectedSessionRuntimeStepPlan {
             run_room_pause_sync: false,
@@ -308,8 +308,6 @@ pub fn connected_session_runtime_step_plan_legacy_compatible(
             run_reconnect_state_restore_validation: true,
             run_state_sync_heartbeat: false,
             publish_pending_local_file_updates: false,
-            advance_playlist_after_natural_completion: shared_playlists_enabled,
-            synchronize_canonical_playlist_selection: shared_playlists_enabled,
         },
     }
 }
@@ -344,13 +342,6 @@ pub fn connected_session_runtime_step_actions_legacy_compatible(
     if plan.publish_pending_local_file_updates {
         actions.push(ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates);
     }
-    if plan.advance_playlist_after_natural_completion {
-        actions.push(ConnectedSessionRuntimeStepAction::AdvancePlaylistAfterNaturalCompletion);
-    }
-    if plan.synchronize_canonical_playlist_selection {
-        actions.push(ConnectedSessionRuntimeStepAction::SynchronizeCanonicalPlaylistSelection);
-    }
-
     actions
 }
 
@@ -370,7 +361,6 @@ pub fn connected_session_drain_plan_legacy_compatible(
     ) = match event_kind {
         ConnectedSessionLoopEventKind::InboundMessage => (true, true, true, true, true),
         ConnectedSessionLoopEventKind::AutoplayTick => (false, false, false, true, true),
-        ConnectedSessionLoopEventKind::PlayerCoordinationTick => (false, false, false, false, true),
         ConnectedSessionLoopEventKind::LocalInput => (false, false, false, false, false),
     };
 

@@ -4,7 +4,6 @@ use crate::legacy_reconnect_diagnostics::ReconnectCorrectionDiagnosticsFormat;
 pub enum ConnectedSessionLoopEventKind {
     InboundMessage,
     AutoplayTick,
-    PlayerCoordinationTick,
     LocalInput,
 }
 
@@ -49,8 +48,6 @@ pub struct ConnectedSessionRuntimeStepPlan {
     pub run_reconnect_state_restore_validation: bool,
     pub run_state_sync_heartbeat: bool,
     pub publish_pending_local_file_updates: bool,
-    pub advance_playlist_after_natural_completion: bool,
-    pub synchronize_canonical_playlist_selection: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +60,6 @@ pub enum ConnectedSessionRuntimeStepAction {
     RunReconnectStateRestoreValidation,
     RunStateSyncHeartbeat,
     PublishPendingLocalFileUpdates,
-    AdvancePlaylistAfterNaturalCompletion,
-    SynchronizeCanonicalPlaylistSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

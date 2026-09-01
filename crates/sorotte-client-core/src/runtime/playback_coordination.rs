@@ -9340,6 +9340,8 @@ mod tests {
         advertises_telemetry: bool,
         reject_rate_commands: bool,
         reject_pause_commands: bool,
+        reject_seek_commands: bool,
+        ordered_batch_after_rejected_seek: Option<PlayerEventBatch>,
     }
 
     impl PlayerAdapter for CoordinatedTestPlayer {
@@ -9356,6 +9358,15 @@ mod tests {
         }
 
         fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
+            if self.reject_seek_commands && matches!(command, PlayerCommand::SetPosition(_)) {
+                self.commands.push(command);
+                if let Some(batch) = self.ordered_batch_after_rejected_seek.take() {
+                    self.ordered_batches.push_back(batch);
+                }
+                return Err(PlayerError::OperationFailed(
+                    "test player lost its active media before seek dispatch".to_owned(),
+                ));
+            }
             if self.reject_rate_commands && matches!(command, PlayerCommand::SetPlaybackRate(_)) {
                 return Err(PlayerError::OperationFailed(
                     "test player rejected rate cleanup".to_owned(),
@@ -9380,6 +9391,15 @@ mod tests {
             &mut self,
             command: PlayerCommand,
         ) -> Result<PlayerCommandId, PlayerError> {
+            if self.reject_seek_commands && matches!(command, PlayerCommand::SetPosition(_)) {
+                self.commands.push(command);
+                if let Some(batch) = self.ordered_batch_after_rejected_seek.take() {
+                    self.ordered_batches.push_back(batch);
+                }
+                return Err(PlayerError::OperationFailed(
+                    "test player lost its active media before seek dispatch".to_owned(),
+                ));
+            }
             if self.reject_rate_commands && matches!(command, PlayerCommand::SetPlaybackRate(_)) {
                 return Err(PlayerError::OperationFailed(
                     "test player rejected tracked rate cleanup".to_owned(),
@@ -10558,6 +10578,125 @@ mod tests {
         assert!(
             runtime.pending_natural_playback_completion.is_some(),
             "an owned semantic Ended event should retain one application progression intent"
+        );
+    }
+
+    #[test]
+    fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let media_generation = PlayerMediaGeneration::new(1);
+        let mut runtime = natural_completion_playlist_runtime(0, "episode.mkv");
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode.mkv","episode2.mkv"],"user":"alice","sorottePlaylistEpoch":3}}}"#,
+            )
+            .expect("the canonical playlist should match the observed active file");
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":4}}}"#,
+            )
+            .expect("the canonical first row should be selected");
+        runtime.player.ordered_delivery = true;
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("episode.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_playing_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    9.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("the initial active-media snapshot should drain");
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room1"}}}}}"#)
+            .expect("the remote room member should be known");
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                1.0,
+            )
+            .expect("the remote room playstate should apply");
+
+        runtime.player.reject_seek_commands = true;
+        runtime.player.ordered_batch_after_rejected_seek = Some(ordered_batch(
+            epoch,
+            3,
+            2,
+            None,
+            vec![
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 2),
+                    event: PlayerEvent::LoadAttemptTerminal {
+                        attempt_id,
+                        media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    },
+                },
+                SequencedPlayerEvent {
+                    order: PlayerEventOrder::new(epoch, 3),
+                    event: PlayerEvent::LogicalPlaybackTerminal {
+                        attempt_id,
+                        media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    },
+                },
+            ],
+            Vec::new(),
+        ));
+
+        runtime
+            .run_desync_correction_if_needed(1.1, false, false, true)
+            .expect("terminal EOF should supersede the losing desync seek");
+        assert!(
+            runtime
+                .player
+                .commands
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::SetPosition(_))),
+            "the regression must exercise a seek that loses the EOF race"
+        );
+        assert_eq!(
+            runtime.playback_coordination_snapshot().diagnostic,
+            PlaybackDiagnostic::Ended
+        );
+        assert!(
+            runtime.pending_natural_playback_completion.is_some(),
+            "the terminal edge must remain available to the playlist lifecycle"
+        );
+        assert!(
+            runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("the retained completion should advance the canonical playlist")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(1)
         );
     }
 
