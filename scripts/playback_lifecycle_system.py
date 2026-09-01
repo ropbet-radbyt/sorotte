@@ -172,6 +172,25 @@ def contained_player_failure_counts(
     return failures
 
 
+def participant_status_authority_withdrawn(
+    event: Mapping[str, Any], role: str
+) -> bool:
+    """Return whether a live status snapshot no longer grants fresh authority."""
+
+    if event.get("event") != "participant-status-snapshot":
+        return False
+    if role not in set(event.get("participants", [])):
+        return True
+    views = event.get("participant_views", {})
+    view = views.get(role) if isinstance(views, dict) else None
+    return isinstance(view, dict) and view.get("availability") in {
+        "delayed",
+        "stale",
+        "awaitingReport",
+        "unavailable",
+    }
+
+
 def validate_terminal_playlist_boundary(
     canonical_events: Iterable[Mapping[str, Any]],
     player_records: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -3711,21 +3730,26 @@ class PlaybackLifecycleHarness:
         status_cursor = self.observer.cursor()
         follower_trace_cursor = self._player_cursor("follower")
         accepted_before_cut = proxy.accepted_count
+        upstream_before_cut = proxy.upstream_connection_count
         proxy.cut_and_hold()
         self._wait(
             "the production follower to reconnect into the held proxy",
             lambda: proxy.accepted_count > accepted_before_cut,
             timeout=5.0,
         )
+        if proxy.upstream_connection_count != upstream_before_cut:
+            raise HarnessFailure(
+                self.stage,
+                "the held follower replacement unexpectedly reached the server",
+            )
         self._observer_event(
             status_cursor,
-            lambda event: event.get("event") == "participant-status-snapshot"
-            and "follower" not in set(event.get("participants", [])),
+            lambda event: participant_status_authority_withdrawn(event, "follower"),
             timeout=6.0,
         )
         self._pass(
             "partition-withdraws-follower-status",
-            "a deterministic transport cut removed the absent packaged follower from status authority",
+            "a deterministic transport cut withdrew fresh follower status authority while its replacement upstream remained held",
         )
 
         self.stage = "start-while-follower-partitioned"

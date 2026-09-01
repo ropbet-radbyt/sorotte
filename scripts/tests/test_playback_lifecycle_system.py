@@ -42,6 +42,42 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertEqual(len(set(usernames)), len(usernames))
         self.assertTrue(all(1 <= len(username) <= 16 for username in usernames))
 
+    def test_partition_status_authority_accepts_absence_or_nonfresh_projection(self) -> None:
+        fresh = {
+            "event": "participant-status-snapshot",
+            "participants": ["follower"],
+            "participant_views": {
+                "follower": {
+                    "availability": "fresh",
+                    "playerConnection": "connected",
+                }
+            },
+        }
+        self.assertFalse(
+            system.participant_status_authority_withdrawn(fresh, "follower")
+        )
+
+        for availability in ("delayed", "stale", "awaitingReport", "unavailable"):
+            event = json.loads(json.dumps(fresh))
+            event["participant_views"]["follower"]["availability"] = availability
+            self.assertTrue(
+                system.participant_status_authority_withdrawn(event, "follower")
+            )
+
+        absent = {
+            "event": "participant-status-snapshot",
+            "participants": ["controller"],
+            "participant_views": {"controller": {"availability": "fresh"}},
+        }
+        self.assertTrue(
+            system.participant_status_authority_withdrawn(absent, "follower")
+        )
+        self.assertFalse(
+            system.participant_status_authority_withdrawn(
+                {"event": "playstate"}, "follower"
+            )
+        )
+
     def test_mpv_version_parser_accepts_reviewed_shapes_and_rejects_noise(self) -> None:
         self.assertEqual(system.parse_mpv_version("mpv 0.41.0 Copyright"), (0, 41, 0))
         self.assertEqual(system.parse_mpv_version("mpv v1.2.3-45-gabc"), (1, 2, 3))
