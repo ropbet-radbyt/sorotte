@@ -2,13 +2,18 @@ use std::{
     fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
     time::{Duration, Instant},
 };
 
 use super::{
     MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES, MediaMatchTool, parse_executable_version_output,
-    probe_executable_output_with_timeout, probe_executable_version,
+    probe_executable_output_with_timeout, probe_executable_output_with_timeout_after_spawn,
+    probe_executable_version,
 };
 
 const LARGE_STDOUT_FIXTURE_TEST: &str = concat!(
@@ -248,10 +253,32 @@ fn version_probe_rejects_unusable_success_output() {
 fn timed_out_version_probe_reaps_process_and_releases_executable() {
     let fixture = FakeMediaMatchTool::new("timeout-cleanup");
     let args = fixture_args(PARKED_FIXTURE_TEST);
+    let executable = fixture.executable().to_owned();
+    let (spawned_tx, spawned_rx) = mpsc::sync_channel(1);
+    let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let result = probe_executable_output_with_timeout_after_spawn(
+            &executable,
+            &args,
+            PROCESS_FIXTURE_TIMEOUT,
+            || {
+                let _ = spawned_tx.send(());
+            },
+        );
+        let _ = completed_tx.send(result);
+    });
+
+    spawned_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the copied fixture should eventually finish process creation under runner load");
     let started = Instant::now();
-    let error =
-        probe_executable_output_with_timeout(fixture.executable(), &args, PROCESS_FIXTURE_TIMEOUT)
-            .expect_err("parked fake tool should time out");
+    let error = completed_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the post-spawn timeout and reap must remain bounded")
+        .expect_err("parked fake tool should time out");
+    worker
+        .join()
+        .expect("probe worker should finish after reaping");
 
     assert!(error.contains("timed out"), "{error}");
     assert!(
