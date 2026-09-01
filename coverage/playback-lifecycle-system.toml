@@ -143,7 +143,6 @@ transitions = [
   "LOAD-RECOVER-001",
   "LOAD-RECOVERY-SUBMIT-001",
   "MEDIA-FAIL-001",
-  "MEDIA-MISSING-001",
   "MEDIA-PLAYABLE-001",
   "TRANSPORT-CACHE-PAUSE-001",
   "TRANSPORT-EOF-CANCEL-001",
@@ -169,6 +168,7 @@ id = "windows-gui-owned-process-recovery"
 platform = "windows-x86_64"
 source = "exact-gui-owned-process-recovery"
 transitions = [
+  "MEDIA-MISSING-001",
   "PLAYER-LOSS-001",
   "PLAYER-RELAUNCH-001",
   "PLAYER-STOP-001",

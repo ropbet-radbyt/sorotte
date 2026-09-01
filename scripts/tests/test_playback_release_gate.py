@@ -228,6 +228,23 @@ class SystemCoverageRegistryTests(unittest.TestCase):
                 suites=suites,
             )
 
+    def test_media_missing_is_attributed_to_player_loss_not_resolution_failure(self) -> None:
+        all_transitions, required_system = gate.model_transition_inventory(MODEL_PATH)
+        _, suites = gate.model_system_suite_inventory(
+            MODEL_PATH,
+            all_transitions=all_transitions,
+            required_system=required_system,
+        )
+
+        self.assertNotIn(
+            "MEDIA-MISSING-001",
+            suites["exact-gui-faulting-http"]["transitions"],
+        )
+        self.assertIn(
+            "MEDIA-MISSING-001",
+            suites["exact-gui-owned-process-recovery"]["transitions"],
+        )
+
 
 class CompleteGateTests(unittest.TestCase):
     def platform_gate(self, platform: str) -> dict[str, object]:
