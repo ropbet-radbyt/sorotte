@@ -660,7 +660,11 @@ def libtest_oracle(
             f"missing={missing}, extra={extra}"
         )
     count = len(expected)
-    running = re.findall(rf"(?m)^running {count} tests\r?$", text)
+    test_noun = "test" if count == 1 else "tests"
+    running = re.findall(
+        rf"(?m)^running {count} {test_noun}\r?$",
+        text,
+    )
     if len(running) != 1:
         raise common.CoverageProfileLaneError(
             f"{lane} did not report exactly one non-zero running count"
