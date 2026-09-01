@@ -957,20 +957,21 @@ fn emit_player_lifecycle_input_evidence(
             }) {
                 identities.push(("load-attempt-id", successor.id.get()));
             }
-            if let Some(attempt) = predecessor {
-                if !attempt.state.is_terminal() && !attempt.logical_ownership_revoked {
-                    emit_player_lifecycle_transition(
-                        "LOAD-SUPERSEDE-001",
-                        "load-attempt",
-                        if recovery {
-                            Trigger::Recovery
-                        } else {
-                            Trigger::LocalInput
-                        },
-                        Disposition::Superseded,
-                        &identities,
-                    );
-                }
+            if let Some(attempt) = predecessor
+                && !attempt.state.is_terminal()
+                && !attempt.logical_ownership_revoked
+            {
+                emit_player_lifecycle_transition(
+                    "LOAD-SUPERSEDE-001",
+                    "load-attempt",
+                    if recovery {
+                        Trigger::Recovery
+                    } else {
+                        Trigger::LocalInput
+                    },
+                    Disposition::Superseded,
+                    &identities,
+                );
             }
             if recovery {
                 if state_before.provisional_eof_attempt().is_some() {

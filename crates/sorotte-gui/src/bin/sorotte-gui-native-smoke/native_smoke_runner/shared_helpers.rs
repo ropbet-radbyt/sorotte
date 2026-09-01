@@ -1276,7 +1276,7 @@ fn read_playlist_echo_line_preserving_timeouts(
 ) -> Result<PlaylistEchoLineRead, String> {
     loop {
         let (consumed, complete) = match reader.fill_buf() {
-            Ok(available) if available.is_empty() => {
+            Ok([]) => {
                 return if partial.is_empty() {
                     Ok(PlaylistEchoLineRead::Closed)
                 } else {
