@@ -117,6 +117,34 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist_index
     }
 }
 
+pub(in crate::app::live_python_interop) fn wait_for_peer_local_ready_with_runtime(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
+    harness: &mut LegacyServerPythonPeerHarness,
+    expected_ready: bool,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        // A readiness mutation can still be crossing the real GUI runtime and
+        // socket when the optimistic shell projection is already complete.
+        // Keep driving that owner while observing the independent Python peer;
+        // a blocking peer-side wait would starve the very delivery it awaits.
+        pump_and_apply(owner, handle, state);
+        let snapshot = harness.peer_snapshot()?;
+        if snapshot.local_ready == Some(expected_ready) {
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer local readiness while pumping the GUI runtime; expected={expected_ready}, observed={:?}, room={:?}",
+                snapshot.local_ready, snapshot.room
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_presence(
     harness: &mut LegacyServerPythonPeerHarness,
     username: &str,

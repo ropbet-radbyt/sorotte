@@ -69,6 +69,29 @@ fn write_package(path: &Path, gui: &[u8], updater: &[u8]) {
     zip.finish().expect("update package should finish");
 }
 
+fn remove_test_root_after_descendants_exit(root: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match fs::remove_dir_all(root) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if Instant::now() < deadline => {
+                // The updater intentionally hands work to a detached helper,
+                // and recovery can also launch the requested target. On
+                // Windows their executable images remain deletion-locked
+                // until both descendants have really exited. Successful
+                // bounded cleanup is therefore the test's positive reap
+                // acknowledgement, not merely best-effort housekeeping.
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!(
+                "updater descendants did not release the test root {}: {error}",
+                root.display()
+            ),
+        }
+    }
+}
+
 #[test]
 fn running_installed_updater_can_replace_its_own_installed_path() {
     let root = test_root();
@@ -150,7 +173,7 @@ fn running_installed_updater_can_replace_its_own_installed_path() {
     );
     assert!(!target.join(".sorotte-update-journal-v1.jsonl").exists());
 
-    let _ = fs::remove_dir_all(root);
+    remove_test_root_after_descendants_exit(&root);
 }
 
 #[test]
@@ -236,5 +259,5 @@ fn running_installed_updater_recovers_interrupted_replacement_and_restarts() {
     assert!(log_body.contains("interrupted update recovery completed"));
     assert!(!target.join(&backup_name).exists());
     assert!(!target.join(&temporary_name).exists());
-    let _ = fs::remove_dir_all(root);
+    remove_test_root_after_descendants_exit(&root);
 }

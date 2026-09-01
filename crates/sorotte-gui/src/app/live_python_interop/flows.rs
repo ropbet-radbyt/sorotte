@@ -27,11 +27,12 @@ use super::runtime_actions::{
 };
 use super::waits::{
     wait_for_controlled_room_peer_ready_projection, wait_for_controlled_room_projection,
-    wait_for_peer_observed_chat_message, wait_for_peer_observed_playlist,
-    wait_for_peer_observed_playlist_index, wait_for_peer_observed_user_controller,
-    wait_for_peer_observed_user_presence, wait_for_peer_observed_user_ready,
-    wait_for_playlist_controls, wait_for_projected_chat_message, wait_for_projected_playlist,
-    wait_for_projected_room_projection, wait_for_projected_user_absence, wait_for_projection,
+    wait_for_peer_local_ready_with_runtime, wait_for_peer_observed_chat_message,
+    wait_for_peer_observed_playlist, wait_for_peer_observed_playlist_index,
+    wait_for_peer_observed_user_controller, wait_for_peer_observed_user_presence,
+    wait_for_peer_observed_user_ready, wait_for_playlist_controls, wait_for_projected_chat_message,
+    wait_for_projected_playlist, wait_for_projected_room_projection,
+    wait_for_projected_user_absence, wait_for_projection,
 };
 #[cfg(test)]
 use super::waits::{wait_for_peer_observed_user_file_name, wait_for_sustained_connection_presence};
@@ -483,13 +484,12 @@ pub(super) fn run_live_python_peer_controlled_room_flow_with_harness(
     harness.wait_for_peer_local_controller(false, Duration::from_secs(3))?;
 
     request_remote_user_ready(&handle, &mut state, harness.peer_username(), true)?;
-    pump_and_apply(&mut owner, &handle, &mut state);
-    harness.wait_for_peer_local_ready(true, Duration::from_secs(3))?;
+    wait_for_peer_local_ready_with_runtime(&mut owner, &handle, &mut state, harness, true)?;
     wait_for_controlled_room_peer_ready_projection(&mut owner, &handle, &mut state, true)?;
 
     request_remote_user_ready(&handle, &mut state, harness.peer_username(), false)?;
-    pump_and_apply(&mut owner, &handle, &mut state);
-    let peer_snapshot = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
+    let peer_snapshot =
+        wait_for_peer_local_ready_with_runtime(&mut owner, &handle, &mut state, harness, false)?;
     wait_for_controlled_room_peer_ready_projection(&mut owner, &handle, &mut state, false)?;
 
     state.apply(GuiShellAction::SwitchView(GuiShellView::Room));

@@ -376,27 +376,29 @@ struct MediaFailureRecoveryEvidence {
     error: Option<String>,
 }
 
+struct MediaFailureRecoveryInit<'a> {
+    listener_endpoint: String,
+    media_url: String,
+    initial_pid: u32,
+    parent_pid: u32,
+    process_image_path: &'a Path,
+    process_sha256: String,
+    initial_ipc_endpoint: String,
+    restored_media_path: &'a Path,
+    restored_media_sha256: String,
+}
+
 impl MediaFailureRecoveryEvidence {
-    fn new(
-        listener_endpoint: String,
-        media_url: String,
-        initial_pid: u32,
-        parent_pid: u32,
-        process_image_path: &Path,
-        process_sha256: String,
-        initial_ipc_endpoint: String,
-        restored_media_path: &Path,
-        restored_media_sha256: String,
-    ) -> Self {
+    fn new(init: MediaFailureRecoveryInit<'_>) -> Self {
         Self {
             schema_version: REAL_MPV_SCHEMA_VERSION,
             kind: REAL_MPV_MEDIA_FAILURE_KIND,
             result: "running".to_owned(),
             failure_mode: "authoritative-loopback-http-404",
             recovery_mode: "authoritative-local-media-restore",
-            listener_endpoint,
+            listener_endpoint: init.listener_endpoint,
             listener_ipv4_loopback: true,
-            media_url,
+            media_url: init.media_url,
             route: REAL_MPV_MEDIA_FAILURE_ROUTE,
             request_count: 0,
             requests: Vec::new(),
@@ -409,19 +411,19 @@ impl MediaFailureRecoveryEvidence {
             media_playable_event_id: None,
             media_playable_emitter: None,
             media_playable_process_role: None,
-            initial_pid,
+            initial_pid: init.initial_pid,
             failure_pid: None,
             recovered_pid: None,
-            parent_pid,
-            process_image_path: process_image_path.display().to_string(),
-            process_sha256,
-            initial_ipc_endpoint,
+            parent_pid: init.parent_pid,
+            process_image_path: init.process_image_path.display().to_string(),
+            process_sha256: init.process_sha256,
+            initial_ipc_endpoint: init.initial_ipc_endpoint,
             failure_ipc_endpoint: None,
             recovered_ipc_endpoint: None,
             same_process_identity: false,
             same_ipc_endpoint: false,
-            restored_media_path: restored_media_path.display().to_string(),
-            restored_media_sha256,
+            restored_media_path: init.restored_media_path.display().to_string(),
+            restored_media_sha256: init.restored_media_sha256,
             manual_retry_invoked: false,
             evidence_retained_before_cleanup: false,
             server_thread_released: false,
@@ -2873,17 +2875,17 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 "hard media-failure HTTP listener",
             )?;
             let hard_failure_url = hard_failure_server.url();
-            let evidence = MediaFailureRecoveryEvidence::new(
-                hard_failure_endpoint,
-                hard_failure_url.clone(),
-                mpv_pid,
+            let evidence = MediaFailureRecoveryEvidence::new(MediaFailureRecoveryInit {
+                listener_endpoint: hard_failure_endpoint,
+                media_url: hard_failure_url.clone(),
+                initial_pid: mpv_pid,
                 parent_pid,
-                &initial_process_image_path,
-                mpv_preflight.identity.sha256.clone(),
-                ipc_endpoint.clone(),
-                &media_path,
-                hex_sha256(&generated_media),
-            );
+                process_image_path: &initial_process_image_path,
+                process_sha256: mpv_preflight.identity.sha256.clone(),
+                initial_ipc_endpoint: ipc_endpoint.clone(),
+                restored_media_path: &media_path,
+                restored_media_sha256: hex_sha256(&generated_media),
+            });
             write_json_file(&media_failure_path, &evidence)?;
             media_failure_evidence = Some(evidence);
 
