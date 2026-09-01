@@ -249,8 +249,8 @@ EXPECTED_TESTS = {
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": 426,
-    "mpv-external-process": 432,
+    "mpv-named-pipe": 427,
+    "mpv-external-process": 433,
     "media-tool-process": 1156,
     "server-platform-signal": 14,
 }
