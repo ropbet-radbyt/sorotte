@@ -4,9 +4,10 @@
 This producer deliberately covers non-interactive Windows behavior that the
 ordinary Linux workspace profile cannot execute: updater replacement and
 recovery, installed-updater self replacement, named-pipe faults, external mpv
-process faults, and media-tool child-process faults. Every lane has an exact
-libtest inventory, must add a fresh raw LLVM profile, and must remain merge
-compatible with the other profiles from this Windows/MSVC producer.
+process faults, media-tool child-process faults, and server platform-signal
+registration. Every lane has an exact libtest inventory, must add a fresh raw
+LLVM profile, and must remain merge compatible with the other profiles from
+this Windows/MSVC producer.
 
 Interactive GUI/UI Automation smoke remains a separate test signal. It is not
 instrumented by this producer and the report schema makes that boundary
@@ -124,6 +125,18 @@ MEDIA_TOOL_PROCESS_COMMAND = (
     "--",
     "--nocapture",
 )
+SERVER_PLATFORM_SIGNAL_COMMAND = (
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sorotte-server",
+    "--bin",
+    "sorotte-server",
+    "platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths",
+    "--",
+    "--nocapture",
+)
 
 LANE_ORDER = (
     "updater-transaction-process",
@@ -131,6 +144,7 @@ LANE_ORDER = (
     "mpv-named-pipe",
     "mpv-external-process",
     "media-tool-process",
+    "server-platform-signal",
     "merge-check",
 )
 PROFILE_LANES = frozenset(LANE_ORDER[:-1])
@@ -140,6 +154,7 @@ LANE_COMMANDS = {
     "mpv-named-pipe": MPV_NAMED_PIPE_COMMAND,
     "mpv-external-process": MPV_EXTERNAL_PROCESS_COMMAND,
     "media-tool-process": MEDIA_TOOL_PROCESS_COMMAND,
+    "server-platform-signal": SERVER_PLATFORM_SIGNAL_COMMAND,
     "merge-check": MERGE_COMMAND,
 }
 LANE_INSTRUMENTATION = {
@@ -148,6 +163,7 @@ LANE_INSTRUMENTATION = {
     "mpv-named-pipe": "cargo-llvm-cov-show-env",
     "mpv-external-process": "cargo-llvm-cov-show-env",
     "media-tool-process": "cargo-llvm-cov-show-env",
+    "server-platform-signal": "cargo-llvm-cov-show-env",
     "merge-check": "cargo-llvm-cov-report",
 }
 LANE_ENVIRONMENT_OVERRIDES = {
@@ -226,6 +242,9 @@ EXPECTED_TESTS = {
         "app::media_match_support::process_fault_tests::version_probe_rejects_unusable_success_output",
         "app::media_match_support::process_fault_tests::version_probe_selects_first_nonempty_line_and_accepts_unterminated_final_line",
     ),
+    "server-platform-signal": (
+        "tests::platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths",
+    ),
 }
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
@@ -233,12 +252,14 @@ EXPECTED_FILTERED_OUT = {
     "mpv-named-pipe": 426,
     "mpv-external-process": 432,
     "media-tool-process": 1156,
+    "server-platform-signal": 14,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {
         "sorotte_gui_tests",
         "sorotte_gui_updater",
         "sorotte_player_mpv_tests",
+        "sorotte_server",
         "updater_self_replacement_windows",
     }
 )

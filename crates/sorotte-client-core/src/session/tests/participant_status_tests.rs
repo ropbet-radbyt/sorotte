@@ -428,6 +428,29 @@ fn snapshot_revision_prevents_old_or_duplicate_snapshots_from_resurrecting_statu
 }
 
 #[test]
+fn participant_status_snapshot_metadata_accessors_expose_committed_state() {
+    let mut session = status_session();
+    assert_eq!(session.participant_status_snapshot_revision(), None);
+    assert_eq!(
+        session.participant_status_snapshot_mode(),
+        ParticipantStatusSnapshotMode::Full
+    );
+
+    session
+        .apply_message_json_at(
+            r#"{"State":{"sorotteParticipantStatusV1":{"snapshot":{"revision":73,"mode":"compact","participants":{}}}}}"#,
+            1.0,
+        )
+        .unwrap();
+
+    assert_eq!(session.participant_status_snapshot_revision(), Some(73));
+    assert_eq!(
+        session.participant_status_snapshot_mode(),
+        ParticipantStatusSnapshotMode::Compact
+    );
+}
+
+#[test]
 fn unsupported_and_awaiting_are_explicit_server_owned_states() {
     let mut session = status_session();
     session

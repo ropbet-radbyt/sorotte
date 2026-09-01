@@ -558,6 +558,23 @@ class DiffCoverageTests(unittest.TestCase):
 
         self.assertEqual(structural, set(range(1, len(source_lines) + 1)))
 
+    def test_compiler_uninstrumented_struct_glue_is_structural(self) -> None:
+        source_lines = [
+            "    event: ConnectedSessionEventPlan {",
+            "    crate::app::PlaybackControlObservation {",
+            "        enabled: false,",
+            "        epoch: 0,",
+            "    } else if let (",
+            "        PlaybackDiagnostic::Empty | PlaybackDiagnostic::Ended",
+            "        enabled: compute_enabled(),",
+            "        launch_windows_player();",
+            "    true",
+        ]
+
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+
+        self.assertEqual(structural, {1, 2, 3, 4, 5, 6})
+
     def test_multiline_expression_glue_is_structural_without_hiding_complete_calls(self) -> None:
         source_lines = [
             "    invoke(",
