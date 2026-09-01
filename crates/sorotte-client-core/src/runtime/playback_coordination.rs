@@ -913,6 +913,14 @@ struct CurrentTransportEvidence {
     last_received_at_seconds: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum MappedTransportCommitOutcome {
+    Committed,
+    LifecycleFenced,
+    #[default]
+    Rejected,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingParticipantStatusReport {
     pub(super) report: ParticipantStatusReport,
@@ -2787,27 +2795,27 @@ impl RuntimePlaybackCoordination {
         candidate_offset_seconds: Option<f64>,
         mut replace_latest_observation: bool,
         mut replace_position_state: bool,
-    ) -> bool {
+    ) -> MappedTransportCommitOutcome {
         if !external_now_seconds.is_finite()
             || !delivery_reference_seconds.is_finite()
             || candidate_offset_seconds.is_some_and(|offset| !offset.is_finite())
         {
-            return false;
+            return MappedTransportCommitOutcome::Rejected;
         }
         if self
             .transport_telemetry_lifecycle_fence_at_seconds
             .is_some_and(|fence| observation.observed_at_seconds < fence)
         {
-            return false;
+            return MappedTransportCommitOutcome::LifecycleFenced;
         }
         if self.coordinator.current_media_generation() != Some(observation.media_generation) {
-            return false;
+            return MappedTransportCommitOutcome::Rejected;
         }
         if !self.observation_timestamp_is_accepted(
             observation.media_generation,
             observation.observed_at_seconds,
         ) {
-            return false;
+            return MappedTransportCommitOutcome::Rejected;
         }
         let owner_clock_rolled_back = self.last_external_now_seconds.is_some_and(|last_observed| {
             !last_observed.is_finite() || external_now_seconds < last_observed
@@ -2867,7 +2875,7 @@ impl RuntimePlaybackCoordination {
         } else {
             self.merge_latest_observation(observation);
         }
-        true
+        MappedTransportCommitOutcome::Committed
     }
 
     pub(crate) fn observe_transport(
@@ -2942,14 +2950,8 @@ impl RuntimePlaybackCoordination {
             buffered_ahead_seconds: update.buffered_ahead_seconds,
             input_rate_bytes_per_second: update.input_rate_bytes_per_second,
         };
-        if self
-            .transport_telemetry_lifecycle_fence_at_seconds
-            .is_some_and(|fence| observation.observed_at_seconds < fence)
-        {
-            return Vec::new();
-        }
         let position_update = observation.clone();
-        let _ = self.commit_mapped_transport_observation(
+        let commit_outcome = self.commit_mapped_transport_observation(
             observation.clone(),
             &position_update,
             external_now_seconds,
@@ -2958,6 +2960,9 @@ impl RuntimePlaybackCoordination {
             replace_previous_state,
             replace_previous_state,
         );
+        if commit_outcome == MappedTransportCommitOutcome::LifecycleFenced {
+            return Vec::new();
+        }
         let actions = if replace_previous_state {
             self.coordinator.rebase_observation(observation)
         } else {
@@ -3088,7 +3093,7 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         };
         let position_update = observation.clone();
-        if !self.commit_mapped_transport_observation(
+        if self.commit_mapped_transport_observation(
             observation.clone(),
             &position_update,
             external_now_seconds,
@@ -3096,7 +3101,8 @@ impl RuntimePlaybackCoordination {
             candidate_offset_seconds,
             true,
             true,
-        ) {
+        ) != MappedTransportCommitOutcome::Committed
+        {
             return Vec::new();
         }
         let actions = self.coordinator.observe(observation);
@@ -3120,7 +3126,7 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         };
         let position_update = Self::position_update_from_ordered_delta(delta, &observation);
-        if !self.commit_mapped_transport_observation(
+        if self.commit_mapped_transport_observation(
             observation.clone(),
             &position_update,
             external_now_seconds,
@@ -3128,7 +3134,8 @@ impl RuntimePlaybackCoordination {
             candidate_offset_seconds,
             true,
             false,
-        ) {
+        ) != MappedTransportCommitOutcome::Committed
+        {
             return Vec::new();
         }
         let actions = self.coordinator.observe(observation);
@@ -7179,34 +7186,42 @@ mod tests {
 
     #[test]
     fn participant_status_transport_commit_guards_are_independent() {
-        let assert_rejected =
-            |mut coordination: RuntimePlaybackCoordination,
-             observation: PlayerTransportObservation| {
-                let position_update = observation.clone();
-                assert!(!coordination.commit_mapped_transport_observation(
-                    observation,
-                    &position_update,
-                    2.0,
-                    2.0,
-                    None,
-                    false,
-                    false,
-                ));
-            };
+        let commit = |mut coordination: RuntimePlaybackCoordination,
+                      observation: PlayerTransportObservation| {
+            let position_update = observation.clone();
+            coordination.commit_mapped_transport_observation(
+                observation,
+                &position_update,
+                2.0,
+                2.0,
+                None,
+                false,
+                false,
+            )
+        };
 
         let (mut fenced, generation) = participant_status_transport_fixture();
         fenced.transport_telemetry_lifecycle_fence_at_seconds = Some(2.0);
-        assert_rejected(fenced, PlayerTransportObservation::new(generation, 1.0));
+        assert_eq!(
+            commit(fenced, PlayerTransportObservation::new(generation, 1.0)),
+            MappedTransportCommitOutcome::LifecycleFenced
+        );
 
         let (wrong_generation, generation) = participant_status_transport_fixture();
-        assert_rejected(
-            wrong_generation,
-            PlayerTransportObservation::new(generation + 1, 1.0),
+        assert_eq!(
+            commit(
+                wrong_generation,
+                PlayerTransportObservation::new(generation + 1, 1.0),
+            ),
+            MappedTransportCommitOutcome::Rejected
         );
 
         let (mut stale, generation) = participant_status_transport_fixture();
         stale.latest_observation = Some(PlayerTransportObservation::new(generation, 2.0));
-        assert_rejected(stale, PlayerTransportObservation::new(generation, 1.0));
+        assert_eq!(
+            commit(stale, PlayerTransportObservation::new(generation, 1.0)),
+            MappedTransportCommitOutcome::Rejected
+        );
 
         for (external_now, delivery_reference, offset) in [
             (f64::NAN, 2.0, None),
@@ -7215,16 +7230,43 @@ mod tests {
         ] {
             let (mut coordination, generation) = participant_status_transport_fixture();
             let observation = PlayerTransportObservation::new(generation, 1.0);
-            assert!(!coordination.commit_mapped_transport_observation(
-                observation.clone(),
-                &observation,
-                external_now,
-                delivery_reference,
-                offset,
-                false,
-                false,
-            ));
+            assert_eq!(
+                coordination.commit_mapped_transport_observation(
+                    observation.clone(),
+                    &observation,
+                    external_now,
+                    delivery_reference,
+                    offset,
+                    false,
+                    false,
+                ),
+                MappedTransportCommitOutcome::Rejected
+            );
         }
+    }
+
+    #[test]
+    fn participant_status_transport_lifecycle_fence_accepts_its_exact_boundary() {
+        let (mut older, _) = participant_status_transport_fixture();
+        older.transport_telemetry_lifecycle_fence_at_seconds = Some(2.0);
+        assert!(
+            older
+                .observe_transport(transport(1, 1.0, PlayerTransportPhase::Playing, 7.0), 1.0,)
+                .is_empty()
+        );
+        assert!(!older.transport_telemetry_observed);
+        assert!(older.latest_observation.is_none());
+
+        let (mut at_boundary, generation) = participant_status_transport_fixture();
+        at_boundary.transport_telemetry_lifecycle_fence_at_seconds = Some(2.0);
+        at_boundary.observe_transport(transport(1, 2.0, PlayerTransportPhase::Playing, 7.0), 2.0);
+        let accepted = at_boundary
+            .latest_observation
+            .expect("an observation exactly on the lifecycle fence must be accepted");
+        assert_eq!(accepted.media_generation, generation);
+        assert_eq!(accepted.observed_at_seconds, 2.0);
+        assert_eq!(accepted.position_seconds, Some(7.0));
+        assert!(at_boundary.transport_telemetry_observed);
     }
 
     #[test]
@@ -7244,15 +7286,18 @@ mod tests {
             coordination.last_transport_telemetry_received_at_seconds = last_received_at;
             let sparse = PlayerTransportObservation::new(generation, 2.0)
                 .with_phase(PlayerTransportPhase::Playing);
-            assert!(coordination.commit_mapped_transport_observation(
-                sparse.clone(),
-                &sparse,
-                external_now,
-                external_now,
-                None,
-                false,
-                false,
-            ));
+            assert_eq!(
+                coordination.commit_mapped_transport_observation(
+                    sparse.clone(),
+                    &sparse,
+                    external_now,
+                    external_now,
+                    None,
+                    false,
+                    false,
+                ),
+                MappedTransportCommitOutcome::Committed
+            );
             coordination
                 .latest_observation
                 .as_ref()
