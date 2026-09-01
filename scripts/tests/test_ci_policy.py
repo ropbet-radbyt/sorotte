@@ -486,6 +486,91 @@ class CiPolicyTests(unittest.TestCase):
               --binary mpv
             """,
         )
+        self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Verify Sorotte candidate revision",
+            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$GITHUB_SHA\"",
+        )
+        self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Build packaged playback lifecycle candidates",
+            "cargo build --locked -p sorotte-server -p sorotte-cli",
+        )
+        system_step = self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Required packaged multi-client real mpv lifecycle",
+            """
+            python3 scripts/playback_lifecycle_system.py run \
+              --server target/debug/sorotte-server \
+              --client target/debug/sorotte-cli \
+              --mpv target/mpv-supported/build/mpv \
+              --ffmpeg ffmpeg \
+              --artifact-dir target/verification/playback-lifecycle-system \
+              --candidate-sha "$GITHUB_SHA"
+            """,
+            continue_on_error="true",
+        )
+        self.assertEqual(system_step.get("id"), "playback_lifecycle_system")
+        self.assertEqual(system_step.get("continue-on-error"), "true")
+
+        evidence_step = self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Validate and stage privacy-safe lifecycle evidence",
+            """
+            python3 scripts/playback_lifecycle_system.py stage-safe-evidence \
+              --artifact-dir target/verification/playback-lifecycle-system \
+              --output-dir target/verification/playback-lifecycle-safe-evidence
+            """,
+            continue_on_error="true",
+            allowed_if="always()",
+        )
+        self.assertEqual(evidence_step.get("id"), "playback_lifecycle_evidence")
+        self.assertEqual(evidence_step.get("if"), "always()")
+        self.assertEqual(evidence_step.get("continue-on-error"), "true")
+
+        upload_step = named_step(
+            jobs,
+            "mpv-pr-semantics",
+            "Upload privacy-safe packaged lifecycle evidence",
+        )
+        self.assertEqual(upload_step.get("uses"), PINNED_USES["actions/upload-artifact"])
+        self.assertEqual(
+            upload_step.get("if"),
+            "${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}",
+        )
+        self.assertEqual(
+            upload_step.get("with"),
+            {
+                "name": "playback-lifecycle-system-${{ matrix.mpv_identity }}",
+                "path": "target/verification/playback-lifecycle-safe-evidence",
+                "if-no-files-found": "error",
+                "retention-days": "14",
+                "overwrite": "true",
+            },
+        )
+
+        enforcement = self.assert_exact_run(
+            jobs,
+            "mpv-pr-semantics",
+            "Enforce packaged lifecycle verification and safe evidence",
+            """
+            test "$PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME" = success
+            test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
+            """,
+            allowed_if="always()",
+        )
+        self.assertEqual(enforcement.get("if"), "always()")
+        self.assertEqual(
+            enforcement.get("env"),
+            {
+                "PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME": "${{ steps.playback_lifecycle_system.outcome }}",
+                "PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME": "${{ steps.playback_lifecycle_evidence.outcome }}",
+            },
+        )
 
     def test_every_external_action_is_pinned_to_reviewed_commit(self) -> None:
         for path, workflow_text in (
@@ -718,6 +803,67 @@ class CiPolicyTests(unittest.TestCase):
             "Validate behavior catalog",
             "python scripts/behavior_evidence.py validate "
             "--catalog coverage/behaviors.toml",
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Validate playback lifecycle model",
+            "python scripts/playback_lifecycle_model.py validate "
+            "--model coverage/playback-lifecycle.toml",
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Execute playback lifecycle oracle",
+            "python scripts/playback_lifecycle_oracle.py witness-summary "
+            "--model coverage/playback-lifecycle.toml --compact",
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Replay playback lifecycle seeds",
+            "python scripts/playback_lifecycle_oracle.py run-suite "
+            "--schedule-dir fixtures/playback-lifecycle",
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Required state-aware playback lifecycle exploration",
+            """
+            python scripts/playback_lifecycle_oracle.py explore
+            --model coverage/playback-lifecycle.toml
+            --seed 0x50A077E20260831
+            --cases 64
+            --steps 128
+            --failure-dir target/verification/playback-lifecycle-model-failures
+            --compact
+            """,
+            continue_on_error="true",
+        )
+        exploration_enforcement = self.assert_exact_run(
+            self.jobs,
+            "checks",
+            "Enforce state-aware playback lifecycle exploration",
+            'test "$LIFECYCLE_EXPLORE_OUTCOME" = success',
+            allowed_if="always()",
+        )
+        self.assertEqual(
+            exploration_enforcement["env"],
+            {"LIFECYCLE_EXPLORE_OUTCOME": "${{ steps.lifecycle_explore.outcome }}"},
+        )
+        self.assert_exact_run(
+            self.jobs,
+            "nightly-deep",
+            "Nightly state-aware playback lifecycle exploration",
+            """
+            python scripts/playback_lifecycle_oracle.py explore
+            --model coverage/playback-lifecycle.toml
+            --seed 0x50A077E20260831
+            --cases 512
+            --steps 256
+            --failure-dir target/verification/playback-lifecycle-model-failures
+            --compact
+            """,
         )
         self.assert_exact_run(
             self.jobs,
@@ -2610,6 +2756,7 @@ done""",
                             "(participant_status|ParticipantStatus|"
                             "collect_due_periodic_updates_at|"
                             "delete field (set_by|"
+                            "transport_revision|"
                             "client_latency_calculation|"
                             "client_ignoring_counter|server_rtt_seconds|"
                             "latency_calculation_seconds) from struct "
@@ -3849,30 +3996,6 @@ done""",
                             ),
                             (
                                 (
-                                    "gui-playlist-delivery-fence-finish-"
-                                    "let-chain-or"
-                                ),
-                                "gui-playlist-delivery-fence",
-                                (
-                                    "crates/sorotte-gui/src/app/runtime_owner/"
-                                    "player/media_open.rs"
-                                ),
-                                (
-                                    "GuiPersistedConfigRuntimeOwner::"
-                                    "finish_shared_playlist_open_after_delivery"
-                                ),
-                                "",
-                                "BinaryOperator",
-                                "||",
-                                (
-                                    "cargo-mutants changes the observed && "
-                                    "connector in a Rust let-chain to ||, "
-                                    "which rustc rejects because let-chain "
-                                    "conditions support only &&"
-                                ),
-                            ),
-                            (
-                                (
                                     "client-app-participant-status-"
                                     "presentation-default"
                                 ),
@@ -4252,6 +4375,7 @@ done""",
 
         for field in (
             "set_by",
+            "transport_revision",
             "client_latency_calculation",
             "client_ignoring_counter",
             "server_rtt_seconds",

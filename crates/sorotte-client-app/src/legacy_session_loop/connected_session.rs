@@ -213,6 +213,48 @@ pub fn connected_session_autoplay_tick_event_execution_plan_legacy_compatible(
     )
 }
 
+pub fn connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(
+    shared: ConnectedSessionSharedExecutionInputs,
+) -> ConnectedSessionEventExecutionPlan {
+    ConnectedSessionEventExecutionPlan {
+        inbound_apply: None,
+        event: ConnectedSessionEventPlan {
+            inbound_post_apply: None,
+            branch: ConnectedSessionBranchPlan {
+                run_protocol_before_runtime_steps: false,
+                runtime_steps: ConnectedSessionRuntimeStepPlan {
+                    run_room_pause_sync: true,
+                    run_readiness_unpause_attempt: false,
+                    run_update_autoplay_check: false,
+                    run_tick_autoplay: false,
+                    run_desync_correction: false,
+                    run_reconnect_state_restore_validation: true,
+                    run_state_sync_heartbeat: false,
+                    publish_pending_local_file_updates: true,
+                },
+                protocol: ConnectedSessionProtocolPlan {
+                    flush_runtime_protocol_lines: true,
+                    startup_playlist_disposition:
+                        ConnectedSessionStartupPlaylistDisposition::LeavePending,
+                },
+                drain: ConnectedSessionDrainPlan {
+                    flush_player_playback_diagnostics: shared.diagnostics.log_player_telemetry
+                        || shared.diagnostics.log_player_drift,
+                    reconnect_correction_diagnostics_format: shared
+                        .diagnostics
+                        .reconnect_correction_diagnostics_format,
+                    flush_reconnect_notifications: true,
+                    flush_controller_auth_notifications: false,
+                    flush_chat_notifications: false,
+                    flush_user_change_notifications: false,
+                    flush_autoplay_notifications: false,
+                    flush_file_difference_notifications: true,
+                },
+            },
+        },
+    }
+}
+
 pub fn connected_session_local_input_event_execution_plan_legacy_compatible(
     emitted_runtime_action: bool,
     shared: ConnectedSessionSharedExecutionInputs,
@@ -300,7 +342,6 @@ pub fn connected_session_runtime_step_actions_legacy_compatible(
     if plan.publish_pending_local_file_updates {
         actions.push(ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates);
     }
-
     actions
 }
 

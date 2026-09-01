@@ -1062,6 +1062,35 @@ impl PlaybackCoordinator {
         self.media.as_ref().map(|media| media.kind)
     }
 
+    /// Retires the current logical media generation without retiring the
+    /// player attachment. Late observations and command completions from the
+    /// old generation can no longer satisfy future room authority.
+    pub fn retire_media(&mut self) -> Vec<PlaybackCoordinatorAction> {
+        let actions = self.interrupt_recovery();
+        self.finish_seek_preparation(SeekPreparationTerminalOutcome::Cancelled);
+        self.last_seek_preparation_terminal = None;
+        self.media = None;
+        self.desired = None;
+        self.observed = None;
+        self.cached_seekable_ranges = None;
+        self.pending_commands.clear();
+        self.last_applied_revision = None;
+        self.last_started_revision = None;
+        self.desired_seek_satisfied_revision = None;
+        self.required_seek_dispatch_revision = None;
+        self.authoritative_alignment_guard_revision = None;
+        self.completed_seek_restart_baseline = None;
+        self.rate_override = None;
+        self.last_playback_rate_observation_sequence = None;
+        self.retry_not_before_seconds = 0.0;
+        self.failed_command_attempts = 0;
+        self.command_budget_degraded = false;
+        self.pending_degraded_reason = None;
+        self.clear_participant_status_transport_metrics();
+        self.diagnostic = PlaybackDiagnostic::Empty;
+        actions
+    }
+
     pub fn update_desired_room_state(
         &mut self,
         desired: DesiredRoomPlayback,

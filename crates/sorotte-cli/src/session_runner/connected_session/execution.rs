@@ -345,7 +345,9 @@ pub(super) fn run_contained_planned_local_runtime_action(
     contain_planned_local_runtime_action_result(runtime, now_seconds, player_bound, result)
 }
 
-fn planned_local_runtime_action_is_player_bound(action: &PlannedLocalRuntimeAction) -> bool {
+pub(super) fn planned_local_runtime_action_is_player_bound(
+    action: &PlannedLocalRuntimeAction,
+) -> bool {
     matches!(
         action,
         PlannedLocalRuntimeAction::UndoSeek
@@ -423,15 +425,22 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     let actions =
         connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
+    let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
 
     for action in actions {
         let (operation, outcome) = match action {
-            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => (
-                "synchronize room pause state",
-                runtime
-                    .run_room_pause_sync_if_needed_at(now_seconds)
-                    .map_err(anyhow::Error::from),
-            ),
+            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
+                let outcome = if shared_playlists_enabled {
+                    runtime
+                        .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(now_seconds)
+                } else {
+                    runtime.run_room_pause_sync_if_needed_at(now_seconds)
+                };
+                (
+                    "synchronize room pause state",
+                    outcome.map_err(anyhow::Error::from),
+                )
+            }
             ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => (
                 "apply readiness unpause",
                 runtime
@@ -500,6 +509,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                     runtime,
                     config,
                     network_options_health_reporter,
+                    now_seconds,
                 ),
             ),
         };
@@ -510,6 +520,34 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 operation,
                 error,
             ));
+        }
+    }
+
+    if shared_playlists_enabled {
+        for (operation, outcome) in [
+            (
+                "advance playlist after natural completion",
+                runtime
+                    .run_advance_playlist_after_natural_completion()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+            ),
+            (
+                "synchronize canonical playlist selection",
+                runtime
+                    .synchronize_canonical_playlist_selection_to_player()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+            ),
+        ] {
+            if let Err(error) = outcome {
+                return Some(contain_connected_session_player_failure(
+                    runtime,
+                    now_seconds,
+                    operation,
+                    error,
+                ));
+            }
         }
     }
 

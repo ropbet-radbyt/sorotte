@@ -5,6 +5,7 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
+        set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
 
@@ -35,6 +36,15 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .set_positions
                 .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
             Ok(())
         }
     }
@@ -96,6 +106,11 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .set_positions
         .clear();
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_paused_values
+        .clear();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#.to_owned(),
@@ -115,6 +130,10 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
             .iter()
             .any(|position| (*position - 0.0).abs() < f64::EPSILON),
         "same-file playlist index changes should still consume the reset handoff and rewind"
+    );
+    assert!(
+        recorded_state.set_paused_values.contains(&true),
+        "same-file playlist index changes should retain a physical pause hold until successor State"
     );
     assert!(
         !recorded_state
@@ -250,16 +269,19 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
 
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
     let mut outbound_protocol_lines = Vec::new();
+    let player_attachment_epoch = owner.player_attachment_epoch;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        let reset_consumed = !owner
+        let reset_physically_applied = owner
             .session
             .as_ref()
             .expect("session should remain attached")
-            .has_pending_playlist_index_reset_intent();
+            .pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_epoch,
+            );
         let recorded_rewind = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -272,7 +294,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
                 .as_ref()
                 .and_then(|file| file.path.as_deref())
                 == Some(selected_media_path.to_string_lossy().as_ref())
-            && reset_consumed
+            && reset_physically_applied
             && recorded_rewind
         {
             break;
@@ -290,12 +312,22 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
         "the local index switch should open the newly selected media after its delivery receipt"
     );
     assert!(
-        !owner
+        owner
             .session
             .as_ref()
             .expect("session should remain attached")
             .has_pending_playlist_index_reset_intent(),
-        "the intended local playlist reset should be consumed before its acknowledgment arrives"
+        "the physical reset must retain its authority fence until successor State arrives"
+    );
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should remain attached")
+            .pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_epoch,
+            ),
+        "the selected media should be physically reset before its delayed acknowledgment"
     );
     {
         let mut recorded_state = player_state
@@ -353,12 +385,53 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
         "a delayed omitted-user acknowledgment must not seek the attached player a second time"
     );
     assert!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should remain attached")
+            .has_pending_playlist_index_reset_intent(),
+        "an index echo alone cannot release the successor transport fence"
+    );
+
+    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
+    let successor_state = outbound_protocol_lines
+        .iter()
+        .find(|line| line.contains("\"State\""))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "the local selection should publish successor State; outbound={outbound_protocol_lines:?}"
+            )
+        });
+    session_transport.push_inbound_protocol_line(successor_state);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if !owner
+            .session
+            .as_ref()
+            .expect("session should remain attached")
+            .has_pending_playlist_index_reset_intent()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
         !owner
             .session
             .as_ref()
             .expect("session should remain attached")
             .has_pending_playlist_index_reset_intent(),
-        "a delayed omitted-user acknowledgment must not queue another playlist reset"
+        "accepted post-selection State should release the already-proven physical reset"
+    );
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions
+            .is_empty(),
+        "authority completion must not rewind the selected media again"
     );
 
     let _ = std::fs::remove_dir_all(&root);

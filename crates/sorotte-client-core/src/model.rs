@@ -58,6 +58,8 @@ pub struct RoomState {
     pub(crate) media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     pub(crate) known_rooms: BTreeSet<String>,
     pub(crate) playstates: BTreeMap<String, RoomPlaystateView>,
+    pub(crate) playstate_transport_revisions: BTreeMap<String, u64>,
+    pub(crate) playstate_receipt_sequences: BTreeMap<String, u64>,
     pub(crate) playstate_updated_at_seconds: BTreeMap<String, f64>,
     pub(crate) playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
     pub(crate) participant_statuses: BTreeMap<String, ClientParticipantStatusView>,
@@ -520,6 +522,10 @@ pub struct PlaylistState {
     pub(crate) rooms: BTreeMap<String, RoomPlaylistView>,
     pub(crate) pending: Option<RoomPlaylistView>,
     pub(crate) pending_remote_revision: u64,
+    pub(crate) selection_revisions: BTreeMap<String, u64>,
+    pub(crate) pending_selection_revision: u64,
+    pub(crate) canonical_epochs: BTreeMap<String, u64>,
+    pub(crate) pending_canonical_epoch: Option<u64>,
     pub(crate) pending_local_change_echoes: BTreeMap<String, PendingLocalPlaylistEchoTracker>,
     pub(crate) pending_local_index_echoes: BTreeMap<String, PendingLocalPlaylistIndexEchoTracker>,
     pub(crate) remote_revisions: BTreeMap<String, u64>,
@@ -528,6 +534,10 @@ pub struct PlaylistState {
     pub(crate) shuffle_nonce: u64,
     pub(crate) received_first_index: bool,
     pub(crate) pending_index_reset_pause_before_sync: Option<bool>,
+    pub(crate) pending_index_reset_room: Option<String>,
+    pub(crate) pending_index_reset_base_transport_revision: Option<u64>,
+    pub(crate) pending_index_reset_base_playstate_receipt_sequence: Option<u64>,
+    pub(crate) pending_index_reset_physical_attachment_epoch: Option<u64>,
     pub(crate) pending_index_reset_refresh_recently_advanced: bool,
     pub(crate) suppress_next_self_index_reset: bool,
     pub(crate) last_seek_position_before_manual_seek: Option<f64>,
@@ -540,6 +550,19 @@ impl std::fmt::Debug for PlaylistState {
             .field("rooms", &self.rooms)
             .field("pending", &self.pending)
             .field("pending_remote_revision", &self.pending_remote_revision)
+            .field(
+                "selection_revision_room_count",
+                &self.selection_revisions.len(),
+            )
+            .field(
+                "pending_selection_revision",
+                &self.pending_selection_revision,
+            )
+            .field("canonical_epoch_room_count", &self.canonical_epochs.len())
+            .field(
+                "has_pending_canonical_epoch",
+                &self.pending_canonical_epoch.is_some(),
+            )
             .field(
                 "pending_local_change_echo_count",
                 &self
@@ -583,6 +606,22 @@ impl std::fmt::Debug for PlaylistState {
             .field(
                 "pending_index_reset_pause_before_sync",
                 &self.pending_index_reset_pause_before_sync,
+            )
+            .field(
+                "has_pending_index_reset_room",
+                &self.pending_index_reset_room.is_some(),
+            )
+            .field(
+                "pending_index_reset_base_transport_revision",
+                &self.pending_index_reset_base_transport_revision,
+            )
+            .field(
+                "pending_index_reset_base_playstate_receipt_sequence",
+                &self.pending_index_reset_base_playstate_receipt_sequence,
+            )
+            .field(
+                "pending_index_reset_physical_attachment_epoch",
+                &self.pending_index_reset_physical_attachment_epoch,
             )
             .field(
                 "pending_index_reset_refresh_recently_advanced",

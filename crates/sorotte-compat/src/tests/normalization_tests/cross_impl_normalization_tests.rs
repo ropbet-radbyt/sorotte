@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn cross_impl_normalization_ignores_sorotte_only_causal_fences() {
+    let playlist_change = normalize_cross_impl_message(json!({
+        "Set": {
+            "playlistChange": {
+                "files": ["episode.mkv"],
+                "sorottePlaylistEpoch": 7,
+                "sorotteExpectedPlaylistIndex": 0,
+                "sorotteExpectedPlaylistEpoch": 6
+            }
+        }
+    }));
+    assert_eq!(
+        playlist_change,
+        json!({"Set": {"playlistChange": {"files": ["episode.mkv"]}}})
+    );
+
+    let playlist_index = normalize_cross_impl_message(json!({
+        "Set": {
+            "playlistIndex": {
+                "index": 1,
+                "sorottePlaylistEpoch": 8,
+                "sorotteExpectedPlaylistIndex": 0,
+                "sorotteExpectedPlaylistEpoch": 7
+            }
+        }
+    }));
+    assert_eq!(
+        playlist_index,
+        json!({"Set": {"playlistIndex": {"index": 1}}})
+    );
+
+    let playstate = normalize_cross_impl_message(json!({
+        "State": {
+            "playstate": {
+                "position": 3.0,
+                "paused": true,
+                "sorotteTransportRevision": 11
+            }
+        }
+    }));
+    assert_eq!(
+        playstate,
+        json!({"State": {"playstate": {"position": 3.0, "paused": true}}})
+    );
+}
+
+#[test]
 fn normalize_cross_impl_message_treats_null_fields_as_absent() {
     let with_null = json!({
         "Set": {

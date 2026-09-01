@@ -1,0 +1,166 @@
+name: playback lifecycle release gate
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Full Sorotte commit SHA whose release candidates must be verified
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  playback-lifecycle-release-gate:
+    name: Exact-candidate playback lifecycle release gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      MPV_SOURCE_SHA: 41f6a645068483470267271e1d09966ca3b9f413
+      MPV_MINIMUM_VERSION: "0.41.0"
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Checkout exact Sorotte candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Bind checkout to release candidate
+        run: |
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install supported mpv build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            ffmpeg \
+            libass-dev \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            liblua5.2-dev \
+            libplacebo-dev \
+            libswresample-dev \
+            libswscale-dev \
+            meson \
+            ninja-build \
+            pkg-config
+
+      - name: Checkout pinned official mpv source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mpv-player/mpv
+          ref: ${{ env.MPV_SOURCE_SHA }}
+          path: target/mpv-supported-release
+          persist-credentials: false
+
+      - name: Verify supported mpv source revision
+        working-directory: target/mpv-supported-release
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "$MPV_SOURCE_SHA"
+
+      - name: Build pinned supported mpv
+        working-directory: target/mpv-supported-release
+        run: |
+          meson setup build \
+            -Dalsa=disabled \
+            -Dbuild-date=false \
+            -Ddrm=disabled \
+            -Dgl=disabled \
+            -Dlibmpv=false \
+            -Dlua=enabled \
+            -Dmanpage-build=disabled \
+            -Dpipewire=disabled \
+            -Dpulse=disabled \
+            -Dtests=false \
+            -Dvaapi=disabled \
+            -Dvulkan=disabled \
+            -Dwayland=disabled \
+            -Dx11=disabled
+          meson compile -C build ./mpv:executable
+
+      - name: Verify supported mpv version
+        run: >-
+          python scripts/mpv_version_matrix.py validate
+          --identity minimum
+          --source-sha "$MPV_SOURCE_SHA"
+          --minimum-source-sha "$MPV_SOURCE_SHA"
+          --newest-source-sha d12f2ce19c918875981e00ed276f153bdf40a2ac
+          --minimum-version "$MPV_MINIMUM_VERSION"
+          --binary target/mpv-supported-release/build/mpv
+
+      - name: Validate lifecycle declarations and behavior evidence
+        run: |
+          python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
+          python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml
+          python scripts/playback_lifecycle_oracle.py witness-summary --model coverage/playback-lifecycle.toml --compact
+          python scripts/playback_lifecycle_oracle.py run-suite --schedule-dir fixtures/playback-lifecycle
+
+      - name: Build exact release-mode lifecycle candidates
+        run: cargo build --locked --release -p sorotte-server -p sorotte-cli
+
+      - name: Run exact-candidate multi-client real mpv lifecycle
+        id: playback_lifecycle_system
+        continue-on-error: true
+        run: |
+          python scripts/playback_lifecycle_system.py run \
+            --server target/release/sorotte-server \
+            --client target/release/sorotte-cli \
+            --mpv target/mpv-supported-release/build/mpv \
+            --ffmpeg ffmpeg \
+            --artifact-dir target/verification/playback-lifecycle-release \
+            --candidate-sha "$CANDIDATE_SHA"
+
+      - name: Validate and stage privacy-safe release evidence
+        id: playback_lifecycle_evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          python scripts/playback_lifecycle_system.py stage-safe-evidence \
+            --artifact-dir target/verification/playback-lifecycle-release \
+            --output-dir target/verification/playback-lifecycle-release-safe
+
+      - name: Require every declared lifecycle gap to be closed
+        id: playback_lifecycle_closed
+        if: always()
+        continue-on-error: true
+        run: >-
+          python scripts/playback_lifecycle_model.py validate
+          --model coverage/playback-lifecycle.toml
+          --require-closed
+
+      - name: Upload privacy-safe lifecycle release evidence
+        if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-release-${{ inputs.candidate_sha }}
+          path: target/verification/playback-lifecycle-release-safe
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+      - name: Enforce exact-candidate lifecycle release gate
+        if: always()
+        env:
+          PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME: ${{ steps.playback_lifecycle_system.outcome }}
+          PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME: ${{ steps.playback_lifecycle_evidence.outcome }}
+          PLAYBACK_LIFECYCLE_CLOSED_OUTCOME: ${{ steps.playback_lifecycle_closed.outcome }}
+        run: |
+          test "$PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME" = success
+          test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
+          test "$PLAYBACK_LIFECYCLE_CLOSED_OUTCOME" = success

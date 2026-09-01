@@ -680,7 +680,14 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             line.strip() for line in workflow.splitlines() if line.strip().startswith("uses:")
         ]
         self.assertGreaterEqual(len(action_lines), 5)
+        local_workflows = [line for line in action_lines if line.startswith("uses: ./")]
+        self.assertEqual(
+            local_workflows,
+            ["uses: ./.github/workflows/playback-lifecycle-release-gate.yml"],
+        )
         for line in action_lines:
+            if line.startswith("uses: ./"):
+                continue
             reference = line.split("#", 1)[0].rsplit("@", 1)[1].strip()
             self.assertRegex(reference, r"^[0-9a-f]{40}$", line)
 

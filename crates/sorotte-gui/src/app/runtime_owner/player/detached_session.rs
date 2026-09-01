@@ -57,18 +57,49 @@ impl GuiPersistedConfigRuntimeOwner {
                 | GuiAttachedPlayerRuntimeAction::Coordinator { .. } => true,
             })
             .collect();
-        self.pending_local_attached_pause_override = self
+        let coordination_snapshot = self
             .session
             .as_ref()
-            .and_then(|session| session.playback_coordination_snapshot())
-            .map_or(Some(target_paused), |snapshot| {
-                match snapshot.last_local_pause_intent_stage_accepted {
-                    Some(_) => snapshot.pending_local_pause_intent,
-                    // Legacy sessions without a prepared coordinator media
-                    // episode still need the GUI-side pre-echo guard.
-                    None => Some(target_paused),
-                }
-            });
+            .and_then(|session| session.playback_coordination_snapshot());
+        self.pending_local_attached_pause_override =
+            coordination_snapshot
+                .as_ref()
+                .map_or(Some(target_paused), |snapshot| {
+                    match snapshot.last_local_pause_intent_stage_accepted {
+                        Some(_) => snapshot.pending_local_pause_intent,
+                        // Legacy sessions without a prepared coordinator media
+                        // episode still need the GUI-side pre-echo guard.
+                        None => Some(target_paused),
+                    }
+                });
+        let trace = coordination_snapshot.as_ref();
+        crate::app::test_lifecycle::record_playback_control(
+            "playback-control-intent-staged",
+            crate::app::test_lifecycle::PlaybackControlObservation {
+                target_paused: Some(target_paused),
+                current_room_paused: self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.current_room_playstate())
+                    .and_then(|playstate| playstate.paused),
+                media_generation: trace.and_then(|snapshot| snapshot.media_generation),
+                pending_local_pause_intent: trace
+                    .and_then(|snapshot| snapshot.pending_local_pause_intent),
+                pending_local_pause_intent_dormant: trace
+                    .is_some_and(|snapshot| snapshot.pending_local_pause_intent_dormant),
+                last_local_pause_intent_stage_accepted: trace
+                    .and_then(|snapshot| snapshot.last_local_pause_intent_stage_accepted),
+                transport_telemetry_observed: trace
+                    .is_some_and(|snapshot| snapshot.transport_telemetry_observed),
+                ordinary_correction_blocked: trace
+                    .is_some_and(|snapshot| snapshot.ordinary_correction_blocked),
+                playlist_reset_pending: self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.has_pending_playlist_index_reset_intent()),
+                state_queued: None,
+            },
+        );
         let _ =
             self.apply_attached_player_runtime_actions_impl(actions, "local pause-intent staging");
         Ok(())
@@ -274,14 +305,37 @@ impl GuiPersistedConfigRuntimeOwner {
                                 telemetry_synced = true;
                                 if let Err(error) = session.finalize_local_player_unpause_attempt()
                                 {
-                                    sync_error = Some(error);
-                                } else if let Err(error) =
-                                    session.emit_immediate_playback_state_update()
-                                {
-                                    sync_error = Some(error);
+                                    if sync_error.is_none() {
+                                        sync_error = Some(error);
+                                    } else {
+                                        eprintln!(
+                                            "warning: failed to finalize attached-player readiness after Play: {error}"
+                                        );
+                                    }
                                 }
                             }
-                            Err(error) => sync_error = Some(error),
+                            Err(error) => {
+                                if sync_error.is_none() {
+                                    sync_error = Some(error);
+                                } else {
+                                    eprintln!(
+                                        "warning: failed to mirror attached-player telemetry after Play: {error}"
+                                    );
+                                }
+                            }
+                        }
+                        // A successful physical Play is an independent
+                        // semantic command. Readiness and telemetry
+                        // housekeeping may fail or lag, but neither is allowed
+                        // to suppress the canonical server mutation attempt.
+                        if let Err(error) = session.emit_immediate_playback_state_update() {
+                            if sync_error.is_none() {
+                                sync_error = Some(error);
+                            } else {
+                                eprintln!(
+                                    "warning: failed to publish attached-player Play immediately: {error}"
+                                );
+                            }
                         }
                     }
                     if telemetry_synced {
@@ -340,6 +394,18 @@ impl GuiPersistedConfigRuntimeOwner {
         ) && sync_error.is_none()
         {
             sync_error = Some(error);
+        }
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.emit_immediate_playback_state_update()
+        {
+            if sync_error.is_none() {
+                sync_error = Some(error);
+            } else {
+                eprintln!(
+                    "warning: failed to publish attached-player {} immediately: {error}",
+                    if target_paused { "Pause" } else { "Play" }
+                );
+            }
         }
         Ok((target_paused, sync_error))
     }

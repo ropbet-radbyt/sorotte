@@ -52,6 +52,35 @@ def pcm_au_bytes(duration_seconds: int) -> bytes:
     )
 
 
+def playstate_exchange(
+    action: str, paused: bool, position: float
+) -> dict[str, Any]:
+    request = {
+        "State": {
+            "playstate": {"position": position, "paused": paused},
+            "ping": {"clientLatencyCalculation": 1234.5, "clientRtt": 0.0},
+        }
+    }
+    authoritative_echo = {
+        "State": {
+            "playstate": {
+                "doSeek": False,
+                "paused": paused,
+                "position": position,
+                "setBy": "real-mpv-user",
+            }
+        }
+    }
+    return {
+        "action": action,
+        "expected_paused": paused,
+        "request": json.dumps(request, separators=(",", ":")),
+        "authoritative_echo": json.dumps(
+            authoritative_echo, separators=(",", ":")
+        ),
+    }
+
+
 def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, Any]]:
     root.mkdir()
     gui = root / "sorotte-gui.exe"
@@ -106,6 +135,53 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
             "client_hello": json.dumps(contract.EXPECTED_CLIENT_HELLO),
             "server_hello": json.dumps(contract.EXPECTED_SERVER_HELLO),
             "advertised_capabilities": list(contract.SESSION_CAPABILITIES),
+            "playlist_change_request": json.dumps(
+                {"Set": {"playlistChange": {"files": [media.name]}}},
+                separators=(",", ":"),
+            ),
+            "playlist_change_echo": json.dumps(
+                {
+                    "Set": {
+                        "playlistChange": {
+                            "files": [media.name],
+                            "user": "real-mpv-user",
+                        }
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            "playlist_index_request": json.dumps(
+                {"Set": {"playlistIndex": {"index": 0}}},
+                separators=(",", ":"),
+            ),
+            "playlist_index_echo": json.dumps(
+                {
+                    "Set": {
+                        "playlistIndex": {
+                            "index": 0,
+                            "user": "real-mpv-user",
+                        }
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            "initial_authoritative_playstate": json.dumps(
+                {
+                    "State": {
+                        "playstate": {
+                            "doSeek": False,
+                            "paused": True,
+                            "position": 0.0,
+                            "setBy": "real-mpv-user",
+                        }
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            "playstate_exchanges": [
+                playstate_exchange("GUI Play canonical transport", False, 0.0),
+                playstate_exchange("GUI Pause canonical transport", True, 1.0),
+            ],
             "server_thread_released": True,
             "socket_released": True,
             "error": None,
@@ -218,6 +294,7 @@ def extend_with_owned_mpv_recovery(
 ) -> None:
     root = pathlib.Path(arguments["artifact_root"])
     observations = root / "mpv-observation.jsonl"
+    session_exchange_path = root / "session-exchange.json"
     menu_path = root / "menu-interactions.json"
     state_path = root / "real-mpv-state.json"
     recovery_path = root / "owned-mpv-recovery.json"
@@ -270,6 +347,19 @@ def extend_with_owned_mpv_recovery(
         "".join(json.dumps(row) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+    session_exchange = json.loads(session_exchange_path.read_text(encoding="utf-8"))
+    session_exchange["playstate_exchanges"].extend(
+        [
+            playstate_exchange(
+                "GUI Play on replacement mpv canonical transport", False, 0.0
+            ),
+            playstate_exchange(
+                "GUI Pause on replacement mpv canonical transport", True, 1.0
+            ),
+        ]
+    )
+    write_json(session_exchange_path, session_exchange)
 
     menu = json.loads(menu_path.read_text(encoding="utf-8"))
     replacement_open = copy.deepcopy(menu["interactions"][0])
@@ -327,6 +417,7 @@ def extend_with_owned_mpv_recovery(
     report["recovery"] = recovery
     for label, path in {
         "mpv_observation": observations,
+        "session_exchange": session_exchange_path,
         "menu_interactions": menu_path,
         "state": state_path,
         "owned_mpv_recovery": recovery_path,
@@ -385,6 +476,9 @@ def extend_with_faulting_http_recovery(
                 separators=(",", ":"),
             ),
         }
+    )
+    session_exchange["playstate_exchanges"][1] = playstate_exchange(
+        "GUI Pause after HTTP fault canonical transport", True, 2.0
     )
     write_json(session_exchange_path, session_exchange)
 
@@ -629,6 +723,9 @@ def extend_with_stalled_http(
             ),
         }
     )
+    session_exchange["playstate_exchanges"][1] = playstate_exchange(
+        "GUI Pause after HTTP stall canonical transport", True, 8.2
+    )
     write_json(session_exchange_path, session_exchange)
 
     observations = [
@@ -857,6 +954,83 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self.assertEqual(summary["assertion_count"], len(contract.REQUIRED_ASSERTIONS))
         self.assertEqual(summary["artifact_count"], len(contract.REQUIRED_ARTIFACTS))
         self.assertNotIn("recovery_exercised", summary)
+
+    def test_local_media_contract_requires_exact_canonical_playlist_echo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report, arguments = build_valid_fixture(
+                pathlib.Path(temporary) / "artifacts"
+            )
+            root = pathlib.Path(arguments["artifact_root"])
+            session_path = root / "session-exchange.json"
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+            request = json.loads(session["playlist_change_request"])
+            request["Set"]["playlistChange"]["files"] = [str(root / "other.wav")]
+            session["playlist_change_request"] = json.dumps(request)
+            write_json(session_path, session)
+            report["artifacts"]["session_exchange"] = identity(
+                session_path, relative_to=root
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "playlistChange request drifted from the exact closed request schema"
+            ):
+                contract.validate_report(report, **arguments)
+
+    def test_session_transport_contract_rejects_incomplete_or_forged_playstate_proof(
+        self,
+    ) -> None:
+        def missing_pause(session: dict[str, Any]) -> None:
+            session["playstate_exchanges"].pop()
+
+        def reversed_edges(session: dict[str, Any]) -> None:
+            session["playstate_exchanges"].reverse()
+
+        def forged_echo(session: dict[str, Any]) -> None:
+            echo = json.loads(
+                session["playstate_exchanges"][0]["authoritative_echo"]
+            )
+            echo["State"]["playstate"]["setBy"] = "mallory"
+            session["playstate_exchanges"][0]["authoritative_echo"] = json.dumps(
+                echo, separators=(",", ":")
+            )
+
+        def expanded_request_schema(session: dict[str, Any]) -> None:
+            request = json.loads(session["playstate_exchanges"][0]["request"])
+            request["State"]["playstate"]["doSeek"] = False
+            session["playstate_exchanges"][0]["request"] = json.dumps(
+                request, separators=(",", ":")
+            )
+
+        def unpaused_initial_authority(session: dict[str, Any]) -> None:
+            initial = json.loads(session["initial_authoritative_playstate"])
+            initial["State"]["playstate"]["paused"] = False
+            session["initial_authoritative_playstate"] = json.dumps(
+                initial, separators=(",", ":")
+            )
+
+        cases = [
+            (missing_pause, "canonical Play/Pause exchange inventory drifted"),
+            (reversed_edges, "playstate action order drifted"),
+            (forged_echo, "did not authenticate the exact mutation"),
+            (expanded_request_schema, "request playstate schema drifted"),
+            (unpaused_initial_authority, "initial authoritative paused playstate drifted"),
+        ]
+        for index, (mutate, expected_error) in enumerate(cases):
+            with self.subTest(case=index), tempfile.TemporaryDirectory() as temporary:
+                report, arguments = build_valid_fixture(
+                    pathlib.Path(temporary) / "artifacts"
+                )
+                root = pathlib.Path(arguments["artifact_root"])
+                session_path = root / "session-exchange.json"
+                session = json.loads(session_path.read_text(encoding="utf-8"))
+                mutate(session)
+                write_json(session_path, session)
+                report["artifacts"]["session_exchange"] = identity(
+                    session_path, relative_to=root
+                )
+
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    contract.validate_report(report, **arguments)
 
     def test_accepts_separate_exact_owned_mpv_recovery_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1590,7 +1764,7 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                 "client_hello",
                 contract.EXPECTED_CLIENT_HELLO,
                 lambda hello: hello["Hello"]["features"].__setitem__(
-                    "sharedPlaylists", True
+                    "sharedPlaylists", False
                 ),
                 "client Hello exchange drifted",
             ),

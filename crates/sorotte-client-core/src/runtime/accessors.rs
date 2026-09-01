@@ -353,6 +353,22 @@ impl<'a> ClientSessionUpdate<'a> {
         self.session.take_pending_playlist_index_reset_intent()
     }
 
+    pub fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.session
+            .mark_pending_playlist_index_reset_physical_effect_applied(player_attachment_epoch)
+    }
+
+    pub fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        self.session
+            .complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
+    }
+
     pub fn runtime_actions_for_desync_correction_against_room_playstate(
         &mut self,
         room_playstate: RoomPlaystateView,
@@ -445,6 +461,10 @@ where
             unix_wall_clock_time_seconds_legacy_compatible(),
         )
         .map(|_| ())
+    }
+
+    pub fn unload(&mut self) -> Result<(), PlayerError> {
+        self.player.unload()
     }
 
     pub fn open_media(
@@ -614,7 +634,9 @@ where
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
+            pending_natural_playback_completion: None,
             pending_reconnect_rate_reset: false,
+            pending_state_sync_player_error: None,
             playback_coordination,
             ordered_player_events: OrderedPlayerEventConsumer::default(),
         }
@@ -639,20 +661,36 @@ where
         if !self.session.is_active() {
             return Ok(());
         }
+        let playstate = self.session.with_current_transport_revision(
+            PlaystatePayload::new()
+                .with_position(0.0)
+                .with_paused(true)
+                .with_do_seek(true),
+        );
         self.control.activate_protocol_connection_generation();
         self.control
-            .emit(ClientEffect::SendState(StatePayload::new().with_playstate(
-                PlaystatePayload::new().with_position(0.0).with_paused(true),
-            )))
+            .emit_causal_state(StatePayload::new().with_playstate(playstate))
             .map_err(client_effect_player_error)
     }
 
-    pub(crate) fn dispatch_runtime_actions_with_session_rollback(
+    pub(crate) fn dispatch_local_seek_with_session_rollback(
         &mut self,
         session_snapshot: ClientSessionLocalActionSnapshot,
         actions: &[ClientRuntimeAction],
+        causal_state: Option<StatePayload>,
     ) -> Result<(), PlayerError> {
-        match self.dispatch_runtime_actions_with_causal_tracking(actions) {
+        let result = self
+            .dispatch_runtime_actions_with_causal_tracking(actions)
+            .and_then(|()| {
+                let Some(state) = causal_state else {
+                    return Ok(());
+                };
+                self.control.activate_protocol_connection_generation();
+                self.control
+                    .emit_causal_state(state)
+                    .map_err(client_effect_player_error)
+            });
+        match result {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.session.restore_local_action_state(session_snapshot);
@@ -708,6 +746,19 @@ where
         actions: &[ClientRuntimeAction],
         pause_cause: PlayerCommandCause,
     ) -> Result<(), PlayerError> {
+        self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
+            actions,
+            pause_cause,
+            None,
+        )
+    }
+
+    pub(crate) fn dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+        pause_cause: PlayerCommandCause,
+        expected_playlist_state: Option<(i64, u64)>,
+    ) -> Result<(), PlayerError> {
         for action in actions {
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 self.execute_causal_pause_command(
@@ -715,6 +766,14 @@ where
                     pause_cause,
                     unix_wall_clock_time_seconds_legacy_compatible(),
                 )?;
+            } else if let (
+                ClientRuntimeAction::SetPlaylistIndex { index },
+                Some((expected_index, expected_epoch)),
+            ) = (action, expected_playlist_state)
+            {
+                self.control
+                    .emit_playlist_index_if_current(*index, expected_index, expected_epoch)
+                    .map_err(client_effect_player_error)?;
             } else {
                 ClientSession::dispatch_runtime_actions(
                     std::slice::from_ref(action),
@@ -794,11 +853,27 @@ where
                 } else {
                     self.system_pause_command_cause(paused)
                 };
-                self.execute_causal_pause_command(
+                let local_user_transport = cause == PlayerCommandCause::LocalUserPlaybackControl;
+                if local_user_transport {
+                    // A local application command has the same command/echo
+                    // race as a native player gesture. Stage it before player
+                    // dispatch so an inbound canonical frame cannot erase the
+                    // observed transport change before its State response is
+                    // built. The intent is already scoped to the active room,
+                    // media, connection generation, and controller authority.
+                    self.playback_coordination
+                        .stage_local_pause_intent(paused, &self.session);
+                }
+                let result = self.execute_causal_pause_command(
                     paused,
                     cause,
                     unix_wall_clock_time_seconds_legacy_compatible(),
-                )
+                );
+                if local_user_transport && result.is_err() {
+                    self.playback_coordination
+                        .rollback_local_pause_intent(paused);
+                }
+                result
             }
             ClientEffect::SetPlayerPosition(position) => {
                 self.player.execute(PlayerCommand::SetPosition(position))

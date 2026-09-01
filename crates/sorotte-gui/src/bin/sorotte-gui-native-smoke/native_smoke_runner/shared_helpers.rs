@@ -258,6 +258,39 @@ pub(super) fn wait_for_room_browser_visible<D: NativeGuiDriver>(
     .map(|_| ())
 }
 
+pub(super) fn wait_for_accessible_name_prefix<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    prefix: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_matching_names = Vec::new();
+    loop {
+        let current_error = match driver.accessible_names(window) {
+            Ok(names) => {
+                last_matching_names = names
+                    .iter()
+                    .filter(|name| name.starts_with("Room intent:"))
+                    .take(8)
+                    .cloned()
+                    .collect();
+                if let Some(name) = names.into_iter().find(|name| name.starts_with(prefix)) {
+                    return Ok(name);
+                }
+                None
+            }
+            Err(error) => Some(error),
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for accessible-name prefix {prefix:?}; last matching room intents: {last_matching_names:?}; last read error: {current_error:?}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub(super) fn join_room_from_main_window<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -600,12 +633,25 @@ impl MockSessionServer {
         &self,
         timeout: Duration,
         label: &str,
-    ) -> Result<(String, String, String, String), String> {
+    ) -> Result<PlaylistExchangeEvidence, String> {
         let receiver = self.playlist_exchange_rx.as_ref().ok_or_else(|| {
             format!("{label} mock TCP server does not expose playlist exchange evidence")
         })?;
         receiver.recv_timeout(timeout).map_err(|error| {
             format!("timed out waiting for {label} playlist exchange evidence: {error}")
+        })
+    }
+
+    pub(super) fn recv_playstate_exchange(
+        &self,
+        timeout: Duration,
+        label: &str,
+    ) -> Result<(String, String), String> {
+        let receiver = self.playstate_exchange_rx.as_ref().ok_or_else(|| {
+            format!("{label} mock TCP server does not expose playstate exchange evidence")
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!("timed out waiting for {label} playstate exchange evidence: {error}")
         })
     }
 
@@ -834,6 +880,7 @@ fn start_mock_session_server_with_release_policy(
         peer_rx,
         hello_rx,
         playlist_exchange_rx: None,
+        playstate_exchange_rx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -932,6 +979,7 @@ pub(super) fn start_phased_mock_session_server(
         peer_rx,
         hello_rx,
         playlist_exchange_rx: None,
+        playstate_exchange_rx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -1032,6 +1080,163 @@ fn is_known_playlist_echo_housekeeping_frame(value: &serde_json::Value) -> bool 
             })
 }
 
+fn validated_client_playstate_transition(
+    value: &serde_json::Value,
+) -> Result<Option<(bool, serde_json::Value)>, String> {
+    let Some(state) = value.get("State") else {
+        return Ok(None);
+    };
+    let Some(playstate) = state.get("playstate") else {
+        return Ok(None);
+    };
+    let top_level = value.as_object().ok_or_else(|| {
+        "playlist-echo mock TCP server received a non-object playstate frame".to_owned()
+    })?;
+    if top_level.len() != 1 {
+        return Err(
+            "playlist-echo mock TCP server received a widened playstate top-level schema"
+                .to_owned(),
+        );
+    }
+    let state = state.as_object().ok_or_else(|| {
+        "playlist-echo mock TCP server received a non-object State playstate frame".to_owned()
+    })?;
+    if state
+        .keys()
+        .any(|key| !matches!(key.as_str(), "playstate" | "ping" | "ignoringOnTheFly"))
+    {
+        return Err(
+            "playlist-echo mock TCP server received an unknown field beside client playstate"
+                .to_owned(),
+        );
+    }
+    let playstate = playstate.as_object().ok_or_else(|| {
+        "playlist-echo mock TCP server received a non-object client playstate".to_owned()
+    })?;
+    if playstate.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "position" | "paused" | "doSeek" | "sorotteTransportRevision"
+        )
+    }) {
+        return Err(
+            "playlist-echo mock TCP server received a widened client playstate schema".to_owned(),
+        );
+    }
+    let position = playstate
+        .get("position")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|position| position.is_finite() && *position >= 0.0)
+        .ok_or_else(|| {
+            "playlist-echo mock TCP server client playstate omitted a finite non-negative position"
+                .to_owned()
+        })?;
+    let paused = playstate
+        .get("paused")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "playlist-echo mock TCP server client playstate omitted a boolean paused state"
+                .to_owned()
+        })?;
+    if playstate
+        .get("doSeek")
+        .is_some_and(|do_seek| !do_seek.is_null() && do_seek.as_bool().is_none())
+    {
+        return Err(
+            "playlist-echo mock TCP server client playstate used a non-boolean doSeek".to_owned(),
+        );
+    }
+    if playstate
+        .get("sorotteTransportRevision")
+        .is_some_and(|revision| revision.as_u64().is_none_or(|revision| revision == 0))
+    {
+        return Err(
+            "playlist-echo mock TCP server client playstate used an invalid transport revision"
+                .to_owned(),
+        );
+    }
+
+    let mut authoritative_playstate = serde_json::Map::new();
+    authoritative_playstate.insert("position".to_owned(), serde_json::json!(position));
+    authoritative_playstate.insert("paused".to_owned(), serde_json::json!(paused));
+    authoritative_playstate.insert(
+        "doSeek".to_owned(),
+        playstate
+            .get("doSeek")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .unwrap_or(serde_json::Value::Bool(false)),
+    );
+    if let Some(revision) = playstate.get("sorotteTransportRevision") {
+        authoritative_playstate.insert("sorotteTransportRevision".to_owned(), revision.clone());
+    }
+    Ok(Some((
+        paused,
+        serde_json::Value::Object(authoritative_playstate),
+    )))
+}
+
+fn is_known_post_playlist_housekeeping_frame(
+    value: &serde_json::Value,
+    expected_media_url: &str,
+) -> bool {
+    if is_known_playlist_echo_housekeeping_frame(value) {
+        return true;
+    }
+    if value
+        == &serde_json::json!({
+            "Set": {
+                "playlistChange": {
+                    "files": [expected_media_url],
+                }
+            }
+        })
+        || value
+            == &serde_json::json!({
+                "Set": {
+                    "playlistIndex": {
+                        "index": 0,
+                    }
+                }
+            })
+    {
+        return true;
+    }
+    let Some(top_level) = value.as_object().filter(|value| value.len() == 1) else {
+        return false;
+    };
+    if let Some(set) = top_level
+        .get("Set")
+        .and_then(serde_json::Value::as_object)
+        .filter(|value| value.len() == 1)
+    {
+        if set.get("file").is_some_and(serde_json::Value::is_object) {
+            return true;
+        }
+        if let Some(ready) = set.get("ready").and_then(serde_json::Value::as_object) {
+            return ready
+                .keys()
+                .all(|key| matches!(key.as_str(), "isReady" | "manuallyInitiated"))
+                && ready
+                    .get("isReady")
+                    .is_some_and(serde_json::Value::is_boolean)
+                && ready
+                    .get("manuallyInitiated")
+                    .is_none_or(serde_json::Value::is_boolean);
+        }
+    }
+    let Some(state) = top_level
+        .get("State")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    !state.contains_key("playstate")
+        && state.keys().all(|key| {
+            matches!(key.as_str(), "ping" | "ignoringOnTheFly") || key.starts_with("sorotte")
+        })
+}
+
 pub(super) fn start_playlist_echo_mock_session_server(
     server_hello: &'static str,
     expected_media_url: String,
@@ -1050,6 +1255,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
     let (peer_tx, peer_rx) = mpsc::channel();
     let (hello_tx, hello_rx) = mpsc::channel();
     let (playlist_exchange_tx, playlist_exchange_rx) = mpsc::channel();
+    let (playstate_exchange_tx, playstate_exchange_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::Builder::new()
         .name("sorotte-native-playlist-echo".to_owned())
@@ -1339,12 +1545,42 @@ pub(super) fn start_playlist_echo_mock_session_server(
                     "playlist-echo mock TCP server failed to flush authoritative playlistIndex echo: {error}"
                 )
             })?;
+
+            let initial_playstate = serde_json::json!({
+                "State": {
+                    "playstate": {
+                        "position": 0.0,
+                        "paused": true,
+                        "doSeek": false,
+                        "setBy": username,
+                    }
+                }
+            })
+            .to_string();
+            stream
+                .write_all(initial_playstate.as_bytes())
+                .map_err(|error| {
+                    format!(
+                        "playlist-echo mock TCP server failed to write initial authoritative playstate: {error}"
+                    )
+                })?;
+            stream.write_all(b"\n").map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to terminate initial authoritative playstate: {error}"
+                )
+            })?;
+            stream.flush().map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server failed to flush initial authoritative playstate: {error}"
+                )
+            })?;
             playlist_exchange_tx
                 .send((
                     request,
                     playlist_change_echo,
                     playlist_index_request,
                     playlist_index_echo,
+                    initial_playstate,
                 ))
                 .map_err(|error| {
                     format!(
@@ -1352,8 +1588,114 @@ pub(super) fn start_playlist_echo_mock_session_server(
                     )
                 })?;
 
-            let _ = release_rx.recv();
-            Ok(())
+            let mut canonical_paused = true;
+            let mut post_playlist_housekeeping_count = 0usize;
+            loop {
+                if release_rx.try_recv().is_ok() {
+                    return Ok(());
+                }
+                let mut candidate = String::new();
+                match reader.read_line(&mut candidate) {
+                    Ok(0) => return Ok(()),
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "playlist-echo mock TCP server failed reading post-playlist client frame: {error}"
+                        ));
+                    }
+                }
+                let candidate = candidate.trim();
+                if candidate.is_empty() {
+                    return Err(
+                        "playlist-echo mock TCP server received an empty post-playlist client frame"
+                            .to_owned(),
+                    );
+                }
+                let parsed: serde_json::Value =
+                    serde_json::from_str(candidate).map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server received malformed post-playlist client JSON: {error}"
+                        )
+                    })?;
+                if let Some((paused, mut authoritative_playstate)) =
+                    validated_client_playstate_transition(&parsed)?
+                {
+                    let do_seek = authoritative_playstate
+                        .get("doSeek")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if paused == canonical_paused && !do_seek {
+                        post_playlist_housekeeping_count =
+                            post_playlist_housekeeping_count.saturating_add(1);
+                        if post_playlist_housekeeping_count > 512 {
+                            return Err(
+                                "playlist-echo mock TCP server exceeded the post-playlist telemetry budget"
+                                    .to_owned(),
+                            );
+                        }
+                        continue;
+                    }
+                    authoritative_playstate
+                        .as_object_mut()
+                        .expect("validated authoritative playstate must remain an object")
+                        .insert("setBy".to_owned(), serde_json::json!(username));
+                    let authoritative_echo = serde_json::json!({
+                        "State": {
+                            "playstate": authoritative_playstate,
+                        }
+                    })
+                    .to_string();
+                    stream
+                        .write_all(authoritative_echo.as_bytes())
+                        .map_err(|error| {
+                            format!(
+                                "playlist-echo mock TCP server failed to write authoritative playstate echo: {error}"
+                            )
+                        })?;
+                    stream.write_all(b"\n").map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to terminate authoritative playstate echo: {error}"
+                        )
+                    })?;
+                    stream.flush().map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to flush authoritative playstate echo: {error}"
+                        )
+                    })?;
+                    canonical_paused = paused;
+                    playstate_exchange_tx
+                        .send((candidate.to_owned(), authoritative_echo))
+                        .map_err(|error| {
+                            format!(
+                                "playlist-echo mock TCP server failed to report authoritative playstate exchange: {error}"
+                            )
+                        })?;
+                    continue;
+                }
+                if is_known_post_playlist_housekeeping_frame(&parsed, &expected_media_url) {
+                    post_playlist_housekeeping_count =
+                        post_playlist_housekeeping_count.saturating_add(1);
+                    if post_playlist_housekeeping_count > 512 {
+                        return Err(
+                            "playlist-echo mock TCP server exceeded the post-playlist housekeeping budget"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+                return Err(format!(
+                    "playlist-echo mock TCP server received an unexpected post-playlist client frame (redacted shape: {})",
+                    redacted_playlist_echo_frame_shape(&parsed)
+                ));
+            }
         })
         .map_err(|error| format!("failed to spawn playlist-echo mock TCP server: {error}"))?;
 
@@ -1363,6 +1705,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
         peer_rx,
         hello_rx,
         playlist_exchange_rx: Some(playlist_exchange_rx),
+        playstate_exchange_rx: Some(playstate_exchange_rx),
         release_tx,
         join_handle: Some(join_handle),
     })

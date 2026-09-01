@@ -58,7 +58,7 @@ fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_atta
         .as_mut()
         .expect("session should exist")
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
         )
         .expect("hello should apply");
     owner
@@ -140,17 +140,22 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration),
+    );
     state.main_window.shared_playlist_enabled = true;
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
 
     owner
         .session
         .as_mut()
         .expect("session should exist")
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
         )
         .expect("hello should apply");
     owner
@@ -158,6 +163,14 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
         .as_mut()
         .expect("session should exist")
         .note_local_playlist_index_reset_intent(true);
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("post-selection room playstate should apply");
 
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
@@ -182,6 +195,18 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
     );
 
     owner.player_local_file_placeholder = false;
+    assert_eq!(
+        owner.current_shared_playlist_target(&state).as_deref(),
+        Some("episode2.mkv")
+    );
+    assert!(owner.player_local_file_ready_for_attached_sync());
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should exist")
+            .pending_playlist_index_reset_has_post_selection_playstate()
+    );
     owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
 
     let recorded = player_state
@@ -268,17 +293,22 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
+    owner.active_session_settings = Some(
+        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration),
+    );
     state.main_window.shared_playlist_enabled = true;
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
+    state.main_window.active_playlist_index = Some(0);
 
     owner
         .session
         .as_mut()
         .expect("session should exist")
         .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
         )
         .expect("hello should apply");
     owner
@@ -286,6 +316,14 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
         .as_mut()
         .expect("session should exist")
         .note_local_playlist_index_reset_intent(true);
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("post-selection room playstate should apply");
 
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")

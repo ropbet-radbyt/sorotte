@@ -13,6 +13,8 @@ pub use verification::{
     MpvLifecycleVerificationHarness,
 };
 
+#[cfg(feature = "test-support")]
+use std::sync::{Arc, atomic::AtomicBool};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
@@ -59,6 +61,7 @@ use crate::lifecycle::{
 use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder};
 
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const IPC_EVENT_FENCE_ACTIVE_INTERVAL: Duration = Duration::from_millis(100);
 const IPC_EVENT_FENCE_IDLE_INTERVAL: Duration = Duration::from_millis(500);
 const IPC_RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
@@ -769,6 +772,7 @@ pub struct MpvAdapter {
     pending_load_generation: Option<PlayerMediaGeneration>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     last_paused_position_poll_at: Option<Instant>,
+    last_paused_position_telemetry_at: Option<Instant>,
     last_ipc_event_fence_at: Option<Instant>,
     pending_ipc_event_fence_command_id: Option<u64>,
     pending_cache_pause_readback: Option<PendingCachePauseReadback>,
@@ -835,6 +839,8 @@ pub struct MpvAdapter {
     ipc_endpoint: Option<PathBuf>,
     ipc_reconnect_not_before: Option<Instant>,
     simulation_mode: bool,
+    #[cfg(feature = "test-support")]
+    test_simulated_natural_eof_trigger: Option<Arc<AtomicBool>>,
     ipc_client: Option<MpvJsonIpcClient>,
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
@@ -924,6 +930,8 @@ impl MpvAdapter {
         self.active_generation_has_restarted = false;
         self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
+        self.last_paused_position_poll_at = None;
+        self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
@@ -1003,6 +1011,7 @@ impl MpvAdapter {
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.last_paused_position_poll_at = None;
+        self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
@@ -1122,6 +1131,35 @@ impl MpvAdapter {
             simulation_mode: true,
             ..Self::default()
         }
+    }
+
+    /// Installs a deterministic external trigger for a natural EOF on the
+    /// simulated adapter. The ordinary maintenance pump consumes the trigger,
+    /// so higher-layer tests exercise the same ordered lifecycle delivery as
+    /// real mpv without adding a test-only command to the client protocol.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn set_test_simulated_natural_eof_trigger(&mut self, trigger: Arc<AtomicBool>) {
+        debug_assert!(self.simulation_mode);
+        self.test_simulated_natural_eof_trigger = Some(trigger);
+    }
+
+    #[cfg(feature = "test-support")]
+    fn maintain_test_simulated_natural_eof_trigger(&mut self) {
+        let triggered = self
+            .test_simulated_natural_eof_trigger
+            .as_ref()
+            .is_some_and(|trigger| trigger.swap(false, Ordering::SeqCst));
+        if !triggered || !self.simulation_mode {
+            return;
+        }
+        let Some(playlist_entry_id) = self.active_playlist_entry_id else {
+            return;
+        };
+        self.handle_end_file_event(&json!({
+            "reason": "eof",
+            "playlist_entry_id": playlist_entry_id,
+        }));
     }
 
     /// Builds a connected adapter whose test transport accepts mpv commands but never emits the
@@ -1710,6 +1748,8 @@ impl MpvAdapter {
     /// consuming playback telemetry. Every adapter observation getter also invokes it so an
     /// active transport-only or command-only consumer keeps hook leases alive.
     pub fn maintain_runtime_integrations(&mut self) {
+        #[cfg(feature = "test-support")]
+        self.maintain_test_simulated_natural_eof_trigger();
         self.drain_ipc_events_if_attached();
         self.maintain_json_ipc_reconnection_using(Instant::now(), MpvJsonIpcClient::connect);
         // Every delivery mode shares this pump. Let already-buffered observations complete
@@ -4384,12 +4424,34 @@ impl MpvAdapter {
         let Ok(Some(position_seconds)) = polled_position else {
             return;
         };
-        if !position_seconds.is_finite()
-            || self
-                .observed_state
-                .position_seconds
-                .is_some_and(|observed| (observed - position_seconds).abs() < 1e-6)
-        {
+        if !position_seconds.is_finite() {
+            return;
+        }
+
+        let position_changed = self
+            .observed_state
+            .position_seconds
+            .is_none_or(|observed| (observed - position_seconds).abs() >= 1e-6);
+        let telemetry_heartbeat_due =
+            self.last_paused_position_telemetry_at
+                .is_none_or(|last_observed| {
+                    now.saturating_duration_since(last_observed)
+                        >= PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL
+                });
+        if !position_changed && !telemetry_heartbeat_due {
+            return;
+        }
+        self.last_paused_position_telemetry_at = Some(now);
+
+        let update = self
+            .transport_update()
+            .with_position_seconds(position_seconds);
+        self.queue_transport_telemetry_update(update);
+        if !position_changed {
+            // A successful read is fresh transport evidence even when a paused
+            // position is numerically unchanged. Keep that liveness signal at
+            // heartbeat cadence without flooding the ordered event stream at
+            // the 100 ms out-of-band-seek polling cadence.
             return;
         }
 
@@ -4399,10 +4461,6 @@ impl MpvAdapter {
         self.queue_playback_telemetry_update(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
         );
-        let update = self
-            .transport_update()
-            .with_position_seconds(position_seconds);
-        self.queue_transport_telemetry_update(update);
         if let Some(media_generation) = self.player_lifecycle.active_media_generation() {
             let lifecycle_epoch = self.lifecycle_epoch();
             let observed_sequence = self.player_lifecycle.last_event_sequence();
@@ -6384,6 +6442,32 @@ impl MpvAdapter {
             self.observation_media_generation(),
             TrackedCommandObservation::Phase(phase),
         );
+    }
+
+    fn queue_simulated_authoritative_transport_state(&mut self) {
+        if !self.simulation_mode {
+            return;
+        }
+        let Some(generation) = self.observation_media_generation() else {
+            return;
+        };
+        self.observed_state.position_seconds = Some(self.position_seconds);
+        self.observed_state.paused = Some(self.paused);
+        self.observed_state.logical_pause = Some(self.paused);
+        self.observed_state.paused_for_cache = Some(self.paused_for_cache);
+        self.observed_state.seeking = Some(false);
+        self.observed_state.playback_rate = (self.playback_rate.is_finite()
+            && self.playback_rate > 0.0)
+            .then_some(self.playback_rate);
+
+        let mut update = self.transport_update_for(generation);
+        update.phase = Some(self.transport_phase);
+        update.position_seconds = self.observed_state.position_seconds;
+        update.playback_rate = self.observed_state.playback_rate;
+        update.logical_pause = self.observed_state.logical_pause;
+        update.paused_for_cache = self.observed_state.paused_for_cache;
+        update.seeking = self.observed_state.seeking;
+        self.queue_transport_telemetry_update(update);
     }
 
     fn inferred_transport_phase(&self) -> PlayerTransportPhase {
@@ -8809,9 +8893,14 @@ impl MpvAdapter {
     }
 
     fn send_ipc_command_if_attached(&mut self, command: Value) -> Result<(), PlayerError> {
-        self.send_ipc_command_if_attached_without_draining_events(command)?;
+        let result = self.send_ipc_command_if_attached_without_draining_events(command);
+        // mpv may emit a causally earlier lifecycle event immediately before
+        // rejecting a command. In particular, natural EOF can release
+        // `time-pos` before a desync seek reaches the IPC worker. Always
+        // harvest those events so callers can distinguish a terminal media
+        // transition from an unhealthy player connection.
         self.drain_ipc_events_if_attached();
-        Ok(())
+        result
     }
 
     fn send_ipc_command_if_attached_without_draining_events(

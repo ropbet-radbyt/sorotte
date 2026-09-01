@@ -2327,11 +2327,12 @@ def lexical_non_coverable_lines(
     """Return lines that are conservatively structural rather than executable.
 
     This is intentionally not a Rust parser. It exempts only whitespace,
-    comments, attributes, imports, item/function signatures, and punctuation
-    that cannot itself express runtime behavior. Everything else remains
-    unmapped when LCOV has no DA entry, including statements inside cfg-gated
-    bodies. Multi-line attributes, imports, and function signatures are tracked
-    so ordinary formatting does not create false failures.
+    comments, attributes, imports, item/function signatures, punctuation, and
+    literal-only struct fields that LLVM cannot represent as independent line
+    regions. Everything else remains unmapped when LCOV has no DA entry,
+    including statements inside cfg-gated bodies. Multi-line attributes,
+    imports, function signatures, patterns, and struct-literal openings are
+    tracked so ordinary formatting does not create false failures.
     """
 
     masked_text = mask_rust_comments_and_literals(
@@ -2519,9 +2520,14 @@ def lexical_non_coverable_lines(
                 result.add(number)
                 continue
         if re.fullmatch(
-            r"(?:Self|[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*{",
+            r"(?:[A-Za-z_][A-Za-z0-9_]*:\s*)?"
+            r"(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*::)*"
+            r"(?:Self|[A-Z][A-Za-z0-9_]*)\s*{",
             code_stripped,
         ):
+            result.add(number)
+            continue
+        if re.fullmatch(r"(?:}\s*)?(?:else\s+)?if\s+let\s*\(", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(
@@ -2566,6 +2572,22 @@ def lexical_non_coverable_lines(
         if re.fullmatch(
             r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
             r"(?:\([^;=]*\)|\s*\{\s*\.\.\s*\})?,?",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?:\s*\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*)+"
+            r",?",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*:\s*(?:true|false|None|"
+            r"[+-]?(?:0[xob][0-9A-Fa-f_]+|[0-9][0-9_]*(?:\.[0-9_]+)?)"
+            r"(?:[iu](?:8|16|32|64|128|size)|f(?:32|64))?),",
             code_stripped,
         ):
             result.add(number)

@@ -293,10 +293,12 @@ pub(crate) enum ClientSetCommand {
     PlaylistChange {
         files: Vec<String>,
         user: Option<String>,
+        canonical_epoch: Option<u64>,
     },
     PlaylistIndex {
         index: Option<i64>,
         user: Option<String>,
+        canonical_epoch: Option<u64>,
     },
     Features {
         username: Option<String>,
@@ -324,15 +326,25 @@ impl std::fmt::Debug for ClientSetCommand {
                 .field(command)
                 .finish(),
             Self::Ready(command) => formatter.debug_tuple("Ready").field(command).finish(),
-            Self::PlaylistChange { files, user } => formatter
+            Self::PlaylistChange {
+                files,
+                user,
+                canonical_epoch,
+            } => formatter
                 .debug_struct("PlaylistChange")
                 .field("files_count", &files.len())
                 .field("has_user", &user.is_some())
+                .field("has_canonical_epoch", &canonical_epoch.is_some())
                 .finish(),
-            Self::PlaylistIndex { index, user } => formatter
+            Self::PlaylistIndex {
+                index,
+                user,
+                canonical_epoch,
+            } => formatter
                 .debug_struct("PlaylistIndex")
                 .field("index", index)
                 .field("has_user", &user.is_some())
+                .field("has_canonical_epoch", &canonical_epoch.is_some())
                 .finish(),
             Self::Features {
                 username,
@@ -362,6 +374,7 @@ pub(crate) struct ClientPlaystate {
     pub(crate) paused: Option<bool>,
     pub(crate) do_seek: Option<bool>,
     pub(crate) set_by: Option<String>,
+    pub(crate) transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -692,146 +705,149 @@ pub(crate) fn normalize_client_protocol_message(
             };
             let mut commands = Vec::new();
             for (name, mut set) in ordered_set_commands(message.set) {
-                let command =
-                    match name.as_str() {
-                        "room" => set
-                            .room
-                            .take()
-                            .map(|room| ClientSetCommand::Room(room.name)),
-                        "file" => set.file.take().and_then(|_| {
-                            fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
-                                command: "file".to_owned(),
-                            });
-                            None
-                        }),
-                        "user" => set.user.take().map(|users| {
-                            let updates = users
-                                .into_iter()
-                                .map(|(username, user)| {
-                                    let context = format!("Set.user.{username}.file");
-                                    let file = user.file.and_then(|file| {
-                                        normalize_file_value(file, &context, &mut fallbacks)
-                                    });
-                                    let joined = user
-                                        .event
-                                        .as_ref()
-                                        .and_then(|event| event.get("joined"))
-                                        .and_then(Value::as_bool)
-                                        == Some(true);
-                                    let event_features = user
-                                        .event
-                                        .as_ref()
-                                        .and_then(|event| event.get("features"))
-                                        .filter(|features| !features.is_null())
-                                        .cloned();
-                                    let features = user
-                                        .features
-                                        .filter(|features| !features.is_null())
-                                        .or(event_features);
-                                    let participant_status_v1 =
-                                        features.as_ref().and_then(participant_status_capability);
-                                    let capabilities = features.and_then(|features| {
-                                        peer_capabilities(&features).or_else(|| {
-                                            fallbacks.push(
+                let command = match name.as_str() {
+                    "room" => set
+                        .room
+                        .take()
+                        .map(|room| ClientSetCommand::Room(room.name)),
+                    "file" => set.file.take().and_then(|_| {
+                        fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
+                            command: "file".to_owned(),
+                        });
+                        None
+                    }),
+                    "user" => set.user.take().map(|users| {
+                        let updates = users
+                            .into_iter()
+                            .map(|(username, user)| {
+                                let context = format!("Set.user.{username}.file");
+                                let file = user.file.and_then(|file| {
+                                    normalize_file_value(file, &context, &mut fallbacks)
+                                });
+                                let joined = user
+                                    .event
+                                    .as_ref()
+                                    .and_then(|event| event.get("joined"))
+                                    .and_then(Value::as_bool)
+                                    == Some(true);
+                                let event_features = user
+                                    .event
+                                    .as_ref()
+                                    .and_then(|event| event.get("features"))
+                                    .filter(|features| !features.is_null())
+                                    .cloned();
+                                let features = user
+                                    .features
+                                    .filter(|features| !features.is_null())
+                                    .or(event_features);
+                                let participant_status_v1 =
+                                    features.as_ref().and_then(participant_status_capability);
+                                let capabilities = features.and_then(|features| {
+                                    peer_capabilities(&features).or_else(|| {
+                                        fallbacks.push(
                                             ClientCompatibilityFallback::IgnoredInvalidFeatures {
                                                 context: format!("Set.user.{username}.features"),
                                             },
                                         );
-                                            None
-                                        })
-                                    });
-                                    ClientUserUpdate {
-                                        username,
-                                        room: user.room.map(|room| room.name),
-                                        file,
-                                        left: user
-                                            .event
-                                            .as_ref()
-                                            .and_then(|event| event.get("left"))
-                                            .and_then(Value::as_bool)
-                                            == Some(true),
-                                        joined,
-                                        capabilities,
-                                        participant_status_v1,
-                                        controller: user.controller,
-                                        ready: user.is_ready,
-                                    }
-                                })
-                                .collect();
-                            ClientSetCommand::Users(updates)
-                        }),
-                        "controllerAuth" => set.controller_auth.take().map(|auth| {
-                            ClientSetCommand::ControllerAuth(ClientControllerAuth {
-                                room: auth.room,
-                                user: auth.user,
-                                success: auth.success,
-                            })
-                        }),
-                        "newControlledRoom" => set.new_controlled_room.take().map(|room| {
-                            ClientSetCommand::NewControlledRoom(ClientNewControlledRoom {
-                                room_name: room.room_name,
-                                password: room.password,
-                            })
-                        }),
-                        "ready" => set.ready.take().map(|ready| {
-                            ClientSetCommand::Ready(ClientReadyUpdate {
-                                ready: ready.is_ready,
-                                username: ready.username,
-                            })
-                        }),
-                        "playlistChange" => set.playlist_change.take().map(|playlist| {
-                            ClientSetCommand::PlaylistChange {
-                                files: canonical_playlist_files_from_change(&playlist),
-                                user: playlist.user,
-                            }
-                        }),
-                        "playlistIndex" => set.playlist_index.take().map(|playlist| {
-                            ClientSetCommand::PlaylistIndex {
-                                index: playlist.index_value(),
-                                user: playlist.user,
-                            }
-                        }),
-                        "features" => set.features.take().and_then(|features| {
-                            let username = features
-                                .get("username")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                            let feature_value = features.get("features").unwrap_or(&features);
-                            peer_capabilities(feature_value)
-                                .zip(participant_status_capability(feature_value))
-                                .map(|(capabilities, participant_status_v1)| {
-                                    ClientSetCommand::Features {
-                                        username,
-                                        capabilities,
-                                        participant_status_v1,
-                                    }
-                                })
-                                .or_else(|| {
-                                    fallbacks.push(
-                                        ClientCompatibilityFallback::IgnoredInvalidFeatures {
-                                            context: "Set.features".to_owned(),
-                                        },
-                                    );
-                                    None
-                                })
-                        }),
-                        SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
-                            .take()
-                            .map(Box::new)
-                            .map(ClientSetCommand::PlaybackBarrier),
-                        SOROTTE_READINESS_V2 => readiness_v2
-                            .take()
-                            .map(Box::new)
-                            .map(ClientSetCommand::ReadinessV2),
-                        _ => {
-                            if set.extra.contains_key(&name) {
-                                fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
-                                    command: name,
+                                        None
+                                    })
                                 });
-                            }
-                            None
+                                ClientUserUpdate {
+                                    username,
+                                    room: user.room.map(|room| room.name),
+                                    file,
+                                    left: user
+                                        .event
+                                        .as_ref()
+                                        .and_then(|event| event.get("left"))
+                                        .and_then(Value::as_bool)
+                                        == Some(true),
+                                    joined,
+                                    capabilities,
+                                    participant_status_v1,
+                                    controller: user.controller,
+                                    ready: user.is_ready,
+                                }
+                            })
+                            .collect();
+                        ClientSetCommand::Users(updates)
+                    }),
+                    "controllerAuth" => set.controller_auth.take().map(|auth| {
+                        ClientSetCommand::ControllerAuth(ClientControllerAuth {
+                            room: auth.room,
+                            user: auth.user,
+                            success: auth.success,
+                        })
+                    }),
+                    "newControlledRoom" => set.new_controlled_room.take().map(|room| {
+                        ClientSetCommand::NewControlledRoom(ClientNewControlledRoom {
+                            room_name: room.room_name,
+                            password: room.password,
+                        })
+                    }),
+                    "ready" => set.ready.take().map(|ready| {
+                        ClientSetCommand::Ready(ClientReadyUpdate {
+                            ready: ready.is_ready,
+                            username: ready.username,
+                        })
+                    }),
+                    "playlistChange" => set.playlist_change.take().map(|playlist| {
+                        let canonical_epoch = playlist.playlist_epoch();
+                        ClientSetCommand::PlaylistChange {
+                            files: canonical_playlist_files_from_change(&playlist),
+                            user: playlist.user,
+                            canonical_epoch,
                         }
-                    };
+                    }),
+                    "playlistIndex" => set.playlist_index.take().map(|playlist| {
+                        let canonical_epoch = playlist.playlist_epoch();
+                        ClientSetCommand::PlaylistIndex {
+                            index: playlist.index_value(),
+                            user: playlist.user,
+                            canonical_epoch,
+                        }
+                    }),
+                    "features" => set.features.take().and_then(|features| {
+                        let username = features
+                            .get("username")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let feature_value = features.get("features").unwrap_or(&features);
+                        peer_capabilities(feature_value)
+                            .zip(participant_status_capability(feature_value))
+                            .map(|(capabilities, participant_status_v1)| {
+                                ClientSetCommand::Features {
+                                    username,
+                                    capabilities,
+                                    participant_status_v1,
+                                }
+                            })
+                            .or_else(|| {
+                                fallbacks.push(
+                                    ClientCompatibilityFallback::IgnoredInvalidFeatures {
+                                        context: "Set.features".to_owned(),
+                                    },
+                                );
+                                None
+                            })
+                    }),
+                    SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
+                        .take()
+                        .map(Box::new)
+                        .map(ClientSetCommand::PlaybackBarrier),
+                    SOROTTE_READINESS_V2 => readiness_v2
+                        .take()
+                        .map(Box::new)
+                        .map(ClientSetCommand::ReadinessV2),
+                    _ => {
+                        if set.extra.contains_key(&name) {
+                            fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
+                                command: name,
+                            });
+                        }
+                        None
+                    }
+                };
                 if let Some(command) = command {
                     commands.push(command);
                 }
@@ -971,11 +987,15 @@ fn normalize_client_state_payload_with_participant_status(
     participant_status: DecodedClientParticipantStatusState,
 ) -> ClientStateUpdate {
     ClientStateUpdate {
-        playstate: state.playstate.map(|playstate| ClientPlaystate {
-            position: playstate.position,
-            paused: playstate.paused,
-            do_seek: playstate.do_seek,
-            set_by: playstate.set_by,
+        playstate: state.playstate.map(|playstate| {
+            let transport_revision = playstate.transport_revision().unwrap_or(Some(0));
+            ClientPlaystate {
+                position: playstate.position,
+                paused: playstate.paused,
+                do_seek: playstate.do_seek,
+                set_by: playstate.set_by,
+                transport_revision,
+            }
         }),
         ping: state.ping.map(|ping| ClientPing {
             latency_calculation: ping.latency_calculation,

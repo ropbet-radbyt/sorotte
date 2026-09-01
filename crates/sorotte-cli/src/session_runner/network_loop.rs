@@ -515,6 +515,61 @@ pub(crate) async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow
     run_client_network_loop_with_legacy_startup_overrides(config, None, None).await
 }
 
+/// Runs the production retry/connected-session loop around a caller-prepared
+/// runtime and returns that same runtime after a normal outer-loop exit.
+///
+/// Lifecycle system seams need to preload deterministic player evidence,
+/// force a real socket failure, and then inspect the surviving player/session
+/// owner. Keeping this helper test-only avoids a second reconnect
+/// implementation while preserving production construction and shutdown APIs.
+#[cfg(test)]
+pub(crate) async fn run_client_network_loop_with_prepared_runtime_for_test(
+    config: &ClientLoopConfig,
+    mut runtime: ClientApplication<MpvAdapter>,
+    local_input_rx: Option<UnboundedReceiver<String>>,
+) -> anyhow::Result<ClientApplication<MpvAdapter>> {
+    let endpoint = format!("{}:{}", config.host, config.port);
+    let _ = runtime.dispatch(ClientCommand::Connect {
+        endpoint: endpoint.clone(),
+    });
+    let diagnostics_config = client_loop_diagnostics_config(None);
+    let network_start = Instant::now();
+    let mut retry_state = ClientNetworkLoopRetryState {
+        runtime,
+        chat_message_on_connect: None,
+        startup_playlist_file_on_connect: None,
+        local_input_rx,
+        notification_sink: |_notification: &AutoplayCountdownNotification| Ok(()),
+        file_difference_sink: |_summary: &str| Ok(()),
+        plex_config: cli_plex_config_from_env_and_stored_settings(None),
+        network_options_health_reporter: CliNetworkOptionsHealthReporter::default(),
+        tls_policy_override: None,
+        retries: 0,
+    };
+
+    loop {
+        match run_client_network_loop_transport_attempt_legacy_compatible(
+            client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible(
+                &endpoint,
+                config,
+                diagnostics_config,
+                &network_start,
+                &mut retry_state,
+            ),
+        )
+        .await?
+        {
+            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess => {
+                return Ok(retry_state.runtime);
+            }
+            ClientNetworkLoopTransportAttemptOutcome::Continue => {}
+            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(error) => {
+                return Err(error);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides(
     config: &ClientLoopConfig,

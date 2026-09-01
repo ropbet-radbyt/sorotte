@@ -393,6 +393,19 @@ fn client_runtime_replace_playlist_finalizes_changed_target_at_same_index_before
         None,
         "the matching replacement echo must not create a second reset"
     );
+    runtime
+        .session_mut_for_test()
+        .apply_message_json(
+            r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":3}}}"#,
+        )
+        .expect("the server's same-index selection announcement should apply");
+    assert_eq!(
+        runtime
+            .session_mut_for_test()
+            .take_pending_playlist_index_reset_intent(),
+        None,
+        "the server confirmation for a locally projected replacement must not double-reset"
+    );
     assert_eq!(runtime.control().outbound_messages().len(), 2);
     assert!(matches!(
         runtime.control().outbound_messages()[1],
@@ -1003,6 +1016,66 @@ fn local_playlist_index_echo_tracking_is_bounded_and_recovers_after_overflow() {
             .expect("recovered index should remain projected")
             .index,
         Some(recovered_index)
+    );
+    assert!(session.model.playlist.pending_local_index_echoes.is_empty());
+}
+
+#[test]
+fn playlist_selection_revision_advances_once_per_selection_event() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["first.mkv","second.mkv"],"user":"bob"}}}"#,
+        )
+        .expect("remote playlist should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("initial remote selection should apply");
+
+    let content_revision = session
+        .current_room_playlist()
+        .expect("playlist should be projected")
+        .revision;
+    let first_selection_revision = session
+        .current_room_playlist_selection_revision()
+        .expect("initial index event should establish selection identity");
+
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("remote same-row replay should apply");
+    let replay_selection_revision = session
+        .current_room_playlist_selection_revision()
+        .expect("same-row replay should retain selection identity");
+    assert_ne!(replay_selection_revision, first_selection_revision);
+    assert_eq!(
+        session
+            .current_room_playlist()
+            .expect("playlist should remain projected")
+            .revision,
+        content_revision,
+        "index events must not masquerade as playlist-content mutations"
+    );
+
+    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+        ClientRuntimeAction::SetPlaylistIndex { index: 0 },
+    ]);
+    let optimistic_selection_revision = session
+        .current_room_playlist_selection_revision()
+        .expect("local replay should project a new selection identity");
+    assert_ne!(optimistic_selection_revision, replay_selection_revision);
+
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("matching local echo should apply");
+    assert_eq!(
+        session.current_room_playlist_selection_revision(),
+        Some(optimistic_selection_revision),
+        "the server echo acknowledges the projected selection instead of creating another one"
     );
     assert!(session.model.playlist.pending_local_index_echoes.is_empty());
 }

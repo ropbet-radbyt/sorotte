@@ -811,8 +811,14 @@ fn client_runtime_seek_to_position_clamps_negative_targets_to_zero() {
 }
 
 #[test]
-fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
+fn client_runtime_deliberate_seek_survives_recent_playlist_rewind() {
     let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session.model.playback.local_paused = Some(true);
     session.model.playback.last_rewound_at_seconds =
         Some(unix_wall_clock_time_seconds_legacy_compatible());
 
@@ -821,22 +827,48 @@ fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
     let mut runtime = ClientRuntime::new(session, player, control);
 
     assert!(
-        !runtime
+        runtime
             .run_seek_to_position(10.0)
-            .expect("recent-rewind seek suppression should not fail"),
-        "late seeks beyond the rewind guard threshold should be ignored right after a rewind"
+            .expect("deliberate post-rewind seek should not fail"),
+        "technical playlist rewind bookkeeping must not swallow deliberate seek intent"
     );
-    assert_eq!(runtime.player().position, None);
-    assert_eq!(runtime.session().local_position_seconds(), None);
+    assert_eq!(runtime.player().position, Some(10.0));
+    assert_eq!(runtime.session().local_position_seconds(), Some(10.0));
     assert_eq!(
         runtime.session().last_seek_position_before_manual_seek(),
-        None
+        Some(0.0)
+    );
+    let ProtocolMessage::State(state) = &runtime.control().outbound_messages()[0] else {
+        panic!("active deliberate seek should queue a State message");
+    };
+    let playstate = state
+        .state
+        .playstate
+        .as_ref()
+        .expect("active deliberate seek should publish playstate");
+    assert_eq!(playstate.position, Some(10.0));
+    assert_eq!(playstate.paused, Some(true));
+    assert_eq!(playstate.do_seek, Some(true));
+    let ignoring = state
+        .state
+        .ignoring_on_the_fly
+        .as_ref()
+        .expect("active deliberate seek should publish its client ignore counter");
+    assert_eq!(ignoring.client, Some(1));
+    assert_eq!(
+        ignoring.server, None,
+        "a seek without pending server correction must not manufacture an acknowledgement"
     );
 }
 
 #[test]
 fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails() {
     let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
     session.model.playback.local_position = Some(2.0);
     session.model.playlist.last_seek_position_before_manual_seek = Some(1.0);
 
@@ -862,6 +894,15 @@ fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails
         Some(1.0),
         "failed seek requests should restore the previous seek history too"
     );
+    assert_eq!(
+        runtime.session().model.playback.client_ignoring_on_the_fly,
+        0,
+        "failed player seeks must not retain an unsent ignore counter"
+    );
+    assert!(
+        runtime.control().outbound_messages().is_empty(),
+        "server authority must not move when the physical player seek fails"
+    );
 }
 
 #[test]
@@ -873,10 +914,11 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
             )
             .expect("hello should apply");
     session
-            .apply_message_json(
-                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
-            )
-            .expect("state should apply");
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":31}}}"#,
+        )
+        .expect("state should apply");
+    session.model.playback.server_ignoring_on_the_fly = 7;
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();
@@ -888,9 +930,91 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
         "seek-by should emit a local SetPosition action"
     );
     assert_eq!(runtime.player().position, Some(12.25));
-    assert!(
-        runtime.control().outbound_messages().is_empty(),
-        "local seek should not directly emit protocol lines"
+    assert_eq!(
+        runtime.control().outbound_messages().len(),
+        1,
+        "an active local seek must immediately publish canonical server intent"
+    );
+    let ProtocolMessage::State(state) = &runtime.control().outbound_messages()[0] else {
+        panic!("active local seek should queue a State message");
+    };
+    let playstate = state
+        .state
+        .playstate
+        .as_ref()
+        .expect("active local seek should include playstate");
+    assert_eq!(playstate.position, Some(12.25));
+    assert_eq!(playstate.paused, Some(false));
+    assert_eq!(playstate.do_seek, Some(true));
+    assert_eq!(playstate.set_by, None);
+    assert_eq!(
+        playstate.transport_revision().unwrap(),
+        Some(31),
+        "explicit seek intent must declare the canonical transport revision it observed"
+    );
+    assert_eq!(
+        state
+            .state
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|ignore| ignore.client),
+        Some(1),
+        "the explicit seek must use the same client-ignore handshake as inferred seeks"
+    );
+    assert_eq!(
+        state
+            .state
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|ignore| ignore.server),
+        None,
+        "a causal seek must not eagerly acknowledge a correction whose transport revision may not yet be committed locally"
+    );
+    assert_eq!(
+        runtime.session().server_ignoring_on_the_fly(),
+        7,
+        "the next State reconciliation owns the server acknowledgement and can re-publish the seek against current authority"
+    );
+}
+
+#[derive(Debug, Default)]
+struct FailCausalStateEffectSink;
+
+impl ClientEffectSink for FailCausalStateEffectSink {
+    fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
+        if matches!(effect, ClientEffect::SendState(_)) {
+            return Err(ClientEffectError::OperationFailed(
+                "forced causal state delivery failure".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn client_runtime_seek_restores_client_ignore_when_causal_delivery_fails() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":2.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("forced server state should apply");
+    let player = RecordingPlayer::default();
+    let mut runtime = ClientRuntime::new(session, player, FailCausalStateEffectSink);
+    let error = runtime
+        .run_seek_to_position(12.0)
+        .expect_err("causal state delivery failure should surface");
+
+    assert!(matches!(error, PlayerError::OperationFailed(_)));
+    assert_eq!(
+        runtime.session().model.playback.client_ignoring_on_the_fly,
+        0,
+        "the failed causal edge must restore its client-ignore handshake"
     );
 }
 

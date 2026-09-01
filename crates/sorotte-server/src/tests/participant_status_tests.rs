@@ -219,6 +219,18 @@ fn two_client_wire_snapshot_is_consumed_as_exact_advisory_client_state() {
             100.0,
         )
         .expect("the observer should receive a baseline periodic State");
+    let ProtocolMessage::State(baseline_state) = &baseline else {
+        panic!("periodic synchronization must remain a State message");
+    };
+    assert_eq!(
+        baseline_state
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.transport_revision().ok().flatten()),
+        runtime.transport_authority_revision_for_room("room"),
+        "periodic playstate must carry the room transport revision that owns its sample"
+    );
     bob_session
         .apply_message_json_at(&encode_message_line(&baseline).unwrap(), 100.0)
         .expect("the baseline periodic State should apply");

@@ -199,6 +199,19 @@ pub(crate) struct ServerHelloCommand {
     pub(crate) readiness_reconnect_token: Option<SecretValue>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerPlaylistIndexPrecondition {
+    Unconditional,
+    Expected { index: i64, epoch: u64 },
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ServerPlaylistIndexCommand {
+    pub(crate) index: Option<i64>,
+    pub(crate) precondition: ServerPlaylistIndexPrecondition,
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) enum ServerSetCommand {
     Room(String),
@@ -214,7 +227,7 @@ pub(crate) enum ServerSetCommand {
         set_by: Option<String>,
     },
     PlaylistChange(Vec<String>),
-    PlaylistIndex(Option<i64>),
+    PlaylistIndex(ServerPlaylistIndexCommand),
     Features(ServerClientCapabilities),
     PlaybackBarrier(Box<PlaybackBarrierSetExtension>),
     Readiness(Box<ReadinessSetExtension>),
@@ -246,9 +259,10 @@ impl std::fmt::Debug for ServerSetCommand {
                 .debug_struct("PlaylistChange")
                 .field("files_count", &files.len())
                 .finish(),
-            Self::PlaylistIndex(index) => {
-                formatter.debug_tuple("PlaylistIndex").field(index).finish()
-            }
+            Self::PlaylistIndex(command) => formatter
+                .debug_tuple("PlaylistIndex")
+                .field(command)
+                .finish(),
             Self::Features(capabilities) => formatter
                 .debug_tuple("Features")
                 .field(capabilities)
@@ -270,6 +284,7 @@ pub(crate) struct ServerPlaystateCommand {
     pub(crate) paused: Option<bool>,
     pub(crate) do_seek: Option<bool>,
     pub(crate) set_by: Option<String>,
+    pub(crate) transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -557,10 +572,22 @@ pub(crate) fn normalize_server_protocol_message(
                             &playlist,
                         ))
                     }),
-                    "playlistIndex" => set
-                        .playlist_index
-                        .take()
-                        .map(|playlist| ServerSetCommand::PlaylistIndex(playlist.index_value())),
+                    "playlistIndex" => set.playlist_index.take().map(|playlist| {
+                        let precondition = if !playlist.has_expected_playlist_state() {
+                            ServerPlaylistIndexPrecondition::Unconditional
+                        } else if let (Some(index), Some(epoch)) = (
+                            playlist.expected_playlist_index(),
+                            playlist.expected_playlist_epoch(),
+                        ) {
+                            ServerPlaylistIndexPrecondition::Expected { index, epoch }
+                        } else {
+                            ServerPlaylistIndexPrecondition::Invalid
+                        };
+                        ServerSetCommand::PlaylistIndex(ServerPlaylistIndexCommand {
+                            index: playlist.index_value(),
+                            precondition,
+                        })
+                    }),
                     "features" => set.features.take().and_then(|features| match features {
                         Value::Object(features) => Some(ServerSetCommand::Features(
                             capabilities_from_object(features),
@@ -644,11 +671,15 @@ pub(crate) fn normalize_server_protocol_message(
             };
             let ignoring = state.ignoring_on_the_fly.unwrap_or_default();
             ServerInboundCommand::State(Box::new(ServerStateCommand {
-                playstate: state.playstate.map(|playstate| ServerPlaystateCommand {
-                    position: playstate.position,
-                    paused: playstate.paused,
-                    do_seek: playstate.do_seek,
-                    set_by: playstate.set_by,
+                playstate: state.playstate.map(|playstate| {
+                    let transport_revision = playstate.transport_revision().unwrap_or(Some(0));
+                    ServerPlaystateCommand {
+                        position: playstate.position,
+                        paused: playstate.paused,
+                        do_seek: playstate.do_seek,
+                        set_by: playstate.set_by,
+                        transport_revision,
+                    }
                 }),
                 ping: state.ping.map(|ping| ServerPingCommand {
                     latency_calculation: ping.latency_calculation,

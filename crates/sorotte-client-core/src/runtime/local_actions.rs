@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::control::client_effect_player_error;
+
 impl<P, C> ClientRuntime<P, C>
 where
     P: PlayerAdapter,
@@ -204,7 +206,7 @@ where
                 "a local pause change is already in progress".to_owned(),
             ));
         }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let original_paused = self.session.model.playback.local_paused;
         let original_ready = self
             .session
@@ -261,7 +263,7 @@ where
                 "a local pause change is already in progress".to_owned(),
             ));
         }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         if paused {
             let _ =
                 self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
@@ -361,6 +363,109 @@ where
         self.run_local_playlist_action_batch(actions)
     }
 
+    /// Advances the canonical shared playlist exactly once for an owned,
+    /// natural player completion.
+    ///
+    /// The completed physical file must still be the canonical selection. If
+    /// another participant already advanced the room, the late terminal edge
+    /// is consumed without acting so it cannot skip the newly selected item.
+    /// A completion observed before the playlist snapshot arrives remains
+    /// pending while authority is absent, but it cannot acquire a selection
+    /// identity retroactively and is consumed once that mismatch is knowable.
+    pub fn run_advance_playlist_after_natural_completion(&mut self) -> Result<bool, PlayerError> {
+        let Some(completion) = self.pending_natural_playback_completion.as_ref() else {
+            return Ok(false);
+        };
+        let Some(playlist) = self.session.current_room_playlist() else {
+            return Ok(false);
+        };
+        let Some(index) = playlist.index.and_then(|index| usize::try_from(index).ok()) else {
+            return Ok(false);
+        };
+        let current_selection_revision = self.session.current_room_playlist_selection_revision();
+        let current_canonical_epoch = self.session.current_room_playlist_canonical_epoch();
+        let completion_matches_selection_identity =
+            completion.playlist_selection_revision.is_some()
+                && completion.playlist_selection_revision == current_selection_revision
+                && completion.canonical_playlist_epoch == current_canonical_epoch
+                && completion.playlist_revision == Some(playlist.revision)
+                && completion.playlist_index == playlist.index;
+        if !completion_matches_selection_identity {
+            // File names are not playlist-entry identities: duplicate rows,
+            // loop wraparound, and a peer mutation may all select the same
+            // visible target. Only the exact canonical selection observed at
+            // EOF may advance. A completion received before any playlist
+            // snapshot cannot acquire that identity retroactively.
+            self.pending_natural_playback_completion = None;
+            return Ok(false);
+        }
+        let Some(target) = playlist.files.get(index) else {
+            self.pending_natural_playback_completion = None;
+            return Ok(false);
+        };
+        let completion_matches_selection = completion
+            .completed_file
+            .as_ref()
+            .is_some_and(|file| local_file_matches_playlist_target(file, target));
+        if !completion_matches_selection {
+            // The canonical room has moved on (or the terminal could not be
+            // tied to a publishable file). Either way, fail closed rather than
+            // advancing an unrelated selection.
+            self.pending_natural_playback_completion = None;
+            return Ok(false);
+        }
+
+        let expected_index = playlist
+            .index
+            .expect("validated playlist selection must have an index");
+        let terminal_position_seconds = completion
+            .completed_file
+            .as_ref()
+            .and_then(|file| file.duration_seconds)
+            .filter(|position| position.is_finite() && *position >= 0.0)
+            .or_else(|| {
+                self.session
+                    .model
+                    .playback
+                    .local_position
+                    .filter(|position| position.is_finite() && *position >= 0.0)
+            });
+        let expected_epoch = completion.canonical_playlist_epoch;
+        let actions = self
+            .session
+            .runtime_actions_for_verified_local_playlist_next();
+        let result = if actions.is_empty() {
+            match self
+                .session
+                .terminal_state_for_verified_local_playlist_completion(
+                    expected_index,
+                    terminal_position_seconds,
+                ) {
+                Some(state) => {
+                    self.control.activate_protocol_connection_generation();
+                    self.control
+                        .emit_causal_state(state)
+                        .map(|_| true)
+                        .map_err(client_effect_player_error)
+                }
+                None => Ok(false),
+            }
+        } else {
+            self.run_local_playlist_action_batch_with_guard(
+                actions,
+                expected_epoch.map(|epoch| (expected_index, epoch)),
+            )
+        };
+        if result.is_ok() {
+            // A bounded terminal State is emitted when this client owns an
+            // authorized no-loop boundary and has a finite terminal sample.
+            // `Ok(false)` remains legitimate when authority moved, the room
+            // already paused, or the completion cannot safely publish state.
+            self.pending_natural_playback_completion = None;
+        }
+        result
+    }
+
     fn current_local_playlist_target(&self) -> Option<String> {
         let playlist = self.session.current_room_playlist()?;
         let index = playlist
@@ -372,6 +477,14 @@ where
     fn run_local_playlist_action_batch(
         &mut self,
         actions: Vec<ClientRuntimeAction>,
+    ) -> Result<bool, PlayerError> {
+        self.run_local_playlist_action_batch_with_guard(actions, None)
+    }
+
+    fn run_local_playlist_action_batch_with_guard(
+        &mut self,
+        actions: Vec<ClientRuntimeAction>,
+        expected_playlist_state: Option<(i64, u64)>,
     ) -> Result<bool, PlayerError> {
         if actions.is_empty() {
             return Ok(false);
@@ -390,9 +503,10 @@ where
             .then(|| self.v2_replay_media_for_playlist_actions(&actions))
             .flatten();
 
-        self.dispatch_runtime_actions_with_pause_cause(
+        self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
             &actions,
             PlayerCommandCause::PlaylistTransition,
+            expected_playlist_state,
         )?;
         self.session
             .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
@@ -500,36 +614,39 @@ where
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         // Cleanup is retried from subsequent observations if the adapter
         // rejects it; a failed rate reset must not swallow the user's seek.
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
             .runtime_actions_for_local_seek_offset(offset_seconds);
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
+        self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
+        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
-        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
+        self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
     }
 
@@ -568,12 +685,27 @@ where
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<bool, PlayerError> {
+        self.publish_pending_local_file_update_legacy_compatible_at(
+            filename_privacy_mode,
+            filesize_privacy_mode,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    /// Publishes one pending file observation using the caller's lifecycle
+    /// clock. Runtime owners that use a monotonic clock must call this variant
+    /// so startup evidence and later transport/status heartbeats remain in the
+    /// same clock domain.
+    pub fn publish_pending_local_file_update_legacy_compatible_at(
+        &mut self,
+        filename_privacy_mode: PrivacyMode,
+        filesize_privacy_mode: PrivacyMode,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
         let ordered_delivery = self.player.player_event_delivery_mode()
             == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches;
         let local_file_update = if ordered_delivery {
-            self.drain_player_transport_coordination(
-                unix_wall_clock_time_seconds_legacy_compatible(),
-            )?;
+            self.drain_player_transport_coordination(now_seconds)?;
             if self
                 .playback_coordination
                 .ordered_transport_awaits_snapshot()
@@ -609,12 +741,11 @@ where
         // Queue the compatible file announcement before an optional Sorotte
         // start barrier so peers learn the source before their preparation
         // deadline begins.
-        self.prepare_playback_media_with_intent(
+        self.prepare_playback_media_for_current_file_publication(
             logical_id,
             transport_kind,
-            MediaLoadIntent::TransportRefresh,
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        );
+            now_seconds,
+        )?;
         if ordered_delivery {
             self.pending_ordered_local_file_updates.acknowledge_front();
         }
@@ -664,4 +795,43 @@ where
             }
         }
     }
+
+    fn refresh_player_projection_before_local_transport_intent(
+        &mut self,
+    ) -> Result<(), PlayerError> {
+        if self.player.player_event_delivery_mode()
+            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            // A user can issue adjacent commands before the ordinary runtime
+            // tick drains mpv's acknowledged batch. Deriving Seek or Toggle
+            // from the old projection can then pair a fresh intent with the
+            // previous pause state and overwrite newer room authority.
+            return self.drain_player_transport_coordination(
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            );
+        }
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        Ok(())
+    }
+}
+
+fn local_file_matches_playlist_target(file: &LocalFileUpdate, target: &str) -> bool {
+    if file.name == target || file.path.as_deref() == Some(target) {
+        return true;
+    }
+    if target.contains("://") {
+        return false;
+    }
+    let target_name = std::path::Path::new(target)
+        .file_name()
+        .and_then(|name| name.to_str());
+    target_name.is_some_and(|target_name| {
+        target_name == file.name
+            || file.path.as_deref().is_some_and(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    == Some(target_name)
+            })
+    })
 }

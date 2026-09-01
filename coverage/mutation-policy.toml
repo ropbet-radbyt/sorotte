@@ -151,7 +151,7 @@ files = [
     "crates/sorotte-server/src/runtime_maintenance.rs",
     "crates/sorotte-server/src/runtime_playback_barrier.rs",
 ]
-mutant_filter = "(participant_status|ParticipantStatus|collect_due_periodic_updates_at|delete field (set_by|client_latency_calculation|client_ignoring_counter|server_rtt_seconds|latency_calculation_seconds) from struct StateSyncOptions expression in ServerRuntime::periodic_state_sync_message_for_client_at)"
+mutant_filter = "(participant_status|ParticipantStatus|collect_due_periodic_updates_at|delete field (set_by|transport_revision|client_latency_calculation|client_ignoring_counter|server_rtt_seconds|latency_calculation_seconds) from struct StateSyncOptions expression in ServerRuntime::periodic_state_sync_message_for_client_at)"
 test_target = "lib"
 test_filter = "tests::participant_status_tests::"
 jobs = 2
@@ -932,17 +932,6 @@ genre = "BinaryOperator"
 replacement = "||"
 expected_count = 5
 reason = "cargo-mutants changes five observed && connectors in Rust let-chain conditions to ||, which rustc rejects because let-chain conditions support only &&"
-review_by = "2026-11-30"
-
-[[accepted_unviable]]
-id = "gui-playlist-delivery-fence-finish-let-chain-or"
-shard = "gui-playlist-delivery-fence"
-file = "crates/sorotte-gui/src/app/runtime_owner/player/media_open.rs"
-function = "GuiPersistedConfigRuntimeOwner::finish_shared_playlist_open_after_delivery"
-return_type = ""
-genre = "BinaryOperator"
-replacement = "||"
-reason = "cargo-mutants changes the observed && connector in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
 review_by = "2026-11-30"
 
 [[accepted_unviable]]

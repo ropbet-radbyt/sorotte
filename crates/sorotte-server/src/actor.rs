@@ -37,6 +37,10 @@ enum ServerCommand {
         client_id: String,
         reply: oneshot::Sender<Option<ServerSession>>,
     },
+    ServerIgnoringCounter {
+        client_id: String,
+        reply: oneshot::Sender<u32>,
+    },
     TimeNowOverride {
         reply: oneshot::Sender<Option<f64>>,
     },
@@ -174,6 +178,22 @@ impl ServerActorHandle {
         response.await.map_err(|_| ServerActorError::Unavailable)
     }
 
+    /// Returns the current generation counter that a raw protocol peer must
+    /// acknowledge before its playback sample can become authoritative.
+    /// This is intentionally read-only and is useful to black-box harnesses
+    /// that observe the actor through the production network transport.
+    pub async fn server_ignoring_counter(&self, client_id: &str) -> Result<u32, ServerActorError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(ServerCommand::ServerIgnoringCounter {
+                client_id: client_id.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| ServerActorError::Unavailable)?;
+        response.await.map_err(|_| ServerActorError::Unavailable)
+    }
+
     pub async fn time_now_override_seconds(&self) -> Result<Option<f64>, ServerActorError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -255,6 +275,9 @@ async fn run_server_actor(runtime: &mut ServerRuntime, mut commands: Receiver<Se
             }
             ServerCommand::Session { client_id, reply } => {
                 let _ = reply.send(runtime.session(&client_id).cloned());
+            }
+            ServerCommand::ServerIgnoringCounter { client_id, reply } => {
+                let _ = reply.send(runtime.server_ignoring_counter(&client_id));
             }
             ServerCommand::TimeNowOverride { reply } => {
                 let _ = reply.send(runtime.time_now_override_seconds);

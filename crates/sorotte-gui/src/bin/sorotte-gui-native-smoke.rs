@@ -106,12 +106,15 @@ struct GuiLaunchTestOverrides<'a> {
     player_settings_degraded: bool,
 }
 
+type PlaylistExchangeEvidence = (String, String, String, String, String);
+
 struct MockSessionServer {
     address: String,
     port: u16,
     peer_rx: mpsc::Receiver<String>,
     hello_rx: mpsc::Receiver<String>,
-    playlist_exchange_rx: Option<mpsc::Receiver<(String, String, String, String)>>,
+    playlist_exchange_rx: Option<mpsc::Receiver<PlaylistExchangeEvidence>>,
+    playstate_exchange_rx: Option<mpsc::Receiver<(String, String)>>,
     release_tx: mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
 }

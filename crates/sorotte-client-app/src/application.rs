@@ -328,6 +328,13 @@ struct ApplicationSnapshot {
     ready: Option<bool>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct CanonicalPlaylistSelection {
+    room: String,
+    index: i64,
+    target: String,
+}
+
 pub struct ClientApplication<P>
 where
     P: PlayerAdapter,
@@ -339,6 +346,10 @@ where
     player_connection_observed: Option<bool>,
     player_was_connected: bool,
     pending_unknown_attachment_recovery: bool,
+    player_attachment_revision: u64,
+    last_file_observation_attachment_revision: Option<u64>,
+    pending_canonical_playlist_load: Option<CanonicalPlaylistSelection>,
+    retired_canonical_selection_attachment_revision: Option<u64>,
 }
 
 impl<P> ClientApplication<P>
@@ -389,7 +400,22 @@ where
             player_connection_observed: None,
             player_was_connected,
             pending_unknown_attachment_recovery: false,
+            player_attachment_revision: 0,
+            last_file_observation_attachment_revision: None,
+            pending_canonical_playlist_load: None,
+            retired_canonical_selection_attachment_revision: None,
         }
+    }
+
+    fn observe_player_attachment_signal(&mut self, connected: bool) {
+        if self.player_connection_observed.is_some()
+            && self.player_connection_observed != Some(connected)
+        {
+            self.player_attachment_revision = self.player_attachment_revision.saturating_add(1);
+            self.pending_canonical_playlist_load = None;
+            self.retired_canonical_selection_attachment_revision = None;
+        }
+        self.player_connection_observed = Some(connected);
     }
 
     /// Publishes cached adapter lifecycle transitions without polling the
@@ -416,7 +442,7 @@ where
         if self.player_connection_observed == Some(connected) {
             return Ok(false);
         }
-        self.player_connection_observed = Some(connected);
+        self.observe_player_attachment_signal(connected);
         let availability = if connected {
             self.player_was_connected = true;
             ExternalPlayerAvailability::Connecting
@@ -645,6 +671,198 @@ where
 
     pub fn with_player_io<R>(&mut self, io: impl FnOnce(&mut P) -> R) -> R {
         self.runtime.with_player_io(io)
+    }
+
+    /// Reconciles the canonical room playlist selection with this application's
+    /// owned player.
+    ///
+    /// Protocol state alone is not proof that media changed. This method owns
+    /// the missing application-layer side effect for clients whose
+    /// `ClientApplication` owns the real player (notably the CLI). It suppresses
+    /// duplicate asynchronous loads, waits for the selected file observation
+    /// before applying the queued pause/rewind reset, and never opens a remote
+    /// URL rejected by the session trust policy.
+    pub fn synchronize_canonical_playlist_selection_to_player(
+        &mut self,
+    ) -> Result<bool, PlayerError> {
+        let Some(selection) = self.current_canonical_playlist_selection() else {
+            return self.synchronize_canonical_playlist_absence_to_player();
+        };
+        let selection_follows_canonical_retirement = self
+            .retired_canonical_selection_attachment_revision
+            == Some(self.player_attachment_revision);
+        if !self
+            .runtime
+            .session()
+            .playlist_target_switch_allowed_legacy_compatible(&selection.target)
+        {
+            self.pending_canonical_playlist_load = None;
+            return Ok(false);
+        }
+
+        // `plex://` is a logical identity, not a directly playable transport.
+        // GUI/Plex owners resolve it through their source pipeline. Keep the
+        // reset pending rather than sending a logical URI to mpv.
+        if selection.target.starts_with("plex://") {
+            self.pending_canonical_playlist_load = None;
+            return Ok(false);
+        }
+
+        // A disconnected transport cannot apply a canonical selection. More
+        // importantly, attempting the load here would turn an expected
+        // attachment gap into a repeated contained player failure.
+        if self.runtime.player().transport_is_connected() == Some(false) {
+            self.pending_canonical_playlist_load = None;
+            return Ok(false);
+        }
+
+        let current_attachment_has_file = !selection_follows_canonical_retirement
+            && self.last_file_observation_attachment_revision
+                == Some(self.player_attachment_revision)
+            && self.runtime.last_local_file_update().is_some();
+        let current_file_matches = current_attachment_has_file
+            && self
+                .runtime
+                .last_local_file_update()
+                .is_some_and(|file| local_file_matches_playlist_target(file, &selection.target));
+        if current_file_matches {
+            self.pending_canonical_playlist_load = None;
+        }
+
+        let mut changed = false;
+        if !current_file_matches
+            && self.pending_canonical_playlist_load.as_ref() != Some(&selection)
+        {
+            if self
+                .runtime
+                .session()
+                .has_pending_playlist_index_reset_intent()
+                && current_attachment_has_file
+            {
+                // IPC command acceptance preserves order. Pause the retiring
+                // transport before loadfile so a fast successor cannot expose
+                // an autoplay window while its paired canonical State frame is
+                // still in flight. The post-load pause below remains required
+                // because load completion, not command acceptance, proves the
+                // new physical media owns the reset. An already empty player
+                // has no retiring transport and mpv may not expose its pause
+                // property in that state, so it must proceed directly to the
+                // new load instead of retrying an impossible precondition.
+                self.runtime.player_mut().set_paused(true)?;
+            }
+            self.runtime.player_mut().open_file(&selection.target)?;
+            // An observation of the retiring file (including one delivered
+            // late after `stop`) cannot prove this asynchronous load. A
+            // matching same-path restore must wait for file evidence observed
+            // after the new load command, otherwise it can skip `loadfile` or
+            // apply the physical reset against an idle mpv instance.
+            self.last_file_observation_attachment_revision = None;
+            self.pending_canonical_playlist_load = Some(selection.clone());
+            self.retired_canonical_selection_attachment_revision = None;
+            changed = true;
+        }
+
+        // A successful load command is only an intent. Wait for the adapter's
+        // authoritative file observation before consuming the reset, otherwise
+        // an asynchronous mpv load can lose the only rewind/pause request.
+        if !current_file_matches {
+            return Ok(changed);
+        }
+        let Some(pause_before_sync) = self.runtime.session().pending_playlist_index_reset_intent()
+        else {
+            return Ok(changed);
+        };
+        let player_attachment_revision = self.player_attachment_revision;
+        if !self
+            .runtime
+            .session()
+            .pending_playlist_index_reset_physical_effect_applied_for_attachment(
+                player_attachment_revision,
+            )
+        {
+            self.runtime.player_mut().set_position(0.0)?;
+            // Always reassert the temporary transition hold after authoritative
+            // file evidence. A load can change mpv's pause property even when
+            // the preceding command was accepted. `pause_before_sync` remains
+            // part of the legacy-facing intent shape, while post-selection
+            // room authority decides whether playback ultimately stays paused
+            // or resumes.
+            self.runtime.player_mut().set_paused(true)?;
+            if !self
+                .runtime
+                .session_mut()
+                .mark_pending_playlist_index_reset_physical_effect_applied(
+                    player_attachment_revision,
+                )
+            {
+                return Ok(changed);
+            }
+            changed = true;
+        }
+        if !self
+            .runtime
+            .session()
+            .pending_playlist_index_reset_has_post_selection_playstate()
+        {
+            return Ok(changed);
+        }
+        let consumed = self
+            .runtime
+            .session_mut()
+            .complete_pending_playlist_index_reset_for_attachment(player_attachment_revision);
+        debug_assert_eq!(consumed, Some(pause_before_sync));
+        Ok(changed || consumed.is_some())
+    }
+
+    fn synchronize_canonical_playlist_absence_to_player(&mut self) -> Result<bool, PlayerError> {
+        let pending_load = self.pending_canonical_playlist_load.take().is_some();
+        let Some(_pause_before_sync) = self.runtime.session().pending_playlist_index_reset_intent()
+        else {
+            return Ok(false);
+        };
+        let attachment_revision = self.player_attachment_revision;
+        if self.retired_canonical_selection_attachment_revision == Some(attachment_revision) {
+            return Ok(false);
+        }
+        if self.runtime.player().transport_is_connected() == Some(false) {
+            return Ok(false);
+        }
+
+        let current_file_observed = self.last_file_observation_attachment_revision
+            == Some(attachment_revision)
+            && self.runtime.last_local_file_update().is_some();
+        let logical_media_active = self
+            .runtime
+            .playback_coordination_snapshot()
+            .media_generation
+            .is_some();
+        if pending_load || current_file_observed || logical_media_active {
+            // Stop is itself terminal, but pause first so an accepted stop can
+            // never expose another predecessor frame while it is in flight.
+            self.runtime.player_mut().set_paused(true)?;
+            self.runtime.player_mut().unload()?;
+        }
+
+        self.runtime.retire_playback_media()?;
+        self.runtime
+            .session_mut()
+            .take_pending_playlist_index_reset_intent();
+        self.last_file_observation_attachment_revision = None;
+        self.retired_canonical_selection_attachment_revision = Some(attachment_revision);
+        Ok(true)
+    }
+
+    fn current_canonical_playlist_selection(&self) -> Option<CanonicalPlaylistSelection> {
+        let room = self.runtime.session().room()?.to_owned();
+        let playlist = self.runtime.session().current_room_playlist()?;
+        let index = playlist.index?;
+        let index_usize = usize::try_from(index).ok()?;
+        let target = playlist.files.get(index_usize)?.clone();
+        Some(CanonicalPlaylistSelection {
+            room,
+            index,
+            target,
+        })
     }
 
     fn snapshot(&self) -> ApplicationSnapshot {
@@ -1392,6 +1610,10 @@ where
         self.runtime.run_advance_playlist_index()
     }
 
+    pub fn run_advance_playlist_after_natural_completion(&mut self) -> Result<bool, PlayerError> {
+        self.runtime.run_advance_playlist_after_natural_completion()
+    }
+
     pub fn run_queue_playlist_item(
         &mut self,
         file_name: impl Into<String>,
@@ -1455,11 +1677,35 @@ where
         filename_privacy_mode: sorotte_client_core::PrivacyMode,
         filesize_privacy_mode: sorotte_client_core::PrivacyMode,
     ) -> Result<bool, PlayerError> {
-        self.runtime
+        let published = self
+            .runtime
             .publish_pending_local_file_update_legacy_compatible(
                 filename_privacy_mode,
                 filesize_privacy_mode,
-            )
+            )?;
+        if published {
+            self.last_file_observation_attachment_revision = Some(self.player_attachment_revision);
+        }
+        Ok(published)
+    }
+
+    pub fn publish_pending_local_file_update_legacy_compatible_at(
+        &mut self,
+        filename_privacy_mode: sorotte_client_core::PrivacyMode,
+        filesize_privacy_mode: sorotte_client_core::PrivacyMode,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        let published = self
+            .runtime
+            .publish_pending_local_file_update_legacy_compatible_at(
+                filename_privacy_mode,
+                filesize_privacy_mode,
+                now_seconds,
+            )?;
+        if published {
+            self.last_file_observation_attachment_revision = Some(self.player_attachment_revision);
+        }
+        Ok(published)
     }
 
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
@@ -1512,6 +1758,30 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
+        self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
+    /// Runs legacy room pause synchronization for an application that owns
+    /// canonical shared-playlist selection.
+    ///
+    /// Playlist selection and its successor playstate are separate wire
+    /// messages. While the selected media reset is pending, the retained room
+    /// playstate still belongs to the predecessor and cannot safely target an
+    /// EOF-idle player or the successor. Callers that have shared playlists
+    /// disabled must use the ordinary method above: they do not own the reset
+    /// transaction and must not let an unsolicited playlist frame suspend
+    /// normal legacy pause synchronization indefinitely.
+    pub fn run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        if self
+            .runtime
+            .session()
+            .has_pending_playlist_index_reset_intent()
+        {
+            return Ok(());
+        }
         self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
     }
 
@@ -1756,6 +2026,9 @@ where
                 || availability == ExternalPlayerAvailability::Failed
         );
         let attachment_signal_unknown = self.runtime.player().transport_is_connected().is_none();
+        if availability == ExternalPlayerAvailability::Disconnected && !attachment_signal_unknown {
+            self.observe_player_attachment_signal(false);
+        }
         let result = self
             .runtime
             .set_external_player_availability(availability, now_seconds);
@@ -2084,6 +2357,25 @@ fn protocol_player_error(error: ProtocolError) -> PlayerError {
     PlayerError::OperationFailed(error.to_string())
 }
 
+fn local_file_matches_playlist_target(
+    file: &sorotte_player_api::LocalFileUpdate,
+    target: &str,
+) -> bool {
+    if file.name == target || file.path.as_deref() == Some(target) {
+        return true;
+    }
+    if target.contains("://") {
+        return false;
+    }
+    let target_name = Path::new(target).file_name().and_then(|name| name.to_str());
+    target_name.is_some_and(|target_name| {
+        target_name == file.name
+            || file.path.as_deref().is_some_and(|path| {
+                Path::new(path).file_name().and_then(|name| name.to_str()) == Some(target_name)
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2095,9 +2387,17 @@ mod tests {
     #[derive(Default)]
     struct TestPlayer {
         opened: Vec<String>,
+        unload_calls: usize,
+        paused_when_opened: Vec<bool>,
         paused: bool,
+        pause_calls: usize,
+        position_seconds: Option<f64>,
+        position_calls: usize,
+        connected: Option<bool>,
         open_error: Option<String>,
         pause_error: Option<String>,
+        position_error: Option<String>,
+        pending_local_file_update: Option<sorotte_player_api::LocalFileUpdate>,
         maintenance_calls: Arc<AtomicUsize>,
         blocking_maintenance_calls: Arc<AtomicUsize>,
     }
@@ -2105,6 +2405,10 @@ mod tests {
     impl PlayerAdapter for TestPlayer {
         fn name(&self) -> &'static str {
             "client-application-test"
+        }
+
+        fn transport_is_connected(&self) -> Option<bool> {
+            self.connected
         }
 
         fn maintain_runtime_integrations(&mut self) {
@@ -2117,19 +2421,50 @@ mod tests {
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+            self.paused_when_opened.push(self.paused);
             self.opened.push(path.to_owned());
             match self.open_error.as_ref() {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
-                None => Ok(()),
+                None => {
+                    let name = Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                        .to_owned();
+                    self.pending_local_file_update = Some(
+                        sorotte_player_api::LocalFileUpdate::new(name).with_path(path.to_owned()),
+                    );
+                    Ok(())
+                }
             }
         }
 
+        fn unload(&mut self) -> Result<(), PlayerError> {
+            self.unload_calls = self.unload_calls.saturating_add(1);
+            self.pending_local_file_update = None;
+            Ok(())
+        }
+
         fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+            self.pause_calls = self.pause_calls.saturating_add(1);
             self.paused = paused;
             match self.pause_error.as_ref() {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
                 None => Ok(()),
             }
+        }
+
+        fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+            self.position_calls = self.position_calls.saturating_add(1);
+            self.position_seconds = Some(position_seconds);
+            match self.position_error.as_ref() {
+                Some(message) => Err(PlayerError::OperationFailed(message.clone())),
+                None => Ok(()),
+            }
+        }
+
+        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+            self.pending_local_file_update.take()
         }
     }
 
@@ -2283,6 +2618,69 @@ mod tests {
         assert!(
             application.pending_protocol_line().unwrap().is_none(),
             "a legacy peer must not receive an empty advisory State"
+        );
+    }
+
+    #[test]
+    fn contained_failure_attachment_observation_has_an_exact_truth_table() {
+        fn seed_attachment_owned_state<P>(application: &mut ClientApplication<P>)
+        where
+            P: PlayerAdapter,
+        {
+            application.player_connection_observed = Some(true);
+            application.player_attachment_revision = 7;
+            application.pending_canonical_playlist_load = Some(CanonicalPlaylistSelection {
+                room: "room".to_owned(),
+                index: 1,
+                target: "episode2.mkv".to_owned(),
+            });
+            application.retired_canonical_selection_attachment_revision = Some(7);
+        }
+
+        let mut known_disconnect =
+            ClientApplication::new(ClientSession::default(), InitiallyConnectedPlayer);
+        seed_attachment_owned_state(&mut known_disconnect);
+        known_disconnect
+            .record_contained_external_player_failure(
+                ExternalPlayerAvailability::Disconnected,
+                30.0,
+            )
+            .expect("a known disconnect should be contained");
+        assert_eq!(known_disconnect.player_attachment_revision, 8);
+        assert!(known_disconnect.pending_canonical_playlist_load.is_none());
+        assert!(
+            known_disconnect
+                .retired_canonical_selection_attachment_revision
+                .is_none()
+        );
+
+        let mut known_failure =
+            ClientApplication::new(ClientSession::default(), InitiallyConnectedPlayer);
+        seed_attachment_owned_state(&mut known_failure);
+        known_failure
+            .record_contained_external_player_failure(ExternalPlayerAvailability::Failed, 31.0)
+            .expect("a known attached failure should be contained");
+        assert_eq!(known_failure.player_attachment_revision, 7);
+        assert!(known_failure.pending_canonical_playlist_load.is_some());
+        assert_eq!(
+            known_failure.retired_canonical_selection_attachment_revision,
+            Some(7)
+        );
+
+        let mut unknown_disconnect =
+            ClientApplication::new(ClientSession::default(), UnknownAttachmentPlayer);
+        seed_attachment_owned_state(&mut unknown_disconnect);
+        unknown_disconnect
+            .record_contained_external_player_failure(
+                ExternalPlayerAvailability::Disconnected,
+                32.0,
+            )
+            .expect("an unknown attachment disconnect should be contained");
+        assert_eq!(unknown_disconnect.player_attachment_revision, 7);
+        assert!(unknown_disconnect.pending_canonical_playlist_load.is_some());
+        assert_eq!(
+            unknown_disconnect.retired_canonical_selection_attachment_revision,
+            Some(7)
         );
     }
 
@@ -2692,6 +3090,550 @@ mod tests {
                 }
             )
         }));
+    }
+
+    fn apply_active_playlist_protocol(
+        application: &mut ClientApplication<TestPlayer>,
+        files: &[&str],
+        index: i64,
+        set_by: &str,
+    ) {
+        application
+            .apply_protocol_line(
+                r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+                1.0,
+                false,
+                false,
+                true,
+            )
+            .expect("server Hello should apply");
+        let files = serde_json::to_string(files).expect("playlist fixture should encode");
+        application
+            .apply_protocol_line(
+                &format!(r#"{{"Set":{{"playlistChange":{{"files":{files},"user":"{set_by}"}}}}}}"#),
+                2.0,
+                false,
+                false,
+                true,
+            )
+            .expect("playlist files should apply");
+        application
+            .apply_protocol_line(
+                &format!(r#"{{"Set":{{"playlistIndex":{{"index":{index},"user":"{set_by}"}}}}}}"#),
+                3.0,
+                false,
+                false,
+                true,
+            )
+            .expect("playlist index should apply");
+    }
+
+    fn application_with_pending_successor_selection() -> ClientApplication<TestPlayer> {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            )
+            .expect("server Hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","episode-b.mkv"],"user":"bob"}}}"#,
+            )
+            .expect("playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+            .expect("initial selection should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":9.9,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("predecessor playstate should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("successor selection should apply");
+        assert!(session.has_pending_playlist_index_reset_intent());
+        assert!(
+            !session.pending_playlist_index_reset_has_post_selection_playstate(),
+            "the predecessor State must not satisfy successor authority"
+        );
+
+        ClientApplication::new(
+            session,
+            TestPlayer {
+                pause_error: Some("property unavailable".to_owned()),
+                ..TestPlayer::default()
+            },
+        )
+    }
+
+    #[test]
+    fn room_pause_sync_fences_predecessor_only_for_canonical_playlist_owner() {
+        let mut owner = application_with_pending_successor_selection();
+        owner
+            .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(4.0)
+            .expect("the playlist owner should fence predecessor room sync");
+        assert_eq!(
+            owner.player().pause_calls,
+            0,
+            "stale predecessor play authority must not reach the EOF-idle player"
+        );
+        assert!(owner.session().has_pending_playlist_index_reset_intent());
+
+        let mut opted_out = application_with_pending_successor_selection();
+        opted_out
+            .run_room_pause_sync_if_needed_at(4.0)
+            .expect_err("a non-owner must preserve ordinary legacy pause synchronization");
+        assert_eq!(
+            opted_out.player().pause_calls,
+            1,
+            "an unsolicited playlist frame must not suspend an opted-out client's room sync"
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_selection_waits_for_file_evidence_and_suppresses_duplicate_loads() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        apply_active_playlist_protocol(
+            &mut application,
+            &["episode-a.mkv", "episode-b.mkv"],
+            0,
+            "bob",
+        );
+
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("first canonical selection should dispatch")
+        );
+        assert_eq!(application.player().opened, vec!["episode-a.mkv"]);
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("an in-flight canonical selection should be idempotent")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv"],
+            "the same unobserved asynchronous load must not be dispatched twice"
+        );
+
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the selected file observation should publish")
+        );
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("an observed selection without a reset should settle")
+        );
+
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#,
+                4.0,
+                false,
+                false,
+                true,
+            )
+            .expect("remote canonical selection should apply");
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false)
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the next selected item should load")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "episode-b.mkv"]
+        );
+        assert_eq!(
+            application.player().paused_when_opened,
+            vec![false, true],
+            "a successor load must be preceded by the temporary pause hold"
+        );
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false),
+            "player command acceptance is not file-load evidence"
+        );
+
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the next file observation should publish")
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("observed media should receive its physical reset")
+        );
+        assert_eq!(application.player().position_seconds, Some(0.0));
+        let physical_reset_calls = (
+            application.player().position_calls,
+            application.player().pause_calls,
+        );
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false),
+            "physical reset cannot replay predecessor authority before a post-selection State"
+        );
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("waiting for successor authority should be idempotent")
+        );
+        assert_eq!(
+            (
+                application.player().position_calls,
+                application.player().pause_calls,
+            ),
+            physical_reset_calls,
+            "the physical reset must run once while canonical State is delayed"
+        );
+        application
+            .apply_protocol_line(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":1}}}"#,
+                5.0,
+                false,
+                false,
+                true,
+            )
+            .expect("successor transport authority should apply");
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("post-selection authority should commit the reset")
+        );
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            None
+        );
+        assert_eq!(
+            (
+                application.player().position_calls,
+                application.player().pause_calls,
+            ),
+            physical_reset_calls,
+            "completing the authority half must not repeat the player commands"
+        );
+    }
+
+    #[test]
+    fn same_index_selected_entry_replacement_loads_under_a_fresh_physical_reset() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        apply_active_playlist_protocol(
+            &mut application,
+            &["episode-a.mkv", "episode-b.mkv"],
+            0,
+            "bob",
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the initial selection should load")
+        );
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the initial file observation should publish")
+        );
+
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistChange":{"files":["replacement.mkv","episode-b.mkv"],"user":"bob","sorottePlaylistEpoch":3}}}"#,
+                4.0,
+                false,
+                false,
+                true,
+            )
+            .expect("replacement contents should apply");
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"bob","sorottePlaylistEpoch":3}}}"#,
+                4.1,
+                false,
+                false,
+                true,
+            )
+            .expect("same-row selection generation should apply");
+        application
+            .apply_protocol_line(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":1}}}"#,
+                4.2,
+                false,
+                false,
+                true,
+            )
+            .expect("replacement transport authority should apply");
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false)
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the replacement should load")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "replacement.mkv"]
+        );
+        assert_eq!(application.player().paused_when_opened, vec![false, true]);
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the replacement file observation should publish")
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the replacement reset should complete")
+        );
+        assert_eq!(application.player().position_seconds, Some(0.0));
+        assert!(application.player().paused);
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            None
+        );
+    }
+
+    #[test]
+    fn canonical_null_selection_unloads_once_and_allows_a_fresh_restore() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        apply_active_playlist_protocol(
+            &mut application,
+            &["episode-a.mkv", "episode-b.mkv"],
+            0,
+            "bob",
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the selected file should open")
+        );
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the selected file observation should publish")
+        );
+        assert!(
+            application
+                .playback_coordination_snapshot()
+                .media_generation
+                .is_some()
+        );
+
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistChange":{"files":[],"user":"bob","sorottePlaylistEpoch":3}}}"#,
+                4.0,
+                false,
+                false,
+                true,
+            )
+            .expect("empty contents should apply");
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistIndex":{"index":null,"user":"bob","sorottePlaylistEpoch":3}}}"#,
+                4.1,
+                false,
+                false,
+                true,
+            )
+            .expect("null selection should apply");
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            Some(false)
+        );
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("canonical selection retirement should unload")
+        );
+        assert_eq!(application.player().unload_calls, 1);
+        assert_eq!(
+            application.session().pending_playlist_index_reset_intent(),
+            None
+        );
+        assert_eq!(
+            application
+                .playback_coordination_snapshot()
+                .media_generation,
+            None
+        );
+        assert!(application.runtime.last_local_file_update().is_none());
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("retired selection should be idempotent")
+        );
+        assert_eq!(application.player().unload_calls, 1);
+
+        application.with_player_io(|player| {
+            player.pending_local_file_update = Some(
+                sorotte_player_api::LocalFileUpdate::new("episode-a.mkv")
+                    .with_path("episode-a.mkv"),
+            );
+        });
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("a delayed retiring-file observation should be reproducible")
+        );
+        assert!(application.runtime.last_local_file_update().is_some());
+
+        let pause_calls_after_unload = application.player().pause_calls;
+        application.with_player_io(|player| {
+            player.pause_error = Some("property unavailable".to_owned());
+        });
+
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv"],"user":"bob","sorottePlaylistEpoch":4}}}"#,
+                5.0,
+                false,
+                false,
+                true,
+            )
+            .expect("restored contents should apply");
+        application
+            .apply_protocol_line(
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"bob","sorottePlaylistEpoch":5}}}"#,
+                5.1,
+                false,
+                false,
+                true,
+            )
+            .expect("restored selection should apply");
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("restored canonical selection should open")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "episode-a.mkv"],
+            "same-path evidence from before the restore load must not suppress that load"
+        );
+        assert_eq!(
+            application.player().pause_calls,
+            pause_calls_after_unload,
+            "an empty mpv attachment has no predecessor to pause and may not expose the pause property"
+        );
+        assert_eq!(application.last_file_observation_attachment_revision, None);
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the restored load should wait idempotently for fresh file evidence")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "episode-a.mkv"],
+            "the same in-flight restore must not dispatch twice"
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_selection_never_opens_an_untrusted_remote_url() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        apply_active_playlist_protocol(
+            &mut application,
+            &["https://untrusted.invalid/private/video.mkv"],
+            0,
+            "bob",
+        );
+
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("an untrusted selection should be deferred without a player failure")
+        );
+        assert!(application.player().opened.is_empty());
+    }
+
+    #[test]
+    fn canonical_playlist_selection_requires_current_attachment_file_evidence() {
+        let mut application = ClientApplication::new(
+            ClientSession::default(),
+            TestPlayer {
+                connected: Some(true),
+                ..TestPlayer::default()
+            },
+        );
+        apply_active_playlist_protocol(&mut application, &["episode-a.mkv"], 0, "bob");
+        let _ = application
+            .synchronize_player_availability(3.1)
+            .expect("initial attachment observation should succeed");
+
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the initial attachment should load the canonical item")
+        );
+        assert!(
+            application
+                .publish_pending_local_file_update_legacy_compatible(
+                    PrivacyMode::SendRaw,
+                    PrivacyMode::SendRaw,
+                )
+                .expect("the initial attachment should publish file evidence")
+        );
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("the current attachment should now be synchronized")
+        );
+
+        application.with_player_io(|player| player.connected = Some(false));
+        let _ = application
+            .synchronize_player_availability(4.0)
+            .expect("detach observation should succeed");
+        assert!(
+            !application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("a detached player should not receive a load command")
+        );
+
+        application.with_player_io(|player| player.connected = Some(true));
+        let _ = application
+            .synchronize_player_availability(5.0)
+            .expect("replacement attachment observation should succeed");
+        assert!(
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .expect("a replacement attachment needs its own canonical load")
+        );
+        assert_eq!(
+            application.player().opened,
+            vec!["episode-a.mkv", "episode-a.mkv"],
+            "file evidence from the preceding attachment must not satisfy the replacement"
+        );
     }
 
     #[test]

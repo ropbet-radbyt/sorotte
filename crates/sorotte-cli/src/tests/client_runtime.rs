@@ -441,6 +441,7 @@ fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_netw
         &mut runtime,
         &config,
         &mut CliNetworkOptionsHealthReporter::default(),
+        1.0,
     )
     .expect("the CLI runtime pump should publish and configure the queued network item");
 
@@ -497,6 +498,7 @@ fn cli_runtime_contains_external_network_option_rejection_during_file_update_pum
         &mut runtime,
         &config,
         &mut CliNetworkOptionsHealthReporter::default(),
+        1.0,
     )
     .expect("a healthy mpv option rejection must not abort the CLI session");
 

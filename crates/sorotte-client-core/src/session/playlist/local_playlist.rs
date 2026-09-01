@@ -26,6 +26,94 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_next(&self) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_playlist_next_with_selection_proof(false)
+    }
+
+    /// Builds the ordinary playlist-next action after the runtime has already
+    /// proved that an owned physical completion belongs to the exact current
+    /// canonical selection.
+    ///
+    /// The generic Next surface intentionally compares the published user
+    /// filename with the playlist row before acting. That projection can be
+    /// lossy (for example, a basename published for an absolute local path),
+    /// so it must not override the stronger attempt/generation, selection,
+    /// and physical-file proof retained by `ClientRuntime` at natural EOF.
+    pub(crate) fn runtime_actions_for_verified_local_playlist_next(
+        &self,
+    ) -> Vec<ClientRuntimeAction> {
+        self.runtime_actions_for_local_playlist_next_with_selection_proof(true)
+    }
+
+    /// Builds the bounded room pause for an owned natural completion at a
+    /// no-loop boundary. The state remains an internal runtime obligation so
+    /// the public runtime-action enum can stay exhaustive and patch-compatible.
+    pub(crate) fn terminal_state_for_verified_local_playlist_completion(
+        &self,
+        expected_index: i64,
+        terminal_position_seconds: Option<f64>,
+    ) -> Option<StatePayload> {
+        if !self.verified_natural_completion_is_no_loop_terminal_boundary(expected_index) {
+            return None;
+        }
+        let Some(terminal_position_seconds) =
+            terminal_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
+        else {
+            // Pausing without a finite terminal position would replace one
+            // unbounded authority sample with another ambiguous one. Keep the
+            // completion fail-closed until a trustworthy player sample exists.
+            return None;
+        };
+        if self
+            .current_room_playstate()
+            .and_then(|playstate| playstate.paused)
+            == Some(true)
+        {
+            return None;
+        }
+
+        let playstate = self.with_current_transport_revision(
+            PlaystatePayload::new()
+                .with_position(terminal_position_seconds)
+                .with_paused(true)
+                .with_do_seek(false),
+        );
+        Some(StatePayload::new().with_playstate(playstate))
+    }
+
+    fn verified_natural_completion_is_no_loop_terminal_boundary(
+        &self,
+        expected_index: i64,
+    ) -> bool {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
+            || self.local_can_control() != Some(true)
+        {
+            return false;
+        }
+        let Some(playlist) = self.current_room_playlist() else {
+            return false;
+        };
+        if playlist.index != Some(expected_index) || playlist.files.is_empty() {
+            return false;
+        }
+        let Ok(current_index) = usize::try_from(expected_index) else {
+            return false;
+        };
+        if current_index >= playlist.files.len() {
+            return false;
+        }
+        if playlist.files.len() == 1 {
+            return !self.loop_single_files_enabled_legacy_compatible();
+        }
+        current_index.checked_add(1).is_some_and(|next_index| {
+            next_index >= playlist.files.len()
+                && !self.loop_at_end_of_playlist_enabled_legacy_compatible()
+        })
+    }
+
+    fn runtime_actions_for_local_playlist_next_with_selection_proof(
+        &self,
+        current_selection_already_proven: bool,
+    ) -> Vec<ClientRuntimeAction> {
         if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
@@ -43,7 +131,9 @@ impl ClientSession {
         if current_index >= playlist.files.len() {
             return Vec::new();
         }
-        if self.current_user_file_name() != Some(playlist.files[current_index].as_str()) {
+        if !current_selection_already_proven
+            && self.current_user_file_name() != Some(playlist.files[current_index].as_str())
+        {
             return Vec::new();
         }
 

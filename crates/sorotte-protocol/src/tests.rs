@@ -100,6 +100,62 @@ fn roundtrip_message_fixture() {
 }
 
 #[test]
+fn playstate_transport_revision_has_a_stable_additive_wire_shape() {
+    let message = ProtocolMessage::state(
+        StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(7.0)
+                .with_paused(true)
+                .with_transport_revision(19),
+        ),
+    );
+
+    let encoded = encode_message_line(&message).expect("playstate should encode");
+    let value: serde_json::Value = serde_json::from_str(&encoded).expect("state should be JSON");
+    assert_eq!(
+        value.pointer("/State/playstate/sorotteTransportRevision"),
+        Some(&json!(19))
+    );
+    assert_eq!(
+        decode_message_line(&encoded).expect("encoded playstate should decode"),
+        message
+    );
+    let ProtocolMessage::State(decoded) =
+        decode_message_line(&encoded).expect("encoded playstate should decode")
+    else {
+        panic!("encoded playstate should remain a State message");
+    };
+    assert_eq!(
+        decoded
+            .state
+            .playstate
+            .as_ref()
+            .expect("decoded State should retain playstate")
+            .transport_revision()
+            .expect("transport revision should be well-formed"),
+        Some(19)
+    );
+
+    let malformed = decode_message_line(
+        r#"{"State":{"playstate":{"position":7.0,"paused":true,"sorotteTransportRevision":"invalid"}}}"#,
+    )
+    .expect("an additive malformed extension should remain structurally decodable");
+    let ProtocolMessage::State(malformed) = malformed else {
+        panic!("malformed extension fixture should remain a State message");
+    };
+    assert!(
+        malformed
+            .state
+            .playstate
+            .as_ref()
+            .expect("malformed fixture should retain playstate")
+            .transport_revision()
+            .is_err(),
+        "receivers must be able to reject a malformed causal fence"
+    );
+}
+
+#[test]
 fn roundtrip_raw_json_value_fixture() {
     let fixture = read_fixture("state_ping.json");
     let value = decode_line(&fixture).expect("fixture JSON should decode");
@@ -1550,6 +1606,67 @@ fn playlist_index_message_with_null_index_decodes_as_null_snapshot() {
         encoded_value,
         json!({"Set":{"playlistIndex":{"index":null,"user":null}}})
     );
+}
+
+#[test]
+fn playlist_epoch_and_expected_state_roundtrip_as_namespaced_extensions() {
+    let playlist_change =
+        PlaylistChangePayload::new(["episode1.mkv", "episode2.mkv"]).with_playlist_epoch(41);
+    assert_eq!(playlist_change.playlist_epoch(), Some(41));
+    let change_line = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_change(playlist_change),
+    ))
+    .expect("playlist epoch should encode");
+    let ProtocolMessage::Set(change) =
+        decode_message_line(&change_line).expect("playlist epoch should decode")
+    else {
+        panic!("expected Set message");
+    };
+    assert_eq!(
+        change
+            .set
+            .playlist_change
+            .expect("playlistChange should remain present")
+            .playlist_epoch(),
+        Some(41)
+    );
+
+    let playlist_index = PlaylistIndexPayload::new(1)
+        .with_playlist_epoch(42)
+        .with_expected_playlist_state(0, 41);
+    assert!(playlist_index.has_expected_playlist_state());
+    assert_eq!(playlist_index.playlist_epoch(), Some(42));
+    assert_eq!(playlist_index.expected_playlist_index(), Some(0));
+    assert_eq!(playlist_index.expected_playlist_epoch(), Some(41));
+    let index_line = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_index(playlist_index),
+    ))
+    .expect("guarded playlist index should encode");
+    assert_eq!(
+        decode_line(&index_line).expect("guarded playlist index should remain JSON"),
+        json!({
+            "Set": {
+                "playlistIndex": {
+                    "index": 1,
+                    "sorotteExpectedPlaylistEpoch": 41,
+                    "sorotteExpectedPlaylistIndex": 0,
+                    "sorottePlaylistEpoch": 42
+                }
+            }
+        })
+    );
+    let ProtocolMessage::Set(index) =
+        decode_message_line(&index_line).expect("guarded playlist index should decode")
+    else {
+        panic!("expected Set message");
+    };
+    let index = index
+        .set
+        .playlist_index
+        .expect("playlistIndex should remain present");
+    assert_eq!(index.playlist_epoch(), Some(42));
+    assert_eq!(index.expected_playlist_index(), Some(0));
+    assert_eq!(index.expected_playlist_epoch(), Some(41));
 }
 
 #[test]

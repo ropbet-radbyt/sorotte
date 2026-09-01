@@ -13,6 +13,7 @@ use sorotte_protocol::{
 };
 
 use super::*;
+use crate::session::PendingPlaystateTransportEvidence;
 use crate::{ClientEvent, ReconnectPlaylistRestoreIntent};
 
 const RESET_DEFECT_ID: &str =
@@ -90,6 +91,8 @@ struct PlaylistResetProjection {
     rooms: BTreeMap<String, crate::RoomPlaylistView>,
     pending: Option<crate::RoomPlaylistView>,
     pending_remote_revision: u64,
+    selection_revisions: BTreeMap<String, u64>,
+    pending_selection_revision: u64,
     pending_local_change_echoes: Vec<PlaylistEchoTrackerProjection>,
     pending_local_index_echoes: Vec<PlaylistIndexEchoTrackerProjection>,
     remote_revisions: BTreeMap<String, u64>,
@@ -98,6 +101,10 @@ struct PlaylistResetProjection {
     shuffle_nonce: u64,
     received_first_index: bool,
     pending_index_reset_pause_before_sync: Option<bool>,
+    pending_index_reset_room: Option<String>,
+    pending_index_reset_base_transport_revision: Option<u64>,
+    pending_index_reset_base_playstate_receipt_sequence: Option<u64>,
+    pending_index_reset_physical_attachment_epoch: Option<u64>,
     pending_index_reset_refresh_recently_advanced: bool,
     suppress_next_self_index_reset: bool,
     last_seek_position_before_manual_seek: Option<f64>,
@@ -110,6 +117,8 @@ impl PlaylistResetProjection {
             rooms: playlist.rooms.clone(),
             pending: playlist.pending.clone(),
             pending_remote_revision: playlist.pending_remote_revision,
+            selection_revisions: playlist.selection_revisions.clone(),
+            pending_selection_revision: playlist.pending_selection_revision,
             pending_local_change_echoes: playlist
                 .pending_local_change_echoes
                 .iter()
@@ -142,6 +151,13 @@ impl PlaylistResetProjection {
             shuffle_nonce: playlist.shuffle_nonce,
             received_first_index: playlist.received_first_index,
             pending_index_reset_pause_before_sync: playlist.pending_index_reset_pause_before_sync,
+            pending_index_reset_room: playlist.pending_index_reset_room.clone(),
+            pending_index_reset_base_transport_revision: playlist
+                .pending_index_reset_base_transport_revision,
+            pending_index_reset_base_playstate_receipt_sequence: playlist
+                .pending_index_reset_base_playstate_receipt_sequence,
+            pending_index_reset_physical_attachment_epoch: playlist
+                .pending_index_reset_physical_attachment_epoch,
             pending_index_reset_refresh_recently_advanced: playlist
                 .pending_index_reset_refresh_recently_advanced,
             suppress_next_self_index_reset: playlist.suppress_next_self_index_reset,
@@ -304,6 +320,8 @@ struct SessionResetProjection {
     room_media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     room_known_rooms: BTreeSet<String>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
+    room_playstate_transport_revisions: BTreeMap<String, u64>,
+    room_playstate_receipt_sequences: BTreeMap<String, u64>,
     room_playstate_updated_at_seconds: BTreeMap<String, f64>,
     room_playstate_authority_changed_at_seconds: BTreeMap<String, f64>,
     playback: PlaybackResetProjection,
@@ -318,6 +336,7 @@ struct SessionResetProjection {
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
     pending_compatibility_fallbacks: Vec<crate::ClientCompatibilityFallback>,
+    pending_playstate_transport_evidence: String,
     playback_barrier: String,
 }
 
@@ -334,6 +353,7 @@ impl SessionResetProjection {
             pending_controller_auth_notifications,
             pending_user_change_notifications,
             pending_compatibility_fallbacks,
+            pending_playstate_transport_evidence,
             playback_barrier,
         } = session;
         let crate::ClientModel {
@@ -378,6 +398,8 @@ impl SessionResetProjection {
             room_media_match_peer_tiers: room.media_match_peer_tiers.clone(),
             room_known_rooms: room.known_rooms.clone(),
             room_playstates: room.playstates.clone(),
+            room_playstate_transport_revisions: room.playstate_transport_revisions.clone(),
+            room_playstate_receipt_sequences: room.playstate_receipt_sequences.clone(),
             room_playstate_updated_at_seconds: room.playstate_updated_at_seconds.clone(),
             room_playstate_authority_changed_at_seconds: room
                 .playstate_authority_changed_at_seconds
@@ -395,6 +417,9 @@ impl SessionResetProjection {
             pending_controller_auth_notifications: pending_controller_auth_notifications.clone(),
             pending_user_change_notifications: pending_user_change_notifications.clone(),
             pending_compatibility_fallbacks: pending_compatibility_fallbacks.clone(),
+            pending_playstate_transport_evidence: format!(
+                "{pending_playstate_transport_evidence:#?}"
+            ),
             playback_barrier: format!("{playback_barrier:#?}"),
         }
     }
@@ -672,6 +697,23 @@ fn seed_room_state(session: &mut ClientSession, seed: u64) {
     session
         .model
         .room
+        .playstate_transport_revisions
+        .insert("room1".to_owned(), seed.max(1));
+    session
+        .model
+        .room
+        .playstate_receipt_sequences
+        .insert("room1".to_owned(), seed.max(1));
+    session.pending_playstate_transport_evidence = Some(PendingPlaystateTransportEvidence {
+        room: "room1".to_owned(),
+        transport_revision: seed.max(1),
+        paused: false,
+        seek_position_seconds: Some(101.0 + seed as f64),
+        authority_observed_at_seconds: 101.5 + seed as f64,
+    });
+    session
+        .model
+        .room
         .playstate_updated_at_seconds
         .insert("room1".to_owned(), 102.0 + seed as f64);
     session
@@ -749,10 +791,14 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
     });
     playlist.pending_remote_revision = 303 + seed;
     playlist
+        .selection_revisions
+        .insert("room1".to_owned(), 304 + seed);
+    playlist.pending_selection_revision = 305 + seed;
+    playlist
         .pending_local_change_echoes
         .entry("room1".to_owned())
         .or_default()
-        .record(304 + seed, &room_playlist.files);
+        .record(306 + seed, &room_playlist.files);
     playlist
         .pending_local_change_echoes
         .entry("invalidated-room".to_owned())
@@ -762,7 +808,7 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
         .pending_local_index_echoes
         .entry("room1".to_owned())
         .or_default()
-        .record(305 + seed, 1);
+        .record(307 + seed, 1);
     playlist
         .pending_local_index_echoes
         .entry("invalidated-room".to_owned())
@@ -781,6 +827,10 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
     playlist.shuffle_nonce = 307 + seed;
     playlist.received_first_index = true;
     playlist.pending_index_reset_pause_before_sync = Some(false);
+    playlist.pending_index_reset_room = Some("room1".to_owned());
+    playlist.pending_index_reset_base_transport_revision = Some(seed.max(1));
+    playlist.pending_index_reset_base_playstate_receipt_sequence = Some(seed.max(1));
+    playlist.pending_index_reset_physical_attachment_epoch = Some(900 + seed);
     playlist.pending_index_reset_refresh_recently_advanced = true;
     playlist.suppress_next_self_index_reset = true;
     playlist.last_seek_position_before_manual_seek = Some(308.0 + seed as f64);
@@ -1049,6 +1099,14 @@ fn assert_dense_seed(session: &ClientSession) {
     assert_ne!(projection.connection_phase, fresh.connection_phase);
     assert_ne!(projection.room_domain, fresh.room_domain);
     assert_ne!(projection.room_users, fresh.room_users);
+    assert_ne!(
+        projection.room_playstate_transport_revisions,
+        fresh.room_playstate_transport_revisions
+    );
+    assert_ne!(
+        projection.room_playstate_receipt_sequences,
+        fresh.room_playstate_receipt_sequences
+    );
     assert_ne!(projection.playback, fresh.playback);
     assert_ne!(projection.playlist, fresh.playlist);
     assert_ne!(projection.readiness, fresh.readiness);
@@ -1065,6 +1123,10 @@ fn assert_dense_seed(session: &ClientSession) {
     assert!(!projection.pending_controller_auth_notifications.is_empty());
     assert!(!projection.pending_user_change_notifications.is_empty());
     assert!(!projection.pending_compatibility_fallbacks.is_empty());
+    assert_ne!(
+        projection.pending_playstate_transport_evidence,
+        fresh.pending_playstate_transport_evidence
+    );
     assert_ne!(projection.playback_barrier, fresh.playback_barrier);
     assert!(projection.playback.pending_local_pause_change);
     assert!(projection.playback.pending_room_pause_sync);

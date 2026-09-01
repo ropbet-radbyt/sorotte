@@ -9,6 +9,10 @@ where
 {
     pub fn begin_protocol_connection_generation(&mut self) {
         self.control.begin_protocol_connection_generation();
+        // A natural terminal observation belongs to the authority context in
+        // which it was received. Never replay it after reconnecting into a
+        // potentially newer canonical playlist selection.
+        self.pending_natural_playback_completion = None;
         self.playback_coordination
             .begin_protocol_connection_generation(&self.session);
         self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();
@@ -492,7 +496,17 @@ where
         speed_supported: bool,
     ) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        self.drain_player_transport_coordination(now_seconds)?;
+        if let Err(error) = self.drain_player_transport_coordination(now_seconds) {
+            if self.refresh_terminal_playback_after_desync_error(now_seconds) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+
+        if self.desync_correction_is_terminally_obsolete() {
+            self.session.model.playback.behind_first_detected_at_seconds = None;
+            return Ok(());
+        }
 
         // Reconnect validation owns the correction window immediately after
         // reconnect restore, but transport observations must continue flowing
@@ -546,9 +560,38 @@ where
             Ok(()) => Ok(()),
             Err(error) => {
                 self.session.restore_local_action_state(session_snapshot);
-                Err(error)
+                if self.refresh_terminal_playback_after_desync_error(now_seconds) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
             }
         }
+    }
+
+    fn refresh_terminal_playback_after_desync_error(&mut self, now_seconds: f64) -> bool {
+        // A synchronous player command can lose a race with EOF: the command
+        // response fails because the file is already gone while the terminal
+        // event is waiting immediately behind it. Refresh once before turning
+        // that media transition into a contained player failure.
+        let _ = self.drain_player_transport_coordination(now_seconds);
+        let terminal = self.desync_correction_is_terminally_obsolete();
+        if terminal {
+            self.session.model.playback.behind_first_detected_at_seconds = None;
+        }
+        terminal
+    }
+
+    fn desync_correction_is_terminally_obsolete(&self) -> bool {
+        if self.pending_natural_playback_completion.is_some() {
+            return true;
+        }
+        let coordination = self.playback_coordination_snapshot();
+        coordination.transport_telemetry_observed
+            && matches!(
+                coordination.diagnostic,
+                PlaybackDiagnostic::Empty | PlaybackDiagnostic::Ended
+            )
     }
 
     pub(crate) fn desync_local_position_with_legacy_ping_forward_delay(

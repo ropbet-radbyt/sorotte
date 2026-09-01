@@ -138,10 +138,7 @@ impl ClientSession {
         self.behavior_config.loop_at_end_of_playlist || self.is_playing_music()
     }
 
-    pub(in crate::session) fn playlist_target_switch_allowed_legacy_compatible(
-        &self,
-        file_name: &str,
-    ) -> bool {
+    pub fn playlist_target_switch_allowed_legacy_compatible(&self, file_name: &str) -> bool {
         if Self::is_plex_uri(file_name) {
             return true;
         }

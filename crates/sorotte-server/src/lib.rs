@@ -216,8 +216,8 @@ pub(crate) use auth::{
 pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
 pub(crate) use inbound::{
-    ServerHelloCommand, ServerInboundCommand, ServerSetCommand, ServerSharedFile,
-    ServerStateCommand, normalize_server_protocol_message,
+    ServerHelloCommand, ServerInboundCommand, ServerPlaylistIndexPrecondition, ServerSetCommand,
+    ServerSharedFile, ServerStateCommand, normalize_server_protocol_message,
 };
 pub(crate) use messages::*;
 #[cfg(test)]
@@ -476,6 +476,7 @@ pub struct ServerRuntime {
 struct RoomPlaylistState {
     files: Vec<String>,
     index: Option<i64>,
+    epoch: u64,
 }
 
 impl RoomPlaylistState {
@@ -493,6 +494,14 @@ impl RoomPlaylistState {
         changed
     }
 
+    fn selected_entry_identity(&self) -> Option<(i64, &str)> {
+        let index = self.index?;
+        let index_usize = usize::try_from(index).ok()?;
+        self.files
+            .get(index_usize)
+            .map(|file| (index, file.as_str()))
+    }
+
     fn accepts_index(&self, index: Option<i64>) -> bool {
         match index {
             None => self.files.is_empty(),
@@ -502,6 +511,25 @@ impl RoomPlaylistState {
             }
         }
     }
+
+    fn retire_invalid_selected_index(&mut self) -> bool {
+        let Some(index) = self.index else {
+            return false;
+        };
+        if self.accepts_index(Some(index)) {
+            return false;
+        }
+        self.index = None;
+        true
+    }
+
+    fn advance_epoch(&mut self) -> u64 {
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .expect("canonical playlist epoch exhausted");
+        self.epoch
+    }
 }
 
 impl std::fmt::Debug for RoomPlaylistState {
@@ -510,6 +538,7 @@ impl std::fmt::Debug for RoomPlaylistState {
             .debug_struct("RoomPlaylistState")
             .field("files_count", &self.files.len())
             .field("index", &self.index)
+            .field("epoch", &self.epoch)
             .finish()
     }
 }
@@ -562,6 +591,7 @@ impl RoomPlaybackState {
 struct ClientPlaybackState {
     position: Option<f64>,
     updated_at_seconds: f64,
+    transport_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -638,10 +668,15 @@ struct CachedParticipantStatusSnapshot {
 }
 
 impl ClientPlaybackState {
-    fn new(position: Option<f64>, updated_at_seconds: f64) -> Self {
+    fn new(
+        position: Option<f64>,
+        updated_at_seconds: f64,
+        transport_revision: Option<u64>,
+    ) -> Self {
         Self {
             position,
             updated_at_seconds,
+            transport_revision,
         }
     }
 

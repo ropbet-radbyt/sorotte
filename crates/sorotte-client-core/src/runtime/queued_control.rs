@@ -39,6 +39,25 @@ impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
 {
+    fn refresh_player_projection_before_state_sync(&mut self, now_seconds: f64) -> bool {
+        if self.player.player_event_delivery_mode()
+            != sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        {
+            self.sync_player_playback_telemetry_into_session_and_buffer();
+            return true;
+        }
+        if self.pending_state_sync_player_error.is_some() {
+            return false;
+        }
+        match self.drain_player_transport_coordination(now_seconds) {
+            Ok(()) => true,
+            Err(error) => {
+                self.pending_state_sync_player_error = Some(error);
+                false
+            }
+        }
+    }
+
     fn queue_connection_scoped_state_with_participant_status(
         &mut self,
         mut state: StatePayload,
@@ -74,6 +93,34 @@ where
         }
 
         self.projected_local_position_at(now_seconds)
+    }
+
+    fn outbound_state_sync_position_seconds_for_pause_mutation(
+        &self,
+        now_seconds: f64,
+        dont_slow_down_with_me: bool,
+        has_local_pause_mutation_intent: bool,
+    ) -> Option<f64> {
+        self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me)
+            .or_else(|| {
+                has_local_pause_mutation_intent.then_some(())?;
+                self.playback_coordination
+                    .local_pause_mutation_position_at(
+                        now_seconds,
+                        self.session.model.playback.local_position,
+                    )
+                    .or_else(|| {
+                        // A canonical room position is the neutral fallback
+                        // when the local player is between trustworthy
+                        // samples. The outgoing mutation carries doSeek=false,
+                        // so this preserves the Play/Pause command without
+                        // laundering cache telemetry into a seek.
+                        self.session
+                            .current_room_playstate_at(now_seconds)
+                            .and_then(|playstate| playstate.position)
+                            .filter(|position| position.is_finite() && *position >= 0.0)
+                    })
+            })
     }
 
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
@@ -172,14 +219,34 @@ where
         // the response, so activate that generation while periodic heartbeats
         // remain gated on an active session below.
         self.control.activate_protocol_connection_generation();
-        self.sync_player_playback_telemetry_into_session_and_buffer();
-        let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(
-                clocks.response_at_seconds,
-                dont_slow_down_with_me,
-            ),
-            self.session.model.playback.local_paused,
-        ) else {
+        let player_projection_is_current =
+            self.refresh_player_projection_before_state_sync(clocks.response_at_seconds);
+        let inbound_transport_revision = inbound_state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.transport_revision);
+        let inbound_do_seek = inbound_state
+            .playstate
+            .as_ref()
+            .is_some_and(|playstate| playstate.do_seek == Some(true));
+        let local_pause_mutation_intent = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent_for_inbound_transport(
+                &self.session,
+                inbound_transport_revision,
+                inbound_do_seek,
+            );
+        let local_playback = player_projection_is_current.then(|| {
+            (
+                self.outbound_state_sync_position_seconds_for_pause_mutation(
+                    clocks.response_at_seconds,
+                    dont_slow_down_with_me,
+                    local_pause_mutation_intent.is_some(),
+                ),
+                self.session.model.playback.local_paused,
+            )
+        });
+        let Some((Some(local_position), Some(local_paused))) = local_playback else {
             let outbound_state = self.session.reconcile_ping_only_state_response(
                 inbound_state,
                 client_latency_calculation,
@@ -203,6 +270,7 @@ where
                 client_rtt,
                 crate::session::StateReconcileContext {
                     local_state_change_global_playstate,
+                    local_pause_mutation_intent,
                     received_at_seconds: clocks.received_at_seconds,
                 },
             );
@@ -260,19 +328,28 @@ where
             .ping_metrics_legacy_compatible
             .client_latency_calculation_now();
         let client_rtt = self.ping_metrics_legacy_compatible.client_rtt_seconds();
+        let local_pause_mutation_intent = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent(&self.session);
 
         let outbound_state = if let (Some(local_position), Some(local_paused)) = (
-            self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
+            self.outbound_state_sync_position_seconds_for_pause_mutation(
+                now_seconds,
+                dont_slow_down_with_me,
+                local_pause_mutation_intent.is_some(),
+            ),
             self.session.model.playback.local_paused,
         ) {
-            self.session.reconcile_state_and_build_response_at(
-                StatePayload::new(),
-                local_position,
-                local_paused,
-                client_latency_calculation,
-                client_rtt,
-                now_seconds,
-            )
+            self.session
+                .reconcile_state_and_build_response_at_with_pause_mutation_intent(
+                    StatePayload::new(),
+                    local_position,
+                    local_paused,
+                    client_latency_calculation,
+                    client_rtt,
+                    now_seconds,
+                    local_pause_mutation_intent,
+                )
         } else {
             StatePayload::new().with_ping(
                 PingPayload::new()

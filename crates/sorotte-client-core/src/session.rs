@@ -10,7 +10,17 @@ pub struct ClientSession {
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
     pending_compatibility_fallbacks: Vec<ClientCompatibilityFallback>,
+    pending_playstate_transport_evidence: Option<PendingPlaystateTransportEvidence>,
     playback_barrier: playback_barrier::ClientPlaybackBarrierState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingPlaystateTransportEvidence {
+    room: String,
+    transport_revision: u64,
+    paused: bool,
+    seek_position_seconds: Option<f64>,
+    authority_observed_at_seconds: f64,
 }
 
 const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
@@ -53,6 +63,7 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
     pending_cache_room_playstate_resync: bool,
     cache_recovery_observation_position: Option<f64>,
     cache_recovery_waiting_for_post_cache_position: bool,
+    client_ignoring_on_the_fly: u32,
     last_seek_position_before_manual_seek: Option<f64>,
     last_paused_on_leave_at_seconds: Option<f64>,
     last_rewound_at_seconds: Option<f64>,
@@ -62,7 +73,14 @@ pub(crate) struct ClientSessionLocalActionSnapshot {
 
 pub(crate) struct StateReconcileContext {
     pub(crate) local_state_change_global_playstate: Option<RoomPlaystateView>,
+    pub(crate) local_pause_mutation_intent: Option<LocalPauseMutationIntent>,
     pub(crate) received_at_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocalPauseMutationIntent {
+    pub(crate) paused: bool,
+    pub(crate) base_transport_revision: Option<u64>,
 }
 
 mod apply;

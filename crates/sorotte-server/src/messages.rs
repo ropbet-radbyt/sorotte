@@ -98,6 +98,7 @@ pub(crate) fn readiness_legacy_chat_message(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StateSyncOptions<'a> {
     pub(crate) set_by: Option<&'a str>,
+    pub(crate) transport_revision: Option<u64>,
     pub(crate) server_ignoring_counter: Option<u32>,
     pub(crate) client_latency_calculation: Option<f64>,
     pub(crate) client_ignoring_counter: Option<u32>,
@@ -122,6 +123,9 @@ pub(crate) fn state_sync_message(
     }
     if let Some(set_by) = options.set_by {
         playstate = playstate.with_set_by(set_by);
+    }
+    if let Some(transport_revision) = options.transport_revision {
+        playstate = playstate.with_transport_revision(transport_revision);
     }
 
     let mut ping = PingPayload::new()
@@ -183,8 +187,10 @@ pub(crate) fn new_controlled_room_message(room_name: &str, password: &str) -> Pr
 pub(crate) fn playlist_snapshot_change_message(
     files: Vec<String>,
     set_by: Option<&str>,
+    epoch: u64,
 ) -> ProtocolMessage {
-    let mut playlist_change = playlist_change_with_plex_sidecar(files, false);
+    let mut playlist_change =
+        playlist_change_with_plex_sidecar(files, false).with_playlist_epoch(epoch);
     playlist_change = if let Some(set_by) = set_by {
         playlist_change.with_user(set_by)
     } else {
@@ -196,8 +202,9 @@ pub(crate) fn playlist_snapshot_change_message(
 pub(crate) fn playlist_snapshot_index_message(
     index: Option<i64>,
     set_by: Option<&str>,
+    epoch: u64,
 ) -> ProtocolMessage {
-    let mut playlist_index = PlaylistIndexPayload::from_optional(index);
+    let mut playlist_index = PlaylistIndexPayload::from_optional(index).with_playlist_epoch(epoch);
     playlist_index = if let Some(set_by) = set_by {
         playlist_index.with_user(set_by)
     } else {

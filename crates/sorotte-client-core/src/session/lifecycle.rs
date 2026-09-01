@@ -45,6 +45,7 @@ impl ClientSession {
                 .model
                 .playback
                 .cache_recovery_waiting_for_post_cache_position,
+            client_ignoring_on_the_fly: self.model.playback.client_ignoring_on_the_fly,
             last_seek_position_before_manual_seek: self
                 .model
                 .playlist
@@ -77,6 +78,7 @@ impl ClientSession {
             .playback
             .cache_recovery_waiting_for_post_cache_position =
             snapshot.cache_recovery_waiting_for_post_cache_position;
+        self.model.playback.client_ignoring_on_the_fly = snapshot.client_ignoring_on_the_fly;
         self.model.playlist.last_seek_position_before_manual_seek =
             snapshot.last_seek_position_before_manual_seek;
         self.model.playback.last_paused_on_leave_at_seconds =
@@ -280,6 +282,16 @@ impl ClientSession {
     pub(super) fn reset_playlist_index_transition_tracking(&mut self) {
         self.model.playlist.received_first_index = false;
         self.model.playlist.pending_index_reset_pause_before_sync = None;
+        self.model.playlist.pending_index_reset_room = None;
+        self.model
+            .playlist
+            .pending_index_reset_base_transport_revision = None;
+        self.model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence = None;
+        self.model
+            .playlist
+            .pending_index_reset_physical_attachment_epoch = None;
         self.model
             .playlist
             .pending_index_reset_refresh_recently_advanced = false;
@@ -296,20 +308,23 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn recently_rewound(&self, now_seconds: f64, threshold_seconds: f64) -> bool {
-        if !threshold_seconds.is_finite() || threshold_seconds <= 0.0 {
-            return false;
-        }
-        self.model
-            .playback
-            .last_rewound_at_seconds
-            .is_some_and(|last_rewound_at_seconds| {
-                let elapsed = now_seconds - last_rewound_at_seconds;
-                elapsed >= 0.0 && elapsed < threshold_seconds
-            })
-    }
-
     pub(super) fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+        let room = self.model.room.name.clone();
+        let base_transport_revision = room.as_deref().and_then(|room| {
+            self.model
+                .room
+                .playstate_transport_revisions
+                .get(room)
+                .copied()
+        });
+        let base_playstate_receipt_sequence = room.as_deref().map(|room| {
+            self.model
+                .room
+                .playstate_receipt_sequences
+                .get(room)
+                .copied()
+                .unwrap_or_default()
+        });
         self.model.playlist.pending_index_reset_pause_before_sync = Some(
             self.model
                 .playlist
@@ -317,6 +332,24 @@ impl ClientSession {
                 .unwrap_or(false)
                 || pause_before_sync,
         );
+        // Every new canonical selection needs a playstate observed after that
+        // selection before predecessor transport authority may be replayed on
+        // the successor. Re-arm the receipt fence even when another reset is
+        // already pending; a second selection must not borrow the first one's
+        // later State acknowledgement.
+        self.model.playlist.pending_index_reset_room = room;
+        self.model
+            .playlist
+            .pending_index_reset_base_transport_revision = base_transport_revision;
+        self.model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence = base_playstate_receipt_sequence;
+        // A canonical selection owns a new physical reset even when it replays
+        // the same playlist row. Do not let a reset proven on the predecessor
+        // selection (or on an older player attachment) satisfy this one.
+        self.model
+            .playlist
+            .pending_index_reset_physical_attachment_epoch = None;
     }
 
     pub fn begin_local_playlist_index_reset_intent(
@@ -350,6 +383,16 @@ impl ClientSession {
             .pending_index_reset_pause_before_sync
             .take();
         if pending_reset.is_some() {
+            self.model.playlist.pending_index_reset_room = None;
+            self.model
+                .playlist
+                .pending_index_reset_base_transport_revision = None;
+            self.model
+                .playlist
+                .pending_index_reset_base_playstate_receipt_sequence = None;
+            self.model
+                .playlist
+                .pending_index_reset_physical_attachment_epoch = None;
             if self
                 .model
                 .playlist
@@ -371,6 +414,122 @@ impl ClientSession {
             .playlist
             .pending_index_reset_pause_before_sync
             .is_some()
+    }
+
+    /// Returns the reset still owed to the physical player without consuming it.
+    ///
+    /// Player owners use this to wait until a newly-selected playlist item is
+    /// actually available before committing the pause-and-rewind side effect.
+    pub fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
+        self.model.playlist.pending_index_reset_pause_before_sync
+    }
+
+    /// Returns whether the pending playlist reset has been applied to the
+    /// currently-owned physical player attachment.
+    ///
+    /// The epoch is supplied by the player owner. Binding the proof to that
+    /// epoch prevents a replacement player from inheriting a reset that was
+    /// only applied to its predecessor.
+    pub fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
+        &self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        self.has_pending_playlist_index_reset_intent()
+            && self
+                .model
+                .playlist
+                .pending_index_reset_physical_attachment_epoch
+                == Some(player_attachment_epoch)
+    }
+
+    /// Records that the pending playlist reset reached the physical player
+    /// owned by `player_attachment_epoch`.
+    ///
+    /// Returns false if the selection reset was retired before the effect
+    /// completed, allowing the caller to reject a late player command result.
+    pub fn mark_pending_playlist_index_reset_physical_effect_applied(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> bool {
+        if !self.has_pending_playlist_index_reset_intent() {
+            return false;
+        }
+        self.model
+            .playlist
+            .pending_index_reset_physical_attachment_epoch = Some(player_attachment_epoch);
+        true
+    }
+
+    /// Completes a pending reset only after both independent halves of the
+    /// successor handoff are proven: the selected media was reset on the
+    /// current physical attachment and canonical post-selection playstate was
+    /// accepted.
+    pub fn complete_pending_playlist_index_reset_for_attachment(
+        &mut self,
+        player_attachment_epoch: u64,
+    ) -> Option<bool> {
+        if !self.pending_playlist_index_reset_physical_effect_applied_for_attachment(
+            player_attachment_epoch,
+        ) || !self.pending_playlist_index_reset_has_post_selection_playstate()
+        {
+            return None;
+        }
+        self.take_pending_playlist_index_reset_intent()
+    }
+
+    /// Returns whether canonical room playstate accepted after the pending
+    /// playlist selection is now available.
+    ///
+    /// A playlist-index frame and its paired State frame are separate protocol
+    /// messages. Until the latter is accepted, replaying the predecessor's
+    /// desired Play level can briefly start the successor. Receipt sequencing
+    /// also covers legacy untagged playstate while the transport-revision
+    /// fence rejects stale tagged or downgrade frames before they reach here.
+    pub fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
+        if self
+            .model
+            .playlist
+            .pending_index_reset_pause_before_sync
+            .is_none()
+        {
+            return false;
+        }
+        let Some(room) = self.model.playlist.pending_index_reset_room.as_deref() else {
+            return false;
+        };
+        if self.model.room.name.as_deref() != Some(room) {
+            return false;
+        }
+        let Some(base_sequence) = self
+            .model
+            .playlist
+            .pending_index_reset_base_playstate_receipt_sequence
+        else {
+            return false;
+        };
+        let receipt_advanced = self
+            .model
+            .room
+            .playstate_receipt_sequences
+            .get(room)
+            .copied()
+            .unwrap_or_default()
+            > base_sequence;
+        if let Some(base_transport_revision) = self
+            .model
+            .playlist
+            .pending_index_reset_base_transport_revision
+        {
+            return receipt_advanced
+                && self
+                    .model
+                    .room
+                    .playstate_transport_revisions
+                    .get(room)
+                    .copied()
+                    .is_some_and(|current| current > base_transport_revision);
+        }
+        receipt_advanced
     }
 
     pub(super) fn clear_reconnect_state_restore_validation_state(&mut self) {

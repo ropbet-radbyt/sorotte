@@ -1,6 +1,8 @@
 use super::*;
 use crate::redacted_debug::RedactedJsonMap;
 
+const SOROTTE_TRANSPORT_REVISION: &str = "sorotteTransportRevision";
+
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct StatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +117,10 @@ impl std::fmt::Debug for PlaystatePayload {
             .field("paused", &self.paused)
             .field("do_seek", &self.do_seek)
             .field("set_by", &self.set_by)
+            .field(
+                "transport_revision",
+                &self.transport_revision().ok().flatten(),
+            )
             .field("extra", &RedactedJsonMap(&self.extra))
             .finish()
     }
@@ -143,6 +149,25 @@ impl PlaystatePayload {
     pub fn with_set_by(mut self, set_by: impl Into<String>) -> Self {
         self.set_by = Some(set_by.into());
         self
+    }
+
+    pub fn with_transport_revision(mut self, transport_revision: u64) -> Self {
+        self.extra.insert(
+            SOROTTE_TRANSPORT_REVISION.to_owned(),
+            Value::from(transport_revision),
+        );
+        self
+    }
+
+    /// Decodes the additive server-issued causal fence for the room transport
+    /// authority observed by this sample or mutation. Legacy peers omit it.
+    /// Keeping the extension in `extra` preserves source compatibility for
+    /// downstream code that constructs the long-standing public struct.
+    pub fn transport_revision(&self) -> serde_json::Result<Option<u64>> {
+        match self.extra.get(SOROTTE_TRANSPORT_REVISION) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => serde_json::from_value(value.clone()).map(Some),
+        }
     }
 }
 

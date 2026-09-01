@@ -45,6 +45,12 @@ const REAL_MPV_HTTP_STALL_PCM_BYTES_PER_SECOND: usize = 48_000 * 2;
 const REAL_MPV_HTTP_STALL_POSITION_TOLERANCE_SECONDS: f64 = 0.25;
 const PLAY_CONTROL_AUTOMATION_ID: &str = "main-window:control:play";
 const PAUSE_CONTROL_AUTOMATION_ID: &str = "main-window:control:pause";
+// The room-intent surface may omit attribution while a local causal intent is
+// waiting for canonical and physical confirmation to converge. The strict
+// loopback exchange independently proves the authenticated request and server
+// echo, so accessibility owns only the user-visible room level here.
+const PAUSED_ROOM_INTENT_PREFIX: &str = "Room intent: PAUSED";
+const PLAYING_ROOM_INTENT_PREFIX: &str = "Room intent: PLAYING";
 
 fn real_mpv_http_stall_prefix_playable_seconds() -> f64 {
     REAL_MPV_HTTP_STALL_PREFIX_BYTES.saturating_sub(REAL_MPV_HTTP_STALL_AU_HEADER_BYTES) as f64
@@ -1505,6 +1511,14 @@ struct MpvPreflight {
 }
 
 #[derive(Debug, Serialize)]
+struct PlaystateExchangeEvidence {
+    action: &'static str,
+    expected_paused: bool,
+    request: String,
+    authoritative_echo: String,
+}
+
+#[derive(Debug, Serialize)]
 struct SessionExchangeEvidence {
     schema_version: u32,
     kind: &'static str,
@@ -1520,6 +1534,8 @@ struct SessionExchangeEvidence {
     playlist_change_echo: Option<String>,
     playlist_index_request: Option<String>,
     playlist_index_echo: Option<String>,
+    initial_authoritative_playstate: Option<String>,
+    playstate_exchanges: Vec<PlaystateExchangeEvidence>,
     server_thread_released: bool,
     socket_released: bool,
     error: Option<String>,
@@ -1542,11 +1558,87 @@ impl SessionExchangeEvidence {
             playlist_change_echo: None,
             playlist_index_request: None,
             playlist_index_echo: None,
+            initial_authoritative_playstate: None,
+            playstate_exchanges: Vec::new(),
             server_thread_released: false,
             socket_released: false,
             error: None,
         }
     }
+}
+
+fn record_authoritative_playstate_exchange(
+    server: &MockSessionServer,
+    evidence: &mut SessionExchangeEvidence,
+    evidence_path: &Path,
+    timeout: Duration,
+    action: &'static str,
+    expected_paused: bool,
+) -> Result<(), String> {
+    let (request, authoritative_echo) = server.recv_playstate_exchange(timeout, action)?;
+    let request_json: serde_json::Value = serde_json::from_str(&request)
+        .map_err(|error| format!("{action} client playstate was invalid JSON: {error}"))?;
+    let echo_json: serde_json::Value = serde_json::from_str(&authoritative_echo)
+        .map_err(|error| format!("{action} authoritative playstate was invalid JSON: {error}"))?;
+    let request_playstate = request_json
+        .pointer("/State/playstate")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("{action} client frame omitted State.playstate"))?;
+    let echo_playstate = echo_json
+        .pointer("/State/playstate")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("{action} server echo omitted State.playstate"))?;
+    let request_position = request_playstate
+        .get("position")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|position| position.is_finite() && *position >= 0.0)
+        .ok_or_else(|| format!("{action} client frame omitted a valid position"))?;
+    if request_playstate
+        .get("paused")
+        .and_then(serde_json::Value::as_bool)
+        != Some(expected_paused)
+        || request_playstate
+            .get("doSeek")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        || request_playstate.contains_key("setBy")
+    {
+        return Err(format!(
+            "{action} client playstate was not the expected authenticated pause-only mutation"
+        ));
+    }
+    if echo_playstate
+        .get("paused")
+        .and_then(serde_json::Value::as_bool)
+        != Some(expected_paused)
+        || echo_playstate
+            .get("doSeek")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        || echo_playstate
+            .get("setBy")
+            .and_then(serde_json::Value::as_str)
+            != Some(REAL_MPV_LOOPBACK_USERNAME)
+        || echo_playstate
+            .get("position")
+            .and_then(serde_json::Value::as_f64)
+            .is_none_or(|position| (position - request_position).abs() > f64::EPSILON)
+        || echo_playstate.get("sorotteTransportRevision")
+            != request_playstate.get("sorotteTransportRevision")
+    {
+        return Err(format!(
+            "{action} authoritative echo did not preserve and authenticate the client pause mutation"
+        ));
+    }
+    evidence
+        .playstate_exchanges
+        .push(PlaystateExchangeEvidence {
+            action,
+            expected_paused,
+            request,
+            authoritative_echo,
+        });
+    write_json_file(evidence_path, evidence)
 }
 
 #[derive(Debug, Serialize)]
@@ -1760,15 +1852,21 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             )?;
         }
 
-        let server = if let Some(media_url) = media_url.as_ref() {
-            start_playlist_echo_mock_session_server(
-                REAL_MPV_SESSION_HELLO,
-                media_url.clone(),
-                REAL_MPV_LOOPBACK_USERNAME,
-            )?
-        } else {
-            start_phased_mock_session_server(&[REAL_MPV_SESSION_HELLO])?
+        let expected_playlist_target = match media_url.as_ref() {
+            Some(media_url) => media_url.clone(),
+            None => media_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    "generated local media did not have a valid UTF-8 playlist entry".to_owned()
+                })?,
         };
+        let server = start_playlist_echo_mock_session_server(
+            REAL_MPV_SESSION_HELLO,
+            expected_playlist_target,
+            REAL_MPV_LOOPBACK_USERNAME,
+        )?;
         let session_endpoint = server.address.clone();
         let session_port = server.port;
         session_server = Some(server);
@@ -1875,25 +1973,43 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             "open-media-invoked",
             Some("native-file-menu-open-media"),
         )?;
-        if exercise_http {
-            let (
-                playlist_change_request,
-                playlist_change_echo,
-                playlist_index_request,
-                playlist_index_echo,
-            ) = session_server
-                .as_ref()
-                .expect("HTTP session server must remain live")
-                .recv_playlist_exchange(step_timeout, "real-mpv loopback HTTP")?;
-            let exchange = session_exchange
-                .as_mut()
-                .expect("real-mpv session exchange must remain initialized");
-            exchange.playlist_change_request = Some(playlist_change_request);
-            exchange.playlist_change_echo = Some(playlist_change_echo);
-            exchange.playlist_index_request = Some(playlist_index_request);
-            exchange.playlist_index_echo = Some(playlist_index_echo);
-            write_json_file(&session_exchange_path, exchange)?;
+        let (
+            playlist_change_request,
+            playlist_change_echo,
+            playlist_index_request,
+            playlist_index_echo,
+            initial_authoritative_playstate,
+        ) = session_server
+            .as_ref()
+            .expect("real-mpv session server must remain live")
+            .recv_playlist_exchange(step_timeout, "real-mpv canonical playlist echo")?;
+        let exchange = session_exchange
+            .as_mut()
+            .expect("real-mpv session exchange must remain initialized");
+        exchange.playlist_change_request = Some(playlist_change_request);
+        exchange.playlist_change_echo = Some(playlist_change_echo);
+        exchange.playlist_index_request = Some(playlist_index_request);
+        exchange.playlist_index_echo = Some(playlist_index_echo);
+        let initial_playstate_json: serde_json::Value =
+            serde_json::from_str(&initial_authoritative_playstate).map_err(|error| {
+                format!("initial authoritative playstate was invalid JSON: {error}")
+            })?;
+        if initial_playstate_json
+            != serde_json::json!({
+                "State": {
+                    "playstate": {
+                        "position": 0.0,
+                        "paused": true,
+                        "doSeek": false,
+                        "setBy": REAL_MPV_LOOPBACK_USERNAME,
+                    }
+                }
+            })
+        {
+            return Err("initial authoritative paused playstate drifted".to_owned());
         }
+        exchange.initial_authoritative_playstate = Some(initial_authoritative_playstate);
+        write_json_file(&session_exchange_path, exchange)?;
 
         wait_for_accessible_name(&driver, launched_window, "view: room", step_timeout)?;
         let (file_loaded_index, file_loaded) = wait_for_mpv_observation(
@@ -2019,7 +2135,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             PAUSE_CONTROL_AUTOMATION_ID,
             step_timeout,
         )?;
-        wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+        wait_for_accessible_name_prefix(
+            &driver,
+            launched_window,
+            PAUSED_ROOM_INTENT_PREFIX,
+            step_timeout,
+        )?;
         state.advance(
             &state_path,
             "gui-transport-ready",
@@ -2034,6 +2155,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             NativeControlKind::Button,
             step_timeout,
         )?;
+        record_authoritative_playstate_exchange(
+            session_server
+                .as_ref()
+                .expect("real-mpv session server must remain live"),
+            session_exchange
+                .as_mut()
+                .expect("real-mpv session exchange must remain initialized"),
+            &session_exchange_path,
+            step_timeout,
+            "GUI Play canonical transport",
+            false,
+        )?;
         let (playing_index, _) = wait_for_mpv_observation(
             &observation_path,
             observations_before_play,
@@ -2046,10 +2179,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             "real-mpv-playing",
             Some("gui-play-command-observed-by-real-mpv"),
         )?;
-        wait_for_accessible_name(
+        wait_for_accessible_name_prefix(
             &driver,
             launched_window,
-            "Room state: playing",
+            PLAYING_ROOM_INTENT_PREFIX,
             step_timeout,
         )?;
         state.advance(
@@ -2193,10 +2326,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             let recovered_position = recovered_progress
                 .position
                 .ok_or_else(|| "recovered time-pos observation omitted its position".to_owned())?;
-            wait_for_accessible_name(
+            wait_for_accessible_name_prefix(
                 &driver,
                 launched_window,
-                "Room state: playing",
+                PLAYING_ROOM_INTENT_PREFIX,
                 step_timeout,
             )?;
             state.advance(
@@ -2212,6 +2345,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 PAUSE_CONTROL_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
+            )?;
+            record_authoritative_playstate_exchange(
+                session_server
+                    .as_ref()
+                    .expect("real-mpv session server must remain live"),
+                session_exchange
+                    .as_mut()
+                    .expect("real-mpv session exchange must remain initialized"),
+                &session_exchange_path,
+                step_timeout,
+                "GUI Pause after HTTP fault canonical transport",
+                true,
             )?;
             let (recovered_paused_index, _) = wait_for_mpv_observation(
                 &observation_path,
@@ -2242,7 +2387,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 "real-mpv-paused",
                 Some("gui-pause-command-observed-by-real-mpv"),
             )?;
-            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            wait_for_accessible_name_prefix(
+                &driver,
+                launched_window,
+                PAUSED_ROOM_INTENT_PREFIX,
+                step_timeout,
+            )?;
             state.advance(
                 &state_path,
                 "gui-paused-projected",
@@ -2586,10 +2736,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 evidence.recovered_position_seconds = Some(recovered_position);
                 write_json_file(&http_stall_path, evidence)?;
             }
-            wait_for_accessible_name(
+            wait_for_accessible_name_prefix(
                 &driver,
                 launched_window,
-                "Room state: playing",
+                PLAYING_ROOM_INTENT_PREFIX,
                 step_timeout,
             )?;
             state.advance(
@@ -2605,6 +2755,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 PAUSE_CONTROL_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
+            )?;
+            record_authoritative_playstate_exchange(
+                session_server
+                    .as_ref()
+                    .expect("real-mpv session server must remain live"),
+                session_exchange
+                    .as_mut()
+                    .expect("real-mpv session exchange must remain initialized"),
+                &session_exchange_path,
+                step_timeout,
+                "GUI Pause after HTTP stall canonical transport",
+                true,
             )?;
             let (recovered_paused_index, _) = wait_for_mpv_observation(
                 &observation_path,
@@ -2642,7 +2804,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 "real-mpv-paused",
                 Some("gui-pause-command-observed-by-real-mpv"),
             )?;
-            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            wait_for_accessible_name_prefix(
+                &driver,
+                launched_window,
+                PAUSED_ROOM_INTENT_PREFIX,
+                step_timeout,
+            )?;
             state.advance(
                 &state_path,
                 "gui-paused-projected",
@@ -2711,6 +2878,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
+            record_authoritative_playstate_exchange(
+                session_server
+                    .as_ref()
+                    .expect("real-mpv session server must remain live"),
+                session_exchange
+                    .as_mut()
+                    .expect("real-mpv session exchange must remain initialized"),
+                &session_exchange_path,
+                step_timeout,
+                "GUI Pause canonical transport",
+                true,
+            )?;
             let (paused_index, _) = wait_for_mpv_observation(
                 &observation_path,
                 observations_before_pause,
@@ -2728,7 +2907,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 "real-mpv-paused",
                 Some("gui-pause-command-observed-by-real-mpv"),
             )?;
-            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            wait_for_accessible_name_prefix(
+                &driver,
+                launched_window,
+                PAUSED_ROOM_INTENT_PREFIX,
+                step_timeout,
+            )?;
             state.advance(
                 &state_path,
                 "gui-paused-projected",
@@ -2918,7 +3102,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 PAUSE_CONTROL_AUTOMATION_ID,
                 step_timeout,
             )?;
-            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            wait_for_accessible_name_prefix(
+                &driver,
+                launched_window,
+                PAUSED_ROOM_INTENT_PREFIX,
+                step_timeout,
+            )?;
             let observations_before_recovered_play =
                 read_mpv_observations(&observation_path)?.len();
             invoke_named_control_with_wait(
@@ -2927,6 +3116,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 PLAY_CONTROL_AUTOMATION_ID,
                 NativeControlKind::Button,
                 step_timeout,
+            )?;
+            record_authoritative_playstate_exchange(
+                session_server
+                    .as_ref()
+                    .expect("real-mpv session server must remain live"),
+                session_exchange
+                    .as_mut()
+                    .expect("real-mpv session exchange must remain initialized"),
+                &session_exchange_path,
+                step_timeout,
+                "GUI Play on replacement mpv canonical transport",
+                false,
             )?;
             let (recovered_playing_index, _) = wait_for_mpv_observation(
                 &observation_path,
@@ -2939,10 +3140,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                         && observation.pause == Some(false)
                 },
             )?;
-            wait_for_accessible_name(
+            wait_for_accessible_name_prefix(
                 &driver,
                 launched_window,
-                "Room state: playing",
+                PLAYING_ROOM_INTENT_PREFIX,
                 step_timeout,
             )?;
             state.advance(
@@ -2960,6 +3161,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 NativeControlKind::Button,
                 step_timeout,
             )?;
+            record_authoritative_playstate_exchange(
+                session_server
+                    .as_ref()
+                    .expect("real-mpv session server must remain live"),
+                session_exchange
+                    .as_mut()
+                    .expect("real-mpv session exchange must remain initialized"),
+                &session_exchange_path,
+                step_timeout,
+                "GUI Pause on replacement mpv canonical transport",
+                true,
+            )?;
             let (recovered_paused_index, _) = wait_for_mpv_observation(
                 &observation_path,
                 observations_before_recovered_pause,
@@ -2971,7 +3184,12 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                         && observation.pause == Some(true)
                 },
             )?;
-            wait_for_accessible_name(&driver, launched_window, "Room state: paused", step_timeout)?;
+            wait_for_accessible_name_prefix(
+                &driver,
+                launched_window,
+                PAUSED_ROOM_INTENT_PREFIX,
+                step_timeout,
+            )?;
             state.advance(
                 &state_path,
                 "replacement-real-mpv-paused",
@@ -3056,7 +3274,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 .expect("launched GUI child must remain available"),
             step_timeout,
         )?;
-        wait_for_lifecycle_events(
+        wait_for_lifecycle_event_suffix(
             &lifecycle_path,
             &[
                 "exit-action-applied",
@@ -3577,7 +3795,6 @@ fn seed_real_mpv_config(
     mpv_log_path: &Path,
     trusted_domain: Option<String>,
 ) -> Result<(), String> {
-    let exercise_faulting_http_recovery = trusted_domain.is_some();
     let player_path = mpv_path.display().to_string();
     let extra_args = vec![
         "--no-config".to_owned(),
@@ -3592,7 +3809,10 @@ fn seed_real_mpv_config(
     let settings = StoredClientSettingsMvp {
         player_path: Some(player_path.clone()),
         per_player_arguments: Some(BTreeMap::from([(player_path, extra_args)])),
-        shared_playlist_enabled: Some(exercise_faulting_http_recovery),
+        // Every real-mpv mode exercises the GUI's playlist-backed media-open
+        // workflow. Keep the configured client capability aligned with the
+        // canonical playlist exchange that the fixture requires.
+        shared_playlist_enabled: Some(true),
         show_osd: Some(false),
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
@@ -4834,6 +5054,10 @@ mod tests {
         reader
             .read_line(&mut playlist_index_echo)
             .expect("read playlist index echo");
+        let mut initial_playstate = String::new();
+        reader
+            .read_line(&mut initial_playstate)
+            .expect("read initial authoritative playstate");
         let recorded = server
             .recv_playlist_exchange(Duration::from_secs(2), "unit playlist echo")
             .expect("record playlist exchange");
@@ -4841,6 +5065,7 @@ mod tests {
         assert_eq!(recorded.1, playlist_change_echo.trim());
         assert_eq!(recorded.2, playlist_index_request);
         assert_eq!(recorded.3, playlist_index_echo.trim());
+        assert_eq!(recorded.4, initial_playstate.trim());
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&recorded.1)
                 .expect("valid playlist change echo")
@@ -4862,6 +5087,54 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(0)
         );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&recorded.4)
+                .expect("valid initial playstate"),
+            serde_json::json!({
+                "State": {
+                    "playstate": {
+                        "position": 0.0,
+                        "paused": true,
+                        "doSeek": false,
+                        "setBy": REAL_MPV_LOOPBACK_USERNAME,
+                    }
+                }
+            })
+        );
+
+        for (label, position, paused) in [("play", 1.25, false), ("pause", 2.0, true)] {
+            let request = serde_json::json!({
+                "State": {
+                    "playstate": {
+                        "position": position,
+                        "paused": paused,
+                        "doSeek": false,
+                    }
+                }
+            })
+            .to_string();
+            writeln!(stream, "{request}")
+                .unwrap_or_else(|error| panic!("write {label} playstate: {error}"));
+            let mut echo = String::new();
+            reader
+                .read_line(&mut echo)
+                .unwrap_or_else(|error| panic!("read {label} playstate echo: {error}"));
+            let exchange = server
+                .recv_playstate_exchange(Duration::from_secs(2), label)
+                .unwrap_or_else(|error| panic!("record {label} playstate exchange: {error}"));
+            assert_eq!(exchange.0, request);
+            assert_eq!(exchange.1, echo.trim());
+            let echo_json: serde_json::Value =
+                serde_json::from_str(&exchange.1).expect("valid authoritative playstate echo");
+            assert_eq!(
+                echo_json.pointer("/State/playstate/paused"),
+                Some(&serde_json::json!(paused))
+            );
+            assert_eq!(
+                echo_json.pointer("/State/playstate/setBy"),
+                Some(&serde_json::json!(REAL_MPV_LOOPBACK_USERNAME))
+            );
+        }
         server
             .release("unit playlist echo")
             .expect("release fixture");

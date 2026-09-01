@@ -595,6 +595,7 @@ impl ServerRuntime {
             client_id,
             room_playlist.files.clone(),
             join_room_playback.set_by.as_deref(),
+            room_playlist.epoch,
         );
         outbound.push(DirectedProtocolMessage::new(
             client_id,
@@ -605,6 +606,7 @@ impl ServerRuntime {
             playlist_snapshot_index_message(
                 room_playlist.index,
                 join_room_playback.set_by.as_deref(),
+                room_playlist.epoch,
             ),
         ));
 
@@ -674,6 +676,39 @@ impl ServerRuntime {
             client_id,
             ProtocolMessage::list(ListPayload::rooms(rooms)),
         )])
+    }
+
+    fn reset_room_transport_for_canonical_selection_change(
+        &mut self,
+        room: &str,
+        set_by: &str,
+        now_seconds: f64,
+    ) -> Vec<DirectedProtocolMessage> {
+        let transport_revision_before_selection = self.transport_authority_revision_for_room(room);
+        let readiness_outbound = if self.room_readiness.get(room).is_some_and(|room| {
+            matches!(
+                room.pause_owner,
+                RoomPauseOwner::None
+                    | RoomPauseOwner::ReadinessStartGate { .. }
+                    | RoomPauseOwner::EndOfPlaylist
+            )
+        }) {
+            self.set_readiness_pause_owner(room, RoomPauseOwner::EndOfPlaylist, true)
+        } else {
+            Vec::new()
+        };
+        {
+            let room_state = self.room_playback_state_mut(room);
+            room_state.position = 0.0;
+            room_state.paused = true;
+            room_state.updated_at_seconds = now_seconds;
+            room_state.set_by = Some(set_by.to_owned());
+        }
+        if self.transport_authority_revision_for_room(room) == transport_revision_before_selection {
+            self.advance_transport_authority_revision(room);
+        }
+        self.seed_room_client_playback_states(room, 0.0, now_seconds);
+        readiness_outbound
     }
 
     pub(crate) fn handle_set(
@@ -905,6 +940,7 @@ impl ServerRuntime {
                         client_id,
                         room_playlist.files.clone(),
                         room_playback.set_by.as_deref(),
+                        room_playlist.epoch,
                     );
                     outbound_messages.push(DirectedProtocolMessage::new(
                         client_id,
@@ -915,6 +951,7 @@ impl ServerRuntime {
                         playlist_snapshot_index_message(
                             room_playlist.index,
                             room_playback.set_by.as_deref(),
+                            room_playlist.epoch,
                         ),
                     ));
                     outbound_messages.extend(self.refresh_room_buffering_participant(client_id)?);
@@ -1097,17 +1134,52 @@ impl ServerRuntime {
                             now_seconds,
                         )
                     {
-                        // A playlist replacement and a playlist-index update are
-                        // distinct Syncplay protocol operations. Preserve the
-                        // last explicit index here; clients that want another
-                        // item send playlistIndex separately.
+                        // A room that negotiated Sorotte's playback lifecycle
+                        // extension treats the selected entry identity as part
+                        // of canonical transport authority. Legacy-only rooms
+                        // retain Python Syncplay's historical independent
+                        // playlistChange and playlistIndex semantics.
+                        let lifecycle_authority =
+                            self.room_uses_playback_lifecycle_authority(&session.room);
                         let playlist_changed =
                             self.room_playlist_state(&session.room).files != new_files;
-                        self.room_playlist_state_mut(&session.room).files = new_files.clone();
-                        if playlist_changed {
+                        let previous_selected_entry = lifecycle_authority.then(|| {
+                            self.room_playlist_state(&session.room)
+                                .selected_entry_identity()
+                                .map(|(index, file)| (index, file.to_owned()))
+                        });
+                        let (playlist_epoch, selection_changed, canonical_index) = {
+                            let room_playlist = self.room_playlist_state_mut(&session.room);
+                            room_playlist.files = new_files.clone();
+                            let selection_retired = lifecycle_authority
+                                && room_playlist.retire_invalid_selected_index();
+                            let canonical_index = room_playlist.index;
+                            let selected_entry = lifecycle_authority.then(|| {
+                                room_playlist
+                                    .selected_entry_identity()
+                                    .map(|(index, file)| (index, file.to_owned()))
+                            });
+                            (
+                                room_playlist.advance_epoch(),
+                                lifecycle_authority
+                                    && (selection_retired
+                                        || previous_selected_entry != selected_entry),
+                                canonical_index,
+                            )
+                        };
+                        if playlist_changed || selection_changed {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
                         }
+                        let readiness_outbound = if selection_changed {
+                            self.reset_room_transport_for_canonical_selection_change(
+                                &session.room,
+                                &session.username,
+                                now_seconds,
+                            )
+                        } else {
+                            Vec::new()
+                        };
                         if creation_required {
                             self.record_persistent_room_creation(
                                 &session.room,
@@ -1123,10 +1195,31 @@ impl ServerRuntime {
                                 &peer_client,
                                 new_files.clone(),
                                 Some(&session.username),
+                                playlist_epoch,
                             );
                             outbound_messages
-                                .push(DirectedProtocolMessage::new(peer_client, playlist_message));
+                                .push(DirectedProtocolMessage::new(&peer_client, playlist_message));
+                            if selection_changed {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    &peer_client,
+                                    playlist_snapshot_index_message(
+                                        canonical_index,
+                                        Some(&session.username),
+                                        playlist_epoch,
+                                    ),
+                                ));
+                                let state_message = self.forced_state_sync_message_for_client(
+                                    &peer_client,
+                                    0.0,
+                                    true,
+                                    false,
+                                    Some(&session.username),
+                                );
+                                outbound_messages
+                                    .push(DirectedProtocolMessage::new(peer_client, state_message));
+                            }
                         }
+                        outbound_messages.extend(readiness_outbound);
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
                         outbound_messages.push(DirectedProtocolMessage::new(
@@ -1135,32 +1228,79 @@ impl ServerRuntime {
                                 client_id,
                                 room_state.files.clone(),
                                 Some(&session.room),
+                                room_state.epoch,
                             ),
                         ));
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
-                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                            playlist_snapshot_index_message(
+                                room_state.index,
+                                Some(&session.room),
+                                room_state.epoch,
+                            ),
                         ));
                     }
                 }
                 "playlistIndex" => {
-                    let Some(index) = playlist_index.take() else {
+                    let Some(command) = playlist_index.take() else {
                         continue;
                     };
                     self.ensure_room_state(&session.room);
+                    let room_state = self.room_playlist_state(&session.room);
+                    let precondition_matches = match command.precondition {
+                        ServerPlaylistIndexPrecondition::Unconditional => true,
+                        ServerPlaylistIndexPrecondition::Expected { index, epoch } => {
+                            room_state.index == Some(index) && room_state.epoch == epoch
+                        }
+                        ServerPlaylistIndexPrecondition::Invalid => false,
+                    };
+                    if matches!(
+                        command.precondition,
+                        ServerPlaylistIndexPrecondition::Expected { .. }
+                    ) && !precondition_matches
+                    {
+                        // A peer already committed a transition (or the
+                        // playlist changed) after this player observed EOF.
+                        // The winning fanout is authoritative; silently
+                        // consume the stale compare-and-set so it cannot
+                        // become a duplicate selection generation.
+                        continue;
+                    }
+                    let index = command.index;
                     let index_is_valid =
                         self.room_playlist_state(&session.room).accepts_index(index);
                     if self.user_can_control_playlist(&session.username, &session.room)
                         && index_is_valid
+                        && precondition_matches
                     {
                         let previous_index = self.room_playlist_state(&session.room).index;
-                        self.room_playlist_state_mut(&session.room).index = index;
-                        if previous_index != index {
+                        let selection_changed = previous_index != index;
+                        let guarded_natural_advance = selection_changed
+                            && matches!(
+                                command.precondition,
+                                ServerPlaylistIndexPrecondition::Expected { .. }
+                            );
+                        let lifecycle_authority =
+                            self.room_uses_playback_lifecycle_authority(&session.room);
+                        let reset_transport =
+                            selection_changed && (guarded_natural_advance || lifecycle_authority);
+                        let now_seconds = self.current_time_seconds();
+                        let playlist_epoch = {
+                            let room_playlist = self.room_playlist_state_mut(&session.room);
+                            room_playlist.index = index;
+                            room_playlist.advance_epoch()
+                        };
+                        if selection_changed {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
                         }
-                        self.persist_room_if_needed(&session.room)?;
-                        if previous_index != index
+                        let readiness_outbound = if reset_transport {
+                            self.reset_room_transport_for_canonical_selection_change(
+                                &session.room,
+                                &session.username,
+                                now_seconds,
+                            )
+                        } else if selection_changed
                             && self.room_readiness.get(&session.room).is_some_and(|room| {
                                 matches!(
                                     room.pause_owner,
@@ -1170,14 +1310,18 @@ impl ServerRuntime {
                                 )
                             })
                         {
-                            outbound_messages.extend(self.set_readiness_pause_owner(
+                            self.set_readiness_pause_owner(
                                 &session.room,
                                 RoomPauseOwner::EndOfPlaylist,
                                 true,
-                            ));
-                        }
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                        self.persist_room_if_needed(&session.room)?;
                         let playlist_index = PlaylistIndexPayload::from_optional(index)
-                            .with_user(session.username.clone());
+                            .with_user(session.username.clone())
+                            .with_playlist_epoch(playlist_epoch);
                         let playlist_message = ProtocolMessage::set(
                             SetPayload::new().with_playlist_index(playlist_index),
                         );
@@ -1187,11 +1331,32 @@ impl ServerRuntime {
                                 playlist_message.clone(),
                             ));
                         }
+                        if reset_transport {
+                            // Per-recipient ordering is deliberate: select and
+                            // begin loading the successor before applying its
+                            // zero-position transport authority.
+                            for peer_client in self.clients_in_room(&session.room) {
+                                let state_message = self.forced_state_sync_message_for_client(
+                                    &peer_client,
+                                    0.0,
+                                    true,
+                                    false,
+                                    Some(&session.username),
+                                );
+                                outbound_messages
+                                    .push(DirectedProtocolMessage::new(peer_client, state_message));
+                            }
+                        }
+                        outbound_messages.extend(readiness_outbound);
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
-                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                            playlist_snapshot_index_message(
+                                room_state.index,
+                                Some(&session.room),
+                                room_state.epoch,
+                            ),
                         ));
                     }
                 }
@@ -1359,6 +1524,29 @@ impl ServerRuntime {
         self.ensure_room_state(&session.room);
         let now_seconds = self.current_time_seconds();
         let room_state_before = self.room_playback_state_at(&session.room, now_seconds);
+        let current_transport_revision = self.transport_authority_revision_for_room(&session.room);
+        if playstate
+            .transport_revision
+            .is_some_and(|reported_revision| {
+                reported_revision == 0 || Some(reported_revision) != current_transport_revision
+            })
+        {
+            // This sample was generated against older (or impossible future)
+            // transport authority. It may still carry useful ping/status
+            // telemetry, which was consumed above, but it must not refresh the
+            // slowest-client clock or mutate canonical pause/seek state.
+            barrier_outbound.push(DirectedProtocolMessage::new(
+                client_id,
+                self.forced_state_sync_message_for_client(
+                    client_id,
+                    room_state_before.position,
+                    room_state_before.paused,
+                    true,
+                    room_state_before.set_by.as_deref(),
+                ),
+            ));
+            return Ok(barrier_outbound);
+        }
         let can_control_room = self.user_can_control_playlist(&session.username, &session.room);
         let do_seek = playstate.do_seek;
         let forward_delay_seconds = self.forward_delay_seconds(client_id);
@@ -1405,7 +1593,12 @@ impl ServerRuntime {
             }
             position
         });
-        self.record_client_playback_state_sample(client_id, playback_sample_position, now_seconds);
+        self.record_client_playback_state_sample(
+            client_id,
+            playback_sample_position,
+            now_seconds,
+            playstate.transport_revision,
+        );
 
         if v2_transport_change
             && !accepted_v2_user_transport

@@ -218,7 +218,8 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
     @staticmethod
     def libtest_output(lane: str) -> bytes:
         tests = sorted(lanes.EXPECTED_TESTS[lane])
-        lines = [f"running {len(tests)} tests"]
+        test_noun = "test" if len(tests) == 1 else "tests"
+        lines = [f"running {len(tests)} {test_noun}"]
         lines.extend(f"test {test} ... ok" for test in tests)
         lines.append(
             f"test result: ok. {len(tests)} passed; 0 failed; 0 ignored; "
@@ -350,7 +351,23 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     sorted(lanes.EXPECTED_TESTS[lane]),
                 )
                 total += oracle["passed"]
-        self.assertEqual(total, 55)
+        self.assertEqual(total, 56)
+
+    def test_libtest_oracle_requires_rust_singular_one_test_grammar(self) -> None:
+        lane = "server-platform-signal"
+        output = self.libtest_output(lane)
+        self.assertIn(b"running 1 test\n", output)
+        lanes.libtest_oracle(lane, output, b"")
+
+        with self.assertRaisesRegex(
+            common.CoverageProfileLaneError,
+            "exactly one non-zero running count",
+        ):
+            lanes.libtest_oracle(
+                lane,
+                output.replace(b"running 1 test", b"running 1 tests"),
+                b"",
+            )
 
     def test_libtest_oracle_rejects_zero_partial_extra_and_skip(self) -> None:
         lane = "mpv-external-process"

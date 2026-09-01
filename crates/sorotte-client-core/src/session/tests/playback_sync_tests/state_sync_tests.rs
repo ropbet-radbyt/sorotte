@@ -1,7 +1,83 @@
 use super::*;
+use crate::{LogicalMediaId, MediaTransportKind};
 
 #[test]
-fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state_seen() {
+fn transport_revision_fence_rejects_backwards_zero_and_untagged_downgrades() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json_at(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            1.0,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob","sorotteTransportRevision":12}}}"#,
+            2.0,
+        )
+        .expect("tagged authority should apply");
+
+    for stale in [
+        r#"{"State":{"playstate":{"position":1.0,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":11}}}"#,
+        r#"{"State":{"playstate":{"position":2.0,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":0}}}"#,
+        r#"{"State":{"playstate":{"position":2.5,"paused":false,"doSeek":true,"setBy":"mallory","sorotteTransportRevision":"invalid"}}}"#,
+        r#"{"State":{"playstate":{"position":3.0,"paused":false,"doSeek":true,"setBy":"mallory"}}}"#,
+    ] {
+        session
+            .apply_message_json_at(stale, 3.0)
+            .expect("invalid authority should be ignored without rejecting the State frame");
+    }
+
+    assert_eq!(session.current_room_transport_revision(), Some(12));
+    assert_eq!(
+        session.current_room_playstate(),
+        Some(&RoomPlaystateView {
+            position: Some(10.0),
+            paused: Some(true),
+            do_seek: Some(false),
+            set_by: Some("bob".to_owned()),
+        }),
+        "retired or downgraded authority must not be laundered into the current revision"
+    );
+}
+
+#[test]
+fn room_membership_change_resets_transport_revision_ordering() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"sorotteTransportRevision":12}}}"#,
+        )
+        .expect("first membership authority should apply");
+    session
+        .apply_message_json(r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room2 switch should apply");
+    session
+        .apply_message_json(r#"{"Set":{"room":{"name":"room1"}}}"#)
+        .expect("room1 rejoin should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":1.0,"paused":true,"sorotteTransportRevision":1}}}"#,
+        )
+        .expect("successor membership authority should apply");
+
+    assert_eq!(session.current_room_transport_revision(), Some(1));
+    assert_eq!(
+        session
+            .current_room_playstate()
+            .and_then(|playstate| playstate.position),
+        Some(1.0),
+        "a recreated room's first revision must not be compared with a retired membership"
+    );
+}
+
+#[test]
+fn first_remote_room_revision_waits_for_physical_convergence_before_echo() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -26,7 +102,8 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
                 PlaystatePayload::new()
                     .with_position(10.0)
                     .with_paused(false)
-                    .with_set_by("bob"),
+                    .with_set_by("bob")
+                    .with_transport_revision(12),
             )
             .with_ping(PingPayload::new().with_latency_calculation(42.0)),
         100.0,
@@ -43,23 +120,23 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
     let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
         panic!("queued message should be State");
     };
-    assert_eq!(
-        state_message
-            .state
-            .playstate
-            .as_ref()
-            .and_then(|p| p.position),
-        Some(12.5),
-        "outbound state should report local position"
+    assert!(
+        state_message.state.playstate.is_none(),
+        "a late joiner must not pair revision 12 with its pre-membership player sample"
     );
     assert_eq!(
-        state_message
-            .state
-            .playstate
-            .as_ref()
-            .and_then(|p| p.paused),
+        runtime.session().local_position_seconds(),
+        Some(12.5),
+        "the local model must retain the sampled player position until correction is applied"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
         Some(true),
-        "outbound state should report local paused state"
+        "echoing canonical authority must not pretend the physical player has already played"
+    );
+    assert_eq!(
+        state_message.state.ignoring_on_the_fly, None,
+        "baseline initialization is not a local transport mutation"
     );
     assert_eq!(
         state_message
@@ -88,6 +165,290 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
         Some(0.25),
         "outbound ping should include client RTT"
     );
+
+    runtime.flush_queued_protocol_messages();
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(12.6)
+            .with_paused(false),
+    );
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob")
+                    .with_transport_revision(12),
+            ),
+            100.0,
+            0.25,
+            false,
+        )
+    );
+    let ProtocolMessage::State(converged_response) = &runtime.control().outbound_messages()[0]
+    else {
+        panic!("post-command evidence should receive State");
+    };
+    let converged_playstate = converged_response
+        .state
+        .playstate
+        .as_ref()
+        .expect("physical convergence should release revision 12");
+    assert_eq!(converged_playstate.position, Some(12.6));
+    assert_eq!(converged_playstate.paused, Some(false));
+    assert_eq!(
+        converged_playstate.transport_revision().unwrap(),
+        Some(12),
+        "the post-effect sample must remain causally bound to the server revision it observed"
+    );
+}
+
+#[test]
+fn observed_explicit_pause_intent_can_mutate_the_first_remote_room_baseline() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pre-baseline-explicit-play").expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(false, 0.01);
+
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(true)
+                    .with_set_by("bob"),
+            ),
+            0.0,
+            0.0,
+            false,
+        )
+    );
+
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    let playstate = state_message
+        .state
+        .playstate
+        .as_ref()
+        .expect("explicit transport intent should produce playstate");
+    assert_eq!(playstate.position, Some(12.5));
+    assert_eq!(playstate.paused, Some(false));
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(false),
+        "the intent remains fenced until a canonical acknowledgement"
+    );
+}
+
+#[test]
+fn staged_pause_intent_overrides_stale_playing_telemetry_in_state_response() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pause-command-before-player-edge")
+            .expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(true, 0.01);
+
+    assert!(
+        runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob"),
+            ),
+            0.0,
+            0.0,
+            false,
+        )
+    );
+
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    let playstate = state_message
+        .state
+        .playstate
+        .as_ref()
+        .expect("the explicit Pause should produce playstate");
+    assert_eq!(playstate.position, Some(12.5));
+    assert_eq!(
+        playstate.paused,
+        Some(true),
+        "the staged semantic command, not the preceding mpv sample, owns canonical mutation"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
+        Some(false),
+        "publishing the command must not falsify the still-playing physical observation"
+    );
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(true),
+        "the command remains fenced until both server and player confirm it"
+    );
+}
+
+#[test]
+fn heartbeat_publishes_pending_pause_instead_of_pre_command_player_sample() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#,
+        )
+        .expect("canonical playing state should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime.prepare_playback_media(
+        LogicalMediaId::new("pause-heartbeat-before-player-edge")
+            .expect("logical ID should be valid"),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    runtime.stage_external_player_pause_intent(true, 0.01);
+
+    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued heartbeat should be State");
+    };
+    assert_eq!(
+        state_message
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.paused),
+        Some(true),
+        "a heartbeat in the command/player race must carry the pending Pause"
+    );
+    assert_eq!(
+        runtime.session().local_paused(),
+        Some(false),
+        "heartbeat publication must retain the physical player observation separately"
+    );
+}
+
+#[test]
+fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(true),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    let canonical_playing = || {
+        StatePayload::new().with_playstate(
+            PlaystatePayload::new()
+                .with_position(10.0)
+                .with_paused(false)
+                .with_set_by("bob"),
+        )
+    };
+
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        canonical_playing(),
+        0.0,
+        0.0,
+        false,
+    ));
+    let _ = runtime.flush_queued_protocol_messages();
+
+    // The room baseline has arrived, but the external player has not applied
+    // its correction yet. This physical lag is observation, not user intent.
+    runtime
+        .player_mut_for_test()
+        .pending_playback_telemetry_update = Some(
+        PlayerPlaybackTelemetryUpdate::default()
+            .with_position_seconds(10.0)
+            .with_paused(true),
+    );
+    assert!(runtime.run_state_sync_reconcile_with_inbound_state(
+        canonical_playing(),
+        0.0,
+        0.0,
+        false,
+    ));
+
+    let ProtocolMessage::State(response) = &runtime.control().outbound_messages()[0] else {
+        panic!("canonical acknowledgement should remain State");
+    };
+    let playstate = response
+        .state
+        .playstate
+        .as_ref()
+        .expect("available telemetry should retain a playstate sample");
+    assert_eq!(
+        playstate.paused,
+        Some(false),
+        "a lagging player must echo canonical pause until an explicit local intent is staged"
+    );
+    assert_eq!(playstate.do_seek, None);
+    assert_eq!(response.state.ignoring_on_the_fly, None);
 }
 
 #[test]

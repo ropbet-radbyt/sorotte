@@ -1,0 +1,644 @@
+schema_version = 1
+schedule_id = "full-lifecycle-seed"
+title = "Startup, authoritative playback, play and pause, status self-healing, natural completion, and shutdown"
+model = "coverage/playback-lifecycle.toml"
+
+[[step]]
+id = "app-launch"
+transition = "APP-LAUNCH-001"
+subject = "client-a"
+causes = []
+identities = { process_run = 1 }
+trigger = "startup"
+
+[[step]]
+id = "app-running"
+transition = "APP-RUN-001"
+subject = "client-a"
+causes = ["app-launch"]
+identities = { process_run = 1 }
+trigger = "startup"
+
+[[step]]
+id = "player-launch"
+transition = "PLAYER-LAUNCH-001"
+subject = "client-a"
+causes = ["app-running"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "player-connecting"
+transition = "PLAYER-CONNECT-001"
+subject = "client-a"
+causes = ["player-launch"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "player-attached"
+transition = "PLAYER-ATTACH-001"
+subject = "client-a"
+causes = ["player-connecting"]
+identities = { attachment_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "session-connect"
+transition = "SESSION-CONNECT-001"
+subject = "client-a"
+causes = ["player-attached"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "session-hello"
+transition = "SESSION-HELLO-001"
+subject = "client-a"
+causes = ["session-connect"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "session-active"
+transition = "SESSION-ACTIVE-001"
+subject = "client-a"
+causes = ["session-hello"]
+identities = { connection_generation = 1 }
+trigger = "startup"
+
+[[step]]
+id = "room-join"
+transition = "ROOM-JOIN-001"
+subject = "client-a"
+causes = ["session-active"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "startup"
+
+[[step]]
+id = "room-active"
+transition = "ROOM-ACTIVE-001"
+subject = "client-a"
+causes = ["room-join"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "playlist-selected"
+transition = "PLAYLIST-SNAPSHOT-SELECTED-001"
+subject = "room"
+causes = ["room-active"]
+identities = { playlist_revision = 1, playlist_index_revision = 1 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "media-selected"
+transition = "MEDIA-SELECT-001"
+subject = "client-a"
+causes = ["playlist-selected"]
+identities = { playlist_revision = 1, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "server-snapshot"
+
+[[step]]
+id = "media-resolving"
+transition = "MEDIA-RESOLVE-001"
+subject = "client-a"
+causes = ["media-selected"]
+identities = { playlist_revision = 1, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "media-playable"
+transition = "MEDIA-PLAYABLE-001"
+subject = "client-a"
+causes = ["media-resolving"]
+identities = { playlist_revision = 1, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "load-submit"
+transition = "LOAD-SUBMIT-001"
+subject = "client-a"
+causes = ["media-playable"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "media-resolution"
+
+[[step]]
+id = "load-accepted"
+transition = "LOAD-ACCEPT-001"
+subject = "client-a"
+causes = ["load-submit"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "load-bound"
+transition = "LOAD-BIND-001"
+subject = "client-a"
+causes = ["load-accepted"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "load-active"
+transition = "LOAD-ACTIVE-001"
+subject = "client-a"
+causes = ["load-bound"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "transport-loading"
+transition = "TRANSPORT-LOAD-001"
+subject = "client-a"
+causes = ["load-active"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "transport-initial-pause"
+transition = "TRANSPORT-PAUSE-001"
+subject = "client-a"
+causes = ["transport-loading"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "gate-prepare"
+transition = "GATE-PREPARE-001"
+subject = "room"
+causes = ["transport-initial-pause"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-playable"
+transition = "GATE-PLAYABILITY-001"
+subject = "room"
+causes = ["gate-prepare"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-ready"
+transition = "GATE-READY-001"
+subject = "room"
+causes = ["gate-playable"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "gate-committed"
+transition = "GATE-COMMIT-001"
+subject = "room"
+causes = ["gate-ready"]
+identities = { membership_epoch = 1 }
+trigger = "readiness"
+
+[[step]]
+id = "play-begin"
+transition = "TX-BEGIN-001"
+subject = "playback-transaction"
+causes = ["gate-committed"]
+identities = { command_sequence = 1 }
+trigger = "user-intent"
+
+[[step]]
+id = "play-delivery"
+transition = "TX-DELIVERY-001"
+subject = "playback-transaction"
+causes = ["play-begin"]
+identities = { command_sequence = 1 }
+trigger = "user-intent"
+
+[[step]]
+id = "play-written"
+transition = "TX-WRITTEN-001"
+subject = "playback-transaction"
+causes = ["play-delivery"]
+identities = { command_sequence = 1, frame_receipt = 1 }
+trigger = "user-intent"
+
+[[step]]
+id = "play-committed"
+transition = "TX-COMMIT-001"
+subject = "playback-transaction"
+causes = ["play-written"]
+identities = { command_sequence = 1, frame_receipt = 1 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "play-fanout"
+transition = "TX-FANOUT-001"
+subject = "playback-transaction"
+causes = ["play-committed"]
+identities = { command_sequence = 1, frame_receipt = 1 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "transport-playing"
+transition = "TRANSPORT-PLAY-001"
+subject = "client-a"
+causes = ["play-fanout"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1, command_sequence = 1, frame_receipt = 1 }
+target_kind = "generated-fixture"
+trigger = "canonical-mutation"
+
+[[step]]
+id = "play-converged"
+transition = "TX-CONVERGE-001"
+subject = "playback-transaction"
+causes = ["transport-playing"]
+identities = { command_sequence = 1, frame_receipt = 1 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "play-reset"
+transition = "TX-RESET-001"
+subject = "playback-transaction"
+causes = ["play-converged"]
+identities = { command_sequence = 1 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "pause-begin"
+transition = "TX-BEGIN-001"
+subject = "playback-transaction"
+causes = ["play-reset"]
+identities = { command_sequence = 2 }
+trigger = "user-intent"
+
+[[step]]
+id = "pause-delivery"
+transition = "TX-DELIVERY-001"
+subject = "playback-transaction"
+causes = ["pause-begin"]
+identities = { command_sequence = 2 }
+trigger = "user-intent"
+
+[[step]]
+id = "pause-written"
+transition = "TX-WRITTEN-001"
+subject = "playback-transaction"
+causes = ["pause-delivery"]
+identities = { command_sequence = 2, frame_receipt = 2 }
+trigger = "user-intent"
+
+[[step]]
+id = "pause-committed"
+transition = "TX-COMMIT-001"
+subject = "playback-transaction"
+causes = ["pause-written"]
+identities = { command_sequence = 2, frame_receipt = 2 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "pause-fanout"
+transition = "TX-FANOUT-001"
+subject = "playback-transaction"
+causes = ["pause-committed"]
+identities = { command_sequence = 2, frame_receipt = 2 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "transport-paused"
+transition = "TRANSPORT-PAUSE-001"
+subject = "client-a"
+causes = ["pause-fanout"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1, command_sequence = 2, frame_receipt = 2 }
+target_kind = "generated-fixture"
+trigger = "canonical-mutation"
+
+[[step]]
+id = "pause-converged"
+transition = "TX-CONVERGE-001"
+subject = "playback-transaction"
+causes = ["transport-paused"]
+identities = { command_sequence = 2, frame_receipt = 2 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "pause-reset"
+transition = "TX-RESET-001"
+subject = "playback-transaction"
+causes = ["pause-converged"]
+identities = { command_sequence = 2 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "status-awaiting"
+transition = "STATUS-NEGOTIATE-001"
+subject = "client-a"
+causes = ["pause-reset"]
+identities = { membership_epoch = 1 }
+trigger = "status"
+
+[[step]]
+id = "status-fresh-one"
+transition = "STATUS-FRESH-001"
+subject = "client-a"
+causes = ["status-awaiting"]
+identities = { membership_epoch = 1, report_sequence = 1 }
+trigger = "status"
+
+[[step]]
+id = "status-delayed"
+transition = "STATUS-DELAY-001"
+subject = "client-a"
+causes = ["status-fresh-one"]
+identities = { membership_epoch = 1, report_sequence = 1 }
+trigger = "timer"
+
+[[step]]
+id = "status-fresh-two"
+transition = "STATUS-FRESH-001"
+subject = "client-a"
+causes = ["status-delayed"]
+identities = { membership_epoch = 1, report_sequence = 2 }
+trigger = "status"
+
+[[step]]
+id = "resume-begin"
+transition = "TX-BEGIN-001"
+subject = "playback-transaction"
+causes = ["status-fresh-two"]
+identities = { command_sequence = 3 }
+trigger = "user-intent"
+
+[[step]]
+id = "resume-delivery"
+transition = "TX-DELIVERY-001"
+subject = "playback-transaction"
+causes = ["resume-begin"]
+identities = { command_sequence = 3 }
+trigger = "user-intent"
+
+[[step]]
+id = "resume-written"
+transition = "TX-WRITTEN-001"
+subject = "playback-transaction"
+causes = ["resume-delivery"]
+identities = { command_sequence = 3, frame_receipt = 3 }
+trigger = "user-intent"
+
+[[step]]
+id = "resume-committed"
+transition = "TX-COMMIT-001"
+subject = "playback-transaction"
+causes = ["resume-written"]
+identities = { command_sequence = 3, frame_receipt = 3 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "resume-fanout"
+transition = "TX-FANOUT-001"
+subject = "playback-transaction"
+causes = ["resume-committed"]
+identities = { command_sequence = 3, frame_receipt = 3 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "transport-resumed"
+transition = "TRANSPORT-PLAY-001"
+subject = "client-a"
+causes = ["resume-fanout"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1, command_sequence = 3, frame_receipt = 3 }
+target_kind = "generated-fixture"
+trigger = "canonical-mutation"
+
+[[step]]
+id = "resume-converged"
+transition = "TX-CONVERGE-001"
+subject = "playback-transaction"
+causes = ["transport-resumed"]
+identities = { command_sequence = 3, frame_receipt = 3 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "resume-reset"
+transition = "TX-RESET-001"
+subject = "playback-transaction"
+causes = ["resume-converged"]
+identities = { command_sequence = 3 }
+trigger = "canonical-mutation"
+
+[[step]]
+id = "transport-ended"
+transition = "TRANSPORT-END-001"
+subject = "client-a"
+causes = ["resume-reset"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "player-observation"
+
+[[step]]
+id = "playlist-advance-request"
+transition = "PLAYLIST-SELECT-001"
+subject = "room"
+causes = ["transport-ended"]
+identities = { playlist_revision = 1, playlist_index_revision = 2, media_generation = 1, load_attempt = 1 }
+trigger = "natural-completion"
+
+[[step]]
+id = "playlist-advance-committed"
+transition = "PLAYLIST-SNAPSHOT-SELECTED-001"
+subject = "room"
+causes = ["playlist-advance-request"]
+identities = { playlist_revision = 1, playlist_index_revision = 2 }
+trigger = "server-snapshot"
+
+[[step]]
+id = "app-stopping"
+transition = "APP-STOP-001"
+subject = "client-a"
+causes = ["playlist-advance-committed"]
+identities = { process_run = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "status-withdrawn"
+transition = "STATUS-WITHDRAW-001"
+subject = "client-a"
+causes = ["app-stopping"]
+identities = { membership_epoch = 1, report_sequence = 2 }
+trigger = "shutdown"
+
+[[step]]
+id = "status-unavailable"
+transition = "STATUS-UNAVAILABLE-001"
+subject = "client-a"
+causes = ["status-withdrawn"]
+identities = { membership_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "gate-cleared"
+transition = "GATE-CLEAR-001"
+subject = "room"
+causes = ["status-unavailable"]
+identities = { membership_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "room-leaving"
+transition = "ROOM-LEAVE-001"
+subject = "client-a"
+causes = ["gate-cleared"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "room-outside"
+transition = "ROOM-OUTSIDE-001"
+subject = "client-a"
+causes = ["room-leaving"]
+identities = { connection_generation = 1, membership_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "session-closing"
+transition = "SESSION-CLOSE-001"
+subject = "client-a"
+causes = ["room-outside"]
+identities = { connection_generation = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "session-disconnected"
+transition = "SESSION-DISCONNECT-001"
+subject = "client-a"
+causes = ["session-closing"]
+identities = { connection_generation = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "playlist-authority-cleared"
+transition = "PLAYLIST-LOSE-AUTHORITY-001"
+subject = "room"
+causes = ["session-disconnected"]
+identities = { playlist_revision = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "transport-detached"
+transition = "TRANSPORT-DETACH-001"
+subject = "client-a"
+causes = ["playlist-authority-cleared"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "shutdown"
+
+[[step]]
+id = "load-terminal"
+transition = "LOAD-TERMINAL-001"
+subject = "client-a"
+causes = ["transport-detached"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "shutdown"
+
+[[step]]
+id = "load-cleared"
+transition = "LOAD-CLEAR-001"
+subject = "client-a"
+causes = ["load-terminal"]
+identities = { attachment_epoch = 1, media_generation = 1, load_attempt = 1 }
+target_kind = "generated-fixture"
+trigger = "shutdown"
+
+[[step]]
+id = "media-cleared"
+transition = "MEDIA-CLEAR-001"
+subject = "client-a"
+causes = ["load-cleared"]
+identities = { playlist_revision = 1, media_generation = 1 }
+target_kind = "generated-fixture"
+trigger = "shutdown"
+
+[[step]]
+id = "player-stopped"
+transition = "PLAYER-STOP-001"
+subject = "client-a"
+causes = ["media-cleared"]
+identities = { attachment_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "player-absent"
+transition = "PLAYER-RESET-001"
+subject = "client-a"
+causes = ["player-stopped"]
+identities = { attachment_epoch = 1 }
+trigger = "shutdown"
+
+[[step]]
+id = "app-terminated"
+transition = "APP-TERM-001"
+subject = "client-a"
+causes = ["player-absent"]
+identities = { process_run = 1 }
+trigger = "shutdown"
+
+[[expect]]
+subject = "client-a"
+machine = "application"
+state = "terminated"
+
+[[expect]]
+subject = "client-a"
+machine = "player-attachment"
+state = "absent"
+
+[[expect]]
+subject = "client-a"
+machine = "session"
+state = "disconnected"
+
+[[expect]]
+subject = "client-a"
+machine = "room-membership"
+state = "outside"
+
+[[expect]]
+subject = "room"
+machine = "playlist-selection"
+state = "unknown"
+
+[[expect]]
+subject = "client-a"
+machine = "media-resolution"
+state = "absent"
+
+[[expect]]
+subject = "client-a"
+machine = "load-attempt"
+state = "none"
+
+[[expect]]
+subject = "client-a"
+machine = "local-transport"
+state = "unavailable"
+
+[[expect]]
+subject = "playback-transaction"
+machine = "canonical-transaction"
+state = "quiescent"
+
+[[expect]]
+subject = "room"
+machine = "start-gate"
+state = "inactive"
+
+[[expect]]
+subject = "client-a"
+machine = "participant-status"
+state = "unavailable"

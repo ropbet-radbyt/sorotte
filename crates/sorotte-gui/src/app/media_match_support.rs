@@ -2917,6 +2917,15 @@ fn probe_executable_output_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Result<BoundedProcessOutput, String> {
+    probe_executable_output_with_timeout_after_spawn(path, args, timeout, || {})
+}
+
+fn probe_executable_output_with_timeout_after_spawn(
+    path: &Path,
+    args: &[&str],
+    timeout: Duration,
+    after_spawn: impl FnOnce(),
+) -> Result<BoundedProcessOutput, String> {
     let mut child = hidden_media_match_command(path)
         .args(args)
         .stdin(Stdio::null())
@@ -2952,6 +2961,7 @@ fn probe_executable_output_with_timeout(
         thread::spawn(move || drain_pipe_bounded(stdout, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
     let stderr_drain =
         thread::spawn(move || drain_pipe_bounded(stderr, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
+    after_spawn();
     let started = Instant::now();
     let completion = loop {
         match child.try_wait() {

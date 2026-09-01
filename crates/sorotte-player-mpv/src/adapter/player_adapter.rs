@@ -727,6 +727,7 @@ impl PlayerAdapter for MpvAdapter {
                 TrackedCommandSupersession::Seek => {
                     self.observed_state.position_seconds = Some(self.position_seconds);
                     self.observed_state.seeking = Some(false);
+                    self.queue_simulated_authoritative_transport_state();
                     self.observe_tracked_commands(
                         media_generation,
                         TrackedCommandObservation::Position(self.position_seconds),
@@ -740,6 +741,8 @@ impl PlayerAdapter for MpvAdapter {
                     self.observed_state.paused = Some(true);
                     self.observed_state.logical_pause = Some(true);
                     self.observed_state.paused_for_cache = Some(false);
+                    self.transport_phase = PlayerTransportPhase::ReadyPaused;
+                    self.queue_simulated_authoritative_transport_state();
                     self.observe_tracked_commands(
                         media_generation,
                         TrackedCommandObservation::CachePause(false),
@@ -753,6 +756,8 @@ impl PlayerAdapter for MpvAdapter {
                     self.observed_state.paused = Some(false);
                     self.observed_state.logical_pause = Some(false);
                     self.observed_state.paused_for_cache = Some(false);
+                    self.transport_phase = PlayerTransportPhase::Playing;
+                    self.queue_simulated_authoritative_transport_state();
                     self.observe_tracked_commands(
                         media_generation,
                         TrackedCommandObservation::LogicalPause(false),
@@ -952,8 +957,33 @@ impl PlayerAdapter for MpvAdapter {
                 PlayerTransportPhase::Playing
             };
             self.set_transport_phase(phase);
+            self.queue_simulated_authoritative_transport_state();
         }
         Ok(())
+    }
+
+    fn unload(&mut self) -> Result<(), PlayerError> {
+        let result = self.send_ipc_command_if_attached(json!([MPV_COMMAND_STOP]));
+        if result.is_ok() {
+            // Canonical media retirement supersedes both an in-flight load and
+            // any unpublished observation of the retired file. Real mpv
+            // end-file/path events still establish physical Empty state.
+            self.pending_load_request = None;
+            self.pending_load_generation = None;
+            self.pending_local_file_update = None;
+            self.pending_local_file_generation = None;
+            self.pending_local_file_observed_at = None;
+            self.last_polled_local_file_update = None;
+            self.interrupted_network_stream_recovery = None;
+            self.network_stream_recovery_evidence = None;
+            self.network_cache_stall = None;
+            if self.simulation_mode {
+                self.clear_physical_projection();
+                self.observed_state = MpvObservedState::default();
+                self.transport_phase = PlayerTransportPhase::Empty;
+            }
+        }
+        result
     }
 
     fn set_option_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
@@ -978,6 +1008,16 @@ impl PlayerAdapter for MpvAdapter {
         // lets a cache release distinguish an intentional pause from mpv's
         // transient cache-induced `pause=true`.
         self.logical_pause_explicit = paused;
+        if self.simulation_mode {
+            if self.active_file_loaded {
+                self.transport_phase = if paused {
+                    PlayerTransportPhase::ReadyPaused
+                } else {
+                    PlayerTransportPhase::Playing
+                };
+            }
+            self.queue_simulated_authoritative_transport_state();
+        }
         Ok(())
     }
 
@@ -992,6 +1032,7 @@ impl PlayerAdapter for MpvAdapter {
             position_seconds
         ]))?;
         self.position_seconds = position_seconds;
+        self.queue_simulated_authoritative_transport_state();
         Ok(())
     }
 
@@ -1002,6 +1043,7 @@ impl PlayerAdapter for MpvAdapter {
             rate
         ]))?;
         self.playback_rate = rate;
+        self.queue_simulated_authoritative_transport_state();
         Ok(())
     }
 
@@ -1436,6 +1478,9 @@ impl PlayerAdapter for MpvAdapter {
 
     fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.maintain_runtime_integrations();
+        // Acknowledged-batch consumers bypass the legacy telemetry getters,
+        // so this production path must also perform the paused liveness poll.
+        self.poll_paused_position_telemetry_if_attached();
         self.player_lifecycle.peek_event_batch()
     }
 
@@ -1529,7 +1574,8 @@ mod nonblocking_maintenance_tests {
     use super::*;
     use crate::lifecycle::{LoadAttemptState, SystemSeekOwnershipState};
     use sorotte_player_api::{
-        PlayerCommandProgressState, PlayerCommandSemanticResult, PlayerEventAcknowledgementToken,
+        PlayerCommandProgressState, PlayerCommandSemanticResult, PlayerEvent,
+        PlayerEventAcknowledgementToken,
     };
     use std::{
         collections::{BTreeSet, VecDeque},
@@ -1542,6 +1588,11 @@ mod nonblocking_maintenance_tests {
 
     struct RejectingHeartbeatTransport {
         responses: VecDeque<String>,
+    }
+
+    struct SuccessfulPausedPositionTransport {
+        responses: VecDeque<String>,
+        position_seconds: f64,
     }
 
     struct DelayedSuccessTransport {
@@ -1682,6 +1733,70 @@ mod nonblocking_maintenance_tests {
                 )
             })
             .count()
+    }
+
+    #[test]
+    fn unchanged_paused_position_read_emits_bounded_transport_liveness() {
+        let transport = SuccessfulPausedPositionTransport {
+            responses: VecDeque::new(),
+            position_seconds: 12.0,
+        };
+        let mut adapter =
+            MpvAdapter::with_test_transport_and_ipc_timeout(transport, Duration::from_secs(1));
+        let (_, media_generation) = prepare_active_cache_readback(&mut adapter);
+        adapter.paused = true;
+        adapter.position_seconds = 12.0;
+        adapter.observed_state.position_seconds = Some(12.0);
+
+        while let Some(batch) = adapter.player_lifecycle.peek_event_batch() {
+            <MpvAdapter as PlayerAdapter>::acknowledge_player_event_batch(
+                &mut adapter,
+                batch.acknowledgement_token,
+            )
+            .expect("setup lifecycle events should acknowledge");
+        }
+
+        let first_batch = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
+            .expect("the first successful unchanged read must prove transport liveness");
+        let first = first_batch
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                PlayerEvent::TransportDelta(update) => Some(update),
+                _ => None,
+            })
+            .expect("the acknowledged delivery path must contain the liveness delta");
+        assert_eq!(first.media_generation, Some(media_generation));
+        assert_eq!(first.position_seconds, Some(12.0));
+        <MpvAdapter as PlayerAdapter>::acknowledge_player_event_batch(
+            &mut adapter,
+            first_batch.acknowledgement_token,
+        )
+        .expect("the first liveness batch should acknowledge");
+
+        adapter.pending_ordered_player_events.clear();
+        adapter.pending_transport_telemetry_updates.clear();
+        adapter.last_paused_position_poll_at =
+            Instant::now().checked_sub(PAUSED_POSITION_POLL_INTERVAL);
+        assert!(
+            <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter).is_none(),
+            "the 100 ms seek poll must not become a 10 Hz ordered heartbeat"
+        );
+
+        let now = Instant::now();
+        adapter.last_paused_position_poll_at = now.checked_sub(PAUSED_POSITION_POLL_INTERVAL);
+        adapter.last_paused_position_telemetry_at =
+            now.checked_sub(PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL);
+        let heartbeat = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
+            .expect("an aged successful read should publish a new liveness batch");
+        assert!(heartbeat.events.iter().any(|event| {
+            matches!(
+                &event.event,
+                PlayerEvent::TransportDelta(update)
+                    if update.media_generation == Some(media_generation)
+                        && update.position_seconds == Some(12.0)
+            )
+        }));
     }
 
     #[test]
@@ -1852,6 +1967,113 @@ mod nonblocking_maintenance_tests {
             <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter),
             None
         );
+    }
+
+    #[test]
+    fn simulated_open_publishes_a_complete_authoritative_transport_baseline() {
+        let mut adapter = MpvAdapter::simulated();
+
+        adapter
+            .open_file("simulated-baseline.mkv")
+            .expect("simulated load should succeed");
+
+        let batch = adapter
+            .take_ordered_event_batch()
+            .expect("simulated load should publish an ordered batch");
+        let transport = batch
+            .ordered_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                PlayerOrderedEventKind::Transport(update) => Some(update),
+                _ => None,
+            })
+            .next_back()
+            .expect("simulated load should publish authoritative transport evidence");
+
+        assert_eq!(transport.phase, Some(PlayerTransportPhase::Playing));
+        assert_eq!(transport.position_seconds, Some(0.0));
+        assert_eq!(transport.logical_pause, Some(false));
+        assert_eq!(transport.paused_for_cache, Some(false));
+        assert_eq!(transport.seeking, Some(false));
+        assert_eq!(
+            transport.media_generation,
+            Some(adapter.active_media_generation.expect("active generation"))
+        );
+    }
+
+    #[test]
+    fn simulated_tracked_transport_commands_publish_complete_evidence_before_completion() {
+        let mut adapter = MpvAdapter::simulated();
+        adapter
+            .open_file("simulated-command-evidence.mkv")
+            .expect("simulated load should succeed");
+        adapter
+            .take_ordered_event_batch()
+            .expect("simulated load batch");
+
+        let cases = [
+            (
+                PlayerCommand::SetPosition(12.0),
+                PlayerTransportPhase::Playing,
+                12.0,
+                false,
+            ),
+            (
+                PlayerCommand::SetPaused(true),
+                PlayerTransportPhase::ReadyPaused,
+                12.0,
+                true,
+            ),
+            (
+                PlayerCommand::Play(PlayerPlayIntent::Resume),
+                PlayerTransportPhase::Playing,
+                12.0,
+                false,
+            ),
+        ];
+
+        for (command, expected_phase, expected_position, expected_pause) in cases {
+            let command_id = adapter
+                .execute_tracked(command)
+                .expect("simulated tracked command should be accepted");
+            let batch = adapter
+                .take_ordered_event_batch()
+                .expect("simulated command should publish an ordered batch");
+            let transport_event = batch
+                .ordered_events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    PlayerOrderedEventKind::Transport(update) => Some((event.sequence, update)),
+                    _ => None,
+                })
+                .next_back()
+                .expect("simulated command should publish transport evidence");
+            let completion = batch
+                .ordered_events
+                .iter()
+                .find(|event| {
+                    matches!(
+                        &event.kind,
+                        PlayerOrderedEventKind::CommandProgress(progress)
+                            if progress.command_id == command_id
+                                && progress.state
+                                    == PlayerCommandProgressState::Finished(
+                                        PlayerCommandResult::Completed
+                                    )
+                    )
+                })
+                .expect("simulated command should publish semantic completion");
+
+            assert!(
+                transport_event.0 < completion.sequence,
+                "authoritative transport evidence must causally precede command completion"
+            );
+            assert_eq!(transport_event.1.phase, Some(expected_phase));
+            assert_eq!(transport_event.1.position_seconds, Some(expected_position));
+            assert_eq!(transport_event.1.logical_pause, Some(expected_pause));
+            assert_eq!(transport_event.1.paused_for_cache, Some(false));
+            assert_eq!(transport_event.1.seeking, Some(false));
+        }
     }
 
     #[test]
@@ -2628,6 +2850,41 @@ mod nonblocking_maintenance_tests {
             })?;
             self.responses.push_back(
                 json!({"request_id": request_id, "error": "client not found"}).to_string() + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    impl MpvJsonIpcTransport for SuccessfulPausedPositionTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let request_id = request.get("request_id").cloned().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test request omitted request_id",
+                )
+            })?;
+            self.responses.push_back(
+                json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": self.position_seconds,
+                })
+                .to_string()
+                    + "\n",
             );
             Ok(())
         }

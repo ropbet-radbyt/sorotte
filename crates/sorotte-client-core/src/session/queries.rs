@@ -334,6 +334,24 @@ impl ClientSession {
             .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
+    pub(crate) fn current_room_playlist_selection_revision(&self) -> Option<u64> {
+        self.model
+            .room
+            .name
+            .as_ref()
+            .and_then(|room_name| self.model.playlist.selection_revisions.get(room_name))
+            .copied()
+    }
+
+    pub(crate) fn current_room_playlist_canonical_epoch(&self) -> Option<u64> {
+        self.model
+            .room
+            .name
+            .as_ref()
+            .and_then(|room_name| self.model.playlist.canonical_epochs.get(room_name))
+            .copied()
+    }
+
     pub fn current_room_playlist_remote_revision(&self) -> u64 {
         self.model
             .room
@@ -403,6 +421,13 @@ impl ClientSession {
                     }
                     playlist.index = Some(*index);
                     playlist.set_by = Some(local_username.clone());
+                    let selection_revision = self
+                        .model
+                        .playlist
+                        .selection_revisions
+                        .entry(room_name.clone())
+                        .or_default();
+                    *selection_revision = selection_revision.wrapping_add(1);
                     self.model
                         .playlist
                         .pending_local_index_echoes
@@ -429,6 +454,15 @@ impl ClientSession {
             .name
             .as_deref()
             .and_then(|room_name| self.model.room.playstates.get(room_name))
+    }
+
+    pub(crate) fn current_room_transport_revision(&self) -> Option<u64> {
+        let room_name = self.model.room.name.as_deref()?;
+        self.model
+            .room
+            .playstate_transport_revisions
+            .get(room_name)
+            .copied()
     }
 
     pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {

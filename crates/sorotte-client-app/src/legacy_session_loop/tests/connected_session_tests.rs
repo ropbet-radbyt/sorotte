@@ -670,6 +670,53 @@ fn connected_session_autoplay_tick_event_execution_plan_legacy_compatible_packs_
 }
 
 #[test]
+fn connected_session_player_coordination_tick_event_execution_plan_legacy_compatible_packs_inputs()
+{
+    let shared = ConnectedSessionSharedExecutionInputs {
+        shared_playlists_enabled: true,
+        diagnostics: ConnectedSessionDiagnosticsPlan {
+            log_player_telemetry: true,
+            log_player_drift: false,
+            reconnect_correction_diagnostics_format: None,
+        },
+        outbound_state_sync_enabled: true,
+    };
+    let plan =
+        connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(shared);
+    assert_eq!(plan.inbound_apply, None);
+    assert_eq!(plan.event.inbound_post_apply, None);
+    assert!(!plan.event.branch.run_protocol_before_runtime_steps);
+    assert!(plan.event.branch.runtime_steps.run_room_pause_sync);
+    assert!(
+        !plan
+            .event
+            .branch
+            .runtime_steps
+            .run_readiness_unpause_attempt
+    );
+    assert!(!plan.event.branch.runtime_steps.run_update_autoplay_check);
+    assert!(!plan.event.branch.runtime_steps.run_tick_autoplay);
+    assert!(!plan.event.branch.runtime_steps.run_desync_correction);
+    assert!(
+        plan.event
+            .branch
+            .runtime_steps
+            .run_reconnect_state_restore_validation
+    );
+    assert!(!plan.event.branch.runtime_steps.run_state_sync_heartbeat);
+    assert!(
+        plan.event
+            .branch
+            .runtime_steps
+            .publish_pending_local_file_updates
+    );
+    assert!(plan.event.branch.protocol.flush_runtime_protocol_lines);
+    assert!(plan.event.branch.drain.flush_reconnect_notifications);
+    assert!(plan.event.branch.drain.flush_file_difference_notifications);
+    assert!(plan.event.branch.drain.flush_player_playback_diagnostics);
+}
+
+#[test]
 fn connected_session_local_input_event_execution_plan_legacy_compatible_packs_inputs() {
     let shared = ConnectedSessionSharedExecutionInputs {
         shared_playlists_enabled: false,

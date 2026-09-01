@@ -816,11 +816,11 @@ impl GuiPersistedConfigRuntimeOwner {
             } else {
                 SelectedPlaylistMediaSyncOutcome::NoChange
             };
-        if selected_media_sync.selection_started()
-            && let Some(session) = self.session.as_mut()
-        {
-            session.note_local_playlist_index_reset_intent(true);
-        }
+        // The session adapter owns canonical playlist-selection reset intent.
+        // A physical open can also be a same-selection reload (for example,
+        // after an owned player process is replaced), so treating every open
+        // as a new canonical selection creates a fence that no playlist State
+        // exchange can satisfy and can later reverse a valid Play command.
         let selection_handoff_ready = selected_media_sync.selection_handoff_ready(
             self.session
                 .as_ref()

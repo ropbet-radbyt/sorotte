@@ -147,6 +147,44 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut state_changed = false;
         let user_offset_seconds = self.user_offset_seconds;
         for action in actions {
+            let pause_trace = match &action {
+                GuiAttachedPlayerRuntimeAction::Paused { paused, cause } => {
+                    Some((*paused, format!("{cause:?}")))
+                }
+                GuiAttachedPlayerRuntimeAction::Coordinator { command, .. } => match command {
+                    CoordinatorPlayerCommand::SetPaused(paused) => {
+                        Some((*paused, "CoordinatorSetPaused".to_owned()))
+                    }
+                    CoordinatorPlayerCommand::Play(_) => {
+                        Some((false, "CoordinatorPlay".to_owned()))
+                    }
+                    CoordinatorPlayerCommand::SetPosition(_)
+                    | CoordinatorPlayerCommand::SetPlaybackRate(_) => None,
+                },
+                GuiAttachedPlayerRuntimeAction::Position(_)
+                | GuiAttachedPlayerRuntimeAction::PlaybackRate(_)
+                | GuiAttachedPlayerRuntimeAction::DesyncPlaybackRate { .. } => None,
+            };
+            if let Some((target_paused, cause)) = pause_trace {
+                let coordination_snapshot = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.playback_coordination_snapshot());
+                crate::app::test_lifecycle::record_attached_pause_command(
+                    "playback-control-attached-command",
+                    target_paused,
+                    action_description,
+                    &cause,
+                    self.session
+                        .as_ref()
+                        .and_then(|session| session.current_room_playstate())
+                        .and_then(|playstate| playstate.paused),
+                    coordination_snapshot.and_then(|snapshot| snapshot.pending_local_pause_intent),
+                    self.session
+                        .as_ref()
+                        .is_some_and(|session| session.has_pending_playlist_index_reset_intent()),
+                );
+            }
             match action {
                 GuiAttachedPlayerRuntimeAction::Paused { paused, cause } => {
                     if self.player_paused_for_cache == Some(true) && !paused {
