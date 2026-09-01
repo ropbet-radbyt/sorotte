@@ -639,7 +639,7 @@ where
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
-        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
+        let causal_state = self.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
         self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
@@ -652,7 +652,7 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_seek_offset(offset_seconds);
-        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
+        let causal_state = self.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
         self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
@@ -663,7 +663,7 @@ where
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
-        let causal_state = self.session.causal_state_for_local_seek_actions(&actions);
+        let causal_state = self.causal_state_for_local_seek_actions(&actions);
         let sent = !actions.is_empty();
         self.dispatch_local_seek_with_session_rollback(session_snapshot, &actions, causal_state)
             .map(|_| sent)
@@ -831,6 +831,18 @@ where
         }
         self.sync_player_playback_telemetry_into_session_and_buffer();
         Ok(())
+    }
+
+    fn causal_state_for_local_seek_actions(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+    ) -> Option<StatePayload> {
+        let pending_local_pause_intent = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent(&self.session)
+            .map(|intent| intent.paused);
+        self.session
+            .causal_state_for_local_seek_actions(actions, pending_local_pause_intent)
     }
 }
 

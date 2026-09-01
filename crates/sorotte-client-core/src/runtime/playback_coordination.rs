@@ -9831,6 +9831,125 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_pause_then_seek_rejects_a_late_pre_pause_play_projection() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut session = participant_status_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"alice","sorotteTransportRevision":1}}}"#,
+                1.0,
+            )
+            .expect("initial canonical pause should apply");
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("adjacent-pause-seek-player-fence").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let media_generation = PlayerMediaGeneration::new(plan.media_generation);
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_paused_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    0.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial paused snapshot should drain");
+        runtime.flush_queued_protocol_messages();
+
+        assert!(runtime.run_set_paused(false).expect("Play should dispatch"));
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice","sorotteTransportRevision":2}}}"#,
+                1.1,
+            )
+            .expect("canonical Play echo should apply");
+        assert!(runtime.run_set_paused(true).expect("Pause should dispatch"));
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.1,"paused":true,"doSeek":false,"setBy":"alice","sorotteTransportRevision":3}}}"#,
+                1.2,
+            )
+            .expect("canonical Pause echo should apply");
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    load_attempt_id: Some(attempt_id),
+                    media_generation: Some(media_generation),
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_millis(1150),
+                    )),
+                    phase: Some(PlayerTransportPhase::Playing),
+                    position_seconds: Some(0.1),
+                    logical_pause: Some(false),
+                    paused_for_cache: Some(false),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+
+        assert!(
+            runtime
+                .run_seek_to_position(3.0)
+                .expect("adjacent Seek should dispatch")
+        );
+        assert_eq!(
+            runtime.session().local_paused(),
+            Some(false),
+            "the regression must actually drain the late Play projection before building Seek"
+        );
+        let seek_playstate = runtime
+            .flush_queued_protocol_messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                ProtocolMessage::State(state) => state.state.playstate,
+                _ => None,
+            })
+            .find(|playstate| {
+                playstate.do_seek == Some(true)
+                    && playstate
+                        .position
+                        .is_some_and(|position| (position - 3.0).abs() < f64::EPSILON)
+            })
+            .expect("the local Seek must publish one causal playstate");
+        assert_eq!(
+            seek_playstate.paused,
+            Some(true),
+            "Seek must preserve canonical Pause despite the late pre-Pause player edge"
+        );
+    }
+
+    #[test]
     fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
         let epoch = PlayerAttachmentEpoch::new(1);
         let attempt_id = LoadAttemptId::new(1);
