@@ -73,12 +73,6 @@ impl ClientSession {
             .playback
             .client_ignoring_on_the_fly
             .saturating_add(1);
-        let mut ignoring = IgnoringOnTheFlyPayload::new()
-            .with_client(self.model.playback.client_ignoring_on_the_fly);
-        if self.model.playback.server_ignoring_on_the_fly != 0 {
-            ignoring = ignoring.with_server(self.model.playback.server_ignoring_on_the_fly);
-            self.model.playback.server_ignoring_on_the_fly = 0;
-        }
         let playstate = self.with_current_transport_revision(
             PlaystatePayload::new()
                 .with_position(*target_position)
@@ -88,7 +82,10 @@ impl ClientSession {
         Some(
             StatePayload::new()
                 .with_playstate(playstate)
-                .with_ignoring_on_the_fly(ignoring),
+                .with_ignoring_on_the_fly(
+                    IgnoringOnTheFlyPayload::new()
+                        .with_client(self.model.playback.client_ignoring_on_the_fly),
+                ),
         )
     }
 

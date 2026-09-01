@@ -45,7 +45,6 @@ impl ClientSession {
                 .model
                 .playback
                 .cache_recovery_waiting_for_post_cache_position,
-            server_ignoring_on_the_fly: self.model.playback.server_ignoring_on_the_fly,
             client_ignoring_on_the_fly: self.model.playback.client_ignoring_on_the_fly,
             last_seek_position_before_manual_seek: self
                 .model
@@ -79,7 +78,6 @@ impl ClientSession {
             .playback
             .cache_recovery_waiting_for_post_cache_position =
             snapshot.cache_recovery_waiting_for_post_cache_position;
-        self.model.playback.server_ignoring_on_the_fly = snapshot.server_ignoring_on_the_fly;
         self.model.playback.client_ignoring_on_the_fly = snapshot.client_ignoring_on_the_fly;
         self.model.playlist.last_seek_position_before_manual_seek =
             snapshot.last_seek_position_before_manual_seek;

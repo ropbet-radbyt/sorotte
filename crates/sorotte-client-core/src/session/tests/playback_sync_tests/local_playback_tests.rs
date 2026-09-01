@@ -967,13 +967,13 @@ fn client_runtime_seek_by_offset_uses_global_position_when_available() {
             .ignoring_on_the_fly
             .as_ref()
             .and_then(|ignore| ignore.server),
-        Some(7),
-        "the causal seek must acknowledge the in-flight server correction so the server can apply the edge"
+        None,
+        "a causal seek must not eagerly acknowledge a correction whose transport revision may not yet be committed locally"
     );
     assert_eq!(
         runtime.session().server_ignoring_on_the_fly(),
-        0,
-        "the acknowledgement is consumed only after it is owned by the causal outbox"
+        7,
+        "the next State reconciliation owns the server acknowledgement and can re-publish the seek against current authority"
     );
 }
 
@@ -992,7 +992,7 @@ impl ClientEffectSink for FailCausalStateEffectSink {
 }
 
 #[test]
-fn client_runtime_seek_restores_pending_server_ack_when_causal_delivery_fails() {
+fn client_runtime_seek_restores_client_ignore_when_causal_delivery_fails() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -1004,8 +1004,6 @@ fn client_runtime_seek_restores_pending_server_ack_when_causal_delivery_fails() 
             r#"{"State":{"playstate":{"position":2.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
         )
         .expect("forced server state should apply");
-    session.model.playback.server_ignoring_on_the_fly = 9;
-
     let player = RecordingPlayer::default();
     let mut runtime = ClientRuntime::new(session, player, FailCausalStateEffectSink);
     let error = runtime
@@ -1013,11 +1011,10 @@ fn client_runtime_seek_restores_pending_server_ack_when_causal_delivery_fails() 
         .expect_err("causal state delivery failure should surface");
 
     assert!(matches!(error, PlayerError::OperationFailed(_)));
-    assert_eq!(runtime.session().server_ignoring_on_the_fly(), 9);
     assert_eq!(
         runtime.session().model.playback.client_ignoring_on_the_fly,
         0,
-        "the failed causal edge must restore both halves of the ignore handshake"
+        "the failed causal edge must restore its client-ignore handshake"
     );
 }
 
