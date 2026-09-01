@@ -246,11 +246,16 @@ EXPECTED_TESTS = {
         "tests::platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths",
     ),
 }
+MPV_LIBTEST_INVENTORY_SIZE = 441
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": 427,
-    "mpv-external-process": 433,
+    "mpv-named-pipe": (
+        MPV_LIBTEST_INVENTORY_SIZE - len(EXPECTED_TESTS["mpv-named-pipe"])
+    ),
+    "mpv-external-process": (
+        MPV_LIBTEST_INVENTORY_SIZE - len(EXPECTED_TESTS["mpv-external-process"])
+    ),
     "media-tool-process": 1157,
     "server-platform-signal": 14,
 }

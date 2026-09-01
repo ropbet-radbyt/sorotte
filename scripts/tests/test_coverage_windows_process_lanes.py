@@ -353,6 +353,16 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                 total += oracle["passed"]
         self.assertEqual(total, 56)
 
+    def test_mpv_lane_filtered_counts_share_reviewed_inventory_size(self) -> None:
+        for lane in ("mpv-named-pipe", "mpv-external-process"):
+            with self.subTest(lane=lane):
+                self.assertEqual(
+                    len(lanes.EXPECTED_TESTS[lane])
+                    + lanes.EXPECTED_FILTERED_OUT[lane],
+                    lanes.MPV_LIBTEST_INVENTORY_SIZE,
+                )
+        self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 441)
+
     def test_libtest_oracle_requires_rust_singular_one_test_grammar(self) -> None:
         lane = "server-platform-signal"
         output = self.libtest_output(lane)
