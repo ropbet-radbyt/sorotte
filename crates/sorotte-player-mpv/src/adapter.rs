@@ -61,6 +61,7 @@ use crate::lifecycle::{
 use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder};
 
 const PAUSED_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const IPC_EVENT_FENCE_ACTIVE_INTERVAL: Duration = Duration::from_millis(100);
 const IPC_EVENT_FENCE_IDLE_INTERVAL: Duration = Duration::from_millis(500);
 const IPC_RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
@@ -771,6 +772,7 @@ pub struct MpvAdapter {
     pending_load_generation: Option<PlayerMediaGeneration>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     last_paused_position_poll_at: Option<Instant>,
+    last_paused_position_telemetry_at: Option<Instant>,
     last_ipc_event_fence_at: Option<Instant>,
     pending_ipc_event_fence_command_id: Option<u64>,
     pending_cache_pause_readback: Option<PendingCachePauseReadback>,
@@ -928,6 +930,8 @@ impl MpvAdapter {
         self.active_generation_has_restarted = false;
         self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
+        self.last_paused_position_poll_at = None;
+        self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
@@ -1007,6 +1011,7 @@ impl MpvAdapter {
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.last_paused_position_poll_at = None;
+        self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
@@ -4419,12 +4424,34 @@ impl MpvAdapter {
         let Ok(Some(position_seconds)) = polled_position else {
             return;
         };
-        if !position_seconds.is_finite()
-            || self
-                .observed_state
-                .position_seconds
-                .is_some_and(|observed| (observed - position_seconds).abs() < 1e-6)
-        {
+        if !position_seconds.is_finite() {
+            return;
+        }
+
+        let position_changed = self
+            .observed_state
+            .position_seconds
+            .is_none_or(|observed| (observed - position_seconds).abs() >= 1e-6);
+        let telemetry_heartbeat_due =
+            self.last_paused_position_telemetry_at
+                .is_none_or(|last_observed| {
+                    now.saturating_duration_since(last_observed)
+                        >= PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL
+                });
+        if !position_changed && !telemetry_heartbeat_due {
+            return;
+        }
+        self.last_paused_position_telemetry_at = Some(now);
+
+        let update = self
+            .transport_update()
+            .with_position_seconds(position_seconds);
+        self.queue_transport_telemetry_update(update);
+        if !position_changed {
+            // A successful read is fresh transport evidence even when a paused
+            // position is numerically unchanged. Keep that liveness signal at
+            // heartbeat cadence without flooding the ordered event stream at
+            // the 100 ms out-of-band-seek polling cadence.
             return;
         }
 
@@ -4434,10 +4461,6 @@ impl MpvAdapter {
         self.queue_playback_telemetry_update(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
         );
-        let update = self
-            .transport_update()
-            .with_position_seconds(position_seconds);
-        self.queue_transport_telemetry_update(update);
         if let Some(media_generation) = self.player_lifecycle.active_media_generation() {
             let lifecycle_epoch = self.lifecycle_epoch();
             let observed_sequence = self.player_lifecycle.last_event_sequence();

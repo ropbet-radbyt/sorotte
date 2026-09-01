@@ -133,6 +133,10 @@ impl fmt::Debug for MpvAdapter {
                 "last_paused_position_poll_at",
                 &self.last_paused_position_poll_at,
             )
+            .field(
+                "last_paused_position_telemetry_at",
+                &self.last_paused_position_telemetry_at,
+            )
             .field("last_ipc_event_fence_at", &self.last_ipc_event_fence_at)
             .field(
                 "pending_ipc_event_fence_command_id",
@@ -321,6 +325,7 @@ impl Default for MpvAdapter {
             pending_load_generation: None,
             last_polled_local_file_update: None,
             last_paused_position_poll_at: None,
+            last_paused_position_telemetry_at: None,
             last_ipc_event_fence_at: None,
             pending_ipc_event_fence_command_id: None,
             pending_cache_pause_readback: None,

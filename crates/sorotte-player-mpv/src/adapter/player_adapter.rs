@@ -1586,6 +1586,11 @@ mod nonblocking_maintenance_tests {
         responses: VecDeque<String>,
     }
 
+    struct SuccessfulPausedPositionTransport {
+        responses: VecDeque<String>,
+        position_seconds: f64,
+    }
+
     struct DelayedSuccessTransport {
         responses: VecDeque<String>,
         first_response_delay: Option<Duration>,
@@ -1724,6 +1729,56 @@ mod nonblocking_maintenance_tests {
                 )
             })
             .count()
+    }
+
+    #[test]
+    fn unchanged_paused_position_read_emits_bounded_transport_liveness() {
+        let transport = SuccessfulPausedPositionTransport {
+            responses: VecDeque::new(),
+            position_seconds: 12.0,
+        };
+        let mut adapter =
+            MpvAdapter::with_test_transport_and_ipc_timeout(transport, Duration::from_secs(1));
+        let (_, media_generation) = prepare_active_cache_readback(&mut adapter);
+        adapter.paused = true;
+        adapter.position_seconds = 12.0;
+        adapter.observed_state.position_seconds = Some(12.0);
+
+        adapter.poll_paused_position_telemetry_if_attached();
+        let first = adapter
+            .pending_ordered_player_events
+            .back()
+            .and_then(|event| match &event.kind {
+                PlayerOrderedEventKind::Transport(update) => Some(update),
+                _ => None,
+            })
+            .expect("the first successful unchanged read must prove transport liveness");
+        assert_eq!(first.media_generation, Some(media_generation));
+        assert_eq!(first.position_seconds, Some(12.0));
+
+        adapter.pending_ordered_player_events.clear();
+        adapter.pending_transport_telemetry_updates.clear();
+        adapter.last_paused_position_poll_at =
+            Instant::now().checked_sub(PAUSED_POSITION_POLL_INTERVAL);
+        adapter.poll_paused_position_telemetry_if_attached();
+        assert!(
+            adapter.pending_ordered_player_events.is_empty(),
+            "the 100 ms seek poll must not become a 10 Hz ordered heartbeat"
+        );
+
+        let now = Instant::now();
+        adapter.last_paused_position_poll_at = now.checked_sub(PAUSED_POSITION_POLL_INTERVAL);
+        adapter.last_paused_position_telemetry_at =
+            now.checked_sub(PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL);
+        adapter.poll_paused_position_telemetry_if_attached();
+        assert!(adapter.pending_ordered_player_events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                PlayerOrderedEventKind::Transport(update)
+                    if update.media_generation == Some(media_generation)
+                        && update.position_seconds == Some(12.0)
+            )
+        }));
     }
 
     #[test]
@@ -2777,6 +2832,41 @@ mod nonblocking_maintenance_tests {
             })?;
             self.responses.push_back(
                 json!({"request_id": request_id, "error": "client not found"}).to_string() + "\n",
+            );
+            Ok(())
+        }
+
+        fn read_line_until(&mut self, line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            let response = self.responses.pop_front().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "test response queue was empty",
+                )
+            })?;
+            line.clear();
+            line.push_str(&response);
+            Ok(line.len())
+        }
+    }
+
+    impl MpvJsonIpcTransport for SuccessfulPausedPositionTransport {
+        fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
+            let request: Value = serde_json::from_str(line.trim())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let request_id = request.get("request_id").cloned().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test request omitted request_id",
+                )
+            })?;
+            self.responses.push_back(
+                json!({
+                    "request_id": request_id,
+                    "error": "success",
+                    "data": self.position_seconds,
+                })
+                .to_string()
+                    + "\n",
             );
             Ok(())
         }
