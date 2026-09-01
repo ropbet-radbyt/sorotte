@@ -3931,6 +3931,33 @@ done""",
                             ),
                             (
                                 (
+                                    "server-participant-status-barrier-"
+                                    "scope-message-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_playback_barrier.rs"
+                                ),
+                                (
+                                    "ServerRuntime::replace_room_barrier_"
+                                    "participant_status_scope"
+                                ),
+                                "-> Vec<DirectedProtocolMessage>",
+                                "FnValue",
+                                "vec![Default::default()]",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "directed protocol message in the "
+                                    "barrier-scope replacement vector, but "
+                                    "every message requires an explicit "
+                                    "authenticated recipient and protocol "
+                                    "payload, so the generated replacement "
+                                    "cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
                                     "server-participant-status-clear-client-"
                                     "let-chain-or"
                                 ),
