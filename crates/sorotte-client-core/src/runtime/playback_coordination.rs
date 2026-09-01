@@ -857,6 +857,7 @@ struct LocalPositionObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlayerCommandBinding {
     coordinator_command_id: CoordinatorCommandId,
+    desired_paused: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4318,6 +4319,7 @@ impl RuntimePlaybackCoordination {
             player_command_id,
             PlayerCommandBinding {
                 coordinator_command_id,
+                desired_paused,
             },
         );
         if let Some(desired_paused) = desired_paused {
@@ -4691,7 +4693,10 @@ impl RuntimePlaybackCoordination {
             }))
             .with_synchronization(
                 self.reconnect_reconciliation.is_some()
-                    || (!self.player_command_bindings.is_empty()
+                    || (self
+                        .player_command_bindings
+                        .values()
+                        .any(|binding| binding.desired_paused.is_some())
                         && self.coordinator.ordinary_correction_blocked()),
             )
     }
@@ -18860,6 +18865,122 @@ mod tests {
             "managed-terminal-timeout-play",
             Some(PlaybackBarrierPhase::Degraded),
         );
+    }
+
+    #[test]
+    fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
+        let mut session = readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::NotReady);
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":11.0,"paused":true,"doSeek":true,"setBy":"bob","sorotteTransportRevision":24}}}"#,
+                0.0,
+            )
+            .expect("canonical paused seek should apply");
+        assert_eq!(session.local_can_control(), Some(true));
+        session.model.playback.local_paused = Some(true);
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                advertises_telemetry: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("final-item-seek-play-race").expect("logical ID should be valid"),
+            MediaTransportKind::LocalFile,
+            0.0,
+        );
+        runtime.flush_queued_protocol_messages();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                0.0,
+                PlayerTransportPhase::ReadyPaused,
+                0.0,
+            ));
+        runtime
+            .drain_player_transport_coordination(0.0)
+            .expect("paused origin should dispatch canonical seek");
+        assert!(runtime.player().commands.iter().any(
+            |command| matches!(command, PlayerCommand::SetPosition(position) if (*position - 11.0).abs() <= f64::EPSILON)
+        ));
+        runtime.flush_queued_protocol_messages();
+        runtime.player_mut_for_test().commands.clear();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(paused_transport(
+                1,
+                0.1,
+                PlayerTransportPhase::ReadyPaused,
+                11.0,
+            ));
+        runtime
+            .drain_player_transport_coordination(0.1)
+            .expect("target position should converge before command completion arrives");
+        assert!(
+            !runtime
+                .playback_coordination
+                .player_command_bindings
+                .is_empty(),
+            "the regression requires command completion to remain in flight"
+        );
+        assert!(
+            runtime
+                .playback_coordination
+                .player_command_bindings
+                .values()
+                .all(|binding| binding.desired_paused.is_none())
+        );
+        runtime.flush_queued_protocol_messages();
+        runtime.player_mut_for_test().commands.clear();
+
+        runtime
+            .player_mut_for_test()
+            .transport_updates
+            .push_back(transport(1, 0.2, PlayerTransportPhase::Playing, 11.0));
+        runtime
+            .drain_player_transport_coordination(0.2)
+            .expect("native Play should supersede stale canonical pause correction");
+
+        assert!(matches!(
+            runtime
+                .playback_coordination
+                .last_player_transition_classification,
+            Some(PlayerTransitionClassification::NativePlayerGesture {
+                action: NativePlayerAction::Play
+            })
+        ));
+        assert!(
+            runtime
+                .player()
+                .commands
+                .iter()
+                .all(|command| !matches!(command, PlayerCommand::SetPaused(true))),
+            "an in-flight seek completion must not cause immediate re-pause"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            Some(false),
+            "native Play must remain authoritative until the server commits it"
+        );
+        assert!(runtime.control().outbound_messages().iter().any(|message| {
+            let ProtocolMessage::Set(set) = message else {
+                return false;
+            };
+            set.set
+                .readiness_v2()
+                .expect("readiness extension should decode")
+                .and_then(|extension| extension.intent)
+                .is_some_and(|intent| intent.desired == UserReadinessIntent::Ready)
+        }));
     }
 
     #[test]
