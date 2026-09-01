@@ -1478,6 +1478,9 @@ impl PlayerAdapter for MpvAdapter {
 
     fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.maintain_runtime_integrations();
+        // Acknowledged-batch consumers bypass the legacy telemetry getters,
+        // so this production path must also perform the paused liveness poll.
+        self.poll_paused_position_telemetry_if_attached();
         self.player_lifecycle.peek_event_batch()
     }
 
@@ -1571,7 +1574,8 @@ mod nonblocking_maintenance_tests {
     use super::*;
     use crate::lifecycle::{LoadAttemptState, SystemSeekOwnershipState};
     use sorotte_player_api::{
-        PlayerCommandProgressState, PlayerCommandSemanticResult, PlayerEventAcknowledgementToken,
+        PlayerCommandProgressState, PlayerCommandSemanticResult, PlayerEvent,
+        PlayerEventAcknowledgementToken,
     };
     use std::{
         collections::{BTreeSet, VecDeque},
@@ -1744,25 +1748,38 @@ mod nonblocking_maintenance_tests {
         adapter.position_seconds = 12.0;
         adapter.observed_state.position_seconds = Some(12.0);
 
-        adapter.poll_paused_position_telemetry_if_attached();
-        let first = adapter
-            .pending_ordered_player_events
-            .back()
-            .and_then(|event| match &event.kind {
-                PlayerOrderedEventKind::Transport(update) => Some(update),
+        while let Some(batch) = adapter.player_lifecycle.peek_event_batch() {
+            <MpvAdapter as PlayerAdapter>::acknowledge_player_event_batch(
+                &mut adapter,
+                batch.acknowledgement_token,
+            )
+            .expect("setup lifecycle events should acknowledge");
+        }
+
+        let first_batch = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
+            .expect("the first successful unchanged read must prove transport liveness");
+        let first = first_batch
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                PlayerEvent::TransportDelta(update) => Some(update),
                 _ => None,
             })
-            .expect("the first successful unchanged read must prove transport liveness");
+            .expect("the acknowledged delivery path must contain the liveness delta");
         assert_eq!(first.media_generation, Some(media_generation));
         assert_eq!(first.position_seconds, Some(12.0));
+        <MpvAdapter as PlayerAdapter>::acknowledge_player_event_batch(
+            &mut adapter,
+            first_batch.acknowledgement_token,
+        )
+        .expect("the first liveness batch should acknowledge");
 
         adapter.pending_ordered_player_events.clear();
         adapter.pending_transport_telemetry_updates.clear();
         adapter.last_paused_position_poll_at =
             Instant::now().checked_sub(PAUSED_POSITION_POLL_INTERVAL);
-        adapter.poll_paused_position_telemetry_if_attached();
         assert!(
-            adapter.pending_ordered_player_events.is_empty(),
+            <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter).is_none(),
             "the 100 ms seek poll must not become a 10 Hz ordered heartbeat"
         );
 
@@ -1770,11 +1787,12 @@ mod nonblocking_maintenance_tests {
         adapter.last_paused_position_poll_at = now.checked_sub(PAUSED_POSITION_POLL_INTERVAL);
         adapter.last_paused_position_telemetry_at =
             now.checked_sub(PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL);
-        adapter.poll_paused_position_telemetry_if_attached();
-        assert!(adapter.pending_ordered_player_events.iter().any(|event| {
+        let heartbeat = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
+            .expect("an aged successful read should publish a new liveness batch");
+        assert!(heartbeat.events.iter().any(|event| {
             matches!(
-                &event.kind,
-                PlayerOrderedEventKind::Transport(update)
+                &event.event,
+                PlayerEvent::TransportDelta(update)
                     if update.media_generation == Some(media_generation)
                         && update.position_seconds == Some(12.0)
             )
